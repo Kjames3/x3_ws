@@ -278,13 +278,13 @@ class AstraCamera:
 
 class OLEDDisplay:
     """
-    OLED display over I2C using luma.oled.
-    Tries SH1106 first (most common 0.96"/1.3" modules), then falls back to SSD1306.
+    0.91-inch SSD1306 OLED, 128x32 pixels, I2C.
     Jetson Orin 40-pin header: Pin 1=3.3V, Pin 3=SDA, Pin 5=SCL, GND=GND.
     On Jetson Orin the 40-pin I2C maps to bus 7.
+    Fits 3 lines of text with the default 8px bitmap font.
     """
 
-    LINE_HEIGHT = 11  # pixels between lines; fits 5 lines on 64px display
+    LINE_HEIGHT = 10  # pixels per line; 3 lines × 10px = 30px fits in 32px height
 
     def __init__(self, i2c_port=7, i2c_address=0x3C, sim_mode=False):
         self.sim_mode = sim_mode
@@ -295,23 +295,14 @@ class OLEDDisplay:
         if not sim_mode:
             try:
                 from luma.core.interface.serial import i2c as luma_i2c
-                from luma.oled.device import sh1106, ssd1306
+                from luma.oled.device import ssd1306
                 from PIL import ImageFont
 
                 serial = luma_i2c(port=i2c_port, address=i2c_address)
-
-                # SH1106 is the most common controller on cheap 0.96"/1.3" modules.
-                # If text appears shifted or garbled with ssd1306, sh1106 fixes it.
-                for driver_cls, name in [(sh1106, "SH1106"), (ssd1306, "SSD1306")]:
-                    try:
-                        self._device = driver_cls(serial)
-                        logger.info(f"OLED: {name} on I2C bus {i2c_port}, addr 0x{i2c_address:02X}")
-                        break
-                    except Exception as e:
-                        logger.warning(f"OLED: {name} init failed ({e}), trying next driver")
-
-                # Use default PIL bitmap font — crisp and always available
+                # width=128, height=32 must match the physical panel
+                self._device = ssd1306(serial, width=128, height=32)
                 self._font = ImageFont.load_default()
+                logger.info(f"OLED: SSD1306 128x32 on I2C bus {i2c_port}, addr 0x{i2c_address:02X}")
 
             except ImportError:
                 logger.warning("luma.oled not installed — OLED unavailable (pip install luma.oled)")
@@ -319,14 +310,14 @@ class OLEDDisplay:
                 logger.error(f"OLED init failed: {e}")
 
     def show(self, lines):
-        """Render a list of text strings (one per line) on the display."""
+        """Render up to 3 lines of text on the 128x32 display."""
         if self._device is None:
             return
         try:
             from luma.core.render import canvas
             with self._lock:
                 with canvas(self._device) as draw:
-                    for i, line in enumerate(lines[:5]):
+                    for i, line in enumerate(lines[:3]):
                         draw.text((0, i * self.LINE_HEIGHT), str(line),
                                   fill="white", font=self._font)
         except Exception as e:

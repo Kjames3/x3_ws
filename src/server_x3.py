@@ -132,7 +132,7 @@ def initialize_hardware():
     # 7. OLED Display (SSD1306 on I2C bus 1 — Jetson Orin pins 3/5)
     logger.info("Initializing OLED display...")
     oled = OLEDDisplay(i2c_port=7, i2c_address=0x3C, sim_mode=SIM_MODE)
-    oled.show(["X3 Robot", "Starting...", "", "", ""])
+    oled.show(["X3 Robot", "Starting...", ""])
 
     logger.info("="*50)
     logger.info("Initialization Complete")
@@ -369,10 +369,9 @@ async def oled_loop():
             ip   = _get_ip()
             clients = len(connected_clients)
             oled.show([
-                "X3 Robot",
-                f"WiFi: {ssid[:16]}",
-                f"IP: {ip}",
-                f"WS:{WS_PORT} CLI:{clients}",
+                f"WiFi:{ssid[:16]}",
+                f"IP:{ip}",
+                f"WS:{WS_PORT} C:{clients}",
             ])
         await asyncio.sleep(5)
 
