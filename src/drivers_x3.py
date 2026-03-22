@@ -129,8 +129,111 @@ class MecanumDrive:
 # =============================================================================
 
 # Reuse existing Camera and Lidar classes for now
-# We will replace NativeLidar with YDLidarDriver in next iteration
 from drivers import NativeCamera, Picamera2Driver
+
+
+# =============================================================================
+# ORBBEC ASTRA PRO CAMERA
+# =============================================================================
+
+class AstraCamera:
+    """
+    Driver for Orbbec Astra Pro SC camera.
+
+    RGB stream: accessed via OpenCV using the /dev/camera_depth symlink
+    created by the Yahboom udev rule (99-yahboom-camera.rules).
+
+    Depth stream: accessed via OpenNI2 SDK (pip install openni).
+    Falls back gracefully if OpenNI2 is not installed.
+    """
+
+    RGB_DEVICE = "/dev/camera_depth"
+
+    def __init__(self, width=640, height=480, sim_mode=False, enable_depth=False):
+        self.width = width
+        self.height = height
+        self.sim_mode = sim_mode
+        self.enable_depth = enable_depth
+
+        self._cap = None          # OpenCV VideoCapture for RGB
+        self._oni_device = None   # OpenNI2 device
+        self._depth_stream = None # OpenNI2 depth stream
+        self._lock = threading.Lock()
+
+        if not sim_mode:
+            self._open_rgb()
+            if enable_depth:
+                self._open_depth()
+
+    def _open_rgb(self):
+        cap = cv2.VideoCapture(self.RGB_DEVICE)
+        if not cap.isOpened():
+            logger.error(f"AstraCamera: failed to open RGB at {self.RGB_DEVICE}. "
+                         "Is the udev rule installed? Run: sudo udevadm trigger")
+            return
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc('M', 'J', 'P', 'G'))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+        self._cap = cap
+        logger.info(f"AstraCamera: RGB opened at {self.RGB_DEVICE} ({self.width}x{self.height})")
+
+    def _open_depth(self):
+        try:
+            from openni import openni2
+            openni2.initialize()
+            self._oni_device = openni2.Device.open_any()
+            self._depth_stream = self._oni_device.create_depth_stream()
+            self._depth_stream.start()
+            logger.info("AstraCamera: depth stream started via OpenNI2")
+        except ImportError:
+            logger.warning("AstraCamera: openni not installed — depth unavailable (pip install openni)")
+        except Exception as e:
+            logger.error(f"AstraCamera: depth init failed: {e}")
+
+    def get_frame(self):
+        """Return the latest RGB frame as a BGR numpy array, or None."""
+        if self.sim_mode or self._cap is None:
+            return None
+        with self._lock:
+            ret, frame = self._cap.read()
+        if not ret:
+            return None
+        return frame
+
+    def get_depth_frame(self):
+        """
+        Return a colourised depth image (BGR uint8) or None.
+        White = near, dark = far.
+        """
+        if self._depth_stream is None:
+            return None
+        try:
+            from openni import openni2
+            frame = self._depth_stream.read_frame()
+            buf = frame.get_buffer_as_uint16()
+            depth = np.frombuffer(buf, dtype=np.uint16).reshape(
+                frame.height, frame.width)
+            # Normalise to 0-255 and colourise
+            depth_8 = cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+            coloured = cv2.applyColorMap(depth_8, cv2.COLORMAP_JET)
+            return coloured
+        except Exception as e:
+            logger.error(f"AstraCamera: depth read error: {e}")
+            return None
+
+    def cleanup(self):
+        if self._cap:
+            self._cap.release()
+            self._cap = None
+        if self._depth_stream:
+            self._depth_stream.stop()
+        try:
+            from openni import openni2
+            openni2.unload()
+        except Exception:
+            pass
+        logger.info("AstraCamera: released")
+
 
 class YDLidarDriver:
     """

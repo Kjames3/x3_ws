@@ -38,8 +38,7 @@ logger = logging.getLogger(__name__)
 
 # Import X3 specific drivers
 from drivers_x3 import (
-    Rosmaster, MecanumDrive, YDLidarDriver, SERIAL_PORT,
-    NativeCamera
+    Rosmaster, MecanumDrive, YDLidarDriver, AstraCamera, SERIAL_PORT
 )
 from robot_state import RobotState
 
@@ -54,7 +53,6 @@ SIM_MODE = args.sim
 # Hardware Ports
 # SERIAL_PORT auto-detected in drivers_x3 (/dev/ttyCH341USB0 or /dev/ttyUSB0)
 LIDAR_PORT = "/dev/ttyUSB0"   # YDLidar (ROSMASTER is on ttyCH341USB0, so USB0 is free)
-CAMERA_INDEX = 0              # Orbbec RGB via OpenCV
 
 # Detection Config
 YOLO_MODEL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models', 'yolo11n_cans.pt')
@@ -110,9 +108,9 @@ def initialize_hardware():
     drive = MecanumDrive(ros_board)
     logger.info("Mecanum Drive initialized")
 
-    # 3. Camera (Orbbec RGB)
+    # 3. Camera (Orbbec Astra Pro RGB + optional depth)
     logger.info("Initializing Camera...")
-    camera = NativeCamera(device=CAMERA_INDEX, width=640, height=480, sim_mode=SIM_MODE)
+    camera = AstraCamera(width=640, height=480, sim_mode=SIM_MODE, enable_depth=False)
 
     # 4. YOLO Model
     try:
