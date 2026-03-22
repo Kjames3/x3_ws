@@ -375,7 +375,7 @@ async def broadcast_loop():
 
             websockets.broadcast(connected_clients, json.dumps(msg))
 
-        await asyncio.sleep(0.05)  # 20 FPS cap
+        await asyncio.sleep(0.01)  # 20 FPS cap
 
 async def oled_loop():
     """Refresh OLED with WiFi SSID and IP every 5 seconds."""
