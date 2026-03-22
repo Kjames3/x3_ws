@@ -97,7 +97,7 @@ connected_clients = set()
 # =============================================================================
 
 def initialize_hardware():
-    global ros_board, drive, lidar, camera, robot_state, model
+    global ros_board, drive, lidar, camera, robot_state, model, oled
 
     logger.info("="*50)
     logger.info("Initializing Yahboom X3 Hardware")
