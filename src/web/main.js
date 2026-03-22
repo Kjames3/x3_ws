@@ -5,6 +5,7 @@ const state = {
     ws: null,
     connected: false,
     detectionEnabled: false,
+    depthEnabled: false,
     lidarEnabled: false,
     autoDriveEnabled: false, // Local toggle tracking
     isAutoDriving: false,    // Server state
@@ -65,6 +66,10 @@ const elements = {
     // Camera & Detection
     cameraFeed: document.getElementById('camera-feed'),
     cameraPlaceholder: document.getElementById('camera-placeholder'),
+    depthFeed: document.getElementById('depth-feed'),
+    depthPanel: document.getElementById('depth-panel'),
+    depthPlaceholder: document.getElementById('depth-placeholder'),
+    depthToggle: document.getElementById('depth-toggle'),
     detectionToggle: document.getElementById('detection-toggle'),
     detectionPanel: document.getElementById('detection-panel'),
     detectionCount: document.getElementById('detection-count'),
@@ -515,6 +520,13 @@ function updateUI() {
         elements.cameraFeed.src = "data:image/jpeg;base64," + data.image;
         elements.cameraFeed.style.display = 'block';
         if (elements.cameraPlaceholder) elements.cameraPlaceholder.style.display = 'none';
+    }
+
+    // 2b. Depth Image
+    if (data.depth_image && elements.depthFeed) {
+        elements.depthFeed.src = "data:image/jpeg;base64," + data.depth_image;
+        elements.depthFeed.style.display = 'block';
+        if (elements.depthPlaceholder) elements.depthPlaceholder.style.display = 'none';
     }
 
     // 3. FPS
@@ -1083,6 +1095,14 @@ if (elements.stopBtn) elements.stopBtn.addEventListener('click', () => {
     // Reset UI
     if (elements.leftSlider) { elements.leftSlider.value = 0; elements.leftSliderValue.textContent = "0"; updateVisuals(0, elements.leftFill, elements.leftThumb); }
     if (elements.rightSlider) { elements.rightSlider.value = 0; elements.rightSliderValue.textContent = "0"; updateVisuals(0, elements.rightFill, elements.rightThumb); }
+});
+
+if (elements.depthToggle) elements.depthToggle.addEventListener('click', () => {
+    if (!state.connected) return;
+    state.depthEnabled = !state.depthEnabled;
+    elements.depthToggle.classList.toggle('active', state.depthEnabled);
+    if (elements.depthPanel) elements.depthPanel.style.display = state.depthEnabled ? 'block' : 'none';
+    sendMessage({ type: "toggle_depth", enabled: state.depthEnabled });
 });
 
 if (elements.detectionToggle) elements.detectionToggle.addEventListener('click', () => {

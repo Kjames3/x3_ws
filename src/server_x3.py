@@ -76,6 +76,7 @@ model = None
 oled = None
 
 detection_enabled = False
+depth_enabled = False
 is_auto_driving = False
 last_detections = []
 
@@ -189,7 +190,7 @@ def _apply_tank_as_mecanum():
 # =============================================================================
 
 async def handle_client(websocket):
-    global detection_enabled, is_auto_driving
+    global detection_enabled, depth_enabled, is_auto_driving
     global current_left_power, current_right_power
 
     logger.info("Client connected")
@@ -247,6 +248,12 @@ async def handle_client(websocket):
                     detection_enabled = data.get("enabled", False)
                     logger.info(f"Detection: {detection_enabled}")
 
+                elif msg_type == "toggle_depth":
+                    depth_enabled = data.get("enabled", False)
+                    if depth_enabled and camera and camera._depth_stream is None:
+                        camera._open_depth()
+                    logger.info(f"Depth streaming: {depth_enabled}")
+
                 elif msg_type == "start_auto_drive":
                     is_auto_driving = True
                     logger.info("Auto-drive started (stub)")
@@ -284,7 +291,7 @@ async def handle_client(websocket):
 
 async def broadcast_loop():
     global _cam_frame_count, _yolo_frame_count, _fps_last_time
-    global fps_camera, fps_detection, last_detections
+    global fps_camera, fps_detection, last_detections, depth_enabled
 
     while True:
         if connected_clients:
@@ -321,11 +328,19 @@ async def broadcast_loop():
                 _yolo_frame_count = 0
                 _fps_last_time = now
 
-            # 4. Encode image
+            # 4. Encode RGB image
             img_str = ""
             if frame is not None:
                 _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
                 img_str = base64.b64encode(buffer).decode('utf-8')
+
+            # 4b. Depth frame (only when depth_enabled)
+            depth_str = ""
+            if depth_enabled and camera:
+                depth_frame = camera.get_depth_frame()
+                if depth_frame is not None:
+                    _, dbuf = cv2.imencode('.jpg', depth_frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
+                    depth_str = base64.b64encode(dbuf).decode('utf-8')
 
             # 5. Lidar points
             scan_points = lidar.get_points_xy() if lidar else []
@@ -341,6 +356,7 @@ async def broadcast_loop():
             msg = {
                 "type": "readout",
                 "image": img_str,
+                "depth_image": depth_str,
                 "lidar_points": scan_points,
                 "robot_pose": pose,
                 "target_pose": {"x": None, "y": None, "distance_cm": None},

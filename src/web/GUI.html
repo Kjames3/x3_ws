@@ -94,6 +94,10 @@
                         ✨ Golden Set: Start
                     </button>
                     <div class="toggle-wrapper">
+                        <span class="toggle-label">Depth</span>
+                        <div id="depth-toggle" class="toggle" title="Toggle depth view"></div>
+                    </div>
+                    <div class="toggle-wrapper">
                         <span class="toggle-label">Detection</span>
                         <div id="detection-toggle" class="toggle" title="Toggle object detection"></div>
                     </div>
@@ -142,10 +146,26 @@
                 </div>
             </div>
             <div class="card-body" style="position: relative;">
-                <img id="camera-feed" class="camera-feed" alt="Camera feed" style="display: none;">
-                <div id="camera-placeholder" class="camera-placeholder">
-                    <span class="camera-placeholder-icon">📷</span>
-                    <span>Awaiting camera feed...</span>
+                <div id="camera-panels" style="display: flex; gap: 0.5rem; width: 100%;">
+                    <!-- RGB Panel -->
+                    <div id="rgb-panel" style="flex: 1; position: relative; min-width: 0;">
+                        <img id="camera-feed" class="camera-feed" alt="Camera feed" style="display: none; width: 100%;">
+                        <div id="camera-placeholder" class="camera-placeholder">
+                            <span class="camera-placeholder-icon">📷</span>
+                            <span>Awaiting camera feed...</span>
+                        </div>
+                    </div>
+                    <!-- Depth Panel (hidden until depth toggle is on) -->
+                    <div id="depth-panel" style="flex: 1; position: relative; min-width: 0; display: none;">
+                        <img id="depth-feed" class="camera-feed" alt="Depth feed" style="display: none; width: 100%;">
+                        <div id="depth-placeholder" class="camera-placeholder">
+                            <span class="camera-placeholder-icon">📡</span>
+                            <span>Awaiting depth feed...</span>
+                        </div>
+                        <div style="position: absolute; top: 4px; left: 6px; background: rgba(0,0,0,0.55);
+                                    color: #67e8f9; font-size: 0.65rem; padding: 2px 6px; border-radius: 3px;
+                                    pointer-events: none;">DEPTH</div>
+                    </div>
                 </div>
 
                 <!-- Demo Mode Banner Overlay -->
