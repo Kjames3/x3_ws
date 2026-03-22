@@ -19,8 +19,14 @@ logger = logging.getLogger(__name__)
 # HARDWARE CONFIGURATION CONSTANTS
 # =============================================================================
 
+import os
+
 # Serial Config
-SERIAL_PORT = "/dev/ttyUSB0"  # Changes based on USB insertion order
+if os.path.exists("/dev/ttyCH341USB0"):
+    SERIAL_PORT = "/dev/ttyCH341USB0"
+else:
+    SERIAL_PORT = "/dev/ttyUSB0"  # Fallback for standard kernel driver
+
 SERIAL_BAUDRATE = 115200
 
 # Robot Mechanicals (Mecanum)
