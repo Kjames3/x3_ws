@@ -7,14 +7,14 @@ Usage:
 """
 import time
 import logging
-from drivers_x3 import Rosmaster
+from drivers_x3 import Rosmaster, SERIAL_PORT
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("MotorTest")
 
 def main():
-    logger.info("Initializing ROSMASTER Serial Connection...")
-    bot = Rosmaster(port="/dev/ttyUSB0")
+    logger.info(f"Initializing ROSMASTER Serial Connection on {SERIAL_PORT}...")
+    bot = Rosmaster()
     time.sleep(1) # Allow connection settle
     
     logger.info("Starting Motor Test Sequence.")
