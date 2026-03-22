@@ -1,0 +1,28 @@
+[Unit]
+Description=Yahboom X3 WebSocket Control Server
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=kamren
+Group=kamren
+
+WorkingDirectory=/home/kamren/x3_ws/src
+ExecStart=/usr/bin/python3 /home/kamren/x3_ws/src/server_x3.py
+Restart=on-failure
+RestartSec=5
+
+# Give hardware (serial, I2C, USB) time to enumerate after boot
+ExecStartPre=/bin/sleep 5
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+
+# Logging — view with: journalctl -u x3_server -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=x3_server
+
+[Install]
+WantedBy=multi-user.target
