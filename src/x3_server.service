@@ -8,8 +8,8 @@ Type=simple
 User=jetson
 Group=jetson
 
-WorkingDirectory=/home/kamren/x3_ws/src
-ExecStart=/usr/bin/python3 /home/kamren/x3_ws/src/server_x3.py
+WorkingDirectory=/home/jetson/x3_ws/src
+ExecStart=/usr/bin/python3 /home/jetson/x3_ws/src/server_x3.py
 Restart=on-failure
 RestartSec=5
 
