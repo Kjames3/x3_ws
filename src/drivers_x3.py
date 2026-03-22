@@ -278,23 +278,41 @@ class AstraCamera:
 
 class OLEDDisplay:
     """
-    SSD1306 128x64 OLED over I2C using luma.oled.
+    OLED display over I2C using luma.oled.
+    Tries SH1106 first (most common 0.96"/1.3" modules), then falls back to SSD1306.
     Jetson Orin 40-pin header: Pin 1=3.3V, Pin 3=SDA, Pin 5=SCL, GND=GND.
-    I2C bus 1 corresponds to those pins on Jetson Orin.
-    Default address 0x3C (most SSD1306 modules); try 0x3D if not found.
+    On Jetson Orin the 40-pin I2C maps to bus 7.
     """
-    def __init__(self, i2c_port=1, i2c_address=0x3C, sim_mode=False):
+
+    LINE_HEIGHT = 11  # pixels between lines; fits 5 lines on 64px display
+
+    def __init__(self, i2c_port=7, i2c_address=0x3C, sim_mode=False):
         self.sim_mode = sim_mode
         self._device = None
+        self._font = None
         self._lock = threading.Lock()
 
         if not sim_mode:
             try:
                 from luma.core.interface.serial import i2c as luma_i2c
-                from luma.oled.device import ssd1306
+                from luma.oled.device import sh1106, ssd1306
+                from PIL import ImageFont
+
                 serial = luma_i2c(port=i2c_port, address=i2c_address)
-                self._device = ssd1306(serial)
-                logger.info(f"OLED initialized on I2C bus {i2c_port}, address 0x{i2c_address:02X}")
+
+                # SH1106 is the most common controller on cheap 0.96"/1.3" modules.
+                # If text appears shifted or garbled with ssd1306, sh1106 fixes it.
+                for driver_cls, name in [(sh1106, "SH1106"), (ssd1306, "SSD1306")]:
+                    try:
+                        self._device = driver_cls(serial)
+                        logger.info(f"OLED: {name} on I2C bus {i2c_port}, addr 0x{i2c_address:02X}")
+                        break
+                    except Exception as e:
+                        logger.warning(f"OLED: {name} init failed ({e}), trying next driver")
+
+                # Use default PIL bitmap font — crisp and always available
+                self._font = ImageFont.load_default()
+
             except ImportError:
                 logger.warning("luma.oled not installed — OLED unavailable (pip install luma.oled)")
             except Exception as e:
@@ -309,7 +327,8 @@ class OLEDDisplay:
             with self._lock:
                 with canvas(self._device) as draw:
                     for i, line in enumerate(lines[:5]):
-                        draw.text((0, i * 13), str(line), fill="white")
+                        draw.text((0, i * self.LINE_HEIGHT), str(line),
+                                  fill="white", font=self._font)
         except Exception as e:
             logger.error(f"OLED show error: {e}")
 
