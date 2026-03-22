@@ -37,13 +37,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import X3 specific drivers
-# Note: Since this script is in 'yahboom/', and drivers_x3 is also there, direct import works.
 from drivers_x3 import (
-    Rosmaster, MecanumDrive, YDLidarDriver, 
-    # Reuse Camera drivers
+    Rosmaster, MecanumDrive, YDLidarDriver, SERIAL_PORT,
     NativeCamera
 )
-# Reuse generic RobotState (Requires Odometry updates)
 from robot_state import RobotState
 
 # =============================================================================
@@ -55,15 +52,17 @@ args = parser.parse_args()
 SIM_MODE = args.sim
 
 # Hardware Ports
-SERIAL_PORT = "/dev/ttyUSB0" # Motor Board
-LIDAR_PORT = "/dev/ttyUSB1" # YDLidar
-CAMERA_INDEX = 0 # Orbbec RGB usually shows as standard video device
+# SERIAL_PORT auto-detected in drivers_x3 (/dev/ttyCH341USB0 or /dev/ttyUSB0)
+LIDAR_PORT = "/dev/ttyUSB0"   # YDLidar (ROSMASTER is on ttyCH341USB0, so USB0 is free)
+CAMERA_INDEX = 0              # Orbbec RGB via OpenCV
 
 # Detection Config
-# Construct absolute path to model in ../models/
 YOLO_MODEL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models', 'yolo11n_cans.pt')
 CONFIDENCE_THRESHOLD = 0.25
 INFERENCE_SIZE = 640
+
+# WebSocket port (must match GUI DEFAULT_PORT)
+WS_PORT = 8081
 
 # =============================================================================
 # GLOBAL STATE
@@ -73,11 +72,22 @@ drive = None
 lidar = None
 camera = None
 robot_state = None
+model = None
 
 detection_enabled = False
-is_auto_driving = False # Placeholder for future autonomous logic
+is_auto_driving = False
 last_detections = []
-model = None
+
+# Current motor powers (tank-drive representation for GUI readout)
+current_left_power = 0.0
+current_right_power = 0.0
+
+# FPS tracking
+_cam_frame_count = 0
+_yolo_frame_count = 0
+_fps_last_time = time.time()
+fps_camera = 0.0
+fps_detection = 0.0
 
 connected_clients = set()
 
@@ -87,23 +97,21 @@ connected_clients = set()
 
 def initialize_hardware():
     global ros_board, drive, lidar, camera, robot_state, model
-    
+
     logger.info("="*50)
     logger.info("Initializing Yahboom X3 Hardware")
     logger.info("="*50)
 
-    # 1. Motor Controller (Serial)
-    logger.info("Connecting to Rosmaster...")
-    ros_board = Rosmaster(port=SERIAL_PORT, sim_mode=SIM_MODE)
-    
+    # 1. Motor Controller (Serial) - uses auto-detected SERIAL_PORT
+    logger.info(f"Connecting to Rosmaster on {SERIAL_PORT}...")
+    ros_board = Rosmaster(sim_mode=SIM_MODE)
+
     # 2. Mecanum Drive Wrapper
     drive = MecanumDrive(ros_board)
     logger.info("Mecanum Drive initialized")
 
     # 3. Camera (Orbbec RGB)
     logger.info("Initializing Camera...")
-    # Using NativeCamera (OpenCV) for now. 
-    # Orbbec driver should be integrated here later for Depth.
     camera = NativeCamera(device=CAMERA_INDEX, width=640, height=480, sim_mode=SIM_MODE)
 
     # 4. YOLO Model
@@ -114,12 +122,12 @@ def initialize_hardware():
         logger.error(f"YOLO Load Failed: {e}")
 
     # 5. YDLidar
-    logger.info("Initializing Lidar...")
+    logger.info(f"Initializing Lidar on {LIDAR_PORT}...")
     lidar = YDLidarDriver(port=LIDAR_PORT, sim_mode=SIM_MODE)
 
-    # 6. Robot State (EKF)
+    # 6. Robot State (pose tracking — x/y/theta, updated by IMU when available)
     robot_state = RobotState()
-    
+
     logger.info("="*50)
     logger.info("Initialization Complete")
     logger.info("="*50)
@@ -131,10 +139,24 @@ def cleanup():
     if lidar: lidar.cleanup()
 
 # =============================================================================
+# MOTION: Convert tank-drive (left/right power) to mecanum (vx, vy, omega)
+# =============================================================================
+
+def _apply_tank_as_mecanum():
+    """Translate left/right slider powers into holonomic vx + omega."""
+    vx = (current_left_power + current_right_power) / 2.0
+    omega = (current_right_power - current_left_power) / 2.0
+    if drive:
+        drive.move(vx, 0.0, omega)
+
+# =============================================================================
 # WEBSOCKET HANDLER
 # =============================================================================
 
 async def handle_client(websocket):
+    global detection_enabled, is_auto_driving
+    global current_left_power, current_right_power
+
     logger.info("Client connected")
     connected_clients.add(websocket)
     try:
@@ -142,35 +164,75 @@ async def handle_client(websocket):
             try:
                 data = json.loads(message)
                 msg_type = data.get("type")
-                
-                if msg_type == "set_move":
-                    # Holonomic Move Command: vx, vy, omega
+
+                if msg_type == "set_power":
+                    # Tank-drive sliders / gamepad axes
+                    motor = data.get("motor")
+                    power = float(data.get("power", 0.0))
+                    if motor == "left":
+                        current_left_power = power
+                    elif motor == "right":
+                        current_right_power = power
+                    _apply_tank_as_mecanum()
+
+                elif msg_type == "set_move":
+                    # Holonomic move: vx, vy, omega (direct)
                     vx = float(data.get("vx", 0.0))
                     vy = float(data.get("vy", 0.0))
                     omega = float(data.get("omega", 0.0))
-                    
                     if drive:
                         drive.move(vx, vy, omega)
-                        
-                elif msg_type == "move": 
-                    # Legacy D-Pad Support (Forward, Back, Left, Right)
+
+                elif msg_type == "move":
+                    # D-pad direction buttons
                     direction = data.get("direction")
                     if drive:
-                        if direction == "forward": drive.move(0.5, 0, 0)
-                        elif direction == "backward": drive.move(-0.5, 0, 0)
-                        elif direction == "left": drive.move(0, 0, 0.5) # Rotate Left
-                        elif direction == "right": drive.move(0, 0, -0.5) # Rotate Right
-                        elif direction == "strafe_left": drive.move(0, -0.5, 0)
-                        elif direction == "strafe_right": drive.move(0, 0.5, 0)
-                        elif direction == "stop": drive.move(0, 0, 0)
+                        if direction == "forward":
+                            drive.move(0.5, 0.0, 0.0)
+                        elif direction == "backward":
+                            drive.move(-0.5, 0.0, 0.0)
+                        elif direction == "left":
+                            drive.move(0.0, 0.0, 0.5)   # Rotate CCW
+                        elif direction == "right":
+                            drive.move(0.0, 0.0, -0.5)  # Rotate CW
+                        elif direction == "strafe_left":
+                            drive.move(0.0, -0.5, 0.0)
+                        elif direction == "strafe_right":
+                            drive.move(0.0, 0.5, 0.0)
+                        elif direction == "stop":
+                            drive.move(0.0, 0.0, 0.0)
 
                 elif msg_type == "stop":
-                    if drive: drive.move(0, 0, 0)
+                    current_left_power = 0.0
+                    current_right_power = 0.0
+                    if drive:
+                        drive.move(0.0, 0.0, 0.0)
 
                 elif msg_type == "toggle_detection":
-                    global detection_enabled
                     detection_enabled = data.get("enabled", False)
                     logger.info(f"Detection: {detection_enabled}")
+
+                elif msg_type == "start_auto_drive":
+                    is_auto_driving = True
+                    logger.info("Auto-drive started (stub)")
+
+                elif msg_type == "stop_auto_drive":
+                    is_auto_driving = False
+                    current_left_power = 0.0
+                    current_right_power = 0.0
+                    if drive:
+                        drive.move(0.0, 0.0, 0.0)
+
+                # Silently ignore GUI-only messages (model switching, capture, demo, etc.)
+                elif msg_type in ("set_model", "set_classes", "set_labels",
+                                  "capture_image", "download_images",
+                                  "collect_blur_dataset", "start_golden_collection",
+                                  "stop_golden_collection", "start_demo", "stop_demo",
+                                  "disconnect"):
+                    pass
+
+                else:
+                    logger.debug(f"Unhandled message type: {msg_type}")
 
             except Exception as e:
                 logger.error(f"Msg Error: {e}")
@@ -182,58 +244,92 @@ async def handle_client(websocket):
         logger.info("Client disconnected")
 
 # =============================================================================
-# MAIN LOOPS
+# MAIN BROADCAST LOOP
 # =============================================================================
 
 async def broadcast_loop():
-    """Broadcast sensor data to clients."""
-    global last_detections
-    
+    global _cam_frame_count, _yolo_frame_count, _fps_last_time
+    global fps_camera, fps_detection, last_detections
+
     while True:
         if connected_clients:
-            # 1. Get Frame
+            now = time.time()
+
+            # 1. Camera frame
             frame = camera.get_frame() if camera else None
-            
-            # 2. YOLO
+            if frame is not None:
+                _cam_frame_count += 1
+
+            # 2. YOLO detection
             if detection_enabled and frame is not None and model:
                 results = model(frame, verbose=False, conf=CONFIDENCE_THRESHOLD, imgsz=INFERENCE_SIZE)
                 last_detections = []
                 for r in results:
-                    # Draw boxes (Basic)
                     for box in r.boxes:
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        label = model.names[int(box.cls[0])] if model.names else str(int(box.cls[0]))
+                        conf = float(box.conf[0])
                         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                         last_detections.append({
+                            "label": label,
                             "bbox": [x1, y1, x2, y2],
-                            "conf": float(box.conf[0])
+                            "conf": conf
                         })
+                _yolo_frame_count += 1
 
-            # 3. Encode Image
+            # 3. FPS update every second
+            elapsed = now - _fps_last_time
+            if elapsed >= 1.0:
+                fps_camera = round(_cam_frame_count / elapsed, 1)
+                fps_detection = round(_yolo_frame_count / elapsed, 1)
+                _cam_frame_count = 0
+                _yolo_frame_count = 0
+                _fps_last_time = now
+
+            # 4. Encode image
             img_str = ""
             if frame is not None:
                 _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
                 img_str = base64.b64encode(buffer).decode('utf-8')
-            
-            # 4. Get Lidar (Simulated or Real)
+
+            # 5. Lidar points
             scan_points = lidar.get_points_xy() if lidar else []
-            
-            # 5. Send Update
-            msg = {
-                "type": "telemetry",
-                "image": img_str,
-                "lidar": scan_points,
-                "voltage": 12.0 # Placeholder
+
+            # 6. Robot pose (x/y/theta — stays at 0,0,0 until encoder/IMU integration)
+            pose = {
+                "x": robot_state.x if robot_state else 0.0,
+                "y": robot_state.y if robot_state else 0.0,
+                "theta": robot_state.theta if robot_state else 0.0
             }
-            
-            # Broadcast
+
+            # 7. Build readout (matches GUI handleMessage "readout" handler)
+            msg = {
+                "type": "readout",
+                "image": img_str,
+                "lidar_points": scan_points,
+                "robot_pose": pose,
+                "target_pose": {"x": None, "y": None, "distance_cm": None},
+                "left_power": current_left_power,
+                "right_power": current_right_power,
+                "detection_enabled": detection_enabled,
+                "is_auto_driving": is_auto_driving,
+                "is_demo_mode": False,
+                "nav_phase": "AUTO" if is_auto_driving else "IDLE",
+                "fps_camera": fps_camera,
+                "fps_detection": fps_detection,
+                "detections": last_detections,
+                "battery": None,
+                "latest_log": None
+            }
+
             websockets.broadcast(connected_clients, json.dumps(msg))
-            
-        await asyncio.sleep(0.05) # 20 FPS Cap
+
+        await asyncio.sleep(0.05)  # 20 FPS cap
 
 async def main():
     initialize_hardware()
-    async with websockets.serve(handle_client, "0.0.0.0", 8765):
-        logger.info("Server started on ws://0.0.0.0:8765")
+    async with websockets.serve(handle_client, "0.0.0.0", WS_PORT):
+        logger.info(f"Server started on ws://0.0.0.0:{WS_PORT}")
         await broadcast_loop()
 
 if __name__ == "__main__":
