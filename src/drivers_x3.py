@@ -147,7 +147,9 @@ class AstraCamera:
     Falls back gracefully if OpenNI2 is not installed.
     """
 
-    RGB_DEVICE = "/dev/camera_depth"
+    # Orbbec Astra Pro SC USB IDs
+    ORBBEC_RGB_VENDOR  = "2bc5"
+    ORBBEC_RGB_PRODUCT = "0501"
 
     def __init__(self, width=640, height=480, sim_mode=False, enable_depth=False):
         self.width = width
@@ -165,17 +167,52 @@ class AstraCamera:
             if enable_depth:
                 self._open_depth()
 
+    def _find_rgb_device(self):
+        """
+        Return the correct /dev/videoX path for the Orbbec RGB camera.
+        Priority:
+          1. /dev/camera_depth  (udev symlink, most reliable)
+          2. Scan /dev/video0..7 and match by USB vendor/product via sysfs
+          3. Fall back to /dev/video0
+        """
+        import glob
+
+        # 1. udev symlink
+        if os.path.exists("/dev/camera_depth"):
+            return "/dev/camera_depth"
+
+        # 2. sysfs scan — find which videoX belongs to the Orbbec RGB
+        for video_path in sorted(glob.glob("/dev/video?")):
+            dev_name = os.path.basename(video_path)   # e.g. "video0"
+            # Walk sysfs looking for the matching idVendor/idProduct
+            for sys_path in glob.glob(f"/sys/class/video4linux/{dev_name}/device/../../../*"):
+                vendor_file = os.path.join(sys_path, "idVendor")
+                product_file = os.path.join(sys_path, "idProduct")
+                try:
+                    with open(vendor_file) as f:
+                        vendor = f.read().strip()
+                    with open(product_file) as f:
+                        product = f.read().strip()
+                    if vendor == self.ORBBEC_RGB_VENDOR and product == self.ORBBEC_RGB_PRODUCT:
+                        return video_path
+                except Exception:
+                    continue
+
+        # 3. last resort
+        logger.warning("AstraCamera: could not identify Orbbec RGB device via sysfs, trying /dev/video0")
+        return "/dev/video0"
+
     def _open_rgb(self):
-        cap = cv2.VideoCapture(self.RGB_DEVICE)
+        device = self._find_rgb_device()
+        cap = cv2.VideoCapture(device)
         if not cap.isOpened():
-            logger.error(f"AstraCamera: failed to open RGB at {self.RGB_DEVICE}. "
-                         "Is the udev rule installed? Run: sudo udevadm trigger")
+            logger.error(f"AstraCamera: failed to open RGB at {device}.")
             return
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc('M', 'J', 'P', 'G'))
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         self._cap = cap
-        logger.info(f"AstraCamera: RGB opened at {self.RGB_DEVICE} ({self.width}x{self.height})")
+        logger.info(f"AstraCamera: RGB opened at {device} ({self.width}x{self.height})")
 
     def _open_depth(self):
         try:
@@ -233,6 +270,60 @@ class AstraCamera:
         except Exception:
             pass
         logger.info("AstraCamera: released")
+
+
+# =============================================================================
+# OLED DISPLAY (SSD1306 via I2C — Jetson Orin 40-pin: Pin3=SDA, Pin5=SCL)
+# =============================================================================
+
+class OLEDDisplay:
+    """
+    SSD1306 128x64 OLED over I2C using luma.oled.
+    Jetson Orin 40-pin header: Pin 1=3.3V, Pin 3=SDA, Pin 5=SCL, GND=GND.
+    I2C bus 1 corresponds to those pins on Jetson Orin.
+    Default address 0x3C (most SSD1306 modules); try 0x3D if not found.
+    """
+    def __init__(self, i2c_port=1, i2c_address=0x3C, sim_mode=False):
+        self.sim_mode = sim_mode
+        self._device = None
+        self._lock = threading.Lock()
+
+        if not sim_mode:
+            try:
+                from luma.core.interface.serial import i2c as luma_i2c
+                from luma.oled.device import ssd1306
+                serial = luma_i2c(port=i2c_port, address=i2c_address)
+                self._device = ssd1306(serial)
+                logger.info(f"OLED initialized on I2C bus {i2c_port}, address 0x{i2c_address:02X}")
+            except ImportError:
+                logger.warning("luma.oled not installed — OLED unavailable (pip install luma.oled)")
+            except Exception as e:
+                logger.error(f"OLED init failed: {e}")
+
+    def show(self, lines):
+        """Render a list of text strings (one per line) on the display."""
+        if self._device is None:
+            return
+        try:
+            from luma.core.render import canvas
+            with self._lock:
+                with canvas(self._device) as draw:
+                    for i, line in enumerate(lines[:5]):
+                        draw.text((0, i * 13), str(line), fill="white")
+        except Exception as e:
+            logger.error(f"OLED show error: {e}")
+
+    def clear(self):
+        if self._device is None:
+            return
+        try:
+            self._device.clear()
+        except Exception:
+            pass
+
+    def cleanup(self):
+        self.clear()
+        self._device = None
 
 
 class YDLidarDriver:

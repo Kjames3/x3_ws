@@ -21,6 +21,8 @@ import cv2
 import websockets
 import sys
 import os
+import socket
+import subprocess
 from ultralytics import YOLO
 
 # Add root directory to sys.path to allow importing 'robot_state'
@@ -38,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 # Import X3 specific drivers
 from drivers_x3 import (
-    Rosmaster, MecanumDrive, YDLidarDriver, AstraCamera, SERIAL_PORT
+    Rosmaster, MecanumDrive, YDLidarDriver, AstraCamera, OLEDDisplay, SERIAL_PORT
 )
 from robot_state import RobotState
 
@@ -71,6 +73,7 @@ lidar = None
 camera = None
 robot_state = None
 model = None
+oled = None
 
 detection_enabled = False
 is_auto_driving = False
@@ -126,6 +129,11 @@ def initialize_hardware():
     # 6. Robot State (pose tracking — x/y/theta, updated by IMU when available)
     robot_state = RobotState()
 
+    # 7. OLED Display (SSD1306 on I2C bus 1 — Jetson Orin pins 3/5)
+    logger.info("Initializing OLED display...")
+    oled = OLEDDisplay(i2c_port=7, i2c_address=0x3C, sim_mode=SIM_MODE)
+    oled.show(["X3 Robot", "Starting...", "", "", ""])
+
     logger.info("="*50)
     logger.info("Initialization Complete")
     logger.info("="*50)
@@ -135,6 +143,35 @@ def cleanup():
     if ros_board: ros_board.cleanup()
     if camera: camera.cleanup()
     if lidar: lidar.cleanup()
+    if oled: oled.cleanup()
+
+
+# =============================================================================
+# NETWORK INFO HELPERS
+# =============================================================================
+
+def _get_ip() -> str:
+    """Return the first non-loopback IP address, or 'No IP'."""
+    try:
+        result = subprocess.run(
+            ['hostname', '-I'], capture_output=True, text=True, timeout=2
+        )
+        ips = result.stdout.strip().split()
+        return ips[0] if ips else 'No IP'
+    except Exception:
+        return 'No IP'
+
+
+def _get_ssid() -> str:
+    """Return the connected WiFi SSID, or 'No WiFi'."""
+    try:
+        result = subprocess.run(
+            ['iwgetid', '--raw'], capture_output=True, text=True, timeout=2
+        )
+        ssid = result.stdout.strip()
+        return ssid if ssid else 'No WiFi'
+    except Exception:
+        return 'No WiFi'
 
 # =============================================================================
 # MOTION: Convert tank-drive (left/right power) to mecanum (vx, vy, omega)
@@ -324,11 +361,27 @@ async def broadcast_loop():
 
         await asyncio.sleep(0.05)  # 20 FPS cap
 
+async def oled_loop():
+    """Refresh OLED with WiFi SSID and IP every 5 seconds."""
+    while True:
+        if oled:
+            ssid = _get_ssid()
+            ip   = _get_ip()
+            clients = len(connected_clients)
+            oled.show([
+                "X3 Robot",
+                f"WiFi: {ssid[:16]}",
+                f"IP: {ip}",
+                f"WS:{WS_PORT} CLI:{clients}",
+            ])
+        await asyncio.sleep(5)
+
+
 async def main():
     initialize_hardware()
     async with websockets.serve(handle_client, "0.0.0.0", WS_PORT):
         logger.info(f"Server started on ws://0.0.0.0:{WS_PORT}")
-        await broadcast_loop()
+        await asyncio.gather(broadcast_loop(), oled_loop())
 
 if __name__ == "__main__":
     try:
