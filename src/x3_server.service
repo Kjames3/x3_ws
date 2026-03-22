@@ -5,8 +5,8 @@ Wants=network.target
 
 [Service]
 Type=simple
-User=kamren
-Group=kamren
+User=jetson
+Group=jetson
 
 WorkingDirectory=/home/kamren/x3_ws/src
 ExecStart=/usr/bin/python3 /home/kamren/x3_ws/src/server_x3.py
