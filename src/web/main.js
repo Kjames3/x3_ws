@@ -505,10 +505,10 @@ function updateUI() {
     if (!data) return;
 
     // 1. Motor Readouts
-    if (elements.leftPos) elements.leftPos.textContent = data.left_pos.toFixed(2);
-    if (elements.leftPower) elements.leftPower.textContent = `${Math.round(data.left_power * 100)}%`;
-    if (elements.rightPos) elements.rightPos.textContent = data.right_pos.toFixed(2);
-    if (elements.rightPower) elements.rightPower.textContent = `${Math.round(data.right_power * 100)}%`;
+    if (elements.leftPos) elements.leftPos.textContent = (data.left_pos ?? 0).toFixed(2);
+    if (elements.leftPower) elements.leftPower.textContent = `${Math.round((data.left_power ?? 0) * 100)}%`;
+    if (elements.rightPos) elements.rightPos.textContent = (data.right_pos ?? 0).toFixed(2);
+    if (elements.rightPower) elements.rightPower.textContent = `${Math.round((data.right_power ?? 0) * 100)}%`;
 
     // 2. Camera Image (Base64) - Direct update
     if (data.image && elements.cameraFeed) {
