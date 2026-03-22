@@ -91,10 +91,14 @@ const elements = {
     timeRemainingContainer: document.getElementById('time-remaining-container'),
 
     // Motor Readouts (Status Section)
-    leftPos: document.getElementById('left-pos'),
-    leftPower: document.getElementById('left-power'),
-    rightPos: document.getElementById('right-pos'),
-    rightPower: document.getElementById('right-power'),
+    m1Pos: document.getElementById('m1-pos'),
+    m1Power: document.getElementById('m1-power'),
+    m2Pos: document.getElementById('m2-pos'),
+    m2Power: document.getElementById('m2-power'),
+    m3Pos: document.getElementById('m3-pos'),
+    m3Power: document.getElementById('m3-power'),
+    m4Pos: document.getElementById('m4-pos'),
+    m4Power: document.getElementById('m4-power'),
 
     // FPS
     fpsDisplay: document.getElementById('fps-display'),
@@ -510,10 +514,14 @@ function updateUI() {
     if (!data) return;
 
     // 1. Motor Readouts
-    if (elements.leftPos) elements.leftPos.textContent = (data.left_pos ?? 0).toFixed(2);
-    if (elements.leftPower) elements.leftPower.textContent = `${Math.round((data.left_power ?? 0) * 100)}%`;
-    if (elements.rightPos) elements.rightPos.textContent = (data.right_pos ?? 0).toFixed(2);
-    if (elements.rightPower) elements.rightPower.textContent = `${Math.round((data.right_power ?? 0) * 100)}%`;
+    if (elements.m1Pos) elements.m1Pos.textContent = (data.m1_pos ?? 0);
+    if (elements.m1Power) elements.m1Power.textContent = `${Math.round((data.m1_power ?? 0) * 100)}%`;
+    if (elements.m2Pos) elements.m2Pos.textContent = (data.m2_pos ?? 0);
+    if (elements.m2Power) elements.m2Power.textContent = `${Math.round((data.m2_power ?? 0) * 100)}%`;
+    if (elements.m3Pos) elements.m3Pos.textContent = (data.m3_pos ?? 0);
+    if (elements.m3Power) elements.m3Power.textContent = `${Math.round((data.m3_power ?? 0) * 100)}%`;
+    if (elements.m4Pos) elements.m4Pos.textContent = (data.m4_pos ?? 0);
+    if (elements.m4Power) elements.m4Power.textContent = `${Math.round((data.m4_power ?? 0) * 100)}%`;
 
     // 2. Camera Image (Base64) - Direct update
     if (data.image && elements.cameraFeed) {

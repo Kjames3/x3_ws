@@ -92,6 +92,16 @@ class Rosmaster:
         except Exception as e:
             logger.error(f"Serial write error: {e}")
 
+    def get_battery_voltage(self):
+        if self.sim_mode or not self._bot:
+            return 12.0
+        return self._bot.get_battery_voltage()
+
+    def get_motor_encoder(self):
+        if self.sim_mode or not self._bot:
+            return 0, 0, 0, 0
+        return self._bot.get_motor_encoder()
+
     def stop(self):
         self.set_motor(0, 0, 0, 0)
     
@@ -214,14 +224,31 @@ class AstraCamera:
         self._cap = cap
         logger.info(f"AstraCamera: RGB opened at {device} ({self.width}x{self.height})")
 
+    # Search order for libOpenNI2.so
+    OPENNI2_SEARCH_PATHS = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__))),  # alongside this file
+        "/usr/local/lib",
+        "/usr/lib",
+    ]
+
     def _open_depth(self):
         try:
             from openni import openni2
-            openni2.initialize()
+            # Find libOpenNI2.so — try paths in order
+            lib_path = None
+            for p in self.OPENNI2_SEARCH_PATHS:
+                if os.path.exists(os.path.join(p, "libOpenNI2.so")):
+                    lib_path = p
+                    break
+            if lib_path is None:
+                logger.error("AstraCamera: libOpenNI2.so not found. "
+                             "Copy ARM64 libs from the Yahboom SDK to ~/x3_ws/src/")
+                return
+            openni2.initialize(lib_path)
             self._oni_device = openni2.Device.open_any()
             self._depth_stream = self._oni_device.create_depth_stream()
             self._depth_stream.start()
-            logger.info("AstraCamera: depth stream started via OpenNI2")
+            logger.info(f"AstraCamera: depth stream started via OpenNI2 (lib: {lib_path})")
         except ImportError:
             logger.warning("AstraCamera: openni not installed — depth unavailable (pip install openni)")
         except Exception as e:

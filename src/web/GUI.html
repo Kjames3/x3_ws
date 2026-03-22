@@ -298,18 +298,30 @@
                     <div class="control-section-item">
                         <h3 style="margin: 0 0 0.5rem 0; font-size: 0.9rem; color: var(--text-secondary);">📊 Status
                         </h3>
-                        <div class="motor-grid">
+                        <div class="motor-grid" style="grid-template-columns: 1fr 1fr; gap: 0.5rem;">
                             <div class="motor-card">
-                                <h3>Left</h3>
-                                <div id="left-pos" class="motor-value">0.00</div>
-                                <div class="motor-label">rev</div>
-                                <div id="left-power" class="motor-value mt-1">0%</div>
+                                <h3>Front-L</h3>
+                                <div id="m1-pos" class="motor-value">0</div>
+                                <div class="motor-label" style="font-size: 0.5rem;">ticks</div>
+                                <div id="m1-power" class="motor-value mt-1" style="font-size: 0.7rem;">0%</div>
                             </div>
                             <div class="motor-card">
-                                <h3>Right</h3>
-                                <div id="right-pos" class="motor-value">0.00</div>
-                                <div class="motor-label">rev</div>
-                                <div id="right-power" class="motor-value mt-1">0%</div>
+                                <h3>Front-R</h3>
+                                <div id="m2-pos" class="motor-value">0</div>
+                                <div class="motor-label" style="font-size: 0.5rem;">ticks</div>
+                                <div id="m2-power" class="motor-value mt-1" style="font-size: 0.7rem;">0%</div>
+                            </div>
+                            <div class="motor-card">
+                                <h3>Rear-L</h3>
+                                <div id="m3-pos" class="motor-value">0</div>
+                                <div class="motor-label" style="font-size: 0.5rem;">ticks</div>
+                                <div id="m3-power" class="motor-value mt-1" style="font-size: 0.7rem;">0%</div>
+                            </div>
+                            <div class="motor-card">
+                                <h3>Rear-R</h3>
+                                <div id="m4-pos" class="motor-value">0</div>
+                                <div class="motor-label" style="font-size: 0.5rem;">ticks</div>
+                                <div id="m4-power" class="motor-value mt-1" style="font-size: 0.7rem;">0%</div>
                             </div>
                         </div>
                         <!-- FPS Stats -->

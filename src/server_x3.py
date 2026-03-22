@@ -352,6 +352,15 @@ async def broadcast_loop():
                 "theta": robot_state.theta if robot_state else 0.0
             }
 
+            if ros_board:
+                m1_enc, m2_enc, m3_enc, m4_enc = ros_board.get_motor_encoder()
+                batt_v = ros_board.get_battery_voltage()
+            else:
+                m1_enc = m2_enc = m3_enc = m4_enc = 0
+                batt_v = 12.0
+
+            batt_pct = max(0.0, min(100.0, (batt_v - 9.6) / (12.6 - 9.6) * 100.0))
+
             # 7. Build readout (matches GUI handleMessage "readout" handler)
             msg = {
                 "type": "readout",
@@ -360,6 +369,14 @@ async def broadcast_loop():
                 "lidar_points": scan_points,
                 "robot_pose": pose,
                 "target_pose": {"x": None, "y": None, "distance_cm": None},
+                "m1_pos": m1_enc,
+                "m2_pos": m2_enc,
+                "m3_pos": m3_enc,
+                "m4_pos": m4_enc,
+                "m1_power": current_left_power,
+                "m2_power": current_right_power,
+                "m3_power": current_left_power,
+                "m4_power": current_right_power,
                 "left_power": current_left_power,
                 "right_power": current_right_power,
                 "detection_enabled": detection_enabled,
@@ -369,7 +386,13 @@ async def broadcast_loop():
                 "fps_camera": fps_camera,
                 "fps_detection": fps_detection,
                 "detections": last_detections,
-                "battery": None,
+                "battery": {"voltage": batt_v, "amps": 0.0, "watts": 0.0},
+                "power": {
+                    "voltage": batt_v,
+                    "current": 0.0,
+                    "power": 0.0,
+                    "battery_pct": batt_pct
+                },
                 "latest_log": None
             }
 
