@@ -359,7 +359,11 @@ async def broadcast_loop():
                 m1_enc = m2_enc = m3_enc = m4_enc = 0
                 batt_v = 12.0
 
-            batt_pct = max(0.0, min(100.0, (batt_v - 9.6) / (12.6 - 9.6) * 100.0))
+            batt_pct = max(0.0, min(100.0, (batt_v - 8.1) / (12.6 - 8.1) * 100.0))
+            
+            avg_pwr = (abs(current_left_power) + abs(current_right_power)) / 2.0
+            est_current = 0.5 + (avg_pwr * 6.0)
+            est_watts = batt_v * est_current
 
             # 7. Build readout (matches GUI handleMessage "readout" handler)
             msg = {
@@ -386,11 +390,11 @@ async def broadcast_loop():
                 "fps_camera": fps_camera,
                 "fps_detection": fps_detection,
                 "detections": last_detections,
-                "battery": {"voltage": batt_v, "amps": 0.0, "watts": 0.0},
+                "battery": {"voltage": batt_v, "amps": est_current, "watts": est_watts},
                 "power": {
                     "voltage": batt_v,
-                    "current": 0.0,
-                    "power": 0.0,
+                    "current": est_current,
+                    "power": est_watts,
                     "battery_pct": batt_pct
                 },
                 "latest_log": None

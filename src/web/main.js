@@ -702,7 +702,7 @@ function updatePowerUI() {
 
     // Estimate Time
     if (elements.powerTimeRemaining && pwr.current > 0.1) {
-        const BATTERY_CAPACITY_AH = 5.0;
+        const BATTERY_CAPACITY_AH = 6.0;
         const remainingCapacity = (pwr.battery_pct / 100.0) * BATTERY_CAPACITY_AH;
         const hoursRemaining = remainingCapacity / pwr.current;
         const totalMinutes = Math.floor(hoursRemaining * 60);
