@@ -32,107 +32,57 @@ WHEEL_DIAMETER = 0.065 # meters
 # ROSMASTER SERIAL DRIVER
 # =============================================================================
 
+from Rosmaster_Lib import Rosmaster as YahboomRosmaster
+
 class Rosmaster:
     """
-    Serial driver for Yahboom ROSMASTER X3 Controller Board.
-    Handles communication protocol (0x55 header).
+    Wrapper for Yahboom ROSMASTER X3 Controller Board using official driver.
     """
-    
-    # Protocol Constants
-    HEADER = 0x55
-    FUNC_AUTO_REPORT = 0x01
-    FUNC_BEEP = 0x02
-    FUNC_PWM_SERVO = 0x03
-    FUNC_PWM_MOTOR = 0x04
-    FUNC_RGB = 0x05
-    FUNC_RGB_EFFECT = 0x06
-    
     def __init__(self, port=SERIAL_PORT, baudrate=SERIAL_BAUDRATE, sim_mode=False):
         self.port = port
         self.baudrate = baudrate
         self.sim_mode = sim_mode
-        self.ser = None
-        self._lock = threading.Lock()
-        self._running = False
-        self._thread = None
-        
-        # Robot State (Read from serial)
-        self.battery_voltage = 0.0
-        self.ax = 0.0
-        self.ay = 0.0
-        self.az = 0.0
-        self.gx = 0.0
-        self.gy = 0.0
-        self.gz = 0.0
+        self._bot = None
         
         if not self.sim_mode:
             self._connect()
 
     def _connect(self):
         try:
-            import serial
-            self.ser = serial.Serial(self.port, self.baudrate, timeout=0.1)
+            self._bot = YahboomRosmaster(car_type=1, com=self.port)
             logger.info(f"Connected to ROSMASTER on {self.port}")
-            self._running = True
-            self._thread = threading.Thread(target=self._receive_loop, daemon=True)
-            self._thread.start()
         except Exception as e:
             logger.error(f"Failed to connect to ROSMASTER: {e}")
-            self.ser = None
-
-    def _receive_loop(self):
-        """Read data from serial (PLACEHOLDER - Needs Verify)."""
-        # This will need to be updated once we verify the exact protocol response
-        while self._running and self.ser:
-            try:
-                # Placeholder for reading battery/IMU data from auto-report packet
-                # Usually expects: 55 Len Func Data Checksum
-                if self.ser.in_waiting:
-                    header = ord(self.ser.read(1))
-                    if header == 0x55:
-                        length = ord(self.ser.read(1))
-                        payload = self.ser.read(length - 2)
-                        # TODO: Parse payload
-                time.sleep(0.01)
-            except Exception:
-                pass
+            self._bot = None
 
     def set_motor(self, m1, m2, m3, m4):
         """
         Set speed for 4 motors.
-        Range: -100 to 100 (PWM duty capability)
+        Range: -1.0 to 1.0 mapped to -100 to 100
         
         M1: Front Left
         M2: Front Right
         M3: Rear Left
         M4: Rear Right
         """
-        if self.sim_mode:
+        if self.sim_mode or not self._bot:
             return
 
-        if not self.ser:
-            return
-
-        # Prepare packet: 55 Len Func M1 M2 M3 M4 Checksum
-        # Protocol verification needed: Usually signed bytes?
         try:
-            # Placeholder implementation based on typical Yahboom protocol
-            # Len = 7 (Func + 4 Motors + Speed Control Byte + CS?)
-            # Usually: 55 08 01 M1 M2 M3 M4 Speed? Checksum
-            # Let's assume standard Yahboom X3 packet for now, easy to hotfix.
-            
-            # Map -1.0..1.0 to -100..100
             s1 = int(m1 * 100)
             s2 = int(m2 * 100)
             s3 = int(m3 * 100)
             s4 = int(m4 * 100)
             
-            # Use threading lock for writes
-            with self._lock:
-                # Example Packet Construction (NEEDS VERIFICATION)
-                # This is a generic placeholders until we confirm Rosmaster_Lib.py content
-                pass 
-                
+            self._bot.set_motor(s1, s2, s3, s4)
+        except Exception as e:
+            logger.error(f"Serial write error: {e}")
+
+    def set_car_motion(self, vx, vy, vz):
+        if self.sim_mode or not self._bot:
+            return
+        try:
+            self._bot.set_car_motion(vx, vy, vz)
         except Exception as e:
             logger.error(f"Serial write error: {e}")
 
@@ -141,9 +91,9 @@ class Rosmaster:
     
     def cleanup(self):
         self.stop()
-        self._running = False
-        if self.ser:
-            self.ser.close()
+        if self._bot:
+            del self._bot
+            self._bot = None
 
 
 # =============================================================================
@@ -161,28 +111,11 @@ class MecanumDrive:
         vy: Sideways velocity (Right +, Left -)
         omega: Rotation (CCW +, CW -)
         """
-        # Mecanum Inverse Kinematics
-        # FL = vx - vy - omega
-        # FR = vx + vy + omega
-        # RL = vx + vy - omega
-        # RR = vx - vy + omega
-        
-        # Note: Polarity depends on motor wiring!
-        
-        fl = vx - vy - omega
-        fr = vx + vy + omega
-        rl = vx + vy - omega
-        rr = vx - vy + omega
-        
-        # Normalize if any motor exceeds 1.0
-        max_val = max(abs(fl), abs(fr), abs(rl), abs(rr))
-        if max_val > 1.0:
-            fl /= max_val
-            fr /= max_val
-            rl /= max_val
-            rr /= max_val
-            
-        self.driver.set_motor(fl, fr, rl, rr)
+        # The Yahboom X3 board natively performs Mecanum inverse kinematics
+        # Note: Polarity and axis mappings might require tweaking based on
+        # actual robot frame orientation (e.g. if vy is inverted).
+        # We will map (vx, vy, omega) directly to set_car_motion(vx, vy, vz)
+        self.driver.set_car_motion(vx, vy, omega)
 
 
 # =============================================================================
