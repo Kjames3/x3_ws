@@ -13,6 +13,9 @@ const state = {
     gamepadIndex: null,
     lastLeftPower: 0,
     lastRightPower: 0,
+    lastVx: 0,
+    lastVy: 0,
+    lastOmega: 0,
     sessionStartTime: 0,
     sessionTimerInterval: null,
 
@@ -1258,38 +1261,50 @@ function pollGamepad() {
         buttonDebounce.triangle = false;
     }
 
-    // 4. Joystick Drive (Right Stick)
+    // 4. Joystick Drive (Holonomic Mecanum)
+    // Right stick: forward/backward (vx) + strafe left/right (vy)
+    // Left stick:  rotate in place (omega)
+    // Both sticks can be used simultaneously.
     // Only if NOT auto-driving
     if (!state.isAutoDriving) {
         const deadzone = 0.1;
-        let rx = gamepad.axes[2]; // Turn (X)
-        let ry = gamepad.axes[3]; // Throttle (Y)
+
+        // Right stick
+        let rx = gamepad.axes[2]; // Strafe X
+        let ry = gamepad.axes[3]; // Forward/Back Y
+
+        // Left stick
+        let lx = gamepad.axes[0]; // Rotation X
 
         if (Math.abs(rx) < deadzone) rx = 0;
         if (Math.abs(ry) < deadzone) ry = 0;
+        if (Math.abs(lx) < deadzone) lx = 0;
 
-        const throttle = -ry; // Up is -1 usually, invert
-        const turn = rx;
+        const vx    = -ry;   // Right stick Y up → forward (positive vx)
+        const vy    =  rx;   // Right stick X right → strafe right (positive vy)
+        const omega = -lx;   // Left stick X right → rotate CW (negative omega = CW)
 
-        // Arcade Drive Mix
-        let leftPower = throttle + turn;
-        let rightPower = throttle - turn;
-        leftPower = Math.max(-1, Math.min(1, leftPower));
-        rightPower = Math.max(-1, Math.min(1, rightPower));
+        const vxR    = Math.round(vx    * 100) / 100;
+        const vyR    = Math.round(vy    * 100) / 100;
+        const omegaR = Math.round(omega * 100) / 100;
 
-        if (Math.abs(leftPower - state.lastLeftPower) > 0.02 || Math.abs(rightPower - state.lastRightPower) > 0.02) {
-            sendMessage({ type: "set_power", motor: "left", power: leftPower });
-            sendMessage({ type: "set_power", motor: "right", power: rightPower });
-            state.lastLeftPower = leftPower;
-            state.lastRightPower = rightPower;
+        if (Math.abs(vxR - state.lastVx) > 0.02 ||
+            Math.abs(vyR - state.lastVy) > 0.02 ||
+            Math.abs(omegaR - state.lastOmega) > 0.02) {
 
-            // UI visual update
+            sendMessage({ type: "set_move", vx: vxR, vy: vyR, omega: omegaR });
+            state.lastVx    = vxR;
+            state.lastVy    = vyR;
+            state.lastOmega = omegaR;
+
+            // Mirror approximate forward power to UI sliders
+            const approxPower = Math.max(-1, Math.min(1, vxR));
             if (elements.leftSlider) {
-                elements.leftSlider.value = Math.round(leftPower * 100);
+                elements.leftSlider.value = Math.round(approxPower * 100);
                 updateVisuals(elements.leftSlider.value, elements.leftFill, elements.leftThumb);
             }
             if (elements.rightSlider) {
-                elements.rightSlider.value = Math.round(rightPower * 100);
+                elements.rightSlider.value = Math.round(approxPower * 100);
                 updateVisuals(elements.rightSlider.value, elements.rightFill, elements.rightThumb);
             }
         }
