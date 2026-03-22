@@ -56,6 +56,8 @@ class Rosmaster:
     def _connect(self):
         try:
             self._bot = YahboomRosmaster(car_type=1, com=self.port)
+            self._bot.create_receive_threading()
+            self._bot.set_auto_report_state(True)
             logger.info(f"Connected to ROSMASTER on {self.port}")
         except Exception as e:
             logger.error(f"Failed to connect to ROSMASTER: {e}")
@@ -280,7 +282,7 @@ class AstraCamera:
             # Normalise to 0-255 and colourise
             depth_8 = cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
             coloured = cv2.applyColorMap(depth_8, cv2.COLORMAP_JET)
-            return coloured
+            return cv2.flip(coloured, 1)
         except Exception as e:
             logger.error(f"AstraCamera: depth read error: {e}")
             return None
