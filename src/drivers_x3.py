@@ -424,8 +424,7 @@ class YDLidarDriver:
         self._thread = None
         self._laser = None
 
-        if not sim_mode:
-            self._start()
+        # Hardware stays off until start() is called via the GUI toggle
 
     def _start(self):
         try:
@@ -477,9 +476,13 @@ class YDLidarDriver:
                 with self._lock:
                     self._points = pts
 
-    def get_points_xy(self):
+    def get_points_xy(self, max_points=512):
         with self._lock:
-            return list(self._points)
+            pts = self._points
+            if not pts or len(pts) <= max_points:
+                return list(pts)
+            step = max(1, len(pts) // max_points)
+            return pts[::step]
 
     def stop(self):
         """Pause scanning: stop the thread and turn off the laser (keeps device initialised)."""

@@ -23,6 +23,11 @@ import sys
 import os
 import socket
 import subprocess
+try:
+    import torch
+    _TORCH_AVAILABLE = True
+except ImportError:
+    _TORCH_AVAILABLE = False
 from ultralytics import YOLO
 
 # Add root directory to sys.path to allow importing 'robot_state'
@@ -128,10 +133,19 @@ def initialize_hardware():
     logger.info("Initializing Camera...")
     camera = AstraCamera(width=640, height=480, sim_mode=SIM_MODE, enable_depth=False)
 
-    # 4. YOLO Model
+    # 4. YOLO Model — prefer TensorRT engine, fall back to .pt
     try:
-        logger.info(f"Loading YOLO: {YOLO_MODEL}")
-        model = YOLO(YOLO_MODEL)
+        _engine_path = YOLO_MODEL.replace(".pt", ".engine")
+        _model_path = _engine_path if os.path.exists(_engine_path) else YOLO_MODEL
+        logger.info(f"Loading YOLO: {_model_path}")
+        model = YOLO(_model_path)
+        # Force GPU if CUDA is available and we're not using a TensorRT engine
+        if _TORCH_AVAILABLE and not _model_path.endswith(".engine"):
+            _device = "cuda:0" if torch.cuda.is_available() else "cpu"
+            model.to(_device)
+            logger.info(f"YOLO running on: {_device}")
+        else:
+            logger.info("YOLO running on: TensorRT engine")
     except Exception as e:
         logger.error(f"YOLO Load Failed: {e}")
 
