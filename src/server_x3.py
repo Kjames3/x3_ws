@@ -499,15 +499,18 @@ async def broadcast_loop():
 async def oled_loop():
     """Refresh OLED with WiFi SSID and IP every 5 seconds."""
     while True:
-        if oled:
-            ssid = _get_ssid()
-            ip   = _get_ip()
-            clients = len(connected_clients)
-            oled.show([
-                f"WiFi:{ssid[:16]}",
-                f"IP:{ip}",
-                f"WS:{WS_PORT} C:{clients}",
-            ])
+        try:
+            if oled:
+                ssid    = _get_ssid()
+                ip      = _get_ip()
+                clients = len(connected_clients)
+                oled.show([
+                    f"WiFi:{ssid[:16]}",
+                    f"IP:{ip}",
+                    f"WS:{WS_PORT} C:{clients}",
+                ])
+        except Exception as e:
+            logger.warning(f"OLED update error: {e}")
         await asyncio.sleep(5)
 
 
