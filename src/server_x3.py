@@ -133,19 +133,17 @@ def initialize_hardware():
     logger.info("Initializing Camera...")
     camera = AstraCamera(width=640, height=480, sim_mode=SIM_MODE, enable_depth=False)
 
-    # 4. YOLO Model — prefer TensorRT engine, fall back to .pt
+    # 4. YOLO Model — prefer TRT engine (.engine), fall back to .pt on CPU
     try:
+        from trt_detector import TRTDetector
         _engine_path = YOLO_MODEL.replace(".pt", ".engine")
-        _model_path = _engine_path if os.path.exists(_engine_path) else YOLO_MODEL
-        logger.info(f"Loading YOLO: {_model_path}")
-        model = YOLO(_model_path)
-        # Force GPU if CUDA is available and we're not using a TensorRT engine
-        if _TORCH_AVAILABLE and not _model_path.endswith(".engine"):
-            _device = "cuda:0" if torch.cuda.is_available() else "cpu"
-            model.to(_device)
-            logger.info(f"YOLO running on: {_device}")
+        if os.path.exists(_engine_path):
+            model = TRTDetector(_engine_path, pt_path=YOLO_MODEL,
+                                conf_thres=CONFIDENCE_THRESHOLD)
+            logger.info(f"YOLO running on: TensorRT GPU ({_engine_path})")
         else:
-            logger.info("YOLO running on: TensorRT engine")
+            logger.info(f"Loading YOLO (CPU): {YOLO_MODEL}")
+            model = YOLO(YOLO_MODEL)
     except Exception as e:
         logger.error(f"YOLO Load Failed: {e}")
 
@@ -311,8 +309,15 @@ async def handle_client(websocket):
                         try:
                             if not os.path.exists(new_model_path):
                                 logger.warning(f"Model file not found: {new_model_path}")
-                            logger.info(f"Loading new YOLO model: {new_model_path}")
-                            new_model = YOLO(new_model_path)
+                            _new_engine = new_model_path.replace(".pt", ".engine")
+                            if os.path.exists(_new_engine):
+                                from trt_detector import TRTDetector
+                                new_model = TRTDetector(_new_engine, pt_path=new_model_path,
+                                                        conf_thres=CONFIDENCE_THRESHOLD)
+                                logger.info(f"Switched to TRT model: {_new_engine}")
+                            else:
+                                new_model = YOLO(new_model_path)
+                                logger.info(f"Switched to YOLO model: {new_model_path}")
                             model = new_model
                             active_model_name = model_name
                             
