@@ -376,8 +376,8 @@ class YDLidarDriver:
 
     # YDLidar 4ROS parameters
     BAUDRATE     = 128000
-    SAMPLE_RATE  = 3       # kHz — 4ROS is a single-channel triangle lidar (3K)
-    SCAN_FREQ    = 8.0     # Hz
+    SAMPLE_RATE  = 3       # kHz
+    SCAN_FREQ    = 6.0     # Hz
     MAX_RANGE    = 12.0    # metres
     MIN_RANGE    = 0.1     # metres
 
@@ -404,7 +404,7 @@ class YDLidarDriver:
             self._laser.setlidaropt(ydlidar.LidarPropDeviceType,     ydlidar.YDLIDAR_TYPE_SERIAL)
             self._laser.setlidaropt(ydlidar.LidarPropScanFrequency,  self.SCAN_FREQ)
             self._laser.setlidaropt(ydlidar.LidarPropSampleRate,     self.SAMPLE_RATE)
-            self._laser.setlidaropt(ydlidar.LidarPropSingleChannel,  True)
+            self._laser.setlidaropt(ydlidar.LidarPropSingleChannel,  False)
             self._laser.setlidaropt(ydlidar.LidarPropMaxAngle,       180.0)
             self._laser.setlidaropt(ydlidar.LidarPropMinAngle,      -180.0)
             self._laser.setlidaropt(ydlidar.LidarPropMaxRange,       self.MAX_RANGE)
