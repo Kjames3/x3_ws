@@ -376,7 +376,7 @@ class YDLidarDriver:
 
     # YDLidar 4ROS parameters
     BAUDRATE     = 128000
-    SAMPLE_RATE  = 5       # kHz
+    SAMPLE_RATE  = 3       # kHz — 4ROS is a single-channel triangle lidar (3K)
     SCAN_FREQ    = 8.0     # Hz
     MAX_RANGE    = 12.0    # metres
     MIN_RANGE    = 0.1     # metres
