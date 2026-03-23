@@ -1281,7 +1281,7 @@ function pollGamepad() {
         if (Math.abs(lx) < deadzone) lx = 0;
 
         const vx    = -ry;   // Right stick Y up → forward (positive vx)
-        const vy    =  rx;   // Right stick X right → strafe right (positive vy)
+        const vy    = -rx;   // Right stick X right → strafe right (inverted payload)
         const omega = -lx;   // Left stick X right → rotate CW (negative omega = CW)
 
         const vxR    = Math.round(vx    * 100) / 100;
