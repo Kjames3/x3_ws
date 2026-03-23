@@ -87,6 +87,7 @@ oled = None
 
 detection_enabled = False
 depth_enabled = False
+lidar_enabled = False
 is_auto_driving = False
 last_detections = []
 active_model_name = "yolo11n_cans"
@@ -201,7 +202,7 @@ def _apply_tank_as_mecanum():
 # =============================================================================
 
 async def handle_client(websocket):
-    global detection_enabled, depth_enabled, is_auto_driving
+    global detection_enabled, depth_enabled, lidar_enabled, is_auto_driving
     global current_left_power, current_right_power
     global model, active_model_name
 
@@ -261,12 +262,21 @@ async def handle_client(websocket):
                     logger.info(f"Detection: {detection_enabled}")
 
                 elif msg_type == "toggle_lidar":
-                    logger.info(f"Lidar display: {'enabled' if data.get('enabled') else 'disabled'}")
+                    lidar_enabled = data.get("enabled", False)
+                    if lidar and not lidar.sim_mode:
+                        if lidar_enabled:
+                            lidar.start()
+                        else:
+                            lidar.stop()
+                    logger.info(f"Lidar: {'enabled' if lidar_enabled else 'disabled'}")
 
                 elif msg_type == "toggle_depth":
                     depth_enabled = data.get("enabled", False)
-                    if depth_enabled and camera and camera._depth_stream is None:
-                        camera._open_depth()
+                    if camera:
+                        if depth_enabled and camera._depth_stream is None:
+                            camera._open_depth()
+                        elif not depth_enabled and camera._depth_stream is not None:
+                            camera._close_depth()
                     logger.info(f"Depth streaming: {depth_enabled}")
 
                 elif msg_type == "start_auto_drive":
@@ -335,7 +345,7 @@ async def handle_client(websocket):
 
 async def broadcast_loop():
     global _cam_frame_count, _yolo_frame_count, _fps_last_time
-    global fps_camera, fps_detection, last_detections, depth_enabled
+    global fps_camera, fps_detection, last_detections, depth_enabled, lidar_enabled
 
     loop = asyncio.get_event_loop()
     _depth_cycle = 0  # throttle depth to ~10 fps (every other 20fps cycle)
@@ -389,8 +399,8 @@ async def broadcast_loop():
                     _, dbuf = cv2.imencode('.jpg', depth_frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
                     depth_str = base64.b64encode(dbuf).decode('utf-8')
 
-            # 5. Lidar points
-            scan_points = lidar.get_points_xy() if lidar else []
+            # 5. Lidar points (only when toggle is on)
+            scan_points = lidar.get_points_xy() if (lidar and lidar_enabled) else []
 
             # 6. Robot pose (x/y/theta — stays at 0,0,0 until encoder/IMU integration)
             pose = {

@@ -175,6 +175,11 @@ class AstraCamera:
         self._depth_stream = None # OpenNI2 depth stream
         self._lock = threading.Lock()
 
+        # Background capture thread — keeps camera buffer drained so get_frame() is instant
+        self._running = True
+        self._latest_frame = None
+        self._capture_thread = None
+
         if not sim_mode:
             self._open_rgb()
             if enable_depth:
@@ -226,6 +231,17 @@ class AstraCamera:
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         self._cap = cap
         logger.info(f"AstraCamera: RGB opened at {device} ({self.width}x{self.height})")
+        # Start background thread that continuously drains the camera buffer
+        self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self._capture_thread.start()
+
+    def _capture_loop(self):
+        """Continuously read frames from the camera so the buffer never backs up."""
+        while self._running and self._cap is not None:
+            ret, frame = self._cap.read()
+            if ret:
+                with self._lock:
+                    self._latest_frame = frame
 
     # Search order for libOpenNI2.so
     OPENNI2_SEARCH_PATHS = [
@@ -257,15 +273,30 @@ class AstraCamera:
         except Exception as e:
             logger.error(f"AstraCamera: depth init failed: {e}")
 
+    def _close_depth(self):
+        """Stop and release the OpenNI2 depth stream."""
+        stream = self._depth_stream
+        if stream is not None:
+            try:
+                stream.stop()
+            except Exception:
+                pass
+            self._depth_stream = None
+        if self._oni_device:
+            self._oni_device = None
+        try:
+            from openni import openni2
+            openni2.unload()
+        except Exception:
+            pass
+        logger.info("AstraCamera: depth stream closed")
+
     def get_frame(self):
         """Return the latest RGB frame as a BGR numpy array, or None."""
-        if self.sim_mode or self._cap is None:
+        if self.sim_mode:
             return None
         with self._lock:
-            ret, frame = self._cap.read()
-        if not ret:
-            return None
-        return frame
+            return self._latest_frame.copy() if self._latest_frame is not None else None
 
     def get_depth_frame(self):
         """
@@ -289,6 +320,9 @@ class AstraCamera:
             return None
 
     def cleanup(self):
+        self._running = False
+        if self._capture_thread and self._capture_thread.is_alive():
+            self._capture_thread.join(timeout=2.0)
         if self._cap:
             self._cap.release()
             self._cap = None
@@ -447,9 +481,43 @@ class YDLidarDriver:
         with self._lock:
             return list(self._points)
 
-    def cleanup(self):
+    def stop(self):
+        """Pause scanning: stop the thread and turn off the laser (keeps device initialised)."""
         self._running = False
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
         if self._laser:
-            self._laser.turnOff()
-            self._laser.disconnecting()
-        logger.info("YDLidar: stopped")
+            try:
+                self._laser.turnOff()
+            except Exception:
+                pass
+        with self._lock:
+            self._points = []
+        logger.info("YDLidar: scan stopped")
+
+    def start(self):
+        """Resume scanning after stop(). Re-initialises from scratch if needed."""
+        if self.sim_mode:
+            return
+        if self._laser is None:
+            self._start()
+            return
+        try:
+            if not self._laser.turnOn():
+                logger.error("YDLidar: turnOn failed on restart")
+                return
+            self._running = True
+            self._thread = threading.Thread(target=self._scan_loop, daemon=True)
+            self._thread.start()
+            logger.info("YDLidar: scan restarted")
+        except Exception as e:
+            logger.error(f"YDLidar: restart failed: {e}")
+
+    def cleanup(self):
+        self.stop()
+        if self._laser:
+            try:
+                self._laser.disconnecting()
+            except Exception:
+                pass
+        logger.info("YDLidar: disconnected")
