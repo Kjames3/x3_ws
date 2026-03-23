@@ -57,7 +57,17 @@ SIM_MODE = args.sim
 LIDAR_PORT = "/dev/ttyUSB0"   # YDLidar (ROSMASTER is on ttyCH341USB0, so USB0 is free)
 
 # Detection Config
-YOLO_MODEL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models', 'yolo11n_cans.pt')
+MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'yolo_models')
+
+def find_model_path(model_name):
+    # Search recursively for {model_name}.pt
+    for root, _, files in os.walk(MODELS_DIR):
+        if f"{model_name}.pt" in files:
+            return os.path.join(root, f"{model_name}.pt")
+    # Fallback default
+    return os.path.join(MODELS_DIR, f"{model_name}.pt")
+
+YOLO_MODEL = find_model_path("yolo11n_cans")
 CONFIDENCE_THRESHOLD = 0.25
 INFERENCE_SIZE = 640
 
@@ -79,6 +89,7 @@ detection_enabled = False
 depth_enabled = False
 is_auto_driving = False
 last_detections = []
+active_model_name = "yolo11n_cans"
 
 # Current motor powers (tank-drive representation for GUI readout)
 current_left_power = 0.0
@@ -192,6 +203,7 @@ def _apply_tank_as_mecanum():
 async def handle_client(websocket):
     global detection_enabled, depth_enabled, is_auto_driving
     global current_left_power, current_right_power
+    global model, active_model_name
 
     logger.info("Client connected")
     connected_clients.add(websocket)
@@ -265,8 +277,37 @@ async def handle_client(websocket):
                     if drive:
                         drive.move(0.0, 0.0, 0.0)
 
-                # Silently ignore GUI-only messages (model switching, capture, demo, etc.)
-                elif msg_type in ("set_model", "set_classes", "set_labels",
+                elif msg_type == "set_model":
+                    model_name = data.get("model")
+                    if model_name:
+                        new_model_path = find_model_path(model_name)
+                        try:
+                            if not os.path.exists(new_model_path):
+                                logger.warning(f"Model file not found: {new_model_path}")
+                            logger.info(f"Loading new YOLO model: {new_model_path}")
+                            new_model = YOLO(new_model_path)
+                            model = new_model
+                            active_model_name = model_name
+                            
+                            response = {
+                                "type": "model_changed",
+                                "model": model_name,
+                                "success": True,
+                                "path": new_model_path
+                            }
+                            await websocket.send(json.dumps(response))
+                        except Exception as e:
+                            logger.error(f"Failed to load new YOLO model {model_name}: {e}")
+                            await websocket.send(json.dumps({
+                                "type": "model_changed",
+                                "model": model_name,
+                                "success": False,
+                                "error": str(e),
+                                "path": new_model_path
+                            }))
+
+                # Silently ignore GUI-only messages (capture, demo, etc.)
+                elif msg_type in ("set_classes", "set_labels",
                                   "capture_image", "download_images",
                                   "collect_blur_dataset", "start_golden_collection",
                                   "stop_golden_collection", "start_demo", "stop_demo",
@@ -387,6 +428,7 @@ async def broadcast_loop():
                 "is_auto_driving": is_auto_driving,
                 "is_demo_mode": False,
                 "nav_phase": "AUTO" if is_auto_driving else "IDLE",
+                "active_model_name": active_model_name,
                 "fps_camera": fps_camera,
                 "fps_detection": fps_detection,
                 "detections": last_detections,
