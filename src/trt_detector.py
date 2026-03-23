@@ -139,6 +139,8 @@ class TRTDetector:
         self._stream   = cuda.Stream()
         self._ctx.pop()
 
+        # Pre-allocated host buffers — reused every inference call to avoid per-frame allocation
+        self._h_input  = np.empty(in_shape,  dtype=np.float32)   # (1,3,H,W) — P5
         self._h_output = np.empty(out_shape, dtype=np.float32)
 
         logger.info(
@@ -149,10 +151,17 @@ class TRTDetector:
     # ── Internal helpers ───────────────────────────────────────────────────
 
     def _preprocess(self, frame: np.ndarray) -> np.ndarray:
-        """BGR uint8 → normalised NCHW float32 for the engine input."""
-        img = cv2.resize(frame, (self.input_w, self.input_h))
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-        return np.ascontiguousarray(img.transpose(2, 0, 1)[np.newaxis])  # NCHW
+        """BGR uint8 → normalised NCHW float32 written into the pre-allocated host buffer.
+
+        cv2.dnn.blobFromImage does resize + BGR→RGB + /255 normalisation in a
+        single optimised C++ pass (replaces resize → cvtColor → astype → transpose
+        → ascontiguousarray chain that caused 3-4 intermediate allocations).
+        """
+        blob = cv2.dnn.blobFromImage(
+            frame, 1 / 255.0, (self.input_w, self.input_h), swapRB=True, crop=False
+        )
+        np.copyto(self._h_input, blob)   # write into the stable, reused buffer
+        return self._h_input
 
     def _postprocess(
         self,
@@ -185,9 +194,12 @@ class TRTDetector:
         y2 = (boxes[:, 1] + boxes[:, 3] / 2) * sy
         xyxy = np.stack([x1, y1, x2, y2], axis=1)
 
-        idx = cv2.dnn.NMSBoxes(
-            xyxy.tolist(), confs.tolist(), self.conf_thres, self.iou_thres
-        )
+        # NMSBoxes expects [x, y, w, h] (top-left corner), not xyxy.
+        # Pass numpy arrays directly — OpenCV 4.5+ accepts them without .tolist().
+        xywh = np.stack([xyxy[:, 0], xyxy[:, 1],
+                         xyxy[:, 2] - xyxy[:, 0],
+                         xyxy[:, 3] - xyxy[:, 1]], axis=1)
+        idx = cv2.dnn.NMSBoxes(xywh, confs, self.conf_thres, self.iou_thres)
         if len(idx) == 0:
             return np.empty((0, 4)), np.empty(0), np.empty(0, dtype=float)
 

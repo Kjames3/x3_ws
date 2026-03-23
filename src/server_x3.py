@@ -239,6 +239,8 @@ async def handle_client(websocket):
 
     logger.info("Client connected")
     connected_clients.add(websocket)
+    if camera:
+        camera._has_clients = True  # P7: allow capture loop to store frames
     try:
         async for message in websocket:
             try:
@@ -375,6 +377,8 @@ async def handle_client(websocket):
         pass
     finally:
         connected_clients.discard(websocket)
+        if camera and not connected_clients:
+            camera._has_clients = False  # P7: no clients left — skip lock+copy in capture loop
         logger.info("Client disconnected")
 
 # =============================================================================
@@ -398,8 +402,9 @@ async def broadcast_loop():
             if frame is not None:
                 _cam_frame_count += 1
 
-            # 2. YOLO + JPEG encode — all in executor (P1: encode off event loop, P2: draw on copy)
-            img_str = ""
+            # 2. YOLO + JPEG encode — all in executor (P1+P2: off event loop, draw on copy)
+            #    P3: return raw bytes — sent as binary WS frame, eliminating base64 entirely
+            img_bytes = b""
             if detection_enabled and frame is not None and model:
                 def _run_yolo():
                     _names = model.names or {}
@@ -413,17 +418,15 @@ async def broadcast_loop():
                             conf  = float(box.conf[0])
                             cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
                             dets.append({"label": label, "bbox": [x1, y1, x2, y2], "conf": conf})
-                    # P1: encode here so the event loop is never blocked by imencode/base64
                     _, buf = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, 70])
-                    return dets, base64.b64encode(buf).decode('utf-8')
-                last_detections, img_str = await loop.run_in_executor(None, _run_yolo)
+                    return dets, bytes(buf)
+                last_detections, img_bytes = await loop.run_in_executor(None, _run_yolo)
                 _yolo_frame_count += 1
             elif frame is not None:
-                # P1: encode-only path also runs off the event loop
                 def _encode_frame():
                     _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
-                    return base64.b64encode(buf).decode('utf-8')
-                img_str = await loop.run_in_executor(None, _encode_frame)
+                    return bytes(buf)
+                img_bytes = await loop.run_in_executor(None, _encode_frame)
 
             # 3. FPS update every second
             elapsed = now - _fps_last_time
@@ -472,10 +475,13 @@ async def broadcast_loop():
             est_current = 0.5 + (avg_pwr * 6.0)
             est_watts   = batt_v * est_current
 
-            # 8. Build readout (P10: removed always-None/False fields: target_pose, is_demo_mode, latest_log)
+            # P3: send camera frame as a binary WebSocket message (raw JPEG, no base64)
+            if img_bytes:
+                websockets.broadcast(connected_clients, img_bytes)
+
+            # 8. Build readout (P10: removed always-None/False fields; P3: no "image" key)
             msg = {
                 "type": "readout",
-                "image": img_str,
                 "depth_image": depth_str,
                 "lidar_points": scan_points,
                 "robot_pose": pose,

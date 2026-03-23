@@ -175,10 +175,15 @@ class AstraCamera:
         self._depth_stream = None # OpenNI2 depth stream
         self._lock = threading.Lock()
 
+        # Pre-allocated depth processing buffers (set in _open_depth) — P8
+        self._depth_buf_8   = None   # uint8 normalised
+        self._depth_buf_col = None   # BGR colourised
+
         # Background capture thread — keeps camera buffer drained so get_frame() is instant
         self._running = True
         self._latest_frame = None
         self._capture_thread = None
+        self._has_clients = False  # set by server; skips lock+copy when nobody is watching (P7)
 
         if not sim_mode:
             self._open_rgb()
@@ -236,10 +241,14 @@ class AstraCamera:
         self._capture_thread.start()
 
     def _capture_loop(self):
-        """Continuously read frames from the camera so the buffer never backs up."""
+        """Continuously drain the camera buffer so get_frame() always returns fresh data.
+
+        P7: when no clients are watching, we still drain the buffer (so frames don't
+        pile up on reconnect) but skip the lock + copy to save CPU.
+        """
         while self._running and self._cap is not None:
             ret, frame = self._cap.read()
-            if ret:
+            if ret and self._has_clients:
                 with self._lock:
                     self._latest_frame = frame
 
@@ -267,6 +276,11 @@ class AstraCamera:
             self._oni_device = openni2.Device.open_any()
             self._depth_stream = self._oni_device.create_depth_stream()
             self._depth_stream.start()
+            # Pre-allocate processing buffers now that we know the resolution — P8
+            vm = self._depth_stream.get_video_mode()
+            dh, dw = vm.resolutionY, vm.resolutionX
+            self._depth_buf_8   = np.empty((dh, dw),    dtype=np.uint8)
+            self._depth_buf_col = np.empty((dh, dw, 3), dtype=np.uint8)
             logger.info(f"AstraCamera: depth stream started via OpenNI2 (lib: {lib_path})")
         except ImportError:
             logger.warning("AstraCamera: openni not installed — depth unavailable (pip install openni)")
@@ -308,12 +322,11 @@ class AstraCamera:
         try:
             from openni import openni2
             frame = self._depth_stream.read_frame()
-            buf = frame.get_buffer_as_uint16()
-            depth = np.frombuffer(buf, dtype=np.uint16).reshape(
-                frame.height, frame.width)
-            # Normalise to 0-255 and colourise
-            depth_8 = cv2.normalize(depth, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
-            coloured = cv2.applyColorMap(depth_8, cv2.COLORMAP_JET)
+            buf   = frame.get_buffer_as_uint16()
+            depth = np.frombuffer(buf, dtype=np.uint16).reshape(frame.height, frame.width)
+            # P8: write into pre-allocated buffers to avoid 3 allocations per depth frame
+            cv2.normalize(depth, self._depth_buf_8, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+            coloured = cv2.applyColorMap(self._depth_buf_8, cv2.COLORMAP_JET, self._depth_buf_col)
             return cv2.flip(coloured, 1)
         except Exception as e:
             logger.error(f"AstraCamera: depth read error: {e}")
@@ -422,7 +435,7 @@ class YDLidarDriver:
     def __init__(self, port="/dev/ttyUSB0", sim_mode=False):
         self.port = port
         self.sim_mode = sim_mode
-        self._points = []
+        self._points = np.empty(0, dtype=np.float32)  # flat [x0,y0,x1,y1,...] — P4
         self._lock = threading.Lock()
         self._running = False
         self._thread = None
@@ -467,28 +480,53 @@ class YDLidarDriver:
             logger.error(f"YDLidar: init failed: {e}")
 
     def _scan_loop(self):
+        """Scan loop — vectorised with numpy (P4).
+
+        Stores points as a flat float32 array [x0, y0, x1, y1, …] so that
+        JSON serialisation and decimation are both cheaper than list-of-lists.
+        """
         import ydlidar
-        scan = ydlidar.LaserScan()
-        x_sign = -1 if self.FLIP_HORIZONTAL else 1
+        scan   = ydlidar.LaserScan()
+        x_sign = -1.0 if self.FLIP_HORIZONTAL else 1.0
         while self._running and ydlidar.os_isOk():
             if self._laser.doProcessSimple(scan):
-                pts = []
-                for pt in scan.points:
-                    if (self.MIN_RANGE < pt.range < self.MAX_RANGE
-                            and abs(pt.angle) <= self.SCAN_ANGLE_MAX):
-                        x = x_sign * pt.range * math.cos(pt.angle)
-                        y = pt.range * math.sin(pt.angle)
-                        pts.append([x, y])
+                raw = scan.points
+                if raw:
+                    # Pull C++ values into numpy arrays in one pass
+                    angles = np.fromiter(
+                        (pt.angle for pt in raw), dtype=np.float32, count=len(raw)
+                    )
+                    ranges = np.fromiter(
+                        (pt.range for pt in raw), dtype=np.float32, count=len(raw)
+                    )
+                    # Vectorised filter + polar→cartesian
+                    mask = (
+                        (ranges > self.MIN_RANGE) &
+                        (ranges < self.MAX_RANGE) &
+                        (np.abs(angles) <= self.SCAN_ANGLE_MAX)
+                    )
+                    a, r  = angles[mask], ranges[mask]
+                    xs    = (x_sign * r * np.cos(a)).astype(np.float32)
+                    ys    = (r * np.sin(a)).astype(np.float32)
+                    flat       = np.empty(len(xs) * 2, dtype=np.float32)
+                    flat[0::2] = xs
+                    flat[1::2] = ys
+                else:
+                    flat = np.empty(0, dtype=np.float32)
                 with self._lock:
-                    self._points = pts
+                    self._points = flat
 
     def get_points_xy(self, max_points=512):
+        """Return a flat [x0, y0, x1, y1, …] Python list, decimated to max_points."""
         with self._lock:
             pts = self._points
-            if not pts or len(pts) <= max_points:
-                return list(pts)
-            step = max(1, len(pts) // max_points)
-            return pts[::step]
+        n = len(pts) // 2
+        if n == 0:
+            return []
+        if n <= max_points:
+            return pts.tolist()
+        step = max(1, n // max_points)
+        return pts.reshape(-1, 2)[::step].ravel().tolist()
 
     def stop(self):
         """Pause scanning: stop the thread and turn off the laser (keeps device initialised)."""
@@ -501,7 +539,7 @@ class YDLidarDriver:
             except Exception:
                 pass
         with self._lock:
-            self._points = []
+            self._points = np.empty(0, dtype=np.float32)
         logger.info("YDLidar: scan stopped")
 
     def start(self):

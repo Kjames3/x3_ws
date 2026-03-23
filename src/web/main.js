@@ -337,6 +337,17 @@ function connect() {
     };
 
     state.ws.onmessage = (event) => {
+        // P3: binary frame = raw JPEG camera image (no base64 round-trip)
+        if (event.data instanceof Blob) {
+            if (elements.cameraFeed) {
+                const oldSrc = elements.cameraFeed.src;
+                elements.cameraFeed.src = URL.createObjectURL(event.data);
+                elements.cameraFeed.style.display = 'block';
+                if (elements.cameraPlaceholder) elements.cameraPlaceholder.style.display = 'none';
+                if (oldSrc.startsWith('blob:')) URL.revokeObjectURL(oldSrc);
+            }
+            return;
+        }
         try {
             const data = JSON.parse(event.data);
             handleMessage(data);
@@ -537,12 +548,7 @@ function updateUI() {
     if (elements.m4Pos) elements.m4Pos.textContent = (data.m4_pos ?? 0);
     if (elements.m4Power) elements.m4Power.textContent = `${Math.round((data.m4_power ?? 0) * 100)}%`;
 
-    // 2. Camera Image (Base64) - Direct update
-    if (data.image && elements.cameraFeed) {
-        elements.cameraFeed.src = "data:image/jpeg;base64," + data.image;
-        elements.cameraFeed.style.display = 'block';
-        if (elements.cameraPlaceholder) elements.cameraPlaceholder.style.display = 'none';
-    }
+    // 2. Camera image is now sent as a binary WebSocket frame (P3) — handled in onmessage
 
     // 2b. Depth Image
     if (data.depth_image && elements.depthFeed) {
@@ -956,13 +962,13 @@ function drawLidar(points) {
     ctx.lineTo(cx, height);
     ctx.stroke();
 
-    // Points
+    // Points — flat [x0,y0,x1,y1,…] format (P4)
     ctx.fillStyle = '#22c55e';
-    points.forEach(point => {
-        const x = cx - (point[1] * scale);
-        const y = cy - (point[0] * scale);
+    for (let i = 0; i < points.length; i += 2) {
+        const x = cx - (points[i + 1] * scale);
+        const y = cy - (points[i]     * scale);
         ctx.fillRect(x - 1, y - 1, 2, 2);
-    });
+    }
 
     // Robot Center
     ctx.fillStyle = '#ef4444';
