@@ -404,7 +404,7 @@ class YDLidarDriver:
             self._laser.setlidaropt(ydlidar.LidarPropDeviceType,     ydlidar.YDLIDAR_TYPE_SERIAL)
             self._laser.setlidaropt(ydlidar.LidarPropScanFrequency,  self.SCAN_FREQ)
             self._laser.setlidaropt(ydlidar.LidarPropSampleRate,     self.SAMPLE_RATE)
-            self._laser.setlidaropt(ydlidar.LidarPropSingleChannel,  False)
+            self._laser.setlidaropt(ydlidar.LidarPropSingleChannel,  True)
             self._laser.setlidaropt(ydlidar.LidarPropMaxAngle,       180.0)
             self._laser.setlidaropt(ydlidar.LidarPropMinAngle,      -180.0)
             self._laser.setlidaropt(ydlidar.LidarPropMaxRange,       self.MAX_RANGE)
