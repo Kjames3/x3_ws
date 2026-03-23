@@ -7,6 +7,7 @@ import os
 # Add root directory to sys.path to allow importing 'drivers'
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import math
 import time
 import struct
 import numpy as np
@@ -367,24 +368,88 @@ class OLEDDisplay:
 
 class YDLidarDriver:
     """
-    Driver for YDLidar 4ROS (via ydlidar pip package).
+    Driver for YDLidar 4ROS using the ydlidar Python SDK.
+    Install on Jetson:
+        sudo apt-get install -y cmake swig
+        cd ~/Downloads/YDLidar-SDK && pip3 install .
     """
+
+    # YDLidar 4ROS parameters
+    BAUDRATE     = 128000
+    SAMPLE_RATE  = 5       # kHz
+    SCAN_FREQ    = 8.0     # Hz
+    MAX_RANGE    = 12.0    # metres
+    MIN_RANGE    = 0.1     # metres
+
     def __init__(self, port="/dev/ttyUSB0", sim_mode=False):
         self.port = port
         self.sim_mode = sim_mode
-        self._scan = []
+        self._points = []
         self._lock = threading.Lock()
-        
+        self._running = False
+        self._thread = None
+        self._laser = None
+
         if not sim_mode:
-            try:
-                import ydlidar
-                # Setup code here
-                pass
-            except ImportError:
-                logger.warning("ydlidar not installed")
+            self._start()
+
+    def _start(self):
+        try:
+            import ydlidar
+            ydlidar.os_init()
+            self._laser = ydlidar.CYdLidar()
+            self._laser.setlidaropt(ydlidar.LidarPropSerialPort,     self.port)
+            self._laser.setlidaropt(ydlidar.LidarPropSerialBaudrate, self.BAUDRATE)
+            self._laser.setlidaropt(ydlidar.LidarPropLidarType,      ydlidar.TYPE_TRIANGLE)
+            self._laser.setlidaropt(ydlidar.LidarPropDeviceType,     ydlidar.YDLIDAR_TYPE_SERIAL)
+            self._laser.setlidaropt(ydlidar.LidarPropScanFrequency,  self.SCAN_FREQ)
+            self._laser.setlidaropt(ydlidar.LidarPropSampleRate,     self.SAMPLE_RATE)
+            self._laser.setlidaropt(ydlidar.LidarPropSingleChannel,  True)
+            self._laser.setlidaropt(ydlidar.LidarPropMaxAngle,       180.0)
+            self._laser.setlidaropt(ydlidar.LidarPropMinAngle,      -180.0)
+            self._laser.setlidaropt(ydlidar.LidarPropMaxRange,       self.MAX_RANGE)
+            self._laser.setlidaropt(ydlidar.LidarPropMinRange,       self.MIN_RANGE)
+            self._laser.setlidaropt(ydlidar.LidarPropIntenstiy,      False)
+
+            if not self._laser.initialize():
+                logger.error("YDLidar: initialization failed")
+                return
+            if not self._laser.turnOn():
+                logger.error("YDLidar: turnOn failed")
+                return
+
+            self._running = True
+            self._thread = threading.Thread(target=self._scan_loop, daemon=True)
+            self._thread.start()
+            logger.info(f"YDLidar: started on {self.port} @ {self.BAUDRATE} baud")
+
+        except ImportError:
+            logger.warning("ydlidar not installed — "
+                           "run: cd ~/Downloads/YDLidar-SDK && pip3 install .")
+        except Exception as e:
+            logger.error(f"YDLidar: init failed: {e}")
+
+    def _scan_loop(self):
+        import ydlidar
+        scan = ydlidar.LaserScan()
+        while self._running and ydlidar.os_isOk():
+            if self._laser.doProcessSimple(scan):
+                pts = []
+                for pt in scan.points:
+                    if self.MIN_RANGE < pt.range < self.MAX_RANGE:
+                        x = pt.range * math.cos(pt.angle)
+                        y = pt.range * math.sin(pt.angle)
+                        pts.append([x, y])
+                with self._lock:
+                    self._points = pts
 
     def get_points_xy(self):
-        return []
-        
+        with self._lock:
+            return list(self._points)
+
     def cleanup(self):
-        pass
+        self._running = False
+        if self._laser:
+            self._laser.turnOff()
+            self._laser.disconnecting()
+        logger.info("YDLidar: stopped")
