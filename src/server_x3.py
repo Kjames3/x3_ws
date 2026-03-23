@@ -123,6 +123,10 @@ _fps_last_time = time.time()
 fps_camera = 0.0
 fps_detection = 0.0
 
+# Battery voltage cache (refreshed at 1 Hz, not every frame)
+_batt_cache_v    = 12.0
+_batt_cache_time = 0.0
+
 connected_clients = set()
 
 # =============================================================================
@@ -380,6 +384,7 @@ async def handle_client(websocket):
 async def broadcast_loop():
     global _cam_frame_count, _yolo_frame_count, _fps_last_time
     global fps_camera, fps_detection, last_detections, depth_enabled, lidar_enabled
+    global _batt_cache_v, _batt_cache_time  # P9
 
     loop = asyncio.get_event_loop()
     _depth_cycle = 0  # throttle depth to ~10 fps (every other 20fps cycle)
@@ -388,82 +393,92 @@ async def broadcast_loop():
         if connected_clients:
             now = time.time()
 
-            # 1. Camera frame — run blocking capture in thread pool
+            # 1. Camera frame — blocking capture in thread pool
             frame = await loop.run_in_executor(None, camera.get_frame) if camera else None
             if frame is not None:
                 _cam_frame_count += 1
 
-            # 2. YOLO detection — also blocking, run in executor
+            # 2. YOLO + JPEG encode — all in executor (P1: encode off event loop, P2: draw on copy)
+            img_str = ""
             if detection_enabled and frame is not None and model:
                 def _run_yolo():
+                    _names = model.names or {}
+                    annotated = frame.copy()   # P2: never mutate the shared frame reference
                     results = model(frame, verbose=False, conf=CONFIDENCE_THRESHOLD, imgsz=INFERENCE_SIZE)
                     dets = []
                     for r in results:
                         for box in r.boxes:
                             x1, y1, x2, y2 = map(int, box.xyxy[0])
-                            label = model.names[int(box.cls[0])] if model.names else str(int(box.cls[0]))
-                            conf = float(box.conf[0])
-                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                            label = _names.get(int(box.cls[0]), str(int(box.cls[0])))
+                            conf  = float(box.conf[0])
+                            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
                             dets.append({"label": label, "bbox": [x1, y1, x2, y2], "conf": conf})
-                    return dets
-                last_detections = await loop.run_in_executor(None, _run_yolo)
+                    # P1: encode here so the event loop is never blocked by imencode/base64
+                    _, buf = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    return dets, base64.b64encode(buf).decode('utf-8')
+                last_detections, img_str = await loop.run_in_executor(None, _run_yolo)
                 _yolo_frame_count += 1
+            elif frame is not None:
+                # P1: encode-only path also runs off the event loop
+                def _encode_frame():
+                    _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    return base64.b64encode(buf).decode('utf-8')
+                img_str = await loop.run_in_executor(None, _encode_frame)
 
             # 3. FPS update every second
             elapsed = now - _fps_last_time
             if elapsed >= 1.0:
-                fps_camera = round(_cam_frame_count / elapsed, 1)
+                fps_camera    = round(_cam_frame_count / elapsed, 1)
                 fps_detection = round(_yolo_frame_count / elapsed, 1)
-                _cam_frame_count = 0
+                _cam_frame_count  = 0
                 _yolo_frame_count = 0
-                _fps_last_time = now
+                _fps_last_time    = now
 
-            # 4. Encode RGB image
-            img_str = ""
-            if frame is not None:
-                _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
-                img_str = base64.b64encode(buffer).decode('utf-8')
-
-            # 4b. Depth frame — throttled to 10fps, run in executor
+            # 4. Depth frame — throttled to 10fps; encode also in executor (P1)
             depth_str = ""
             _depth_cycle += 1
             if depth_enabled and camera and (_depth_cycle % 2 == 0):
-                depth_frame = await loop.run_in_executor(None, camera.get_depth_frame)
-                if depth_frame is not None:
-                    _, dbuf = cv2.imencode('.jpg', depth_frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
-                    depth_str = base64.b64encode(dbuf).decode('utf-8')
+                def _get_depth():
+                    df = camera.get_depth_frame()
+                    if df is None:
+                        return ""
+                    _, dbuf = cv2.imencode('.jpg', df, [cv2.IMWRITE_JPEG_QUALITY, 60])
+                    return base64.b64encode(dbuf).decode('utf-8')
+                depth_str = await loop.run_in_executor(None, _get_depth)
 
             # 5. Lidar points (only when toggle is on)
             scan_points = lidar.get_points_xy() if (lidar and lidar_enabled) else []
 
-            # 6. Robot pose (x/y/theta — stays at 0,0,0 until encoder/IMU integration)
+            # 6. Robot pose
             pose = {
-                "x": robot_state.x if robot_state else 0.0,
-                "y": robot_state.y if robot_state else 0.0,
-                "theta": robot_state.theta if robot_state else 0.0
+                "x":     robot_state.x     if robot_state else 0.0,
+                "y":     robot_state.y     if robot_state else 0.0,
+                "theta": robot_state.theta if robot_state else 0.0,
             }
 
+            # 7. Encoders + battery (P9: battery voltage cached at 1 Hz, not 20 Hz)
             if ros_board:
                 m1_enc, m2_enc, m3_enc, m4_enc = ros_board.get_motor_encoder()
-                batt_v = ros_board.get_battery_voltage()
+                if now - _batt_cache_time >= 1.0:
+                    _batt_cache_v    = ros_board.get_battery_voltage()
+                    _batt_cache_time = now
+                batt_v = _batt_cache_v
             else:
                 m1_enc = m2_enc = m3_enc = m4_enc = 0
                 batt_v = 12.0
 
-            batt_pct = max(0.0, min(100.0, (batt_v - 8.1) / (12.6 - 8.1) * 100.0))
-            
-            avg_pwr = (abs(current_left_power) + abs(current_right_power)) / 2.0
+            batt_pct    = max(0.0, min(100.0, (batt_v - 8.1) / (12.6 - 8.1) * 100.0))
+            avg_pwr     = (abs(current_left_power) + abs(current_right_power)) / 2.0
             est_current = 0.5 + (avg_pwr * 6.0)
-            est_watts = batt_v * est_current
+            est_watts   = batt_v * est_current
 
-            # 7. Build readout (matches GUI handleMessage "readout" handler)
+            # 8. Build readout (P10: removed always-None/False fields: target_pose, is_demo_mode, latest_log)
             msg = {
                 "type": "readout",
                 "image": img_str,
                 "depth_image": depth_str,
                 "lidar_points": scan_points,
                 "robot_pose": pose,
-                "target_pose": {"x": None, "y": None, "distance_cm": None},
                 "m1_pos": m1_enc,
                 "m2_pos": m2_enc,
                 "m3_pos": m3_enc,
@@ -476,7 +491,6 @@ async def broadcast_loop():
                 "right_power": current_right_power,
                 "detection_enabled": detection_enabled,
                 "is_auto_driving": is_auto_driving,
-                "is_demo_mode": False,
                 "nav_phase": "AUTO" if is_auto_driving else "IDLE",
                 "active_model_name": active_model_name,
                 "fps_camera": fps_camera,
@@ -484,12 +498,11 @@ async def broadcast_loop():
                 "detections": last_detections,
                 "battery": {"voltage": batt_v, "amps": est_current, "watts": est_watts},
                 "power": {
-                    "voltage": batt_v,
-                    "current": est_current,
-                    "power": est_watts,
-                    "battery_pct": batt_pct
+                    "voltage":     batt_v,
+                    "current":     est_current,
+                    "power":       est_watts,
+                    "battery_pct": batt_pct,
                 },
-                "latest_log": None
             }
 
             websockets.broadcast(connected_clients, json.dumps(msg))
