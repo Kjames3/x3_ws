@@ -28,6 +28,21 @@ try:
     _TORCH_AVAILABLE = True
 except ImportError:
     _TORCH_AVAILABLE = False
+
+# Ultralytics SAM3 does a bare `import torchvision` at module load time.
+# Mock it if the real package isn't installed so the server still starts.
+try:
+    import torchvision  # noqa: F401
+except ModuleNotFoundError:
+    import sys
+    from unittest.mock import MagicMock
+    _tv = MagicMock()
+    _tv.__version__ = "0.15.0"
+    sys.modules["torchvision"]            = _tv
+    sys.modules["torchvision.ops"]        = MagicMock()
+    sys.modules["torchvision.transforms"] = MagicMock()
+    sys.modules["torchvision.models"]     = MagicMock()
+
 from ultralytics import YOLO
 
 # Add root directory to sys.path to allow importing 'robot_state'
