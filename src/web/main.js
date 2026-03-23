@@ -1126,6 +1126,7 @@ if (elements.detectionToggle) elements.detectionToggle.addEventListener('click',
 if (elements.lidarToggle) elements.lidarToggle.addEventListener('click', () => {
     state.lidarEnabled = !state.lidarEnabled;
     elements.lidarToggle.classList.toggle('active', state.lidarEnabled);
+    if (state.connected) sendMessage({ type: "toggle_lidar", enabled: state.lidarEnabled });
     if (!state.lidarEnabled && elements.lidarCtx) {
         elements.lidarCtx.fillStyle = '#000';
         elements.lidarCtx.fillRect(0, 0, elements.lidarCanvas.width, elements.lidarCanvas.height);
