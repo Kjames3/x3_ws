@@ -71,38 +71,17 @@
         <div class="card">
             <div class="card-header">
                 <h2><span class="icon">📹</span> Camera Feed</h2>
-                <div style="display: flex; align-items: center; gap: 1rem;">
-                    <button id="capture-btn" class="btn btn-primary" style="padding: 0.4rem 0.8rem; font-size: 0.75rem;"
-                        title="Capture image for training">
-                        📸 Capture
-                    </button>
-                    <span id="capture-count" style="font-size: 0.75rem; color: var(--text-secondary);">0
-                        saved</span>
-                    <button id="download-images-btn" class="btn"
-                        style="padding: 0.4rem 0.8rem; font-size: 0.75rem; background: var(--bg-tertiary); border: 1px solid var(--border-color);"
-                        title="Download all captured images as ZIP">
-                        💾 Download All
-                    </button>
-                    <button id="blur-sweep-btn" class="btn"
-                        style="padding: 0.4rem 0.8rem; font-size: 0.75rem; background: linear-gradient(135deg, #a855f7, #7c3aed); color: white; border: none; box-shadow: 0 4px 12px rgba(168, 85, 247, 0.3);"
-                        title="Capture 25 images with focus 0.0-12.0 (step 0.5)">
-                        🌊 Blur Sweep
-                    </button>
-                    <button id="golden-set-btn" class="btn"
-                        style="padding: 0.4rem 0.8rem; font-size: 0.75rem; background: linear-gradient(135deg, #f59e0b, #d97706); color: white; border: none; box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);"
-                        title="Start continuous collection of dynamic motion blur frames (600 max)">
-                        ✨ Golden Set: Start
-                    </button>
-                    <div class="toggle-wrapper">
-                        <span class="toggle-label">Depth</span>
-                        <div id="depth-toggle" class="toggle" title="Toggle depth view"></div>
-                    </div>
-                    <div class="toggle-wrapper">
-                        <span class="toggle-label">Detection</span>
-                        <div id="detection-toggle" class="toggle" title="Toggle object detection"></div>
-                    </div>
-                    <!-- Model Selection -->
-                    <div style="display: flex; align-items: center; gap: 0.5rem; margin-left: 0.5rem;">
+                <div style="display: flex; flex-direction: column; gap: 0.4rem; align-items: flex-end;">
+                    <!-- Primary row: always visible -->
+                    <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
+                        <div class="toggle-wrapper">
+                            <span class="toggle-label">Depth</span>
+                            <div id="depth-toggle" class="toggle" title="Toggle depth view"></div>
+                        </div>
+                        <div class="toggle-wrapper">
+                            <span class="toggle-label">Detection</span>
+                            <div id="detection-toggle" class="toggle" title="Toggle object detection"></div>
+                        </div>
                         <select id="model-select" class="btn"
                             style="padding: 0.3rem 0.6rem; font-size: 0.75rem; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); outline: none;">
                             <optgroup label="── Standard COCO ──">
@@ -126,22 +105,32 @@
                                 <option value="yolo26n_student">YOLOv26 Student</option>
                             </optgroup>
                         </select>
-                    </div>
-                    <!-- Class Filter Toggle -->
-                    <div style="display: flex; align-items: center; gap: 0.4rem; margin-left: 0.5rem;">
-                        <button id="class-filter-toggle" class="btn" title="Toggle detected classes" style="padding: 0.3rem 0.7rem; font-size: 0.72rem; background: var(--bg-tertiary);
-                                   color: var(--accent-warning, #facc15); border: 1px solid var(--accent-warning, #facc15);
-                                   border-radius: 4px; cursor: pointer; white-space: nowrap; transition: all 0.25s;">
-                            🥫 Cans Only
+                        <!-- Data tools expand/collapse button -->
+                        <button id="data-tools-toggle" class="btn" title="Show/hide data capture tools"
+                            style="padding: 0.3rem 0.6rem; font-size: 0.75rem; background: var(--bg-tertiary); border: 1px solid var(--border-color);">
+                            📸 Data ▾
                         </button>
                     </div>
-                    <!-- Label Overlay Toggle -->
-                    <div style="display: flex; align-items: center; gap: 0.4rem; margin-left: 0.4rem;">
-                        <button id="label-toggle" class="btn" title="Toggle detection labels" style="padding: 0.3rem 0.7rem; font-size: 0.72rem; background: var(--bg-tertiary);
-                                   color: #60a5fa; border: 1px solid #60a5fa;
-                                   border-radius: 4px; cursor: pointer; white-space: nowrap; transition: all 0.25s;">
-                            🏷️ Labels On
-                        </button>
+                    <!-- Secondary row: data capture tools (collapsed by default) -->
+                    <div id="camera-toolbar-secondary" style="display: none; align-items: center; gap: 0.6rem; flex-wrap: wrap; padding-top: 0.2rem; border-top: 1px solid var(--border-color);">
+                        <button id="capture-btn" class="btn btn-primary" style="padding: 0.4rem 0.8rem; font-size: 0.75rem;"
+                            title="Capture image for training">📸 Capture</button>
+                        <span id="capture-count" style="font-size: 0.75rem; color: var(--text-secondary);">0 saved</span>
+                        <button id="download-images-btn" class="btn"
+                            style="padding: 0.4rem 0.8rem; font-size: 0.75rem; background: var(--bg-tertiary); border: 1px solid var(--border-color);"
+                            title="Download all captured images as ZIP">💾 Download All</button>
+                        <button id="blur-sweep-btn" class="btn"
+                            style="padding: 0.4rem 0.8rem; font-size: 0.75rem; background: linear-gradient(135deg, #a855f7, #7c3aed); color: white; border: none; box-shadow: 0 4px 12px rgba(168, 85, 247, 0.3);"
+                            title="Capture 25 images with focus 0.0-12.0 (step 0.5)">🌊 Blur Sweep</button>
+                        <button id="golden-set-btn" class="btn"
+                            style="padding: 0.4rem 0.8rem; font-size: 0.75rem; background: linear-gradient(135deg, #f59e0b, #d97706); color: white; border: none; box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);"
+                            title="Start continuous collection of dynamic motion blur frames (600 max)">✨ Golden Set: Start</button>
+                        <button id="class-filter-toggle" class="btn" title="Toggle detected classes"
+                            style="padding: 0.3rem 0.7rem; font-size: 0.72rem; background: var(--bg-tertiary); color: var(--accent-warning, #facc15); border: 1px solid var(--accent-warning, #facc15); border-radius: 4px; cursor: pointer; white-space: nowrap; transition: all 0.25s;">
+                            🥫 Cans Only</button>
+                        <button id="label-toggle" class="btn" title="Toggle detection labels"
+                            style="padding: 0.3rem 0.7rem; font-size: 0.72rem; background: var(--bg-tertiary); color: #60a5fa; border: 1px solid #60a5fa; border-radius: 4px; cursor: pointer; white-space: nowrap; transition: all 0.25s;">
+                            🏷️ Labels On</button>
                     </div>
                 </div>
             </div>
@@ -291,6 +280,13 @@
                                 </div>
                                 <span id="right-slider-value" class="slider-value">0</span>
                             </div>
+                        </div>
+
+                        <!-- Gamepad Widget (hidden until controller connects) -->
+                        <div id="gamepad-widget" style="display: none; flex-direction: column; align-items: center; gap: 0.5rem; padding: 0.5rem 0;">
+                            <canvas id="gamepad-canvas" width="220" height="110"
+                                style="border-radius: 8px; background: var(--bg-secondary);"></canvas>
+                            <div id="gamepad-btns" style="display: flex; gap: 0.5rem; font-size: 0.65rem;"></div>
                         </div>
                     </div>
 

@@ -246,6 +246,17 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // Data capture toolbar expand/collapse
+    const dataToolsToggle = document.getElementById('data-tools-toggle');
+    const cameraToolbarSecondary = document.getElementById('camera-toolbar-secondary');
+    if (dataToolsToggle && cameraToolbarSecondary) {
+        dataToolsToggle.addEventListener('click', () => {
+            const isVisible = cameraToolbarSecondary.style.display !== 'none';
+            cameraToolbarSecondary.style.display = isVisible ? 'none' : 'flex';
+            dataToolsToggle.textContent = isVisible ? '📸 Data ▾' : '✖ Close';
+        });
+    }
+
     // Init Visuals
     updateVisuals(0, elements.leftFill, elements.leftThumb);
     updateVisuals(0, elements.rightFill, elements.rightThumb);
@@ -1212,11 +1223,104 @@ function handleBlurResponse(data) {
 // =================================================================
 // Gamepad & Input
 // =================================================================
+// =================================================================
+// Gamepad Widget
+// =================================================================
+function showGamepadWidget(show) {
+    const widget    = document.getElementById('gamepad-widget');
+    const sliders   = document.querySelector('.sliders-container');
+    if (!widget) return;
+    if (show) {
+        widget.style.display = 'flex';
+        if (sliders) sliders.style.visibility = 'hidden';
+    } else {
+        widget.style.display = 'none';
+        if (sliders) sliders.style.visibility = '';
+    }
+}
+
+function drawGamepadWidget(axes, buttons) {
+    const canvas = document.getElementById('gamepad-canvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+
+    const R = 38;           // outer circle radius
+    const DOT = 7;          // stick-dot radius
+    const DEAD = 0.12;      // dead-zone fraction
+    const centres = [
+        { x: 60,  y: 56, axX: 0, axY: 1, label: 'ROT/STR' },
+        { x: 160, y: 56, axX: 2, axY: 3, label: 'FWD/STR' },
+    ];
+
+    centres.forEach(({ x, y, axX, axY, label }) => {
+        // Outer ring
+        ctx.beginPath();
+        ctx.arc(x, y, R, 0, Math.PI * 2);
+        ctx.strokeStyle = '#334155';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Dead-zone ring
+        ctx.beginPath();
+        ctx.arc(x, y, R * DEAD * 3.5, 0, Math.PI * 2);
+        ctx.strokeStyle = '#475569';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        // Stick dot
+        const ax = axes[axX] || 0;
+        const ay = axes[axY] || 0;
+        const dx = ax * (R - DOT - 2);
+        const dy = ay * (R - DOT - 2);
+        ctx.beginPath();
+        ctx.arc(x + dx, y + dy, DOT, 0, Math.PI * 2);
+        ctx.fillStyle = '#60a5fa';
+        ctx.fill();
+
+        // Label
+        ctx.fillStyle = '#64748b';
+        ctx.font = '9px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(label, x, y + R + 13);
+    });
+
+    // Button pills
+    const pillDefs = [
+        { idx: 0, label: '✕ Stop',   color: '#f87171' },
+        { idx: 2, label: '□ Detect', color: '#a78bfa' },
+        { idx: 3, label: '△ Auto',   color: '#34d399' },
+    ];
+    const pillContainer = document.getElementById('gamepad-btns');
+    if (pillContainer) {
+        if (!pillContainer.children.length) {
+            // Build pills once
+            pillDefs.forEach(({ label }, i) => {
+                const pill = document.createElement('span');
+                pill.id = `gp-btn-${i}`;
+                pill.style.cssText = 'padding: 0.15rem 0.5rem; border-radius: 999px; border: 1px solid #334155; background: var(--bg-secondary); color: #64748b; transition: all 0.1s;';
+                pill.textContent = label;
+                pillContainer.appendChild(pill);
+            });
+        }
+        pillDefs.forEach(({ idx, color }, i) => {
+            const pill = document.getElementById(`gp-btn-${i}`);
+            if (!pill) return;
+            const pressed = buttons[idx] && buttons[idx].pressed;
+            pill.style.background = pressed ? color : 'var(--bg-secondary)';
+            pill.style.color      = pressed ? '#0f172a' : '#64748b';
+            pill.style.borderColor = pressed ? color : '#334155';
+        });
+    }
+}
+
 window.addEventListener("gamepadconnected", (e) => {
     state.gamepadIndex = e.gamepad.index;
     if (elements.controllerName) elements.controllerName.textContent = e.gamepad.id.substring(0, 30);
     if (elements.gamepadIndicator) elements.gamepadIndicator.classList.add('connected');
     if (elements.gamepadStatusText) elements.gamepadStatusText.textContent = '✓ Connected';
+    showGamepadWidget(true);
 });
 
 window.addEventListener("gamepaddisconnected", (e) => {
@@ -1225,6 +1329,7 @@ window.addEventListener("gamepaddisconnected", (e) => {
         if (elements.controllerName) elements.controllerName.textContent = "No controller";
         if (elements.gamepadIndicator) elements.gamepadIndicator.classList.remove('connected');
         if (elements.gamepadStatusText) elements.gamepadStatusText.textContent = 'No Controller';
+        showGamepadWidget(false);
     }
 });
 
@@ -1310,6 +1415,9 @@ function pollGamepad() {
             }
         }
     }
+
+    // Draw live stick + button visualization
+    drawGamepadWidget(gamepad.axes, gamepad.buttons);
 }
 
 // Keyboard Support
