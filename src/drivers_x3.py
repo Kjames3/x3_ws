@@ -415,6 +415,10 @@ class YDLidarDriver:
     MAX_RANGE    = 30.0    # metres — per datasheet
     MIN_RANGE    = 0.05    # metres — per datasheet
 
+    # Point-cloud shaping — tune these to match the physical mounting
+    FLIP_HORIZONTAL = True          # mirror X axis (left-right flip)
+    SCAN_ANGLE_MAX  = math.radians(135)  # keep ±135° (front 270° arc); rear 90° excluded
+
     def __init__(self, port="/dev/ttyUSB0", sim_mode=False):
         self.port = port
         self.sim_mode = sim_mode
@@ -465,12 +469,14 @@ class YDLidarDriver:
     def _scan_loop(self):
         import ydlidar
         scan = ydlidar.LaserScan()
+        x_sign = -1 if self.FLIP_HORIZONTAL else 1
         while self._running and ydlidar.os_isOk():
             if self._laser.doProcessSimple(scan):
                 pts = []
                 for pt in scan.points:
-                    if self.MIN_RANGE < pt.range < self.MAX_RANGE:
-                        x = pt.range * math.cos(pt.angle)
+                    if (self.MIN_RANGE < pt.range < self.MAX_RANGE
+                            and abs(pt.angle) <= self.SCAN_ANGLE_MAX):
+                        x = x_sign * pt.range * math.cos(pt.angle)
                         y = pt.range * math.sin(pt.angle)
                         pts.append([x, y])
                 with self._lock:
