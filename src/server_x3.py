@@ -337,30 +337,32 @@ async def broadcast_loop():
     global _cam_frame_count, _yolo_frame_count, _fps_last_time
     global fps_camera, fps_detection, last_detections, depth_enabled
 
+    loop = asyncio.get_event_loop()
+    _depth_cycle = 0  # throttle depth to ~10 fps (every other 20fps cycle)
+
     while True:
         if connected_clients:
             now = time.time()
 
-            # 1. Camera frame
-            frame = camera.get_frame() if camera else None
+            # 1. Camera frame — run blocking capture in thread pool
+            frame = await loop.run_in_executor(None, camera.get_frame) if camera else None
             if frame is not None:
                 _cam_frame_count += 1
 
-            # 2. YOLO detection
+            # 2. YOLO detection — also blocking, run in executor
             if detection_enabled and frame is not None and model:
-                results = model(frame, verbose=False, conf=CONFIDENCE_THRESHOLD, imgsz=INFERENCE_SIZE)
-                last_detections = []
-                for r in results:
-                    for box in r.boxes:
-                        x1, y1, x2, y2 = map(int, box.xyxy[0])
-                        label = model.names[int(box.cls[0])] if model.names else str(int(box.cls[0]))
-                        conf = float(box.conf[0])
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        last_detections.append({
-                            "label": label,
-                            "bbox": [x1, y1, x2, y2],
-                            "conf": conf
-                        })
+                def _run_yolo():
+                    results = model(frame, verbose=False, conf=CONFIDENCE_THRESHOLD, imgsz=INFERENCE_SIZE)
+                    dets = []
+                    for r in results:
+                        for box in r.boxes:
+                            x1, y1, x2, y2 = map(int, box.xyxy[0])
+                            label = model.names[int(box.cls[0])] if model.names else str(int(box.cls[0]))
+                            conf = float(box.conf[0])
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                            dets.append({"label": label, "bbox": [x1, y1, x2, y2], "conf": conf})
+                    return dets
+                last_detections = await loop.run_in_executor(None, _run_yolo)
                 _yolo_frame_count += 1
 
             # 3. FPS update every second
@@ -375,15 +377,16 @@ async def broadcast_loop():
             # 4. Encode RGB image
             img_str = ""
             if frame is not None:
-                _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
+                _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                 img_str = base64.b64encode(buffer).decode('utf-8')
 
-            # 4b. Depth frame (only when depth_enabled)
+            # 4b. Depth frame — throttled to 10fps, run in executor
             depth_str = ""
-            if depth_enabled and camera:
-                depth_frame = camera.get_depth_frame()
+            _depth_cycle += 1
+            if depth_enabled and camera and (_depth_cycle % 2 == 0):
+                depth_frame = await loop.run_in_executor(None, camera.get_depth_frame)
                 if depth_frame is not None:
-                    _, dbuf = cv2.imencode('.jpg', depth_frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
+                    _, dbuf = cv2.imencode('.jpg', depth_frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
                     depth_str = base64.b64encode(dbuf).decode('utf-8')
 
             # 5. Lidar points
@@ -447,7 +450,7 @@ async def broadcast_loop():
 
             websockets.broadcast(connected_clients, json.dumps(msg))
 
-        await asyncio.sleep(0.01)  # 20 FPS cap
+        await asyncio.sleep(0.05)  # 20 FPS cap
 
 async def oled_loop():
     """Refresh OLED with WiFi SSID and IP every 5 seconds."""
