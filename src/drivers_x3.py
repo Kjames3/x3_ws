@@ -374,12 +374,12 @@ class YDLidarDriver:
         cd ~/Downloads/YDLidar-SDK && pip3 install .
     """
 
-    # YDLidar 4ROS parameters
-    BAUDRATE     = 128000
-    SAMPLE_RATE  = 3       # kHz
-    SCAN_FREQ    = 6.0     # Hz
-    MAX_RANGE    = 12.0    # metres
-    MIN_RANGE    = 0.1     # metres
+    # YDLidar 4ROS parameters (TOF, 512000 bps, 20K sample rate per spec sheet)
+    BAUDRATE     = 512000
+    SAMPLE_RATE  = 20      # kHz — TOF, 20000 samples/s per datasheet
+    SCAN_FREQ    = 8.0     # Hz — within 5~12 Hz spec range
+    MAX_RANGE    = 30.0    # metres — per datasheet
+    MIN_RANGE    = 0.05    # metres — per datasheet
 
     def __init__(self, port="/dev/ttyUSB0", sim_mode=False):
         self.port = port
@@ -400,7 +400,7 @@ class YDLidarDriver:
             self._laser = ydlidar.CYdLidar()
             self._laser.setlidaropt(ydlidar.LidarPropSerialPort,     self.port)
             self._laser.setlidaropt(ydlidar.LidarPropSerialBaudrate, self.BAUDRATE)
-            self._laser.setlidaropt(ydlidar.LidarPropLidarType,      ydlidar.TYPE_TRIANGLE)
+            self._laser.setlidaropt(ydlidar.LidarPropLidarType,      ydlidar.TYPE_TOF)
             self._laser.setlidaropt(ydlidar.LidarPropDeviceType,     ydlidar.YDLIDAR_TYPE_SERIAL)
             self._laser.setlidaropt(ydlidar.LidarPropScanFrequency,  self.SCAN_FREQ)
             self._laser.setlidaropt(ydlidar.LidarPropSampleRate,     self.SAMPLE_RATE)

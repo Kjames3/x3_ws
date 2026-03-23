@@ -260,6 +260,9 @@ async def handle_client(websocket):
                     detection_enabled = data.get("enabled", False)
                     logger.info(f"Detection: {detection_enabled}")
 
+                elif msg_type == "toggle_lidar":
+                    logger.info(f"Lidar display: {'enabled' if data.get('enabled') else 'disabled'}")
+
                 elif msg_type == "toggle_depth":
                     depth_enabled = data.get("enabled", False)
                     if depth_enabled and camera and camera._depth_stream is None:
