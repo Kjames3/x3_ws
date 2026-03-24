@@ -41,7 +41,7 @@ def generate_launch_description():
     world_file  = os.path.join(nav_pkg, 'worlds', 'x3_world.world')
     robot_xacro = os.path.join(desc_pkg, 'urdf', 'yahboomcar_X3_gazebo.urdf.xacro')
 
-    robot_description = Command([FindExecutable(name='xacro'), ' ', robot_xacro])
+    robot_description = Command(['/opt/ros/humble/bin/xacro ', robot_xacro])
 
     # ── 1. Gazebo (server + GUI client) ────────────────────────────────────
     gazebo = IncludeLaunchDescription(
