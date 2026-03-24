@@ -170,7 +170,12 @@ const elements = {
     // 3D Viewport
     viewportContainer: document.getElementById('viewport-3d-container'),
     viewportCanvas: document.getElementById('viewport-3d-canvas'),
-    navPhaseDisplay: document.getElementById('nav-phase-display')
+    navPhaseDisplay: document.getElementById('nav-phase-display'),
+
+    // Mode badge & Gazebo launcher
+    modeBadge: document.getElementById('mode-badge'),
+    modeBadgeLabel: document.getElementById('mode-badge-label'),
+    launchGazeboBtn: document.getElementById('launch-gazebo-btn'),
 };
 
 // =================================================================
@@ -414,6 +419,44 @@ function sendMessage(data) {
 // Data Handling
 // =================================================================
 function handleMessage(data) {
+    if (data.type === "hello") {
+        const mode = data.mode; // "sim" | "ros2" | "direct"
+        const label = elements.modeBadgeLabel;
+        const badge = elements.modeBadge;
+        const gazeboBtn = elements.launchGazeboBtn;
+        if (!badge || !label) return;
+
+        const styles = {
+            sim:    { text: 'SIM',    bg: '#92400e', color: '#fde68a', border: '#f59e0b' },
+            ros2:   { text: 'ROS2',   bg: '#1e3a5f', color: '#93c5fd', border: '#3b82f6' },
+            direct: { text: 'DIRECT', bg: '#14532d', color: '#86efac', border: '#22c55e' },
+        };
+        const s = styles[mode] || styles.direct;
+        label.textContent = s.text;
+        label.style.background = s.bg;
+        label.style.color = s.color;
+        label.style.border = `1px solid ${s.border}`;
+        badge.style.display = 'flex';
+
+        if (gazeboBtn) {
+            gazeboBtn.style.display = mode === 'sim' ? 'inline-block' : 'none';
+        }
+        return;
+    }
+
+    if (data.type === "launch_gazebo_result") {
+        const btn = elements.launchGazeboBtn;
+        if (data.success) {
+            if (btn) { btn.textContent = '⏳ Launching…'; btn.disabled = true; }
+            setTimeout(() => {
+                if (btn) { btn.textContent = '🚀 Gazebo'; btn.disabled = false; }
+            }, 15000);
+        } else {
+            alert(`Gazebo: ${data.msg}`);
+        }
+        return;
+    }
+
     if (data.type === "readout") {
         // Update State Buffer
         state.latestData.readout = data;
@@ -1086,6 +1129,9 @@ function hideDemoBanner() {
 
 // Event Listeners (Setup)
 if (elements.connectBtn) elements.connectBtn.addEventListener('click', () => state.connected ? (state.ws.close()) : connect());
+if (elements.launchGazeboBtn) elements.launchGazeboBtn.addEventListener('click', () => {
+    if (state.ws && state.connected) state.ws.send(JSON.stringify({ type: 'launch_gazebo' }));
+});
 if (elements.disconnectBtn) elements.disconnectBtn.addEventListener('click', () => { if (state.ws) { state.ws.send(JSON.stringify({ type: "disconnect" })); state.ws.close(); } });
 
 if (elements.leftSlider) {
