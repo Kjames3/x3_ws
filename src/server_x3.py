@@ -371,11 +371,17 @@ async def handle_client(websocket):
     global detection_enabled, depth_enabled, lidar_enabled, is_auto_driving
     global current_left_power, current_right_power
     global model, active_model_name
+    global _gazebo_proc
 
     logger.info("Client connected")
     connected_clients.add(websocket)
     if camera:
         camera._has_clients = True  # P7: allow capture loop to store frames
+
+    # Tell the client what mode the server is running in
+    _mode = "sim" if SIM_MODE else "ros2" if ROS2_MODE else "direct"
+    await websocket.send(json.dumps({"type": "hello", "mode": _mode}))
+
     try:
         async for message in websocket:
             try:
@@ -429,9 +435,25 @@ async def handle_client(websocket):
                     detection_enabled = data.get("enabled", False)
                     logger.info(f"Detection: {detection_enabled}")
 
+                elif msg_type == "launch_gazebo":
+                    if SIM_MODE:
+                        if _gazebo_proc is None or _gazebo_proc.poll() is not None:
+                            _gazebo_proc = _launch_gazebo()
+                            await websocket.send(json.dumps(
+                                {"type": "launch_gazebo_result", "success": True,
+                                 "msg": "Gazebo launching..."}))
+                        else:
+                            await websocket.send(json.dumps(
+                                {"type": "launch_gazebo_result", "success": False,
+                                 "msg": "Gazebo is already running"}))
+                    else:
+                        await websocket.send(json.dumps(
+                            {"type": "launch_gazebo_result", "success": False,
+                             "msg": "launch_gazebo only available in --sim mode"}))
+
                 elif msg_type == "toggle_lidar":
                     lidar_enabled = data.get("enabled", False)
-                    if lidar and not lidar.sim_mode:
+                    if lidar and not (SIM_MODE or ROS2_MODE):
                         if lidar_enabled:
                             lidar.start()
                         else:
