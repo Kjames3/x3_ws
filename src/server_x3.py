@@ -69,8 +69,12 @@ from robot_state import RobotState
 # =============================================================================
 parser = argparse.ArgumentParser(description='Yahboom X3 Control Server')
 parser.add_argument('--sim', action='store_true', help='Run in simulation mode')
+parser.add_argument('--ros2', action='store_true',
+                    help='ROS2 bridge mode: skip serial hardware (lidar+motors), '
+                         'read /scan and publish /cmd_vel via rclpy instead')
 args = parser.parse_args()
-SIM_MODE = args.sim
+SIM_MODE   = args.sim
+ROS2_MODE  = args.ros2
 
 # Hardware Ports
 # SERIAL_PORT auto-detected in drivers_x3 (/dev/ttyCH341USB0 or /dev/ttyUSB0)
@@ -133,6 +137,89 @@ connected_clients = set()
 # INITIALIZATION
 # =============================================================================
 
+# =============================================================================
+# ROS2 BRIDGE (--ros2 mode)
+# Replaces serial lidar + serial motor control with rclpy topic I/O so that
+# the YDLidar and Rosmaster serial ports are owned exclusively by the ROS2
+# stack (ydlidar_ros2_driver + Mcnamu_driver_X3).
+# =============================================================================
+class ROS2Bridge:
+    """
+    Drop-in adapter that mimics YDLidarDriver.get_points_xy() and
+    MecanumDrive.move() over ROS2 topics.
+
+      /scan  (sensor_msgs/LaserScan) → get_points_xy()
+      /cmd_vel (geometry_msgs/Twist) ← move(vx, vy, omega)
+
+    Velocity scaling matches Mcnamu_driver_X3.py defaults:
+      linear  max = 0.5 m/s  (Rosmaster ±1.0 → ±0.5 m/s)
+      angular max = 2.0 rad/s (Rosmaster ±5.0  → GUI scale)
+    """
+    LINEAR_SCALE  = 0.5   # Rosmaster 1.0 → 0.5 m/s
+    ANGULAR_SCALE = 2.0   # Rosmaster 5.0 → 2.0 rad/s  (tune if needed)
+
+    def __init__(self):
+        import rclpy
+        from rclpy.node import Node
+        from sensor_msgs.msg import LaserScan
+        from geometry_msgs.msg import Twist
+
+        rclpy.init(args=None)
+        self._node = Node('x3_ws_bridge')
+        self._lock = threading.Lock()
+        self._points: list[float] = []
+
+        self._node.create_subscription(LaserScan, '/scan', self._scan_cb, 10)
+        self._cmd_vel_pub = self._node.create_publisher(Twist, '/cmd_vel', 10)
+
+        self._spin_thread = threading.Thread(
+            target=rclpy.spin, args=(self._node,), daemon=True)
+        self._spin_thread.start()
+        logger.info("ROS2Bridge: spinning — subscribed /scan, publishing /cmd_vel")
+
+    def _scan_cb(self, msg):
+        """Convert LaserScan → flat [x0,y0,x1,y1,…] (same format as YDLidarDriver)."""
+        import math
+        flat: list[float] = []
+        for i, r in enumerate(msg.ranges):
+            if msg.range_min < r < msg.range_max:
+                angle = msg.angle_min + i * msg.angle_increment
+                flat.append(r * math.cos(angle))
+                flat.append(r * math.sin(angle))
+        with self._lock:
+            self._points = flat
+
+    def get_points_xy(self, max_points: int = 512) -> list[float]:
+        with self._lock:
+            pts = self._points
+        n = len(pts) // 2
+        if n == 0:
+            return []
+        if n <= max_points:
+            return list(pts)
+        step = max(1, n // max_points)
+        return np.array(pts, dtype=np.float32).reshape(-1, 2)[::step].ravel().tolist()
+
+    def move(self, vx: float, vy: float, omega: float):
+        from geometry_msgs.msg import Twist
+        msg = Twist()
+        msg.linear.x  = float(vx)    * self.LINEAR_SCALE
+        msg.linear.y  = float(vy)    * self.LINEAR_SCALE
+        msg.angular.z = float(omega) * self.ANGULAR_SCALE
+        self._cmd_vel_pub.publish(msg)
+
+    def stop(self):
+        self.move(0.0, 0.0, 0.0)
+
+    def cleanup(self):
+        import rclpy
+        try:
+            self._node.destroy_node()
+            rclpy.shutdown()
+        except Exception:
+            pass
+
+
 def initialize_hardware():
     global ros_board, drive, lidar, camera, robot_state, model, oled
 
@@ -140,13 +227,25 @@ def initialize_hardware():
     logger.info("Initializing Yahboom X3 Hardware")
     logger.info("="*50)
 
-    # 1. Motor Controller (Serial) - uses auto-detected SERIAL_PORT
-    logger.info(f"Connecting to Rosmaster on {SERIAL_PORT}...")
-    ros_board = Rosmaster(sim_mode=SIM_MODE)
+    if ROS2_MODE:
+        # ROS2 bridge mode: Mcnamu_driver_X3 owns the serial port.
+        # Skip Rosmaster / MecanumDrive / YDLidarDriver — use ROS2Bridge instead.
+        logger.info("ROS2 mode: skipping serial hardware, using ROS2Bridge")
+        bridge = ROS2Bridge()
+        drive = bridge
+        lidar = bridge
+    else:
+        # 1. Motor Controller (Serial) - uses auto-detected SERIAL_PORT
+        logger.info(f"Connecting to Rosmaster on {SERIAL_PORT}...")
+        ros_board = Rosmaster(sim_mode=SIM_MODE)
 
-    # 2. Mecanum Drive Wrapper
-    drive = MecanumDrive(ros_board)
-    logger.info("Mecanum Drive initialized")
+        # 2. Mecanum Drive Wrapper
+        drive = MecanumDrive(ros_board)
+        logger.info("Mecanum Drive initialized")
+
+        # 5. YDLidar
+        logger.info(f"Initializing Lidar on {LIDAR_PORT}...")
+        lidar = YDLidarDriver(port=LIDAR_PORT, sim_mode=SIM_MODE)
 
     # 3. Camera (Orbbec Astra Pro RGB + optional depth)
     logger.info("Initializing Camera...")
@@ -166,10 +265,6 @@ def initialize_hardware():
     except Exception as e:
         logger.error(f"YOLO Load Failed: {e}")
 
-    # 5. YDLidar
-    logger.info(f"Initializing Lidar on {LIDAR_PORT}...")
-    lidar = YDLidarDriver(port=LIDAR_PORT, sim_mode=SIM_MODE)
-
     # 6. Robot State (pose tracking — x/y/theta, updated by IMU when available)
     robot_state = RobotState()
 
@@ -184,9 +279,11 @@ def initialize_hardware():
 
 def cleanup():
     logger.info("Cleaning up...")
+    if ROS2_MODE and drive is not None:
+        drive.cleanup()  # ROS2Bridge.cleanup() shuts down rclpy
     if ros_board: ros_board.cleanup()
     if camera: camera.cleanup()
-    if lidar: lidar.cleanup()
+    if not ROS2_MODE and lidar: lidar.cleanup()
     if oled: oled.cleanup()
 
 

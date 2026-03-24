@@ -1,0 +1,24 @@
+ydlidar_ros2_driver_node:
+  ros__parameters:
+    port: /dev/ttyUSB0
+    frame_id: laser_link          # matches yahboomcar_X3.urdf.xacro laser_link frame
+    ignore_array: ""
+    baudrate: 512000              # from drivers_x3.py BAUDRATE
+    lidar_type: 0                 # TYPE_TOF (from drivers_x3.py ydlidar.TYPE_TOF)
+    device_type: 0                # SERIAL
+    isSingleChannel: true         # from drivers_x3.py LidarPropSingleChannel=True
+    intensity: false
+    sample_rate: 20               # kHz — from drivers_x3.py SAMPLE_RATE
+    abnormal_check_count: 4
+    fixed_resolution: false
+    reversion: false
+    inverted: true                # FLIP_HORIZONTAL=True in our driver
+    auto_reconnect: true
+    support_motor_dtr: false
+    angle_max: 180.0
+    angle_min: -180.0
+    range_max: 10.0
+    range_min: 0.12
+    frequency: 8.0                # SCAN_FREQ from drivers_x3.py
+    invalid_range_is_inf: false
+    debug: false
