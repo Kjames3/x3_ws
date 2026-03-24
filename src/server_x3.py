@@ -21,6 +21,7 @@ import cv2
 import websockets
 import sys
 import os
+import signal
 import socket
 import subprocess
 try:
@@ -108,6 +109,7 @@ camera = None
 robot_state = None
 model = None
 oled = None
+_gazebo_proc = None   # subprocess handle when --sim auto-launches Gazebo
 
 detection_enabled = False
 depth_enabled = False
@@ -220,14 +222,43 @@ class ROS2Bridge:
             pass
 
 
+def _launch_gazebo():
+    """Start Gazebo + X3 robot as a background subprocess.
+
+    Sources ROS2 and the workspace install, then calls x3_gazebo.launch.py.
+    Returns the Popen handle so cleanup() can terminate it.
+    """
+    ws_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    install_setup = os.path.join(ws_root, 'install', 'setup.bash')
+    cmd = (
+        f'source /opt/ros/humble/setup.bash && '
+        f'source {install_setup} && '
+        f'ros2 launch yahboomcar_nav x3_gazebo.launch.py'
+    )
+    proc = subprocess.Popen(
+        ['bash', '-c', cmd],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        preexec_fn=os.setsid,   # process group — lets us kill all children
+    )
+    logger.info(f"Gazebo launched (pid {proc.pid}) — waiting for topics...")
+    return proc
+
+
 def initialize_hardware():
-    global ros_board, drive, lidar, camera, robot_state, model, oled
+    global ros_board, drive, lidar, camera, robot_state, model, oled, _gazebo_proc
 
     logger.info("="*50)
     logger.info("Initializing Yahboom X3 Hardware")
     logger.info("="*50)
 
-    if ROS2_MODE:
+    if SIM_MODE:
+        # Gazebo simulation: auto-launch Gazebo then bridge to its topics.
+        _gazebo_proc = _launch_gazebo()
+        bridge = ROS2Bridge()
+        drive = bridge
+        lidar = bridge
+    elif ROS2_MODE:
         # ROS2 bridge mode: Mcnamu_driver_X3 owns the serial port.
         # Skip Rosmaster / MecanumDrive / YDLidarDriver — use ROS2Bridge instead.
         logger.info("ROS2 mode: skipping serial hardware, using ROS2Bridge")
@@ -237,7 +268,7 @@ def initialize_hardware():
     else:
         # 1. Motor Controller (Serial) - uses auto-detected SERIAL_PORT
         logger.info(f"Connecting to Rosmaster on {SERIAL_PORT}...")
-        ros_board = Rosmaster(sim_mode=SIM_MODE)
+        ros_board = Rosmaster(sim_mode=False)
 
         # 2. Mecanum Drive Wrapper
         drive = MecanumDrive(ros_board)
@@ -245,7 +276,7 @@ def initialize_hardware():
 
         # 5. YDLidar
         logger.info(f"Initializing Lidar on {LIDAR_PORT}...")
-        lidar = YDLidarDriver(port=LIDAR_PORT, sim_mode=SIM_MODE)
+        lidar = YDLidarDriver(port=LIDAR_PORT, sim_mode=False)
 
     # 3. Camera (Orbbec Astra Pro RGB + optional depth)
     logger.info("Initializing Camera...")
@@ -279,11 +310,17 @@ def initialize_hardware():
 
 def cleanup():
     logger.info("Cleaning up...")
-    if ROS2_MODE and drive is not None:
+    if (SIM_MODE or ROS2_MODE) and drive is not None:
         drive.cleanup()  # ROS2Bridge.cleanup() shuts down rclpy
+    if _gazebo_proc is not None:
+        logger.info("Shutting down Gazebo...")
+        try:
+            os.killpg(os.getpgid(_gazebo_proc.pid), signal.SIGTERM)
+        except Exception:
+            pass
     if ros_board: ros_board.cleanup()
     if camera: camera.cleanup()
-    if not ROS2_MODE and lidar: lidar.cleanup()
+    if not (SIM_MODE or ROS2_MODE) and lidar: lidar.cleanup()
     if oled: oled.cleanup()
 
 

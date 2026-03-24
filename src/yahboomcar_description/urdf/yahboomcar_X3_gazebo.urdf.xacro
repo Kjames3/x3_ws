@@ -1,0 +1,90 @@
+<?xml version="1.0"?>
+<!--
+  yahboomcar_X3_gazebo.urdf.xacro
+  Extends yahboomcar_X3.urdf with Gazebo Classic 11 plugins:
+    - libgazebo_ros_planar_move  → /cmd_vel  (holonomic mecanum drive)
+    - libgazebo_ros_ray_sensor   → /scan     (lidar)
+    - libgazebo_ros_imu_sensor   → /imu/data (IMU)
+-->
+<robot name="yahboomcar" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- Base robot structure (joints, links, meshes, inertia) -->
+  <xacro:include filename="$(find yahboomcar_description)/urdf/yahboomcar_X3.urdf"/>
+
+  <!-- ── Material colours ────────────────────────────────────────────── -->
+  <gazebo reference="base_link">        <material>Gazebo/Green</material>    </gazebo>
+  <gazebo reference="front_left_wheel"> <material>Gazebo/DarkGrey</material> </gazebo>
+  <gazebo reference="front_right_wheel"><material>Gazebo/DarkGrey</material> </gazebo>
+  <gazebo reference="back_left_wheel">  <material>Gazebo/DarkGrey</material> </gazebo>
+  <gazebo reference="back_right_wheel"> <material>Gazebo/DarkGrey</material> </gazebo>
+  <gazebo reference="laser_link">       <material>Gazebo/Grey</material>     </gazebo>
+
+  <!-- ── Holonomic drive (mecanum → planar_move) ─────────────────────── -->
+  <!-- libgazebo_ros_planar_move treats the robot as a fully holonomic    -->
+  <!-- base: cmd_vel.linear.x/y = forward/strafe, angular.z = rotate.    -->
+  <gazebo>
+    <plugin name="gazebo_ros_planar_move" filename="libgazebo_ros_planar_move.so">
+      <ros>
+        <remapping>cmd_vel:=/cmd_vel</remapping>
+        <remapping>odom:=/odom</remapping>
+      </ros>
+      <update_rate>50</update_rate>
+      <publish_rate>20</publish_rate>
+      <publish_odom>true</publish_odom>
+      <publish_odom_tf>true</publish_odom_tf>
+      <odometry_frame>odom</odometry_frame>
+      <robot_base_frame>base_footprint</robot_base_frame>
+    </plugin>
+  </gazebo>
+
+  <!-- ── 2-D lidar (mirrors YDLidar X3 TOF: 360°, 8 Hz, 8 m max) ─────── -->
+  <gazebo reference="laser_link">
+    <sensor name="laser" type="ray">
+      <always_on>true</always_on>
+      <visualize>false</visualize>
+      <update_rate>8</update_rate>
+      <ray>
+        <scan>
+          <horizontal>
+            <samples>720</samples>
+            <resolution>1</resolution>
+            <min_angle>-3.14159</min_angle>
+            <max_angle>3.14159</max_angle>
+          </horizontal>
+        </scan>
+        <range>
+          <min>0.12</min>
+          <max>8.0</max>
+          <resolution>0.01</resolution>
+        </range>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.01</stddev>
+        </noise>
+      </ray>
+      <plugin name="gazebo_ros_laser" filename="libgazebo_ros_ray_sensor.so">
+        <ros>
+          <remapping>~/out:=/scan</remapping>
+        </ros>
+        <output_type>sensor_msgs/LaserScan</output_type>
+        <frame_name>laser_link</frame_name>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+  <!-- ── IMU ─────────────────────────────────────────────────────────── -->
+  <gazebo reference="imu_link">
+    <sensor name="imu_sensor" type="imu">
+      <always_on>true</always_on>
+      <update_rate>100</update_rate>
+      <plugin name="gazebo_ros_imu_sensor" filename="libgazebo_ros_imu_sensor.so">
+        <ros>
+          <remapping>~/out:=/imu/data</remapping>
+        </ros>
+        <initial_orientation_as_reference>false</initial_orientation_as_reference>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+</robot>
