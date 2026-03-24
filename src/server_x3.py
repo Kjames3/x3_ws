@@ -236,13 +236,15 @@ def _launch_gazebo():
         f'source {install_setup} && '
         f'ros2 launch yahboomcar_nav x3_gazebo.launch.py'
     )
+    log_path = '/tmp/gazebo_launch.log'
+    log_file = open(log_path, 'w')
     proc = subprocess.Popen(
         ['bash', '-c', cmd],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log_file,
+        stderr=log_file,
         preexec_fn=os.setsid,   # process group — lets us kill all children
     )
-    logger.info(f"Gazebo launched (pid {proc.pid}) — waiting for topics...")
+    logger.info(f"Gazebo launched (pid {proc.pid}) — log: {log_path}")
     return proc
 
 
