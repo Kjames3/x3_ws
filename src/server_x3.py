@@ -164,21 +164,56 @@ class ROS2Bridge:
     def __init__(self):
         import rclpy
         from rclpy.node import Node
-        from sensor_msgs.msg import LaserScan
+        from sensor_msgs.msg import LaserScan, Image
         from geometry_msgs.msg import Twist
+        from nav_msgs.msg import Odometry
 
         rclpy.init(args=None)
         self._node = Node('x3_ws_bridge')
         self._lock = threading.Lock()
         self._points: list[float] = []
+        self._latest_frame = None          # cv2 BGR ndarray from Gazebo camera
+        self._pose_m = {"x": 0.0, "y": 0.0, "theta": 0.0}  # metres + radians
 
         self._node.create_subscription(LaserScan, '/scan', self._scan_cb, 10)
+        self._node.create_subscription(Image, '/camera/image_raw', self._image_cb, 1)
+        self._node.create_subscription(Odometry, '/odom', self._odom_cb, 10)
         self._cmd_vel_pub = self._node.create_publisher(Twist, '/cmd_vel', 10)
 
         self._spin_thread = threading.Thread(
             target=rclpy.spin, args=(self._node,), daemon=True)
         self._spin_thread.start()
-        logger.info("ROS2Bridge: spinning — subscribed /scan, publishing /cmd_vel")
+        logger.info("ROS2Bridge: spinning — subscribed /scan /camera/image_raw /odom, publishing /cmd_vel")
+
+    def _image_cb(self, msg):
+        """Convert sensor_msgs/Image (RGB_INT8 from Fortress) to cv2 BGR ndarray."""
+        import numpy as np, cv2
+        arr = np.frombuffer(bytes(msg.data), dtype=np.uint8).reshape(msg.height, msg.width, 3)
+        bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+        with self._lock:
+            self._latest_frame = bgr
+
+    def get_frame(self):
+        """Return latest camera frame as BGR ndarray, or None. Matches AstraCamera API."""
+        with self._lock:
+            f = self._latest_frame
+        return f.copy() if f is not None else None
+
+    def _odom_cb(self, msg):
+        """Extract position (metres) and yaw (radians) from nav_msgs/Odometry."""
+        import math
+        p = msg.pose.pose.position
+        q = msg.pose.pose.orientation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        with self._lock:
+            self._pose_m = {"x": p.x, "y": p.y, "theta": yaw}
+
+    def get_pose_cm(self) -> dict:
+        """Return pose with x/y in cm (matches RobotState units) and theta in radians."""
+        with self._lock:
+            p = dict(self._pose_m)
+        return {"x": p["x"] * 100.0, "y": p["y"] * 100.0, "theta": p["theta"]}
 
     def _scan_cb(self, msg):
         """Convert LaserScan → flat [x0,y0,x1,y1,…] (same format as YDLidarDriver)."""
@@ -309,6 +344,7 @@ def initialize_hardware():
         bridge = ROS2Bridge()
         drive = bridge
         lidar = bridge
+        camera = bridge   # bridge provides get_frame() from /camera/image_raw
     elif ROS2_MODE:
         # ROS2 bridge mode: Mcnamu_driver_X3 owns the serial port.
         # Skip Rosmaster / MecanumDrive / YDLidarDriver — use ROS2Bridge instead.
@@ -316,6 +352,7 @@ def initialize_hardware():
         bridge = ROS2Bridge()
         drive = bridge
         lidar = bridge
+        camera = bridge   # bridge provides get_frame() from /camera/image_raw
     else:
         # 1. Motor Controller (Serial) - uses auto-detected SERIAL_PORT
         logger.info(f"Connecting to Rosmaster on {SERIAL_PORT}...")
@@ -329,9 +366,10 @@ def initialize_hardware():
         logger.info(f"Initializing Lidar on {LIDAR_PORT}...")
         lidar = YDLidarDriver(port=LIDAR_PORT, sim_mode=False)
 
-    # 3. Camera (Orbbec Astra Pro RGB + optional depth)
-    logger.info("Initializing Camera...")
-    camera = AstraCamera(width=640, height=480, sim_mode=SIM_MODE, enable_depth=False)
+    # 3. Camera — hardware only; sim/ros2 modes use ROS2Bridge.get_frame() instead
+    if not (SIM_MODE or ROS2_MODE):
+        logger.info("Initializing Camera...")
+        camera = AstraCamera(width=640, height=480, sim_mode=False, enable_depth=False)
 
     # 4. YOLO Model — prefer TRT engine (.engine), fall back to .pt on CPU
     try:
@@ -659,12 +697,15 @@ async def broadcast_loop():
             # 5. Lidar points (only when toggle is on)
             scan_points = lidar.get_points_xy() if (lidar and lidar_enabled) else []
 
-            # 6. Robot pose
-            pose = {
-                "x":     robot_state.x     if robot_state else 0.0,
-                "y":     robot_state.y     if robot_state else 0.0,
-                "theta": robot_state.theta if robot_state else 0.0,
-            }
+            # 6. Robot pose — use /odom from Gazebo in sim/ros2 modes
+            if (SIM_MODE or ROS2_MODE) and hasattr(lidar, 'get_pose_cm'):
+                pose = lidar.get_pose_cm()
+            else:
+                pose = {
+                    "x":     robot_state.x     if robot_state else 0.0,
+                    "y":     robot_state.y     if robot_state else 0.0,
+                    "theta": robot_state.theta if robot_state else 0.0,
+                }
 
             # 7. Encoders + battery (P9: battery voltage cached at 1 Hz, not 20 Hz)
             if ros_board:
