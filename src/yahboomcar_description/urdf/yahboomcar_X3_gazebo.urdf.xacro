@@ -1,48 +1,50 @@
 <?xml version="1.0"?>
 <!--
   yahboomcar_X3_gazebo.urdf.xacro
-  Extends yahboomcar_X3.urdf with Gazebo Classic 11 plugins:
-    - libgazebo_ros_planar_move  → /cmd_vel  (holonomic mecanum drive)
-    - libgazebo_ros_ray_sensor   → /scan     (lidar)
-    - libgazebo_ros_imu_sensor   → /imu/data (IMU)
+  Extends yahboomcar_X3.urdf with Ignition Fortress (gz-sim 6) plugins:
+    - ignition::gazebo::systems::VelocityControl  → /cmd_vel (holonomic)
+    - ignition::gazebo::systems::Sensors          → laser (world-level system)
+    - ignition::gazebo::systems::Imu              → IMU   (world-level system)
+
+  Topics bridged to ROS 2 via ros_gz_bridge in x3_gazebo.launch.py:
+    /lidar    (gz) → /scan      (ROS sensor_msgs/LaserScan)
+    /imu_raw  (gz) → /imu/data  (ROS sensor_msgs/Imu)
+    /cmd_vel  (ROS) → VelocityControl plugin (holonomic: linear.x/y + angular.z)
 -->
 <robot name="yahboomcar" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
   <!-- Base robot structure (joints, links, meshes, inertia) -->
   <xacro:include filename="$(find yahboomcar_description)/urdf/yahboomcar_X3.urdf"/>
 
-  <!-- ── Material colours ────────────────────────────────────────────── -->
-  <gazebo reference="base_link">        <material>Gazebo/Green</material>    </gazebo>
-  <gazebo reference="front_left_wheel"> <material>Gazebo/DarkGrey</material> </gazebo>
-  <gazebo reference="front_right_wheel"><material>Gazebo/DarkGrey</material> </gazebo>
-  <gazebo reference="back_left_wheel">  <material>Gazebo/DarkGrey</material> </gazebo>
-  <gazebo reference="back_right_wheel"> <material>Gazebo/DarkGrey</material> </gazebo>
-  <gazebo reference="laser_link">       <material>Gazebo/Grey</material>     </gazebo>
-
-  <!-- ── Holonomic drive (mecanum → planar_move) ─────────────────────── -->
-  <!-- libgazebo_ros_planar_move treats the robot as a fully holonomic    -->
-  <!-- base: cmd_vel.linear.x/y = forward/strafe, angular.z = rotate.    -->
+  <!-- ── Holonomic drive via VelocityControl ──────────────────────────────
+       VelocityControl applies cmd_vel directly as body-frame velocity to the
+       model, preserving linear.x, linear.y, angular.z — full holonomic motion.
+       This matches the behaviour of the old libgazebo_ros_planar_move.so.
+       Note: Fortress VelocityControl listens on /model/<name>/cmd_vel by
+       default inside Ignition Transport; the ros_gz_bridge maps /cmd_vel
+       (ROS) to that topic.                                                  -->
   <gazebo>
-    <plugin name="gazebo_ros_planar_move" filename="libgazebo_ros_planar_move.so">
-      <ros>
-        <remapping>cmd_vel:=/cmd_vel</remapping>
-        <remapping>odom:=/odom</remapping>
-      </ros>
-      <update_rate>50</update_rate>
-      <publish_rate>20</publish_rate>
-      <publish_odom>true</publish_odom>
-      <publish_odom_tf>true</publish_odom_tf>
-      <odometry_frame>odom</odometry_frame>
-      <robot_base_frame>base_footprint</robot_base_frame>
+    <plugin filename="ignition-gazebo-velocity-control-system"
+            name="ignition::gazebo::systems::VelocityControl">
+      <!-- Explicitly set to /cmd_vel so it matches what ros_gz_bridge publishes. -->
+      <!-- Without this, the plugin defaults to /model/yahboomcar_x3/cmd_vel     -->
+      <!-- which is a different Ignition Transport topic — robot won't move.      -->
+      <topic>/cmd_vel</topic>
+      <initial_linear>0 0 0</initial_linear>
+      <initial_angular>0 0 0</initial_angular>
     </plugin>
   </gazebo>
 
-  <!-- ── 2-D lidar (mirrors YDLidar X3 TOF: 360°, 8 Hz, 8 m max) ─────── -->
+  <!-- ── 2-D lidar (mirrors YDLidar X3 TOF: 360°, 8 Hz, 8 m max) ─────────
+       In Fortress, no child <plugin> is needed inside <sensor>.
+       The world-level ignition::gazebo::systems::Sensors drives all sensors.
+       The <topic> tag sets the Ignition Transport topic name.               -->
   <gazebo reference="laser_link">
-    <sensor name="laser" type="ray">
+    <sensor name="laser" type="gpu_lidar">
       <always_on>true</always_on>
       <visualize>false</visualize>
       <update_rate>8</update_rate>
+      <topic>/lidar</topic>
       <ray>
         <scan>
           <horizontal>
@@ -63,27 +65,28 @@
           <stddev>0.01</stddev>
         </noise>
       </ray>
-      <plugin name="gazebo_ros_laser" filename="libgazebo_ros_ray_sensor.so">
-        <ros>
-          <remapping>~/out:=/scan</remapping>
-        </ros>
-        <output_type>sensor_msgs/LaserScan</output_type>
-        <frame_name>laser_link</frame_name>
-      </plugin>
     </sensor>
   </gazebo>
 
-  <!-- ── IMU ─────────────────────────────────────────────────────────── -->
+  <!-- ── IMU ──────────────────────────────────────────────────────────────
+       Driven by world-level ignition::gazebo::systems::Imu system.          -->
   <gazebo reference="imu_link">
     <sensor name="imu_sensor" type="imu">
       <always_on>true</always_on>
       <update_rate>100</update_rate>
-      <plugin name="gazebo_ros_imu_sensor" filename="libgazebo_ros_imu_sensor.so">
-        <ros>
-          <remapping>~/out:=/imu/data</remapping>
-        </ros>
-        <initial_orientation_as_reference>false</initial_orientation_as_reference>
-      </plugin>
+      <topic>/imu_raw</topic>
+      <imu>
+        <angular_velocity>
+          <x><noise type="gaussian"><mean>0</mean><stddev>0.009</stddev></noise></x>
+          <y><noise type="gaussian"><mean>0</mean><stddev>0.009</stddev></noise></y>
+          <z><noise type="gaussian"><mean>0</mean><stddev>0.009</stddev></noise></z>
+        </angular_velocity>
+        <linear_acceleration>
+          <x><noise type="gaussian"><mean>0</mean><stddev>0.021</stddev></noise></x>
+          <y><noise type="gaussian"><mean>0</mean><stddev>0.021</stddev></noise></y>
+          <z><noise type="gaussian"><mean>0</mean><stddev>0.021</stddev></noise></z>
+        </linear_acceleration>
+      </imu>
     </sensor>
   </gazebo>
 

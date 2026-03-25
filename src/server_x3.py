@@ -231,6 +231,53 @@ def _launch_gazebo():
     """
     ws_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     install_setup = os.path.join(ws_root, 'install', 'setup.bash')
+
+    # Kill any orphaned Ignition Fortress processes first
+    subprocess.call(['bash', '-c', 'pkill -9 -f "ign gazebo" 2>/dev/null; pkill -9 -f "gz sim" 2>/dev/null || true'])
+
+    # Build the subprocess environment: inherit everything from the current
+    # process (which includes DISPLAY, XAUTHORITY, XDG_RUNTIME_DIR, LD_LIBRARY_PATH etc.)
+    # then set the variables that must be set for Ignition Fortress + ROS2 to work.
+    child_env = os.environ.copy()
+    child_env.setdefault('DISPLAY', ':0')
+    # GZ_SIM_RESOURCE_PATH tells Ignition Fortress where to find package:// URIs
+    # and mesh files from the installed workspace.
+    share_dir = os.path.join(ws_root, 'install', 'yahboomcar_description', 'share')
+    gz_resource_path = child_env.get('GZ_SIM_RESOURCE_PATH', '')
+    child_env['GZ_SIM_RESOURCE_PATH'] = f'{share_dir}:{gz_resource_path}' if gz_resource_path else share_dir
+    # IGN_GAZEBO_RESOURCE_PATH is the alias used by some Fortress tools — set both
+    child_env['IGN_GAZEBO_RESOURCE_PATH'] = child_env['GZ_SIM_RESOURCE_PATH']
+    # OGRE_RTT_MODE was a workaround for Gazebo Classic/Ogre1 on NVIDIA — not needed
+    # for Ignition Fortress which uses Ogre2.
+    # ROS2 tools must run under system Python 3.10.
+    # Miniconda prepends its Python 3.13 to PATH which breaks rclpy C extensions.
+    # Strip all conda/miniconda dirs from PATH so /usr/bin/python3 wins.
+    clean_path = ':'.join(
+        p for p in child_env.get('PATH', '').split(':')
+        if 'conda' not in p.lower()
+    )
+    child_env['PATH'] = clean_path
+    # Also unset any conda-injected PYTHONPATH entries that would pull in 3.13
+    if 'PYTHONPATH' in child_env:
+        child_env['PYTHONPATH'] = ':'.join(
+            p for p in child_env['PYTHONPATH'].split(':')
+            if 'conda' not in p.lower()
+        )
+    # OpenCV (cv2) ships its own Qt plugins that are incompatible with Ignition's Qt.
+    # When server_x3.py inherits QT_PLUGIN_PATH containing cv2/qt/plugins, the
+    # Ignition GUI crashes with "Could not load Qt platform plugin xcb".
+    # Strip any cv2 Qt paths so Ignition uses the system Qt plugins only.
+    for qt_var in ('QT_PLUGIN_PATH', 'QT_QPA_PLATFORM_PLUGIN_PATH'):
+        if qt_var in child_env:
+            cleaned = ':'.join(
+                p for p in child_env[qt_var].split(':')
+                if 'cv2' not in p and 'cv2' not in p.lower()
+            )
+            if cleaned:
+                child_env[qt_var] = cleaned
+            else:
+                del child_env[qt_var]
+
     cmd = (
         f'source /opt/ros/humble/setup.bash && '
         f'source {install_setup} && '
@@ -243,6 +290,7 @@ def _launch_gazebo():
         stdout=log_file,
         stderr=log_file,
         preexec_fn=os.setsid,   # process group — lets us kill all children
+        env=child_env,
     )
     logger.info(f"Gazebo launched (pid {proc.pid}) — log: {log_path}")
     return proc

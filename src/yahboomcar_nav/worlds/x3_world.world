@@ -1,25 +1,71 @@
 <?xml version="1.0"?>
-<sdf version="1.6">
+<sdf version="1.9">
   <world name="x3_world">
 
-    <!-- Lighting -->
-    <include>
-      <uri>model://sun</uri>
-    </include>
+    <!-- ── Required Ignition Fortress systems ────────────────────────────── -->
+    <!-- Physics engine -->
+    <plugin filename="ignition-gazebo-physics-system"
+            name="ignition::gazebo::systems::Physics"/>
+    <!-- Allows models to be created/deleted at runtime (for robot spawn) -->
+    <plugin filename="ignition-gazebo-user-commands-system"
+            name="ignition::gazebo::systems::UserCommands"/>
+    <!-- Publishes scene state for the Ignition GUI client -->
+    <plugin filename="ignition-gazebo-scene-broadcaster-system"
+            name="ignition::gazebo::systems::SceneBroadcaster"/>
+    <!-- Sensor infrastructure: drives all sensors declared in robot model -->
+    <plugin filename="ignition-gazebo-sensors-system"
+            name="ignition::gazebo::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <!-- IMU system (required alongside Sensors for IMU sensors) -->
+    <plugin filename="ignition-gazebo-imu-system"
+            name="ignition::gazebo::systems::Imu"/>
 
-    <!-- Ground plane -->
-    <include>
-      <uri>model://ground_plane</uri>
-    </include>
+    <!-- ── Lighting ───────────────────────────────────────────────────────── -->
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
 
-    <!-- Physics: real-time factor 1.0, step 1 ms -->
-    <physics type="ode">
-      <real_time_update_rate>1000</real_time_update_rate>
+    <!-- ── Ground plane ──────────────────────────────────────────────────── -->
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane><normal>0 0 1</normal><size>100 100</size></plane>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane><normal>0 0 1</normal><size>100 100</size></plane>
+          </geometry>
+          <material>
+            <ambient>0.8 0.8 0.8 1</ambient>
+            <diffuse>0.8 0.8 0.8 1</diffuse>
+            <specular>0.8 0.8 0.8 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ── Physics: real-time factor 1.0, step 1 ms ─────────────────────── -->
+    <physics name="1ms" type="ignored">
       <max_step_size>0.001</max_step_size>
-      <real_time_factor>1</real_time_factor>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
     </physics>
 
-    <!-- A few simple obstacles to test navigation -->
+    <!-- ── Obstacles to test navigation ──────────────────────────────────── -->
     <model name="box1">
       <static>true</static>
       <pose>1.5 0.0 0.25 0 0 0</pose>
