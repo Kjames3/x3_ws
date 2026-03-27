@@ -114,6 +114,7 @@ model = None
 oled = None
 nav2_client = None    # Nav2Client instance (ROS2/sim modes only)
 _gazebo_proc = None   # subprocess handle when --sim auto-launches Gazebo
+_slam_proc   = None   # subprocess handle when SLAM Toolbox is running
 
 detection_enabled = False
 depth_enabled = False
@@ -354,6 +355,98 @@ def _launch_gazebo():
     return proc
 
 
+def _launch_slam(use_sim_time: bool = False):
+    """Start SLAM Toolbox as a background subprocess.
+
+    For simulation (use_sim_time=True): launches x3_slam_sim.launch.py
+      — only slam_toolbox_node, no hardware drivers (Gazebo provides topics).
+    For physical (use_sim_time=False): launches x3_slam.launch.py
+      — full stack (Mcnamu_driver, base_node, IMU filter, EKF, YDLidar, slam_toolbox).
+
+    Uses the same clean-environment pattern as _launch_gazebo() to avoid
+    conda/miniconda Python version conflicts.
+    Returns the Popen handle.
+    """
+    ws_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    install_setup = os.path.join(ws_root, 'install', 'setup.bash')
+
+    launch_file = 'x3_slam_sim.launch.py' if use_sim_time else 'x3_slam.launch.py'
+
+    child_env = os.environ.copy()
+    child_env.setdefault('DISPLAY', ':0')
+    # Strip conda dirs so system Python 3.10 is used for ROS2 nodes
+    clean_path = ':'.join(
+        p for p in child_env.get('PATH', '').split(':')
+        if 'conda' not in p.lower()
+    )
+    child_env['PATH'] = clean_path
+    if 'PYTHONPATH' in child_env:
+        child_env['PYTHONPATH'] = ':'.join(
+            p for p in child_env['PYTHONPATH'].split(':')
+            if 'conda' not in p.lower()
+        )
+
+    cmd = (
+        f'source /opt/ros/humble/setup.bash && '
+        f'source {install_setup} && '
+        f'ros2 launch yahboomcar_nav {launch_file}'
+    )
+    log_path = '/tmp/slam_launch.log'
+    log_file = open(log_path, 'w')
+    proc = subprocess.Popen(
+        ['bash', '-c', cmd],
+        stdout=log_file,
+        stderr=log_file,
+        preexec_fn=os.setsid,
+        env=child_env,
+    )
+    logger.info(f"SLAM Toolbox launched (pid {proc.pid}, sim={use_sim_time}) — log: {log_path}")
+    return proc
+
+
+def _save_map(name: str) -> tuple[bool, str]:
+    """Call the slam_toolbox/save_map service synchronously.
+
+    Saves the map to the yahboomcar_nav maps directory so it immediately
+    appears in the GUI map selector.
+    Returns (success: bool, message: str).
+    """
+    ws_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    maps_dir = os.path.join(ws_root, 'src', 'yahboomcar_nav', 'maps')
+    os.makedirs(maps_dir, exist_ok=True)
+    map_path = os.path.join(maps_dir, name)
+
+    install_setup = os.path.join(ws_root, 'install', 'setup.bash')
+    child_env = os.environ.copy()
+    clean_path = ':'.join(
+        p for p in child_env.get('PATH', '').split(':')
+        if 'conda' not in p.lower()
+    )
+    child_env['PATH'] = clean_path
+
+    cmd = (
+        f'source /opt/ros/humble/setup.bash && '
+        f'source {install_setup} && '
+        f'ros2 service call /slam_toolbox/save_map slam_toolbox/srv/SaveMap '
+        f'\'{{"name": {{"data": "{map_path}"}}}}\''
+    )
+    try:
+        result = subprocess.run(
+            ['bash', '-c', cmd],
+            capture_output=True, text=True, timeout=10, env=child_env,
+        )
+        if result.returncode == 0:
+            logger.info(f"Map saved: {map_path}")
+            return True, f"Map '{name}' saved"
+        else:
+            logger.warning(f"Map save failed: {result.stderr.strip()}")
+            return False, result.stderr.strip() or "Service call failed"
+    except subprocess.TimeoutExpired:
+        return False, "Timed out waiting for save_map service"
+    except Exception as exc:
+        return False, str(exc)
+
+
 def initialize_hardware():
     global ros_board, drive, lidar, camera, robot_state, model, oled, _gazebo_proc
     global nav2_client
@@ -435,6 +528,12 @@ def cleanup():
         logger.info("Shutting down Gazebo...")
         try:
             os.killpg(os.getpgid(_gazebo_proc.pid), signal.SIGTERM)
+        except Exception:
+            pass
+    if _slam_proc is not None:
+        logger.info("Shutting down SLAM Toolbox...")
+        try:
+            os.killpg(os.getpgid(_slam_proc.pid), signal.SIGTERM)
         except Exception:
             pass
     if ros_board: ros_board.cleanup()
@@ -711,6 +810,37 @@ async def handle_client(websocket):
                         await websocket.send(json.dumps(
                             {"type": "map_data", "error": "Map not found"}))
 
+                # ── SLAM messages ───────────────────────────────────────────
+                elif msg_type == "start_slam":
+                    global _slam_proc
+                    if _slam_proc is None or _slam_proc.poll() is not None:
+                        _slam_proc = _launch_slam(use_sim_time=SIM_MODE)
+                        logger.info("SLAM Toolbox launched")
+                    else:
+                        logger.info("SLAM already running")
+
+                elif msg_type == "stop_slam":
+                    if _slam_proc is not None and _slam_proc.poll() is None:
+                        try:
+                            os.killpg(os.getpgid(_slam_proc.pid), signal.SIGTERM)
+                            logger.info("SLAM Toolbox stopped")
+                        except Exception as exc:
+                            logger.warning(f"Failed to stop SLAM: {exc}")
+                        _slam_proc = None
+
+                elif msg_type == "save_map":
+                    map_name = data.get("name", "slam_map").strip() or "slam_map"
+                    ok, msg_text = _save_map(map_name)
+                    await websocket.send(json.dumps({
+                        "type": "save_map_result",
+                        "success": ok,
+                        "message": msg_text,
+                        "name": map_name,
+                    }))
+                    if ok:
+                        await websocket.send(json.dumps(
+                            {"type": "map_list", "maps": _list_maps()}))
+
                 elif msg_type == "set_model":
                     model_name = data.get("model")
                     if model_name:
@@ -891,6 +1021,7 @@ async def broadcast_loop():
                 "is_auto_driving": is_auto_driving,
                 "nav_phase": nav_status["state"],
                 "nav": nav_status,
+                "slam_active": _slam_proc is not None and _slam_proc.poll() is None,
                 "active_model_name": active_model_name,
                 "fps_camera": fps_camera,
                 "fps_detection": fps_detection,
