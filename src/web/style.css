@@ -1036,3 +1036,135 @@ body {
     font-weight: 600;
     color: var(--text-secondary);
 }
+
+/* =================================================================
+   Navigation Panel
+   ================================================================= */
+
+/* Map canvas — square, dark background, crosshair cursor */
+.nav-canvas {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    background: #060e1a;
+    border-radius: var(--radius-md);
+    cursor: crosshair;
+    border: 1px solid var(--border-color);
+    display: block;
+}
+
+.nav-hint {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-style: italic;
+    margin-top: 0.3rem;
+    text-align: center;
+}
+
+/* Nav2 state badge */
+.nav-badge {
+    font-size: 0.68rem;
+    font-weight: 700;
+    padding: 0.2rem 0.6rem;
+    border-radius: 3px;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    border: 1px solid transparent;
+}
+
+.nav-badge.unavailable { background: #1e293b; color: #64748b; border-color: #334155; }
+.nav-badge.idle        { background: #1e293b; color: #94a3b8; border-color: #475569; }
+.nav-badge.planning    { background: #422006; color: #f59e0b; border-color: #92400e; }
+.nav-badge.executing   { background: #0e2d3d; color: #22d3ee; border-color: #164e63; box-shadow: 0 0 6px rgba(34,211,238,0.25); }
+.nav-badge.succeeded   { background: #052e16; color: #22c55e; border-color: #166534; }
+.nav-badge.failed      { background: #2d0e0e; color: #ef4444; border-color: #7f1d1d; }
+.nav-badge.cancelling  { background: #2d1e05; color: #f97316; border-color: #7c2d12; }
+
+/* Button row */
+.nav-controls {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.btn-nav {
+    padding: 0.35rem 0.75rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    background: var(--bg-tertiary);
+    color: #22d3ee;
+    border: 1px solid #22d3ee;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+
+.btn-nav:hover {
+    background: rgba(34, 211, 238, 0.12);
+}
+
+.btn-nav:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.btn-nav.btn-nav-danger {
+    color: #ef4444;
+    border-color: #ef4444;
+}
+
+.btn-nav.btn-nav-danger:hover {
+    background: rgba(239, 68, 68, 0.12);
+}
+
+.btn-nav.btn-nav-warn {
+    color: #f97316;
+    border-color: #f97316;
+}
+
+.btn-nav.btn-nav-warn:hover {
+    background: rgba(249, 115, 22, 0.12);
+}
+
+.btn-nav.active {
+    background: rgba(34, 211, 238, 0.18);
+    box-shadow: 0 0 6px rgba(34, 211, 238, 0.3);
+}
+
+.btn-nav-sm {
+    padding: 0.25rem 0.6rem;
+    font-size: 0.72rem;
+    font-weight: 600;
+    background: var(--bg-tertiary);
+    color: #22d3ee;
+    border: 1px solid #22d3ee;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+
+.btn-nav-sm:hover {
+    background: rgba(34, 211, 238, 0.12);
+}
+
+/* Map selector and stats rows */
+.nav-map-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.nav-stats {
+    display: flex;
+    gap: 1.5rem;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    flex-wrap: wrap;
+}
+
+.nav-stats b {
+    color: var(--text-primary);
+    font-family: 'SF Mono', 'Monaco', monospace;
+}

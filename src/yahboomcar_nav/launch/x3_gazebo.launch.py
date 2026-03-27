@@ -134,8 +134,10 @@ def generate_launch_description():
         '/imu_raw@sensor_msgs/msg/Imu[ignition.msgs.IMU',
         # Odometry: Ignition → ROS  (remapped to /odom below)
         '/model/yahboomcar_x3/odometry@nav_msgs/msg/Odometry[ignition.msgs.Odometry',
-        # Camera: Ignition → ROS
+        # Camera RGB: Ignition → ROS
         '/camera/image_raw@sensor_msgs/msg/Image[ignition.msgs.Image',
+        # Camera depth: Ignition → ROS  (32FC1 float image, metres)
+        '/camera/depth_image@sensor_msgs/msg/Image[ignition.msgs.Image',
     ]
 
     ros_gz_bridge = Node(

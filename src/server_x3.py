@@ -25,6 +25,7 @@ import signal
 import threading
 import socket
 import subprocess
+import yaml
 try:
     import torch
     _TORCH_AVAILABLE = True
@@ -65,6 +66,7 @@ from drivers_x3 import (
     Rosmaster, MecanumDrive, YDLidarDriver, AstraCamera, OLEDDisplay, SERIAL_PORT
 )
 from robot_state import RobotState
+from nav2_client import Nav2Client
 
 # =============================================================================
 # CONFIGURATION
@@ -110,6 +112,7 @@ camera = None
 robot_state = None
 model = None
 oled = None
+nav2_client = None    # Nav2Client instance (ROS2/sim modes only)
 _gazebo_proc = None   # subprocess handle when --sim auto-launches Gazebo
 
 detection_enabled = False
@@ -172,11 +175,13 @@ class ROS2Bridge:
         self._node = Node('x3_ws_bridge')
         self._lock = threading.Lock()
         self._points: list[float] = []
-        self._latest_frame = None          # cv2 BGR ndarray from Gazebo camera
+        self._latest_frame = None          # cv2 BGR ndarray from Gazebo RGB camera
+        self._latest_depth = None          # cv2 BGR ndarray from Gazebo depth camera
         self._pose_m = {"x": 0.0, "y": 0.0, "theta": 0.0}  # metres + radians
 
         self._node.create_subscription(LaserScan, '/scan', self._scan_cb, 10)
         self._node.create_subscription(Image, '/camera/image_raw', self._image_cb, 1)
+        self._node.create_subscription(Image, '/camera/depth_image', self._depth_cb, 1)
         self._node.create_subscription(Odometry, '/odom', self._odom_cb, 10)
         self._cmd_vel_pub = self._node.create_publisher(Twist, '/cmd_vel', 10)
 
@@ -197,6 +202,24 @@ class ROS2Bridge:
         """Return latest camera frame as BGR ndarray, or None. Matches AstraCamera API."""
         with self._lock:
             f = self._latest_frame
+        return f.copy() if f is not None else None
+
+    def _depth_cb(self, msg):
+        """Convert 32FC1 depth image (metres) from Fortress to colourised BGR uint8.
+        White = near (0 m), dark blue = far (clipped at 4 m) — matches AstraCamera output."""
+        import numpy as np, cv2
+        arr = np.frombuffer(bytes(msg.data), dtype=np.float32).reshape(msg.height, msg.width)
+        # Clip to sensor range and normalise to 0-255 (near=255 white, far=0 dark)
+        clipped = np.clip(arr, 0.0, 4.0)
+        norm = (255.0 * (1.0 - clipped / 4.0)).astype(np.uint8)
+        coloured = cv2.applyColorMap(norm, cv2.COLORMAP_BONE)
+        with self._lock:
+            self._latest_depth = coloured
+
+    def get_depth_frame(self):
+        """Return latest colourised depth frame as BGR ndarray, or None. Matches AstraCamera API."""
+        with self._lock:
+            f = self._latest_depth
         return f.copy() if f is not None else None
 
     def _odom_cb(self, msg):
@@ -333,6 +356,7 @@ def _launch_gazebo():
 
 def initialize_hardware():
     global ros_board, drive, lidar, camera, robot_state, model, oled, _gazebo_proc
+    global nav2_client
 
     logger.info("="*50)
     logger.info("Initializing Yahboom X3 Hardware")
@@ -345,6 +369,8 @@ def initialize_hardware():
         drive = bridge
         lidar = bridge
         camera = bridge   # bridge provides get_frame() from /camera/image_raw
+        nav2_client = Nav2Client(bridge._node)
+        logger.info("Nav2Client initialized (sim mode)")
     elif ROS2_MODE:
         # ROS2 bridge mode: Mcnamu_driver_X3 owns the serial port.
         # Skip Rosmaster / MecanumDrive / YDLidarDriver — use ROS2Bridge instead.
@@ -353,6 +379,8 @@ def initialize_hardware():
         drive = bridge
         lidar = bridge
         camera = bridge   # bridge provides get_frame() from /camera/image_raw
+        nav2_client = Nav2Client(bridge._node)
+        logger.info("Nav2Client initialized (ros2 mode)")
     else:
         # 1. Motor Controller (Serial) - uses auto-detected SERIAL_PORT
         logger.info(f"Connecting to Rosmaster on {SERIAL_PORT}...")
@@ -399,6 +427,8 @@ def initialize_hardware():
 
 def cleanup():
     logger.info("Cleaning up...")
+    if nav2_client is not None:
+        nav2_client.stop_nav2()
     if (SIM_MODE or ROS2_MODE) and drive is not None:
         drive.cleanup()  # ROS2Bridge.cleanup() shuts down rclpy
     if _gazebo_proc is not None:
@@ -455,11 +485,63 @@ def _apply_tank_as_mecanum():
 # WEBSOCKET HANDLER
 # =============================================================================
 
+def _maps_dir() -> str:
+    """Absolute path to the yahboomcar_nav maps directory."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(here, 'yahboomcar_nav', 'maps')
+
+
+def _list_maps() -> list:
+    """Return list of map YAML filenames available in the maps directory."""
+    d = _maps_dir()
+    if not os.path.isdir(d):
+        return []
+    return [f for f in os.listdir(d) if f.endswith('.yaml')]
+
+
+def _load_map_data(yaml_name: str) -> dict | None:
+    """
+    Read a ROS map YAML + PGM and return a dict suitable for the GUI:
+      {png_b64, meta: {resolution, origin:[x,y], width, height}}
+    Returns None on any error.
+    """
+    import yaml as _yaml
+    d = _maps_dir()
+    yaml_path = os.path.join(d, yaml_name)
+    if not os.path.isfile(yaml_path):
+        return None
+    try:
+        with open(yaml_path) as f:
+            meta = yaml.safe_load(f)
+        pgm_name = meta.get('image', '')
+        if not os.path.isabs(pgm_name):
+            pgm_name = os.path.join(d, pgm_name)
+        img = cv2.imread(pgm_name, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return None
+        # Encode as PNG (lossless) for accurate display
+        _, buf = cv2.imencode('.png', img)
+        png_b64 = base64.b64encode(buf).decode('utf-8')
+        origin = meta.get('origin', [0.0, 0.0, 0.0])
+        return {
+            "png_b64": png_b64,
+            "meta": {
+                "resolution": float(meta.get('resolution', 0.05)),
+                "origin": [float(origin[0]), float(origin[1])],
+                "width":  int(img.shape[1]),
+                "height": int(img.shape[0]),
+            },
+        }
+    except Exception as exc:
+        logger.warning(f"[map] Failed to load {yaml_name}: {exc}")
+        return None
+
+
 async def handle_client(websocket):
     global detection_enabled, depth_enabled, lidar_enabled, is_auto_driving
     global current_left_power, current_right_power
     global model, active_model_name
-    global _gazebo_proc
+    global _gazebo_proc, nav2_client
 
     logger.info("Client connected")
     connected_clients.add(websocket)
@@ -559,7 +641,7 @@ async def handle_client(websocket):
 
                 elif msg_type == "start_auto_drive":
                     is_auto_driving = True
-                    logger.info("Auto-drive started (stub)")
+                    logger.info("Auto-drive started")
 
                 elif msg_type == "stop_auto_drive":
                     is_auto_driving = False
@@ -567,6 +649,67 @@ async def handle_client(websocket):
                     current_right_power = 0.0
                     if drive:
                         drive.move(0.0, 0.0, 0.0)
+                    if nav2_client:
+                        nav2_client.cancel()
+
+                # ── Nav2 messages ──────────────────────────────────────────
+                elif msg_type == "launch_nav2":
+                    if nav2_client:
+                        use_st = data.get("use_sim_time", SIM_MODE)
+                        map_f  = data.get("map")
+                        slam   = data.get("slam", False)
+                        ok = nav2_client.launch_nav2(
+                            use_sim_time=use_st, map_path=map_f, slam=slam)
+                        await websocket.send(json.dumps({
+                            "type": "nav2_launch_result",
+                            "success": ok,
+                            "msg": "Nav2 launching..." if ok else "Nav2 already running or failed",
+                        }))
+                    else:
+                        await websocket.send(json.dumps({
+                            "type": "nav2_launch_result", "success": False,
+                            "msg": "Nav2 requires --ros2 or --sim mode",
+                        }))
+
+                elif msg_type == "stop_nav2":
+                    if nav2_client:
+                        nav2_client.stop_nav2()
+
+                elif msg_type == "set_nav_goal":
+                    if nav2_client:
+                        nav2_client.navigate_to(
+                            float(data.get("x", 0.0)),
+                            float(data.get("y", 0.0)),
+                            float(data.get("theta", 0.0)),
+                        )
+                    else:
+                        logger.warning("set_nav_goal ignored: no Nav2Client")
+
+                elif msg_type == "cancel_nav":
+                    if nav2_client:
+                        nav2_client.cancel()
+
+                elif msg_type == "set_initial_pose":
+                    if nav2_client:
+                        nav2_client.set_initial_pose(
+                            float(data.get("x", 0.0)),
+                            float(data.get("y", 0.0)),
+                            float(data.get("theta", 0.0)),
+                        )
+
+                elif msg_type == "get_maps":
+                    maps = _list_maps()
+                    await websocket.send(json.dumps(
+                        {"type": "map_list", "maps": maps}))
+
+                elif msg_type == "request_map":
+                    map_data = _load_map_data(data.get("map", ""))
+                    if map_data:
+                        await websocket.send(json.dumps(
+                            {"type": "map_data", **map_data}))
+                    else:
+                        await websocket.send(json.dumps(
+                            {"type": "map_data", "error": "Map not found"}))
 
                 elif msg_type == "set_model":
                     model_name = data.get("model")
@@ -728,6 +871,7 @@ async def broadcast_loop():
                 websockets.broadcast(connected_clients, img_bytes)
 
             # 8. Build readout (P10: removed always-None/False fields; P3: no "image" key)
+            nav_status = nav2_client.get_status() if nav2_client else {"state": "UNAVAILABLE"}
             msg = {
                 "type": "readout",
                 "depth_image": depth_str,
@@ -745,7 +889,8 @@ async def broadcast_loop():
                 "right_power": current_right_power,
                 "detection_enabled": detection_enabled,
                 "is_auto_driving": is_auto_driving,
-                "nav_phase": "AUTO" if is_auto_driving else "IDLE",
+                "nav_phase": nav_status["state"],
+                "nav": nav_status,
                 "active_model_name": active_model_name,
                 "fps_camera": fps_camera,
                 "fps_detection": fps_detection,

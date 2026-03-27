@@ -91,6 +91,31 @@
   </gazebo>
 
 
+  <!-- ── Depth Camera (mirrors Orbbec Astra Pro depth: 640x480, 10 Hz) ────
+       type="depth_camera" outputs a 32FC1 float image (metres per pixel).
+       Driven by world-level Sensors system alongside the RGB camera.
+       ros_gz_bridge maps /camera/depth_image → ROS sensor_msgs/Image
+       (encoding 32FC1); ROS2Bridge.get_depth_frame() colormaps it to BGR. -->
+  <gazebo reference="camera_link">
+    <sensor name="depth_camera" type="depth_camera">
+      <always_on>true</always_on>
+      <visualize>false</visualize>
+      <update_rate>10</update_rate>
+      <topic>/camera/depth_image</topic>
+      <camera>
+        <horizontal_fov>1.047</horizontal_fov>
+        <image>
+          <width>640</width>
+          <height>480</height>
+        </image>
+        <clip>
+          <near>0.05</near>
+          <far>4.0</far>
+        </clip>
+      </camera>
+    </sensor>
+  </gazebo>
+
   <!-- ── RGB Camera (mirrors Orbbec Astra Pro: 640x480, 20 Hz) ────────────
        Driven by world-level ignition::gazebo::systems::Sensors (ogre2).
        The <topic> sets the Ignition Transport topic name; ros_gz_bridge
