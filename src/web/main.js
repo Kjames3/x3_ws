@@ -41,7 +41,22 @@ const state = {
     movingDetectionCount: 0,
 
     // Logging
-    logThrottle: 0
+    logThrottle: 0,
+
+    // Server mode (from hello message)
+    serverMode: 'direct',
+
+    // Navigation state
+    nav: {
+        status: 'UNAVAILABLE',
+        goal: null,          // {x, y, theta} in metres (map frame)
+        path: [],            // [[x, y], ...] in metres
+        distRemaining: null,
+        mapMode: 'navigate', // 'navigate' | 'set_pose'
+        mapMeta: null,       // {resolution, origin:[x,y], width, height}
+        mapImage: null,      // HTMLImageElement of the loaded map PNG
+        nav2Running: false,
+    },
 };
 
 const DEFAULT_PORT = 8081;
@@ -176,6 +191,20 @@ const elements = {
     modeBadge: document.getElementById('mode-badge'),
     modeBadgeLabel: document.getElementById('mode-badge-label'),
     launchGazeboBtn: document.getElementById('launch-gazebo-btn'),
+
+    // Navigation panel
+    navMapCanvas:     document.getElementById('nav-map-canvas'),
+    navStatusBadge:   document.getElementById('nav-status-badge'),
+    navHint:          document.getElementById('nav-hint'),
+    launchNav2Btn:    document.getElementById('launch-nav2-btn'),
+    stopNav2Btn:      document.getElementById('stop-nav2-btn'),
+    setPoseBtn:       document.getElementById('set-pose-btn'),
+    cancelNavBtn:     document.getElementById('cancel-nav-btn'),
+    mapSelect:        document.getElementById('map-select'),
+    loadMapBtn:       document.getElementById('load-map-btn'),
+    slamModeCheck:    document.getElementById('slam-mode-check'),
+    navDistRemaining: document.getElementById('nav-dist-remaining'),
+    navGoalDisplay:   document.getElementById('nav-goal-display'),
 };
 
 // =================================================================
@@ -203,6 +232,258 @@ function updateLabelToggleBtn(btn, labelsOn) {
         btn.style.color = '#6b7280';   // grey
         btn.style.borderColor = '#6b7280';
     }
+}
+
+// =================================================================
+// Navigation Panel
+// =================================================================
+
+function initNavPanel() {
+    const canvas = elements.navMapCanvas;
+    if (!canvas) return;
+
+    // Match internal pixel resolution to display size
+    const size = canvas.offsetWidth || 400;
+    canvas.width  = size;
+    canvas.height = size;
+
+    canvas.addEventListener('click', handleNavMapClick);
+
+    if (elements.launchNav2Btn) {
+        elements.launchNav2Btn.addEventListener('click', () => {
+            const slam = elements.slamModeCheck?.checked || false;
+            const mapName = elements.mapSelect?.value || '';
+            sendMessage({ type: 'launch_nav2', use_sim_time: state.serverMode === 'sim',
+                          map: mapName || null, slam });
+            elements.launchNav2Btn.textContent = '⏳ Launching…';
+            elements.launchNav2Btn.disabled = true;
+        });
+    }
+
+    if (elements.stopNav2Btn) {
+        elements.stopNav2Btn.addEventListener('click', () => sendMessage({ type: 'stop_nav2' }));
+    }
+
+    if (elements.setPoseBtn) {
+        elements.setPoseBtn.addEventListener('click', () => {
+            state.nav.mapMode = state.nav.mapMode === 'set_pose' ? 'navigate' : 'set_pose';
+            elements.setPoseBtn.classList.toggle('active', state.nav.mapMode === 'set_pose');
+            updateNavHint();
+        });
+    }
+
+    if (elements.cancelNavBtn) {
+        elements.cancelNavBtn.addEventListener('click', () => sendMessage({ type: 'cancel_nav' }));
+    }
+
+    if (elements.loadMapBtn) {
+        elements.loadMapBtn.addEventListener('click', () => {
+            const name = elements.mapSelect?.value;
+            if (name) sendMessage({ type: 'request_map', map: name });
+        });
+    }
+
+    drawNavMap();
+    updateNavHint();
+}
+
+function updateNavHint() {
+    const hint = elements.navHint;
+    if (!hint) return;
+    if (state.nav.status === 'UNAVAILABLE') {
+        hint.textContent = 'Connect in --ros2 or --sim mode to enable navigation';
+    } else if (state.nav.mapMode === 'set_pose') {
+        hint.textContent = '📌 Click on map to set initial pose for AMCL';
+    } else if (state.nav.mapImage) {
+        hint.textContent = 'Click on map to set navigation goal  |  Shift-click = pose only';
+    } else {
+        hint.textContent = 'Load a map, then click to set a navigation goal';
+    }
+}
+
+/** Convert a canvas pixel (cx, cy) to ROS map-frame world coordinates (metres). */
+function canvasPxToWorld(cx, cy) {
+    const meta = state.nav.mapMeta;
+    const canvas = elements.navMapCanvas;
+    if (!meta || !canvas) return null;
+    const W = canvas.width, H = canvas.height;
+    const mapPxX = cx * (meta.width  / W);
+    const mapPxY = (H - cy) * (meta.height / H); // flip Y: ROS Y+ = up, canvas Y+ = down
+    return {
+        x: meta.origin[0] + mapPxX * meta.resolution,
+        y: meta.origin[1] + mapPxY * meta.resolution,
+    };
+}
+
+/** Convert ROS map-frame world coordinates (metres) to canvas pixels. */
+function worldToCanvasPx(wx, wy) {
+    const meta = state.nav.mapMeta;
+    const canvas = elements.navMapCanvas;
+    if (!meta || !canvas) return null;
+    const W = canvas.width, H = canvas.height;
+    const mapPxX = (wx - meta.origin[0]) / meta.resolution;
+    const mapPxY = (wy - meta.origin[1]) / meta.resolution;
+    return {
+        x:  mapPxX * (W / meta.width),
+        y: H - mapPxY * (H / meta.height),
+    };
+}
+
+function handleNavMapClick(e) {
+    if (state.nav.status === 'UNAVAILABLE') return;
+    const canvas = elements.navMapCanvas;
+    const rect = canvas.getBoundingClientRect();
+    const cx = (e.clientX - rect.left) * (canvas.width  / rect.width);
+    const cy = (e.clientY - rect.top)  * (canvas.height / rect.height);
+
+    if (!state.nav.mapMeta) {
+        if (elements.navHint) elements.navHint.textContent = 'Load a map first to set goals';
+        return;
+    }
+
+    const world = canvasPxToWorld(cx, cy);
+    if (!world) return;
+
+    if (state.nav.mapMode === 'set_pose') {
+        sendMessage({ type: 'set_initial_pose', x: world.x, y: world.y, theta: 0 });
+        console.log(`📌 Initial pose → (${world.x.toFixed(2)}, ${world.y.toFixed(2)})`);
+        state.nav.mapMode = 'navigate';
+        if (elements.setPoseBtn) elements.setPoseBtn.classList.remove('active');
+        updateNavHint();
+    } else {
+        state.nav.goal = { x: world.x, y: world.y, theta: 0 };
+        sendMessage({ type: 'set_nav_goal', x: world.x, y: world.y, theta: 0 });
+        console.log(`🎯 Nav goal → (${world.x.toFixed(2)}, ${world.y.toFixed(2)})`);
+        drawNavMap();
+    }
+}
+
+function drawNavMap() {
+    const canvas = elements.navMapCanvas;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+
+    ctx.clearRect(0, 0, W, H);
+
+    // 1. Map background (image or dark grid)
+    if (state.nav.mapImage) {
+        ctx.drawImage(state.nav.mapImage, 0, 0, W, H);
+    } else {
+        ctx.fillStyle = '#060e1a';
+        ctx.fillRect(0, 0, W, H);
+        ctx.strokeStyle = '#1e3a5f';
+        ctx.lineWidth = 1;
+        const step = W / 10;
+        for (let i = 0; i <= 10; i++) {
+            ctx.beginPath(); ctx.moveTo(i * step, 0); ctx.lineTo(i * step, H); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(0, i * step); ctx.lineTo(W, i * step); ctx.stroke();
+        }
+    }
+
+    // 2. Global path (cyan polyline)
+    const path = state.nav.path;
+    if (path && path.length > 1 && state.nav.mapMeta) {
+        ctx.beginPath();
+        ctx.strokeStyle = '#22d3ee';
+        ctx.lineWidth = 2;
+        const p0 = worldToCanvasPx(path[0][0], path[0][1]);
+        if (p0) {
+            ctx.moveTo(p0.x, p0.y);
+            for (let i = 1; i < path.length; i++) {
+                const p = worldToCanvasPx(path[i][0], path[i][1]);
+                if (p) ctx.lineTo(p.x, p.y);
+            }
+            ctx.stroke();
+        }
+    }
+
+    // 3. Goal marker (red X + circle)
+    if (state.nav.goal && state.nav.mapMeta) {
+        const gp = worldToCanvasPx(state.nav.goal.x, state.nav.goal.y);
+        if (gp) {
+            const r = 8;
+            ctx.strokeStyle = '#ef4444';
+            ctx.lineWidth = 2.5;
+            ctx.beginPath();
+            ctx.moveTo(gp.x - r, gp.y - r); ctx.lineTo(gp.x + r, gp.y + r);
+            ctx.moveTo(gp.x + r, gp.y - r); ctx.lineTo(gp.x - r, gp.y + r);
+            ctx.stroke();
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.arc(gp.x, gp.y, r + 4, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+    }
+
+    // 4. Robot pose (cyan arrow)
+    const rp = state.latestData.robotPose;
+    if (rp && state.nav.mapMeta) {
+        // Pose arrives in cm (from get_pose_cm) — convert to metres for map coords
+        const wx = rp.x / 100.0;
+        const wy = rp.y / 100.0;
+        const rcanvas = worldToCanvasPx(wx, wy);
+        if (rcanvas) {
+            const theta = rp.theta;
+            const len = 14;
+            ctx.save();
+            ctx.translate(rcanvas.x, rcanvas.y);
+            ctx.rotate(-theta); // canvas Y is flipped vs ROS
+            ctx.fillStyle = '#22d3ee';
+            ctx.beginPath();
+            ctx.moveTo(len, 0);
+            ctx.lineTo(-len * 0.5, -len * 0.5);
+            ctx.lineTo(-len * 0.5,  len * 0.5);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+        }
+    }
+}
+
+function updateNavStatus(nav) {
+    if (!nav) return;
+    state.nav.status       = nav.state || 'UNAVAILABLE';
+    state.nav.path         = nav.path  || [];
+    state.nav.distRemaining = nav.dist;
+    if (nav.nav2_running !== undefined) state.nav.nav2Running = nav.nav2_running;
+    if (nav.goal) state.nav.goal = nav.goal;
+
+    // Badge
+    const badge = elements.navStatusBadge;
+    if (badge) {
+        badge.textContent = state.nav.status;
+        badge.className   = 'nav-badge ' + state.nav.status.toLowerCase();
+    }
+
+    // Stats
+    if (elements.navDistRemaining) {
+        elements.navDistRemaining.textContent =
+            state.nav.distRemaining != null ? state.nav.distRemaining.toFixed(2) : '—';
+    }
+    if (elements.navGoalDisplay) {
+        elements.navGoalDisplay.textContent = state.nav.goal
+            ? `(${state.nav.goal.x.toFixed(2)}, ${state.nav.goal.y.toFixed(2)})`
+            : '—';
+    }
+
+    // Launch / Stop button visibility
+    if (elements.launchNav2Btn) {
+        elements.launchNav2Btn.style.display = state.nav.nav2Running ? 'none' : 'inline-block';
+        elements.launchNav2Btn.textContent = '🚀 Launch Nav2';
+        elements.launchNav2Btn.disabled = false;
+    }
+    if (elements.stopNav2Btn) {
+        elements.stopNav2Btn.style.display = state.nav.nav2Running ? 'inline-block' : 'none';
+    }
+
+    // 3D nav phase display
+    if (elements.navPhaseDisplay) {
+        elements.navPhaseDisplay.textContent = state.nav.status;
+    }
+
+    drawNavMap();
+    updateNavHint();
 }
 
 // =================================================================
@@ -262,6 +543,9 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // Init Navigation Panel
+    initNavPanel();
+
     // Init Visuals
     updateVisuals(0, elements.leftFill, elements.leftThumb);
     updateVisuals(0, elements.rightFill, elements.rightThumb);
@@ -285,6 +569,13 @@ function renderLoop(timestamp) {
         if (state.lidarEnabled && state.needsLidarUpdate) {
             drawLidar(state.latestData.lidarPoints);
             state.needsLidarUpdate = false;
+        }
+
+        // 4. Redraw nav map at ~10 FPS (robot pose updates continuously)
+        if (state.nav.mapImage && state.latestData.robotPose &&
+            timestamp - (state.nav._lastDrawTime || 0) > 100) {
+            drawNavMap();
+            state.nav._lastDrawTime = timestamp;
         }
     }
 
@@ -426,6 +717,13 @@ function handleMessage(data) {
         const gazeboBtn = elements.launchGazeboBtn;
         if (!badge || !label) return;
 
+        state.serverMode = mode;
+
+        // Request map list when connected in a nav-capable mode
+        if (mode === 'ros2' || mode === 'sim') {
+            sendMessage({ type: 'get_maps' });
+        }
+
         const styles = {
             sim:    { text: 'SIM',    bg: '#92400e', color: '#fde68a', border: '#f59e0b' },
             ros2:   { text: 'ROS2',   bg: '#1e3a5f', color: '#93c5fd', border: '#3b82f6' },
@@ -454,6 +752,52 @@ function handleMessage(data) {
         } else {
             alert(`Gazebo: ${data.msg}`);
         }
+        return;
+    }
+
+    if (data.type === "nav2_launch_result") {
+        if (!data.success) {
+            alert(`Nav2: ${data.msg}`);
+            // Restore button on failure
+            if (elements.launchNav2Btn) {
+                elements.launchNav2Btn.textContent = '🚀 Launch Nav2';
+                elements.launchNav2Btn.disabled = false;
+            }
+        }
+        return;
+    }
+
+    if (data.type === "map_list") {
+        const sel = elements.mapSelect;
+        if (sel && data.maps) {
+            sel.innerHTML = '<option value="">-- select map --</option>';
+            data.maps.forEach(name => {
+                const opt = document.createElement('option');
+                opt.value = name;
+                opt.textContent = name;
+                sel.appendChild(opt);
+            });
+        }
+        return;
+    }
+
+    if (data.type === "map_data") {
+        if (data.error) {
+            console.warn(`[nav] Map load error: ${data.error}`);
+            return;
+        }
+        // Store metadata
+        state.nav.mapMeta = data.meta;
+        // Decode base64 PNG into an HTMLImageElement
+        const img = new Image();
+        img.onload = () => {
+            state.nav.mapImage = img;
+            drawNavMap();
+            updateNavHint();
+            console.log(`[nav] Map loaded: ${data.meta.width}×${data.meta.height}px, ` +
+                        `res=${data.meta.resolution}m, origin=${data.meta.origin}`);
+        };
+        img.src = 'data:image/png;base64,' + data.png_b64;
         return;
     }
 
@@ -488,6 +832,9 @@ function handleMessage(data) {
         state.latestData.navPhase = data.nav_phase;
         state.latestData.autoDriveStart = data.auto_drive_start;
         state.latestData.power = data.power; // Power stats from INA219
+
+        // Update navigation panel status
+        if (data.nav) updateNavStatus(data.nav);
 
         state.needs3DUpdate = true;
 

@@ -416,6 +416,58 @@
             </div>
         </div>
 
+        <!-- Navigation Card -->
+        <div class="card nav-card" id="nav-card" style="margin-top: 0.5rem;">
+            <div class="card-header">
+                <h2><span class="icon">🧭</span> Navigation</h2>
+                <span id="nav-status-badge" class="nav-badge unavailable">UNAVAILABLE</span>
+            </div>
+            <div class="card-body">
+                <!-- Map canvas + overlay container -->
+                <div style="position: relative; width: 100%;">
+                    <canvas id="nav-map-canvas" class="nav-canvas"></canvas>
+                    <div id="nav-hint" class="nav-hint">Connect in --ros2 or --sim mode to enable navigation</div>
+                </div>
+
+                <!-- Control button row -->
+                <div class="nav-controls" style="margin-top: 0.6rem;">
+                    <button id="launch-nav2-btn" class="btn-nav">🚀 Launch Nav2</button>
+                    <button id="stop-nav2-btn"   class="btn-nav btn-nav-danger" style="display:none;">⏹ Stop Nav2</button>
+                    <button id="set-pose-btn"    class="btn-nav">📌 Set Initial Pose</button>
+                    <button id="cancel-nav-btn"  class="btn-nav btn-nav-warn">✖ Cancel Nav</button>
+                </div>
+
+                <!-- Map selector row -->
+                <div class="nav-map-row" style="margin-top: 0.5rem;">
+                    <label style="font-size:0.8rem; color:var(--text-secondary);">Map:</label>
+                    <select id="map-select" class="btn"
+                        style="padding:0.25rem 0.5rem; font-size:0.75rem; background:var(--bg-tertiary);
+                               color:var(--text-primary); border:1px solid var(--border-color); outline:none; flex:1;">
+                        <option value="">-- select map --</option>
+                    </select>
+                    <button id="load-map-btn" class="btn-nav-sm">Load</button>
+                    <label style="display:flex; align-items:center; gap:0.3rem; font-size:0.75rem; color:var(--text-secondary); cursor:pointer;">
+                        <input type="checkbox" id="slam-mode-check">
+                        SLAM Mode
+                    </label>
+                </div>
+
+                <!-- Stats row -->
+                <div class="nav-stats" style="margin-top: 0.4rem;">
+                    <span>Dist remaining: <b id="nav-dist-remaining">—</b> m</span>
+                    <span>Goal: <b id="nav-goal-display">—</b></span>
+                </div>
+
+                <!-- Legend -->
+                <div style="display:flex; gap:1rem; margin-top:0.4rem; font-size:0.7rem; color:var(--text-muted);">
+                    <span style="color:#22d3ee;">— Path</span>
+                    <span style="color:#22d3ee;">▶ Robot</span>
+                    <span style="color:#ef4444;">✕ Goal</span>
+                    <span style="color:#f59e0b;">◎ Initial Pose</span>
+                </div>
+            </div>
+        </div>
+
         <!-- Bottom Row: Lidar and 3D View side by side -->
         <div class="controls-row" style="margin-top: 1rem;">
             <!-- Lidar -->
