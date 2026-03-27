@@ -465,6 +465,20 @@
                     <span style="color:#ef4444;">✕ Goal</span>
                     <span style="color:#f59e0b;">◎ Initial Pose</span>
                 </div>
+
+                <!-- Mapping section divider -->
+                <div style="margin: 0.75rem 0 0.4rem; font-size: 0.7rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; border-top: 1px solid var(--border-color); padding-top: 0.5rem;">
+                    Mapping (SLAM Toolbox)
+                </div>
+                <div class="nav-controls">
+                    <button id="start-slam-btn" class="btn-nav">🗺 Start SLAM</button>
+                    <button id="stop-slam-btn"  class="btn-nav btn-nav-danger" style="display:none;">⏹ Stop SLAM</button>
+                </div>
+                <div class="nav-map-row" style="margin-top: 0.4rem;">
+                    <input id="map-name-input" class="nav-map-input" placeholder="map name…">
+                    <button id="save-map-btn" class="btn-nav-sm">💾 Save Map</button>
+                </div>
+                <div id="slam-status-text" class="nav-hint" style="margin-top: 0.3rem;"></div>
             </div>
         </div>
 

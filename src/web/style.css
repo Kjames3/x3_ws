@@ -1156,6 +1156,22 @@ body {
     flex-wrap: wrap;
 }
 
+.nav-map-input {
+    flex: 1;
+    min-width: 0;
+    padding: 0.25rem 0.5rem;
+    font-size: 0.75rem;
+    background: var(--bg-input, rgba(255,255,255,0.06));
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-primary);
+    outline: none;
+}
+
+.nav-map-input:focus {
+    border-color: var(--accent-cyan, #22d3ee);
+}
+
 .nav-stats {
     display: flex;
     gap: 1.5rem;

@@ -46,6 +46,9 @@ const state = {
     // Server mode (from hello message)
     serverMode: 'direct',
 
+    // SLAM state
+    slamActive: false,
+
     // Navigation state
     nav: {
         status: 'UNAVAILABLE',
@@ -205,6 +208,12 @@ const elements = {
     slamModeCheck:    document.getElementById('slam-mode-check'),
     navDistRemaining: document.getElementById('nav-dist-remaining'),
     navGoalDisplay:   document.getElementById('nav-goal-display'),
+    // SLAM controls
+    startSlamBtn:     document.getElementById('start-slam-btn'),
+    stopSlamBtn:      document.getElementById('stop-slam-btn'),
+    saveMapBtn:       document.getElementById('save-map-btn'),
+    mapNameInput:     document.getElementById('map-name-input'),
+    slamStatusText:   document.getElementById('slam-status-text'),
 };
 
 // =================================================================
@@ -486,6 +495,34 @@ function updateNavStatus(nav) {
     updateNavHint();
 }
 
+// -----------------------------------------------------------------
+// SLAM Controls
+// -----------------------------------------------------------------
+
+function initSlamControls() {
+    const { startSlamBtn, stopSlamBtn, saveMapBtn, mapNameInput } = elements;
+    if (!startSlamBtn) return;
+
+    startSlamBtn.addEventListener('click', () => sendMessage({ type: 'start_slam' }));
+    stopSlamBtn.addEventListener('click',  () => sendMessage({ type: 'stop_slam' }));
+    saveMapBtn.addEventListener('click', () => {
+        const name = (mapNameInput?.value || '').trim() || 'slam_map';
+        sendMessage({ type: 'save_map', name });
+    });
+}
+
+function updateSlamStatus(active) {
+    state.slamActive = active;
+    const { startSlamBtn, stopSlamBtn, slamStatusText } = elements;
+    if (startSlamBtn) startSlamBtn.style.display = active ? 'none'         : 'inline-block';
+    if (stopSlamBtn)  stopSlamBtn.style.display  = active ? 'inline-block' : 'none';
+    if (slamStatusText) {
+        slamStatusText.textContent = active
+            ? 'SLAM mapping active — drive the robot to build the map'
+            : '';
+    }
+}
+
 // =================================================================
 // Initialization
 // =================================================================
@@ -545,6 +582,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Init Navigation Panel
     initNavPanel();
+
+    // Init SLAM Controls
+    initSlamControls();
 
     // Init Visuals
     updateVisuals(0, elements.leftFill, elements.leftThumb);
@@ -767,6 +807,17 @@ function handleMessage(data) {
         return;
     }
 
+    if (data.type === "save_map_result") {
+        const { slamStatusText } = elements;
+        if (data.success) {
+            if (slamStatusText) slamStatusText.textContent = `Map "${data.name}" saved ✓`;
+        } else {
+            if (slamStatusText) slamStatusText.textContent = `Save failed: ${data.message}`;
+            console.warn(`[slam] Save map failed: ${data.message}`);
+        }
+        return;
+    }
+
     if (data.type === "map_list") {
         const sel = elements.mapSelect;
         if (sel && data.maps) {
@@ -835,6 +886,7 @@ function handleMessage(data) {
 
         // Update navigation panel status
         if (data.nav) updateNavStatus(data.nav);
+        if (data.slam_active !== undefined) updateSlamStatus(data.slam_active);
 
         state.needs3DUpdate = true;
 
