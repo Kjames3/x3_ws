@@ -251,3 +251,83 @@ ros2 run rviz2 rviz2
 ros2 service call /slam_toolbox/save_map slam_toolbox/srv/SaveMap \
   "{name: {data: 'my_map'}}"
 ```
+
+---
+
+## SLAM Toolbox Mapping Workflow
+
+The X3 uses [SLAM Toolbox](https://github.com/SteveMacenski/slam_toolbox) for real-time lidar-based
+mapping. The resulting map can be saved and immediately used for autonomous navigation with Nav2.
+
+### Via the GUI (recommended)
+
+1. Launch the server in the appropriate mode:
+   ```bash
+   # Simulation
+   python3 src/server_x3.py --sim
+
+   # Physical robot
+   python3 src/server_x3.py --ros2
+   ```
+2. In the Navigation card, click **Start SLAM**. The status text will confirm mapping is active.
+3. Drive the robot around (use the joystick or WASD keys) to build the map.
+4. When coverage is complete, type a name in the map name field and click **Save Map**.
+5. The new map will appear in the **Map** dropdown in the Navigation card.
+6. To use the map for autonomous navigation: select it, click **Launch Nav2**, then set an
+   initial pose and click a goal on the map canvas.
+7. Click **Stop SLAM** when done mapping (frees CPU for navigation).
+
+### Via the CLI
+
+```bash
+# Terminal 1 — Gazebo (sim only)
+ros2 launch yahboomcar_nav x3_gazebo.launch.py
+
+# Terminal 2 — SLAM Toolbox (sim)
+ros2 launch yahboomcar_nav x3_slam_sim.launch.py
+
+# Terminal 2 — SLAM Toolbox (physical robot)
+ros2 launch yahboomcar_nav x3_slam.launch.py
+
+# Save the finished map
+ros2 service call /slam_toolbox/save_map slam_toolbox/srv/SaveMap \
+  '{name: {data: "/home/kamren/x3_ws/src/yahboomcar_nav/maps/mymap"}}'
+```
+
+Maps are saved as `<name>.pgm` + `<name>.yaml` pairs in
+`src/yahboomcar_nav/maps/` and are automatically discovered by the server.
+
+---
+
+## Future Roadmap
+
+### Trajectory Smoother: SavitzkyGolay → ConstrainedSmoother
+
+The current smoother (`SavitzkyGolayFilterSmoother`) post-processes the global path with a
+fixed-window polynomial filter. It produces smooth trajectories but has no awareness of the
+costmap, so it can occasionally clip corners near obstacles.
+
+The planned upgrade is to **`ConstrainedSmootherServer`**, which optimises path curvature as a
+constrained minimisation problem against the costmap. Benefits:
+
+- Paths respect robot footprint and inflation layer throughout
+- Better clearance in narrow corridors
+- Tunable cost weights (path length vs curvature vs clearance)
+
+Configuration location: `src/yahboomcar_nav/params/nav2_params_x3.yaml` — `smoother_server` block.
+
+### Mapping: SLAM Toolbox → RTAB-Map
+
+The current pipeline uses SLAM Toolbox (lidar-only 2D occupancy mapping). The planned upgrade is
+**RTAB-Map**, which fuses the Orbbec Astra Pro depth camera with the YDLidar. Benefits:
+
+- **Visual loop closure** — camera-based place recognition is far more distinctive than
+  lidar scan-shape matching, drastically reducing drift over large areas or after long loops.
+- **Optional 3D reconstruction** — point cloud / OctoMap alongside the 2D occupancy grid for
+  richer environment understanding.
+- **Improved re-localisation** — RTAB-Map's appearance-based memory is more robust when
+  returning to previously-visited areas after a long absence.
+
+Infrastructure already present in the repository:
+- `navigation_rtabmap_launch.py`
+- `rtabmap_nav_params.yaml`
