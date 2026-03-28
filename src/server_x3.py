@@ -198,6 +198,7 @@ class ROS2Bridge:
         self._latest_frame = None          # cv2 BGR ndarray from Gazebo RGB camera
         self._latest_depth = None          # cv2 BGR ndarray from Gazebo depth camera
         self._pose_m = {"x": 0.0, "y": 0.0, "theta": 0.0}  # metres + radians
+        self._twist = {"vx": 0.0, "vy": 0.0, "wz": 0.0}   # body velocity m/s, rad/s
         self._voltage = 12.0               # volts, updated by /voltage subscriber
         self._occupancy_grid: dict | None = None  # latest OccupancyGrid info dict for frontier explorer
 
@@ -247,7 +248,7 @@ class ROS2Bridge:
         return f.copy() if f is not None else None
 
     def _odom_cb(self, msg):
-        """Extract position (metres) and yaw (radians) from nav_msgs/Odometry."""
+        """Extract position (metres), yaw (radians), and body twist from nav_msgs/Odometry."""
         import math
         p = msg.pose.pose.position
         q = msg.pose.pose.orientation
@@ -255,6 +256,27 @@ class ROS2Bridge:
                          1.0 - 2.0 * (q.y * q.y + q.z * q.z))
         with self._lock:
             self._pose_m = {"x": p.x, "y": p.y, "theta": yaw}
+            self._twist = {
+                "vx": msg.twist.twist.linear.x,
+                "vy": msg.twist.twist.linear.y,
+                "wz": msg.twist.twist.angular.z,
+            }
+
+    def get_wheel_velocities(self) -> tuple:
+        """Decompose body twist into per-wheel linear velocities (m/s) via mecanum kinematics.
+
+        Wheel order: FL, FR, RL, RR.
+        L = lx + ly ≈ 0.20 m for the Yahboom X3 (half-track + half-wheelbase).
+        """
+        L = 0.20
+        with self._lock:
+            t = dict(self._twist)
+        vx, vy, wz = t["vx"], t["vy"], t["wz"]
+        fl = vx - vy - L * wz
+        fr = vx + vy + L * wz
+        rl = vx + vy - L * wz
+        rr = vx - vy + L * wz
+        return fl, fr, rl, rr
 
     def get_pose_cm(self) -> dict:
         """Return pose with x/y in cm and theta in radians."""
@@ -1134,7 +1156,8 @@ async def broadcast_loop():
             # 7. Encoders + battery
             if drive is not None and (ROS2_MODE or SIM_MODE) and hasattr(drive, 'get_battery_voltage'):
                 # Voltage comes from the /voltage topic published by Mcnamu_driver_X3
-                m1_enc = m2_enc = m3_enc = m4_enc = 0
+                # Per-wheel velocities (m/s) derived from /odom twist via mecanum kinematics
+                m1_enc, m2_enc, m3_enc, m4_enc = drive.get_wheel_velocities()
                 batt_v = drive.get_battery_voltage()
             elif ros_board:
                 m1_enc, m2_enc, m3_enc, m4_enc = ros_board.get_motor_encoder()
