@@ -72,13 +72,20 @@ from nav2_client import Nav2Client
 # CONFIGURATION
 # =============================================================================
 parser = argparse.ArgumentParser(description='Yahboom X3 Control Server')
-parser.add_argument('--sim', action='store_true', help='Run in simulation mode')
+parser.add_argument('--sim', action='store_true', help='Run in simulation mode (laptop, Gazebo on demand)')
 parser.add_argument('--ros2', action='store_true',
-                    help='ROS2 bridge mode: skip serial hardware (lidar+motors), '
-                         'read /scan and publish /cmd_vel via rclpy instead')
+                    help='ROS2 bridge mode: subscribe /scan and /cmd_vel via rclpy. '
+                         'Works with local hardware bringup OR remote Gazebo on the laptop.')
+parser.add_argument('--domain-id', type=int, default=None, dest='domain_id',
+                    help='ROS_DOMAIN_ID for multi-machine ROS2 (must match laptop). '
+                         'Overrides the ROS_DOMAIN_ID environment variable.')
 args = parser.parse_args()
 SIM_MODE   = args.sim
 ROS2_MODE  = args.ros2
+
+# Apply ROS_DOMAIN_ID early — must be set before rclpy.init() inside ROS2Bridge
+if args.domain_id is not None:
+    os.environ['ROS_DOMAIN_ID'] = str(args.domain_id)
 
 # Hardware Ports
 # SERIAL_PORT auto-detected in drivers_x3 (/dev/ttyCH341USB0 or /dev/ttyUSB0)
@@ -511,11 +518,12 @@ def initialize_hardware():
         nav2_client = Nav2Client(bridge._node)
         logger.info("Nav2Client initialized (sim mode) — click 🚀 Gazebo in GUI to start simulation")
     elif ROS2_MODE:
-        # ROS2 bridge mode: auto-launch hardware stack (Mcnamu_driver, EKF, lidar).
+        # ROS2 bridge mode: subscribe to /scan, /odom, publish /cmd_vel.
+        # Topics can come from either:
+        #   a) Local hardware stack  (scripts/jetson_bringup.sh on this machine)
+        #   b) Remote Gazebo on laptop (scripts/laptop_sim.sh + matching ROS_DOMAIN_ID)
         # Camera stays as direct USB (AstraCamera) — falls through to init below.
-        logger.info("ROS2 mode: launching hardware stack, using ROS2Bridge")
-        _ros2_stack_proc = _launch_ros2_stack()
-        import time as _time; _time.sleep(3.0)   # give nodes time to start before subscribing
+        logger.info("ROS2 mode: creating bridge — waiting for topics (hardware or remote Gazebo)")
         bridge = ROS2Bridge()
         drive = bridge
         lidar = bridge

@@ -7,24 +7,25 @@ WebSocket-based control server and ROS2 navigation stack for the **Yahboom X3 me
 ## Architecture
 
 ```
-Browser GUI (web/)
-      │  WebSocket (port 8765)
-      ▼
-server_x3.py  ──── direct serial ──► Rosmaster (motors) + YDLidar
-              └─── --ros2 flag  ──► /cmd_vel topic  (ROS2 bridge)
-                                    /scan   topic   (ROS2 bridge)
-                                         ▲
-                              ros2_bringup launch
-                           (Mcnamu_driver + base_node + EKF + lidar)
+Laptop browser ──── WebSocket (port 8081) ────► server_x3.py  (Jetson)
+                                                      │
+                                         ┌────────────┴────────────┐
+                                  direct serial            ROS2 DDS (--ros2)
+                                         │                         │
+                               Rosmaster + YDLidar        /cmd_vel  /scan  /odom
+                                                                    │
+                                                 ┌──────────────────┴──────────────────┐
+                                           Jetson (physical)               Laptop (sim)
+                                           x3_bringup.launch.py            x3_gazebo.launch.py
+                                           (Mcnamu_driver + EKF + lidar)   (Ignition Fortress)
 ```
 
-Two run modes:
-
-| Mode | Flag | When to use |
-|------|------|-------------|
-| **Direct hardware** | *(none)* | Standalone operation, no ROS2 stack |
-| **ROS2 bridge** | `--ros2` | Nav2 / SLAM running; server talks over topics |
-| **Simulation** | `--sim` | No hardware present (dev/testing) |
+| Mode | Flag | Runs on | ROS2 topics come from |
+|------|------|---------|----------------------|
+| **Direct hardware** | *(none)* | Jetson | — (direct serial) |
+| **Physical robot** | `--ros2` | Jetson | `jetson_bringup.sh` (local) |
+| **Cross-machine sim** | `--ros2 --domain-id N` | Jetson | `laptop_sim.sh` on laptop |
+| **Laptop-only sim** | `--sim` | Laptop | Gazebo (via 🚀 button) |
 
 ---
 
@@ -90,53 +91,74 @@ source install/setup.bash
 
 ## Running
 
+The server **always runs on the Jetson** (robot). The browser connects from your laptop.
+Gazebo simulation also runs on the laptop — both machines communicate via ROS2 DDS over the LAN.
+
 ### Option A — Direct hardware mode (no ROS2 stack)
 
+Fastest mode: server talks directly to the Rosmaster serial board and YDLidar.
+
 ```bash
+# Jetson
 cd ~/x3_ws/src
 python3 server_x3.py
 ```
 
-Open `http://<robot-ip>:8765` in your browser (or serve `src/web/` via any HTTP server).
+Open `http://<jetson-ip>:8081` in your browser.
 
-### Option B — ROS2 bridge mode (SLAM / Nav2)
+### Option B — Physical robot with ROS2 stack (SLAM / Nav2)
 
-**Terminal 1** — start the ROS2 hardware + SLAM stack:
+Full ROS2 stack for SLAM, EKF odometry, and Nav2 autonomous navigation.
+
 ```bash
-source /opt/ros/humble/setup.bash
-source ~/x3_ws/install/setup.bash
-ros2 launch yahboomcar_nav x3_slam.launch.py
-```
+# Jetson — Terminal 1: hardware drivers + EKF + lidar
+bash ~/x3_ws/scripts/jetson_bringup.sh
 
-**Terminal 2** — start the server in ROS2 bridge mode:
-```bash
-source /opt/ros/humble/setup.bash
-source ~/x3_ws/install/setup.bash
+# Jetson — Terminal 2: server
 cd ~/x3_ws/src
-python3 server_x3.py --ros2
+python3 server_x3.py --ros2 --domain-id 42
 ```
 
-### Option C — Simulation / Gazebo
+Open `http://<jetson-ip>:8081`. Use the GUI **Start SLAM** button to begin mapping.
 
-The `--ros2` flag is inherently Gazebo-compatible. Gazebo publishes to the same `/scan` and `/cmd_vel` topics, so:
+### Option C — Cross-machine simulation (Gazebo on laptop, server on Jetson)
+
+Gazebo runs on your laptop and publishes the same ROS2 topics that the physical robot
+hardware would. The server on the Jetson receives them transparently via DDS — the GUI
+experience is identical to Option B.
+
+**Requirements:**
+- Both machines on the same LAN (UDP multicast must not be blocked)
+- Same `ROS_DOMAIN_ID` on both machines (the scripts default to `42`)
+- ROS2 Humble and this workspace built on the laptop (`bash scripts/build_ros2.sh`)
+- Ignition Fortress on the laptop: `sudo apt install ros-humble-ros-gz`
 
 ```bash
-# Terminal 1 — Gazebo with robot spawned
-ros2 launch yahboomcar_nav x3_slam.launch.py use_sim_time:=true
+# Laptop — Gazebo simulation
+bash ~/x3_ws/scripts/laptop_sim.sh
 
-# Terminal 2 — server in ROS2 bridge mode
-python3 server_x3.py --ros2
+# Jetson — server (same domain ID)
+cd ~/x3_ws/src
+python3 server_x3.py --ros2 --domain-id 42
 ```
 
-Motor commands and lidar data will be reflected in the GUI in real time.
+Open `http://<jetson-ip>:8081`. The GUI connects to the Jetson server; the Jetson's
+ROS2Bridge receives topics from Gazebo on the laptop via DDS discovery.
 
-### Simulation without any hardware (dev mode)
+> **Tip:** Both scripts accept an optional domain ID argument:
+> `bash scripts/laptop_sim.sh 7`  /  `python3 server_x3.py --ros2 --domain-id 7`
+> They must match. Any integer 0–101 works; avoid 0 on a busy network.
+
+### Option D — Laptop-only simulation (dev mode, no Jetson needed)
+
+Run everything on the laptop — useful for pure GUI / logic development without any robot.
 
 ```bash
+# Laptop
+cd ~/x3_ws/src
 python3 server_x3.py --sim
+# Then click 🚀 Gazebo in the browser header to launch Gazebo
 ```
-
-No serial port or camera needed. Returns dummy data so the GUI layout and logic can be tested.
 
 ---
 
