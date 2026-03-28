@@ -113,8 +113,9 @@ robot_state = None
 model = None
 oled = None
 nav2_client = None    # Nav2Client instance (ROS2/sim modes only)
-_gazebo_proc = None   # subprocess handle when --sim auto-launches Gazebo
-_slam_proc   = None   # subprocess handle when SLAM Toolbox is running
+_gazebo_proc    = None   # subprocess handle when --sim auto-launches Gazebo
+_ros2_stack_proc = None  # subprocess handle when --ros2 auto-launches x3_bringup
+_slam_proc      = None   # subprocess handle when SLAM Toolbox is running
 
 detection_enabled = False
 depth_enabled = False
@@ -162,8 +163,8 @@ class ROS2Bridge:
       linear  max = 0.5 m/s  (Rosmaster ±1.0 → ±0.5 m/s)
       angular max = 2.0 rad/s (Rosmaster ±5.0  → GUI scale)
     """
-    LINEAR_SCALE  = 0.5   # Rosmaster 1.0 → 0.5 m/s
-    ANGULAR_SCALE = 2.0   # Rosmaster 5.0 → 2.0 rad/s  (tune if needed)
+    LINEAR_SCALE  = 1.0   # pass-through: matches MecanumDrive.move() direct-mode behaviour
+    ANGULAR_SCALE = 1.0   # Mcnamu_driver_X3 applies no additional scaling
 
     def __init__(self):
         import rclpy
@@ -355,6 +356,46 @@ def _launch_gazebo():
     return proc
 
 
+def _launch_ros2_stack():
+    """Auto-launch the X3 hardware bringup (drivers + EKF, no SLAM) as a subprocess.
+
+    Mirrors _launch_gazebo() — strips conda from PATH, sources ROS2 + workspace,
+    then starts x3_bringup.launch.py.  SLAM is started separately via the GUI.
+    Returns the Popen handle so cleanup() can SIGTERM the process group.
+    """
+    ws_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    install_setup = os.path.join(ws_root, 'install', 'setup.bash')
+
+    child_env = os.environ.copy()
+    # Strip conda dirs — they inject Python 3.13 which breaks rclpy C extensions
+    child_env['PATH'] = ':'.join(
+        p for p in child_env.get('PATH', '').split(':')
+        if 'conda' not in p.lower()
+    )
+    if 'PYTHONPATH' in child_env:
+        child_env['PYTHONPATH'] = ':'.join(
+            p for p in child_env['PYTHONPATH'].split(':')
+            if 'conda' not in p.lower()
+        )
+
+    cmd = (
+        f'source /opt/ros/humble/setup.bash && '
+        f'source {install_setup} && '
+        f'ros2 launch yahboomcar_nav x3_bringup.launch.py'
+    )
+    log_path = '/tmp/ros2_bringup.log'
+    log_file = open(log_path, 'w')
+    proc = subprocess.Popen(
+        ['bash', '-c', cmd],
+        stdout=log_file,
+        stderr=log_file,
+        preexec_fn=os.setsid,
+        env=child_env,
+    )
+    logger.info(f"ROS2 bringup launched (pid {proc.pid}) — log: {log_path}")
+    return proc
+
+
 def _launch_slam(use_sim_time: bool = False):
     """Start SLAM Toolbox as a background subprocess.
 
@@ -370,7 +411,11 @@ def _launch_slam(use_sim_time: bool = False):
     ws_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     install_setup = os.path.join(ws_root, 'install', 'setup.bash')
 
-    launch_file = 'x3_slam_sim.launch.py' if use_sim_time else 'x3_slam.launch.py'
+    # Both sim and physical use x3_slam_sim.launch.py (slam_toolbox only).
+    # In --ros2 mode the hardware stack is already running via _launch_ros2_stack().
+    # In --sim mode Gazebo already provides all sensor topics.
+    st_arg = 'use_sim_time:=true' if use_sim_time else 'use_sim_time:=false'
+    launch_file = f'x3_slam_sim.launch.py {st_arg}'
 
     child_env = os.environ.copy()
     child_env.setdefault('DISPLAY', ':0')
@@ -456,19 +501,21 @@ def initialize_hardware():
     logger.info("="*50)
 
     if SIM_MODE:
-        # Gazebo simulation: auto-launch Gazebo then bridge to its topics.
-        _gazebo_proc = _launch_gazebo()
+        # Simulation mode: create the ROS2Bridge now so topics are ready to receive
+        # data as soon as Gazebo starts.  Gazebo itself is launched on-demand when
+        # the user clicks "🚀 Gazebo" in the GUI (launch_gazebo WS message).
         bridge = ROS2Bridge()
         drive = bridge
         lidar = bridge
         camera = bridge   # bridge provides get_frame() from /camera/image_raw
         nav2_client = Nav2Client(bridge._node)
-        logger.info("Nav2Client initialized (sim mode)")
+        logger.info("Nav2Client initialized (sim mode) — click 🚀 Gazebo in GUI to start simulation")
     elif ROS2_MODE:
-        # ROS2 bridge mode: Mcnamu_driver_X3 owns the serial port.
-        # Skip Rosmaster / MecanumDrive / YDLidarDriver — use ROS2Bridge instead.
-        # Camera is direct USB (AstraCamera) — no camera ROS2 node runs in x3_slam.launch.py.
-        logger.info("ROS2 mode: skipping serial hardware, using ROS2Bridge")
+        # ROS2 bridge mode: auto-launch hardware stack (Mcnamu_driver, EKF, lidar).
+        # Camera stays as direct USB (AstraCamera) — falls through to init below.
+        logger.info("ROS2 mode: launching hardware stack, using ROS2Bridge")
+        _ros2_stack_proc = _launch_ros2_stack()
+        import time as _time; _time.sleep(3.0)   # give nodes time to start before subscribing
         bridge = ROS2Bridge()
         drive = bridge
         lidar = bridge
@@ -530,6 +577,12 @@ def cleanup():
         logger.info("Shutting down Gazebo...")
         try:
             os.killpg(os.getpgid(_gazebo_proc.pid), signal.SIGTERM)
+        except Exception:
+            pass
+    if _ros2_stack_proc is not None:
+        logger.info("Shutting down ROS2 hardware stack...")
+        try:
+            os.killpg(os.getpgid(_ros2_stack_proc.pid), signal.SIGTERM)
         except Exception:
             pass
     if _slam_proc is not None:
