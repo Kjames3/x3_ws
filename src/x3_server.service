@@ -25,7 +25,7 @@ ExecStart=/usr/bin/python3 /home/jetson/x3_ws/src/server_x3.py $SERVER_ARGS
 #
 # Apply with:  sudo systemctl daemon-reload && sudo systemctl restart x3_server
 
-Environment=SERVER_ARGS=
+Environment=SERVER_ARGS=--ros2 --domain-id 42
 # ──────────────────────────────────────────────────────────────────────────────
 
 Restart=on-failure
