@@ -467,11 +467,12 @@ def initialize_hardware():
     elif ROS2_MODE:
         # ROS2 bridge mode: Mcnamu_driver_X3 owns the serial port.
         # Skip Rosmaster / MecanumDrive / YDLidarDriver — use ROS2Bridge instead.
+        # Camera is direct USB (AstraCamera) — no camera ROS2 node runs in x3_slam.launch.py.
         logger.info("ROS2 mode: skipping serial hardware, using ROS2Bridge")
         bridge = ROS2Bridge()
         drive = bridge
         lidar = bridge
-        camera = bridge   # bridge provides get_frame() from /camera/image_raw
+        # camera intentionally left unset — falls through to AstraCamera init below
         nav2_client = Nav2Client(bridge._node)
         logger.info("Nav2Client initialized (ros2 mode)")
     else:
@@ -487,8 +488,9 @@ def initialize_hardware():
         logger.info(f"Initializing Lidar on {LIDAR_PORT}...")
         lidar = YDLidarDriver(port=LIDAR_PORT, sim_mode=False)
 
-    # 3. Camera — hardware only; sim/ros2 modes use ROS2Bridge.get_frame() instead
-    if not (SIM_MODE or ROS2_MODE):
+    # 3. Camera — direct USB in both direct-hardware and --ros2 modes.
+    #    Only --sim uses ROS2Bridge.get_frame() (Gazebo publishes /camera/image_raw).
+    if not SIM_MODE:
         logger.info("Initializing Camera...")
         camera = AstraCamera(width=640, height=480, sim_mode=False, enable_depth=False)
 
@@ -731,7 +733,7 @@ async def handle_client(websocket):
 
                 elif msg_type == "toggle_depth":
                     depth_enabled = data.get("enabled", False)
-                    if camera:
+                    if camera and hasattr(camera, '_depth_stream'):
                         if depth_enabled and camera._depth_stream is None:
                             camera._open_depth()
                         elif not depth_enabled and camera._depth_stream is not None:
