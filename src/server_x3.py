@@ -519,11 +519,15 @@ def initialize_hardware():
         logger.info("Nav2Client initialized (sim mode) — click 🚀 Gazebo in GUI to start simulation")
     elif ROS2_MODE:
         # ROS2 bridge mode: subscribe to /scan, /odom, publish /cmd_vel.
-        # Topics can come from either:
-        #   a) Local hardware stack  (scripts/jetson_bringup.sh on this machine)
-        #   b) Remote Gazebo on laptop (scripts/laptop_sim.sh + matching ROS_DOMAIN_ID)
+        # Auto-launches x3_bringup.launch.py (hardware drivers: Mcnamu_driver_X3,
+        # base_node_X3, IMU filter, EKF, YDLidar) so /cmd_vel drives the real motors
+        # and real /scan + /odom are published.
         # Camera stays as direct USB (AstraCamera) — falls through to init below.
-        logger.info("ROS2 mode: creating bridge — waiting for topics (hardware or remote Gazebo)")
+        logger.info("ROS2 mode: launching hardware bringup stack...")
+        _ros2_stack_proc = _launch_ros2_stack()
+        # Give the hardware drivers a moment to come up before the bridge subscribes
+        import time as _time; _time.sleep(3.0)
+        logger.info("ROS2 mode: creating bridge — subscribing to hardware topics")
         bridge = ROS2Bridge()
         drive = bridge
         lidar = bridge
