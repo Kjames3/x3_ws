@@ -520,6 +520,12 @@ class YDLidarDriver:
                     flat = np.empty(0, dtype=np.float32)
                 with self._lock:
                     self._points = flat
+            else:
+                # No scan data ready — release the GIL so the asyncio event loop
+                # can process WebSocket messages (movement commands) between polls.
+                # At 8 Hz scan rate there is ~125 ms between full scans; 1 ms sleep
+                # adds negligible latency while eliminating GIL starvation.
+                time.sleep(0.001)
 
     def get_points_xy(self, max_points=512):
         """Return a flat [x0, y0, x1, y1, …] Python list, decimated to max_points."""

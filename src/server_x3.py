@@ -64,6 +64,7 @@ from drivers_x3 import (
     Rosmaster, MecanumDrive, YDLidarDriver, AstraCamera, OLEDDisplay, SERIAL_PORT
 )
 from nav2_client import Nav2Client
+from frontier_explorer import FrontierExplorer
 
 # =============================================================================
 # CONFIGURATION
@@ -116,6 +117,7 @@ camera = None
 model = None
 oled = None
 nav2_client = None    # Nav2Client instance (ROS2/sim modes only)
+frontier_explorer = None  # FrontierExplorer instance (ROS2 mode only)
 _gazebo_proc    = None   # subprocess handle when --sim auto-launches Gazebo
 _ros2_stack_proc = None  # subprocess handle when --ros2 auto-launches x3_bringup
 _slam_proc      = None   # subprocess handle when SLAM Toolbox is running
@@ -143,6 +145,18 @@ _batt_cache_v    = 12.0
 _batt_cache_time = 0.0
 
 connected_clients = set()
+
+# =============================================================================
+# MOTION PIPELINE
+# =============================================================================
+# Watchdog: stop motors if no command received within this many seconds.
+# Normal joystick input arrives at 20-50 Hz so 500 ms is unambiguously a drop.
+MOTION_WATCHDOG_TIMEOUT = 0.5
+
+# asyncio.Queue for decoupled motion commands — created in main() so it runs
+# inside the event loop.  Handlers enqueue (vx, vy, omega) tuples; motion_loop()
+# drains the queue at 100 Hz and calls drive.move().
+motion_queue = None
 
 # =============================================================================
 # INITIALIZATION
@@ -174,7 +188,7 @@ class ROS2Bridge:
         from rclpy.node import Node
         from sensor_msgs.msg import LaserScan, Image
         from geometry_msgs.msg import Twist
-        from nav_msgs.msg import Odometry
+        from nav_msgs.msg import Odometry, OccupancyGrid
         from std_msgs.msg import Float32
 
         rclpy.init(args=None)
@@ -185,18 +199,20 @@ class ROS2Bridge:
         self._latest_depth = None          # cv2 BGR ndarray from Gazebo depth camera
         self._pose_m = {"x": 0.0, "y": 0.0, "theta": 0.0}  # metres + radians
         self._voltage = 12.0               # volts, updated by /voltage subscriber
+        self._occupancy_grid: dict | None = None  # latest OccupancyGrid info dict for frontier explorer
 
-        self._node.create_subscription(LaserScan, '/scan', self._scan_cb, 10)
-        self._node.create_subscription(Image, '/camera/image_raw', self._image_cb, 1)
-        self._node.create_subscription(Image, '/camera/depth_image', self._depth_cb, 1)
-        self._node.create_subscription(Odometry, '/odom', self._odom_cb, 10)
-        self._node.create_subscription(Float32, '/voltage', self._voltage_cb, 10)
+        self._node.create_subscription(LaserScan,      '/scan',             self._scan_cb,  10)
+        self._node.create_subscription(Image,          '/camera/image_raw', self._image_cb,  1)
+        self._node.create_subscription(Image,          '/camera/depth_image', self._depth_cb, 1)
+        self._node.create_subscription(Odometry,       '/odom',             self._odom_cb,  10)
+        self._node.create_subscription(Float32,        '/voltage',          self._voltage_cb, 10)
+        self._node.create_subscription(OccupancyGrid,  '/map',              self._map_cb,    1)
         self._cmd_vel_pub = self._node.create_publisher(Twist, '/cmd_vel', 10)
 
         self._spin_thread = threading.Thread(
             target=rclpy.spin, args=(self._node,), daemon=True)
         self._spin_thread.start()
-        logger.info("ROS2Bridge: spinning — subscribed /scan /camera/image_raw /odom /voltage, publishing /cmd_vel")
+        logger.info("ROS2Bridge: spinning — subscribed /scan /camera/image_raw /odom /voltage /map, publishing /cmd_vel")
 
     def _image_cb(self, msg):
         """Convert sensor_msgs/Image (RGB_INT8 from Fortress) to cv2 BGR ndarray."""
@@ -253,6 +269,28 @@ class ROS2Bridge:
     def get_battery_voltage(self) -> float:
         with self._lock:
             return self._voltage
+
+    def _map_cb(self, msg):
+        """Store the latest OccupancyGrid from SLAM Toolbox (/map topic)."""
+        with self._lock:
+            self._occupancy_grid = {
+                "data":       list(msg.data),
+                "width":      msg.info.width,
+                "height":     msg.info.height,
+                "resolution": msg.info.resolution,
+                "origin_x":   msg.info.origin.position.x,
+                "origin_y":   msg.info.origin.position.y,
+            }
+
+    def get_occupancy_grid(self) -> dict | None:
+        """Return the latest occupancy grid info dict, or None if not yet received."""
+        with self._lock:
+            return dict(self._occupancy_grid) if self._occupancy_grid else None
+
+    def get_pose_m(self) -> dict:
+        """Return the robot pose in metres: {x, y, theta}."""
+        with self._lock:
+            return dict(self._pose_m)
 
     def _scan_cb(self, msg):
         """Convert LaserScan → flat [x0,y0,x1,y1,…] (same format as YDLidarDriver)."""
@@ -508,7 +546,7 @@ def _save_map(name: str) -> tuple[bool, str]:
 
 def initialize_hardware():
     global ros_board, drive, lidar, camera, model, oled, _gazebo_proc
-    global nav2_client, _ros2_stack_proc
+    global nav2_client, _ros2_stack_proc, frontier_explorer
 
     logger.info("="*50)
     logger.info("Initializing Yahboom X3 Hardware")
@@ -523,7 +561,8 @@ def initialize_hardware():
         lidar = bridge
         camera = bridge   # bridge provides get_frame() from /camera/image_raw
         nav2_client = Nav2Client(bridge._node)
-        logger.info("Nav2Client initialized (sim mode) — click 🚀 Gazebo in GUI to start simulation")
+        frontier_explorer = FrontierExplorer(nav2_client, bridge)
+        logger.info("Nav2Client + FrontierExplorer initialized (sim mode) — click 🚀 Gazebo in GUI to start simulation")
     elif ROS2_MODE:
         # ROS2 bridge mode: subscribe to /scan, /odom, publish /cmd_vel.
         # Auto-launches x3_bringup.launch.py (hardware drivers: Mcnamu_driver_X3,
@@ -540,7 +579,8 @@ def initialize_hardware():
         lidar = bridge
         # camera intentionally left unset — falls through to AstraCamera init below
         nav2_client = Nav2Client(bridge._node)
-        logger.info("Nav2Client initialized (ros2 mode)")
+        frontier_explorer = FrontierExplorer(nav2_client, bridge)
+        logger.info("Nav2Client + FrontierExplorer initialized (ros2 mode)")
     else:
         # 1. Motor Controller (Serial) - uses auto-detected SERIAL_PORT
         logger.info(f"Connecting to Rosmaster on {SERIAL_PORT}...")
@@ -645,12 +685,30 @@ def _get_ssid() -> str:
 # MOTION: Convert tank-drive (left/right power) to mecanum (vx, vy, omega)
 # =============================================================================
 
-def _apply_tank_as_mecanum():
-    """Translate left/right slider powers into holonomic vx + omega."""
-    vx = (current_left_power + current_right_power) / 2.0
-    omega = (current_right_power - current_left_power) / 2.0
-    if drive:
-        drive.move(vx, 0.0, omega)
+def _enqueue_motion(vx: float, vy: float, omega: float):
+    """Put a (vx, vy, omega) command onto motion_queue.
+
+    Drops the oldest entry when the queue is full so stale commands never
+    accumulate — the newest command always wins.
+    """
+    if motion_queue is None:
+        return
+    if motion_queue.full():
+        try:
+            motion_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+    try:
+        motion_queue.put_nowait((vx, vy, omega))
+    except asyncio.QueueFull:
+        pass  # race: another coroutine filled it between our drain and put
+
+
+def _enqueue_tank(left: float, right: float):
+    """Convert tank-drive (left/right) to holonomic (vx, omega) and enqueue."""
+    vx    = (left + right) / 2.0
+    omega = (right - left) / 2.0
+    _enqueue_motion(vx, 0.0, omega)
 
 # =============================================================================
 # WEBSOCKET HANDLER
@@ -737,40 +795,34 @@ async def handle_client(websocket):
                         current_left_power = power
                     elif motor == "right":
                         current_right_power = power
-                    _apply_tank_as_mecanum()
+                    _enqueue_tank(current_left_power, current_right_power)
 
                 elif msg_type == "set_move":
                     # Holonomic move: vx, vy, omega (direct)
-                    vx = float(data.get("vx", 0.0))
-                    vy = float(data.get("vy", 0.0))
+                    vx    = float(data.get("vx", 0.0))
+                    vy    = float(data.get("vy", 0.0))
                     omega = float(data.get("omega", 0.0))
-                    if drive:
-                        drive.move(vx, vy, omega)
+                    _enqueue_motion(vx, vy, omega)
 
                 elif msg_type == "move":
                     # D-pad direction buttons
                     direction = data.get("direction")
-                    if drive:
-                        if direction == "forward":
-                            drive.move(0.5, 0.0, 0.0)
-                        elif direction == "backward":
-                            drive.move(-0.5, 0.0, 0.0)
-                        elif direction == "left":
-                            drive.move(0.0, 0.0, 0.5)   # Rotate CCW
-                        elif direction == "right":
-                            drive.move(0.0, 0.0, -0.5)  # Rotate CW
-                        elif direction == "strafe_left":
-                            drive.move(0.0, -0.5, 0.0)
-                        elif direction == "strafe_right":
-                            drive.move(0.0, 0.5, 0.0)
-                        elif direction == "stop":
-                            drive.move(0.0, 0.0, 0.0)
+                    _dir_map = {
+                        "forward":      ( 0.5,  0.0,  0.0),
+                        "backward":     (-0.5,  0.0,  0.0),
+                        "left":         ( 0.0,  0.0,  0.5),   # Rotate CCW
+                        "right":        ( 0.0,  0.0, -0.5),   # Rotate CW
+                        "strafe_left":  ( 0.0, -0.5,  0.0),
+                        "strafe_right": ( 0.0,  0.5,  0.0),
+                        "stop":         ( 0.0,  0.0,  0.0),
+                    }
+                    if direction in _dir_map:
+                        _enqueue_motion(*_dir_map[direction])
 
                 elif msg_type == "stop":
                     current_left_power = 0.0
                     current_right_power = 0.0
-                    if drive:
-                        drive.move(0.0, 0.0, 0.0)
+                    _enqueue_motion(0.0, 0.0, 0.0)
 
                 elif msg_type == "toggle_detection":
                     detection_enabled = data.get("enabled", False)
@@ -818,8 +870,7 @@ async def handle_client(websocket):
                     is_auto_driving = False
                     current_left_power = 0.0
                     current_right_power = 0.0
-                    if drive:
-                        drive.move(0.0, 0.0, 0.0)
+                    _enqueue_motion(0.0, 0.0, 0.0)
                     if nav2_client:
                         nav2_client.cancel()
 
@@ -881,6 +932,31 @@ async def handle_client(websocket):
                     else:
                         await websocket.send(json.dumps(
                             {"type": "map_data", "error": "Map not found"}))
+
+                # ── Frontier exploration messages ───────────────────────────
+                elif msg_type == "start_frontier_explore":
+                    if frontier_explorer and ROS2_MODE:
+                        ok = frontier_explorer.start()
+                        await websocket.send(json.dumps({
+                            "type": "frontier_explore_result",
+                            "success": ok,
+                            "msg": "Frontier exploration started" if ok else "Already exploring",
+                        }))
+                    else:
+                        await websocket.send(json.dumps({
+                            "type": "frontier_explore_result",
+                            "success": False,
+                            "msg": "Frontier exploration requires ROS2 mode with Nav2 running",
+                        }))
+
+                elif msg_type == "stop_frontier_explore":
+                    if frontier_explorer:
+                        frontier_explorer.stop()
+                        await websocket.send(json.dumps({
+                            "type": "frontier_explore_result",
+                            "success": True,
+                            "msg": "Frontier exploration stopped",
+                        }))
 
                 # ── SLAM messages ───────────────────────────────────────────
                 elif msg_type == "start_slam":
@@ -969,6 +1045,8 @@ async def handle_client(websocket):
         connected_clients.discard(websocket)
         if camera and not connected_clients:
             camera._has_clients = False  # P7: no clients left — skip lock+copy in capture loop
+        # Eager stop — don't wait for the watchdog timeout on disconnect
+        _enqueue_motion(0.0, 0.0, 0.0)
         logger.info("Client disconnected")
 
 # =============================================================================
@@ -1094,6 +1172,7 @@ async def broadcast_loop():
                 "nav_phase": nav_status["state"],
                 "nav": nav_status,
                 "slam_active": _slam_proc is not None and _slam_proc.poll() is None,
+                "frontier": frontier_explorer.status() if frontier_explorer else None,
                 "active_model_name": active_model_name,
                 "fps_camera": fps_camera,
                 "fps_detection": fps_detection,
@@ -1110,6 +1189,46 @@ async def broadcast_loop():
             websockets.broadcast(connected_clients, json.dumps(msg))
 
         await asyncio.sleep(0.05)  # 20 FPS cap
+
+async def motion_loop():
+    """Dedicated 100 Hz motion command consumer.
+
+    Drains motion_queue and calls drive.move() at consistent low latency,
+    independent of broadcast_loop timing and lidar GIL contention.
+
+    Safety watchdog: if no command arrives within MOTION_WATCHDOG_TIMEOUT
+    seconds (e.g. dropped WebSocket), motors are stopped automatically.
+    Watchdog is suppressed while Nav2 auto-drive is active.
+    """
+    _last_cmd_time = time.monotonic()
+    _watchdog_fired = False
+
+    while True:
+        if motion_queue is None:
+            await asyncio.sleep(0.01)
+            continue
+
+        cmd = None
+        try:
+            cmd = motion_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+
+        if cmd is not None:
+            vx, vy, omega = cmd
+            if drive:
+                drive.move(vx, vy, omega)
+            _last_cmd_time = time.monotonic()
+            _watchdog_fired = False
+        elif not is_auto_driving and not _watchdog_fired:
+            if time.monotonic() - _last_cmd_time > MOTION_WATCHDOG_TIMEOUT:
+                if drive:
+                    drive.move(0.0, 0.0, 0.0)
+                _watchdog_fired = True
+                logger.debug("motion_loop: watchdog fired — motors stopped")
+
+        await asyncio.sleep(0.01)  # 100 Hz
+
 
 async def oled_loop():
     """Refresh OLED with WiFi SSID and IP every 5 seconds."""
@@ -1130,10 +1249,12 @@ async def oled_loop():
 
 
 async def main():
+    global motion_queue
     initialize_hardware()
+    motion_queue = asyncio.Queue(maxsize=2)
     async with websockets.serve(handle_client, "0.0.0.0", WS_PORT):
         logger.info(f"Server started on ws://0.0.0.0:{WS_PORT}")
-        await asyncio.gather(broadcast_loop(), oled_loop())
+        await asyncio.gather(broadcast_loop(), motion_loop(), oled_loop())
 
 if __name__ == "__main__":
     try:
