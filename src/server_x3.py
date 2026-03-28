@@ -263,8 +263,10 @@ class ROS2Bridge:
         return {"x": p["x"] * 100.0, "y": p["y"] * 100.0, "theta": p["theta"]}
 
     def _voltage_cb(self, msg):
-        with self._lock:
-            self._voltage = float(msg.data)
+        v = float(msg.data)
+        if v > 0.1:   # ignore empty/zero packets from Rosmaster
+            with self._lock:
+                self._voltage = v
 
     def get_battery_voltage(self) -> float:
         with self._lock:
