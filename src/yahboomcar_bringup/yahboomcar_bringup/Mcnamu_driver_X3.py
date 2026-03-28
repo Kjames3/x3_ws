@@ -8,7 +8,7 @@ import random
 import threading
 from math import pi
 from time import sleep
-from Rosmaster_Lib import Rosmaster
+from .Rosmaster_Lib import Rosmaster
 
 #ros lib
 import rclpy
