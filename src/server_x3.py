@@ -804,6 +804,9 @@ async def handle_client(websocket):
                     vx    = float(data.get("vx", 0.0))
                     vy    = float(data.get("vy", 0.0))
                     omega = float(data.get("omega", 0.0))
+                    # Keep display globals in sync so motor status card updates
+                    current_left_power  = max(-1.0, min(1.0, vx - omega))
+                    current_right_power = max(-1.0, min(1.0, vx + omega))
                     _enqueue_motion(vx, vy, omega)
 
                 elif msg_type == "move":
