@@ -179,6 +179,7 @@ class ROS2Bridge:
         from sensor_msgs.msg import LaserScan, Image
         from geometry_msgs.msg import Twist
         from nav_msgs.msg import Odometry
+        from std_msgs.msg import Float32
 
         rclpy.init(args=None)
         self._node = Node('x3_ws_bridge')
@@ -187,17 +188,19 @@ class ROS2Bridge:
         self._latest_frame = None          # cv2 BGR ndarray from Gazebo RGB camera
         self._latest_depth = None          # cv2 BGR ndarray from Gazebo depth camera
         self._pose_m = {"x": 0.0, "y": 0.0, "theta": 0.0}  # metres + radians
+        self._voltage = 12.0               # volts, updated by /voltage subscriber
 
         self._node.create_subscription(LaserScan, '/scan', self._scan_cb, 10)
         self._node.create_subscription(Image, '/camera/image_raw', self._image_cb, 1)
         self._node.create_subscription(Image, '/camera/depth_image', self._depth_cb, 1)
         self._node.create_subscription(Odometry, '/odom', self._odom_cb, 10)
+        self._node.create_subscription(Float32, '/voltage', self._voltage_cb, 10)
         self._cmd_vel_pub = self._node.create_publisher(Twist, '/cmd_vel', 10)
 
         self._spin_thread = threading.Thread(
             target=rclpy.spin, args=(self._node,), daemon=True)
         self._spin_thread.start()
-        logger.info("ROS2Bridge: spinning — subscribed /scan /camera/image_raw /odom, publishing /cmd_vel")
+        logger.info("ROS2Bridge: spinning — subscribed /scan /camera/image_raw /odom /voltage, publishing /cmd_vel")
 
     def _image_cb(self, msg):
         """Convert sensor_msgs/Image (RGB_INT8 from Fortress) to cv2 BGR ndarray."""
@@ -246,6 +249,14 @@ class ROS2Bridge:
         with self._lock:
             p = dict(self._pose_m)
         return {"x": p["x"] * 100.0, "y": p["y"] * 100.0, "theta": p["theta"]}
+
+    def _voltage_cb(self, msg):
+        with self._lock:
+            self._voltage = float(msg.data)
+
+    def get_battery_voltage(self) -> float:
+        with self._lock:
+            return self._voltage
 
     def _scan_cb(self, msg):
         """Convert LaserScan → flat [x0,y0,x1,y1,…] (same format as YDLidarDriver)."""
@@ -501,7 +512,7 @@ def _save_map(name: str) -> tuple[bool, str]:
 
 def initialize_hardware():
     global ros_board, drive, lidar, camera, robot_state, model, oled, _gazebo_proc
-    global nav2_client
+    global nav2_client, _ros2_stack_proc
 
     logger.info("="*50)
     logger.info("Initializing Yahboom X3 Hardware")
@@ -1047,8 +1058,12 @@ async def broadcast_loop():
                     "theta": robot_state.theta if robot_state else 0.0,
                 }
 
-            # 7. Encoders + battery (P9: battery voltage cached at 1 Hz, not 20 Hz)
-            if ros_board:
+            # 7. Encoders + battery
+            if drive is not None and (ROS2_MODE or SIM_MODE) and hasattr(drive, 'get_battery_voltage'):
+                # Voltage comes from the /voltage topic published by Mcnamu_driver_X3
+                m1_enc = m2_enc = m3_enc = m4_enc = 0
+                batt_v = drive.get_battery_voltage()
+            elif ros_board:
                 m1_enc, m2_enc, m3_enc, m4_enc = ros_board.get_motor_encoder()
                 if now - _batt_cache_time >= 1.0:
                     _batt_cache_v    = ros_board.get_battery_voltage()
