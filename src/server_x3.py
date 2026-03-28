@@ -48,8 +48,6 @@ except ModuleNotFoundError:
 
 from ultralytics import YOLO
 
-# Add root directory to sys.path to allow importing 'robot_state'
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # =============================================================================
 # LOGGING CONFIGURATION
@@ -65,7 +63,6 @@ logger = logging.getLogger(__name__)
 from drivers_x3 import (
     Rosmaster, MecanumDrive, YDLidarDriver, AstraCamera, OLEDDisplay, SERIAL_PORT
 )
-from robot_state import RobotState
 from nav2_client import Nav2Client
 
 # =============================================================================
@@ -116,7 +113,6 @@ ros_board = None
 drive = None
 lidar = None
 camera = None
-robot_state = None
 model = None
 oled = None
 nav2_client = None    # Nav2Client instance (ROS2/sim modes only)
@@ -245,7 +241,7 @@ class ROS2Bridge:
             self._pose_m = {"x": p.x, "y": p.y, "theta": yaw}
 
     def get_pose_cm(self) -> dict:
-        """Return pose with x/y in cm (matches RobotState units) and theta in radians."""
+        """Return pose with x/y in cm and theta in radians."""
         with self._lock:
             p = dict(self._pose_m)
         return {"x": p["x"] * 100.0, "y": p["y"] * 100.0, "theta": p["theta"]}
@@ -511,7 +507,7 @@ def _save_map(name: str) -> tuple[bool, str]:
 
 
 def initialize_hardware():
-    global ros_board, drive, lidar, camera, robot_state, model, oled, _gazebo_proc
+    global ros_board, drive, lidar, camera, model, oled, _gazebo_proc
     global nav2_client, _ros2_stack_proc
 
     logger.info("="*50)
@@ -578,8 +574,6 @@ def initialize_hardware():
     except Exception as e:
         logger.error(f"YOLO Load Failed: {e}")
 
-    # 6. Robot State (pose tracking — x/y/theta, updated by IMU when available)
-    robot_state = RobotState()
 
     # 7. OLED Display (SSD1306 on I2C bus 1 — Jetson Orin pins 3/5)
     logger.info("Initializing OLED display...")
@@ -1048,15 +1042,11 @@ async def broadcast_loop():
             # 5. Lidar points (only when toggle is on)
             scan_points = lidar.get_points_xy() if (lidar and lidar_enabled) else []
 
-            # 6. Robot pose — use /odom from Gazebo in sim/ros2 modes
-            if (SIM_MODE or ROS2_MODE) and hasattr(lidar, 'get_pose_cm'):
+            # 6. Robot pose — from /odom (ROS2/sim) or zeros if unavailable
+            if hasattr(lidar, 'get_pose_cm'):
                 pose = lidar.get_pose_cm()
             else:
-                pose = {
-                    "x":     robot_state.x     if robot_state else 0.0,
-                    "y":     robot_state.y     if robot_state else 0.0,
-                    "theta": robot_state.theta if robot_state else 0.0,
-                }
+                pose = {"x": 0.0, "y": 0.0, "theta": 0.0}
 
             # 7. Encoders + battery
             if drive is not None and (ROS2_MODE or SIM_MODE) and hasattr(drive, 'get_battery_voltage'):

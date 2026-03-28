@@ -1,12 +1,7 @@
 
 import logging
 import threading
-import sys
 import os
-
-# Add root directory to sys.path to allow importing 'drivers'
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import math
 import time
 import struct
@@ -19,8 +14,6 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # HARDWARE CONFIGURATION CONSTANTS
 # =============================================================================
-
-import os
 
 # Serial Config
 if os.path.exists("/dev/ttyCH341USB0"):
@@ -105,9 +98,29 @@ class Rosmaster:
             return 0, 0, 0, 0
         return self._bot.get_motor_encoder()
 
+    def get_imu_data(self):
+        """Return (gx, gy, gz, ax, ay, az) in rad/s and m/s²."""
+        if self.sim_mode or not self._bot:
+            return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+        gx, gy, gz = self._bot.get_gyroscope_data()
+        ax, ay, az = self._bot.get_accelerometer_data()
+        return gx, gy, gz, ax, ay, az
+
+    def get_imu_attitude(self):
+        """Return (roll, pitch, yaw) in radians from the board's onboard fusion filter."""
+        if self.sim_mode or not self._bot:
+            return 0.0, 0.0, 0.0
+        return self._bot.get_imu_attitude_data(ToAngle=False)
+
+    def get_magnetometer_data(self):
+        """Return (mx, my, mz). Valid on both MPU9250 and ICM20948 (both 9-axis)."""
+        if self.sim_mode or not self._bot:
+            return 0.0, 0.0, 0.0
+        return self._bot.get_magnetometer_data()
+
     def stop(self):
         self.set_motor(0, 0, 0, 0)
-    
+
     def cleanup(self):
         self.stop()
         if self._bot:
