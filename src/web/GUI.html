@@ -92,6 +92,10 @@
                             <div id="depth-toggle" class="toggle" title="Toggle depth view"></div>
                         </div>
                         <div class="toggle-wrapper">
+                            <span class="toggle-label">Map</span>
+                            <div id="map-toggle" class="toggle" title="Toggle minimap view"></div>
+                        </div>
+                        <div class="toggle-wrapper">
                             <span class="toggle-label">Detection</span>
                             <div id="detection-toggle" class="toggle" title="Toggle object detection"></div>
                         </div>
@@ -167,6 +171,13 @@
                         <div style="position: absolute; top: 4px; left: 6px; background: rgba(0,0,0,0.55);
                                     color: #67e8f9; font-size: 0.65rem; padding: 2px 6px; border-radius: 3px;
                                     pointer-events: none;">DEPTH</div>
+                    </div>
+                    <!-- Mini Map Panel (hidden until map toggle is on) -->
+                    <div id="minimap-panel" style="flex: 1; position: relative; min-width: 0; display: none;">
+                        <canvas id="mini-map-canvas" class="nav-canvas" style="width: 100%; height: auto; aspect-ratio: 1; background: #000; border-radius: 8px;"></canvas>
+                        <div style="position: absolute; top: 4px; left: 6px; background: rgba(0,0,0,0.55);
+                                    color: #a78bfa; font-size: 0.65rem; padding: 2px 6px; border-radius: 3px;
+                                    pointer-events: none;">MAP</div>
                     </div>
                 </div>
 
@@ -477,6 +488,10 @@
                     <label style="display:flex; align-items:center; gap:0.3rem; font-size:0.75rem; color:var(--text-secondary); cursor:pointer;">
                         <input type="checkbox" id="slam-mode-check">
                         SLAM Mode
+                    </label>
+                    <label style="display:flex; align-items:center; gap:0.3rem; font-size:0.75rem; color:var(--text-secondary); cursor:pointer; margin-left:1rem;" title="Enable autonomous Frontier Mapping exploration">
+                        <input type="checkbox" id="frontier-toggle">
+                        Frontier
                     </label>
                 </div>
 

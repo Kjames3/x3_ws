@@ -6,6 +6,7 @@ const state = {
     connected: false,
     detectionEnabled: false,
     depthEnabled: false,
+    mapEnabled: false,
     lidarEnabled: false,
     autoDriveEnabled: false, // Local toggle tracking
     isAutoDriving: false,    // Server state
@@ -88,9 +89,15 @@ const elements = {
     cameraFeed: document.getElementById('camera-feed'),
     cameraPlaceholder: document.getElementById('camera-placeholder'),
     depthFeed: document.getElementById('depth-feed'),
+    cameraPanels: document.getElementById('camera-panels'),
+    rgbPanel: document.getElementById('rgb-panel'),
     depthPanel: document.getElementById('depth-panel'),
     depthPlaceholder: document.getElementById('depth-placeholder'),
     depthToggle: document.getElementById('depth-toggle'),
+    mapToggle: document.getElementById('map-toggle'),
+    minimapPanel: document.getElementById('minimap-panel'),
+    miniMapCanvas: document.getElementById('mini-map-canvas'),
+    frontierToggle: document.getElementById('frontier-toggle'),
     detectionToggle: document.getElementById('detection-toggle'),
     detectionPanel: document.getElementById('detection-panel'),
     detectionCount: document.getElementById('detection-count'),
@@ -451,6 +458,13 @@ function drawNavMap() {
             ctx.fill();
             ctx.restore();
         }
+    }
+
+    if (state.mapEnabled && elements.miniMapCanvas) {
+        elements.miniMapCanvas.width = W;
+        elements.miniMapCanvas.height = H;
+        const miniCtx = elements.miniMapCanvas.getContext('2d');
+        miniCtx.drawImage(canvas, 0, 0);
     }
 }
 
@@ -1582,12 +1596,55 @@ if (elements.stopBtn) elements.stopBtn.addEventListener('click', () => {
     if (elements.rightSlider) { elements.rightSlider.value = 0; elements.rightSliderValue.textContent = "0"; updateVisuals(0, elements.rightFill, elements.rightThumb); }
 });
 
+function updateCameraLayout() {
+    if (!elements.cameraPanels) return;
+    if (state.mapEnabled) {
+        elements.cameraPanels.style.display = 'grid';
+        elements.cameraPanels.style.gridTemplateColumns = '1fr 1fr';
+        elements.cameraPanels.style.gridAutoRows = '1fr';
+        if (elements.rgbPanel) {
+            elements.rgbPanel.style.gridColumn = '1';
+            elements.rgbPanel.style.gridRow = '1';
+        }
+        if (elements.depthPanel) {
+            elements.depthPanel.style.display = state.depthEnabled ? 'block' : 'none';
+            elements.depthPanel.style.gridColumn = '1';
+            elements.depthPanel.style.gridRow = '2';
+        }
+        if (elements.minimapPanel) {
+            elements.minimapPanel.style.display = 'block';
+            elements.minimapPanel.style.gridColumn = '2';
+            elements.minimapPanel.style.gridRow = '1 / span 2';
+        }
+    } else {
+        elements.cameraPanels.style.display = 'flex';
+        if (elements.rgbPanel) elements.rgbPanel.style.flex = '1';
+        if (elements.depthPanel) {
+            elements.depthPanel.style.display = state.depthEnabled ? 'block' : 'none';
+            elements.depthPanel.style.flex = '1';
+        }
+        if (elements.minimapPanel) elements.minimapPanel.style.display = 'none';
+    }
+}
+
 if (elements.depthToggle) elements.depthToggle.addEventListener('click', () => {
     if (!state.connected) return;
     state.depthEnabled = !state.depthEnabled;
     elements.depthToggle.classList.toggle('active', state.depthEnabled);
-    if (elements.depthPanel) elements.depthPanel.style.display = state.depthEnabled ? 'block' : 'none';
+    updateCameraLayout();
     sendMessage({ type: "toggle_depth", enabled: state.depthEnabled });
+});
+
+if (elements.mapToggle) elements.mapToggle.addEventListener('click', () => {
+    state.mapEnabled = !state.mapEnabled;
+    elements.mapToggle.classList.toggle('active', state.mapEnabled);
+    updateCameraLayout();
+    if (state.mapEnabled) drawNavMap();
+});
+
+if (elements.frontierToggle) elements.frontierToggle.addEventListener('change', (e) => {
+    if (!state.connected) return;
+    sendMessage({ type: 'toggle_frontier', enabled: e.target.checked });
 });
 
 if (elements.detectionToggle) elements.detectionToggle.addEventListener('click', () => {
