@@ -29,9 +29,11 @@ class yahboomcar_driver(Node):
 		super().__init__(name)
 		global car_type_dic
 		self.RA2DE = 180 / pi
-		self.car = Rosmaster()
-		self.car.set_car_type(1)
 		#get parameter
+		self.declare_parameter('serial_port', '/dev/ttyCH341USB0')
+		serial_port = self.get_parameter('serial_port').get_parameter_value().string_value
+		self.car = Rosmaster(com=serial_port)
+		self.car.set_car_type(1)
 		self.declare_parameter('car_type', 'X3')
 		self.car_type = self.get_parameter('car_type').get_parameter_value().string_value
 		print (self.car_type)
