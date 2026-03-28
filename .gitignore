@@ -21,3 +21,6 @@ log/
 .idea/
 *.swp
 .DS_Store
+
+# Ignore folder
+/archive
