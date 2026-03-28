@@ -1184,3 +1184,160 @@ body {
     color: var(--text-primary);
     font-family: 'SF Mono', 'Monaco', monospace;
 }
+
+/* =================================================================
+   Gamepad UI (Controller Tester layout)
+   ================================================================= */
+.gp-ui-container {
+    padding: 10px;
+    background: transparent;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin-top: 10px;
+    transform: scale(0.9);
+    width: 100%;
+}
+
+.gp-body {
+    position: relative;
+    width: 280px;
+    height: 160px;
+    background: transparent;
+    border-radius: 40px 40px 80px 80px;
+    border: 2px solid #54657b;
+    box-shadow: none;
+}
+
+.gp-body::before {
+    display: none;
+}
+
+.gp-body * {
+    z-index: 2;
+}
+
+/* DPAD */
+.gp-dpad {
+    position: absolute;
+    left: 20px;
+    top: 35px;
+    width: 50px;
+    height: 50px;
+    border-radius: 50%;
+    background: transparent;
+}
+.gp-dpad-part {
+    position: absolute;
+    background: var(--bg-secondary);
+    border-radius: 4px;
+    border: 2px solid #54657b;
+    box-shadow: none;
+}
+/* Use bg color to hide intersecting borders cleanly */
+.gp-dpad-v {
+    left: 17px; top: 0; width: 16px; height: 50px;
+    z-index: 3;
+}
+.gp-dpad-h {
+    left: 0; top: 17px; width: 50px; height: 16px;
+    z-index: 4;
+    border-left: 2px solid #54657b;
+    border-right: 2px solid #54657b;
+    border-top: none;
+    border-bottom: none;
+}
+.gp-dpad-dir {
+    position: absolute;
+    width: 16px; height: 16px;
+    z-index: 5;
+}
+.gp-dpad-up { left: 17px; top: 0; }
+.gp-dpad-right { left: 34px; top: 17px; }
+.gp-dpad-down { left: 17px; top: 34px; }
+.gp-dpad-left { left: 0; top: 17px; }
+.gp-dpad-pressed { background: rgba(148, 163, 184, 0.4) !important; }
+
+/* Buttons */
+.gp-buttons {
+    position: absolute;
+    right: 20px;
+    top: 30px;
+    width: 60px;
+    height: 60px;
+}
+.gp-btn {
+    position: absolute;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: transparent;
+    color: #94a3b8;
+    font-size: 11px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-family: sans-serif;
+    font-weight: bold;
+    border: 2px solid #54657b;
+    box-shadow: none;
+    transition: transform 0.05s linear, background 0.05s linear;
+}
+.gp-btn-y { top: 0; left: 19px; }
+.gp-btn-b { top: 19px; right: 0; }
+.gp-btn-a { bottom: 0; left: 19px; }
+.gp-btn-x { top: 19px; left: 0; }
+
+.gp-btn.pressed {
+    transform: translateY(2px);
+    background: rgba(148, 163, 184, 0.4) !important;
+}
+
+.gp-stick {
+    position: absolute;
+    width: 50px;
+    height: 50px;
+    background: transparent;
+    border-radius: 50%;
+    border: 2px solid #54657b;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    box-shadow: none;
+}
+.gp-stick-l { left: 60px; bottom: 15px; }
+.gp-stick-r { right: 60px; bottom: 15px; }
+
+.gp-stick-thumb {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: transparent;
+    border: 2px solid #54657b;
+    box-shadow: none;
+    transition: transform 0.03s linear;
+}
+
+.gp-shoulder {
+    position: absolute;
+    top: -20px;
+    width: 44px;
+    height: 20px;
+    background: transparent;
+    border-radius: 12px 12px 0 0;
+    z-index: 0;
+    border: 2px solid #54657b;
+    border-bottom: none;
+}
+.gp-shoulder-l { left: 45px; }
+.gp-shoulder-r { right: 45px; }
+
+.gp-labels-container {
+    display: flex;
+    justify-content: space-around;
+    width: 280px;
+    margin-top: 10px;
+    font-size: 11px;
+    font-weight: bold;
+    color: #64748b;
+}

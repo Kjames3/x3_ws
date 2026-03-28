@@ -113,12 +113,16 @@ const elements = {
 
     // Motor Readouts (Status Section)
     m1Pos: document.getElementById('m1-pos'),
+    m1PosLabel: document.getElementById('m1-pos-label'),
     m1Power: document.getElementById('m1-power'),
     m2Pos: document.getElementById('m2-pos'),
+    m2PosLabel: document.getElementById('m2-pos-label'),
     m2Power: document.getElementById('m2-power'),
     m3Pos: document.getElementById('m3-pos'),
+    m3PosLabel: document.getElementById('m3-pos-label'),
     m3Power: document.getElementById('m3-power'),
     m4Pos: document.getElementById('m4-pos'),
+    m4PosLabel: document.getElementById('m4-pos-label'),
     m4Power: document.getElementById('m4-power'),
 
     // FPS
@@ -981,13 +985,21 @@ function updateUI() {
     if (!data) return;
 
     // 1. Motor Readouts
-    if (elements.m1Pos) elements.m1Pos.textContent = (data.m1_pos ?? 0);
+    // In ROS2/sim mode the server sends per-wheel velocity (m/s); in direct mode it sends encoder ticks.
+    const rosMode = (state.serverMode === 'ros2' || state.serverMode === 'sim');
+    const fmtPos = (v) => rosMode ? (v ?? 0).toFixed(2) : (v ?? 0);
+    const posLabel = rosMode ? 'm/s' : 'ticks';
+    if (elements.m1Pos) elements.m1Pos.textContent = fmtPos(data.m1_pos);
+    if (elements.m1PosLabel) elements.m1PosLabel.textContent = posLabel;
     if (elements.m1Power) elements.m1Power.textContent = `${Math.round((data.m1_power ?? 0) * 100)}%`;
-    if (elements.m2Pos) elements.m2Pos.textContent = (data.m2_pos ?? 0);
+    if (elements.m2Pos) elements.m2Pos.textContent = fmtPos(data.m2_pos);
+    if (elements.m2PosLabel) elements.m2PosLabel.textContent = posLabel;
     if (elements.m2Power) elements.m2Power.textContent = `${Math.round((data.m2_power ?? 0) * 100)}%`;
-    if (elements.m3Pos) elements.m3Pos.textContent = (data.m3_pos ?? 0);
+    if (elements.m3Pos) elements.m3Pos.textContent = fmtPos(data.m3_pos);
+    if (elements.m3PosLabel) elements.m3PosLabel.textContent = posLabel;
     if (elements.m3Power) elements.m3Power.textContent = `${Math.round((data.m3_power ?? 0) * 100)}%`;
-    if (elements.m4Pos) elements.m4Pos.textContent = (data.m4_pos ?? 0);
+    if (elements.m4Pos) elements.m4Pos.textContent = fmtPos(data.m4_pos);
+    if (elements.m4PosLabel) elements.m4PosLabel.textContent = posLabel;
     if (elements.m4Power) elements.m4Power.textContent = `${Math.round((data.m4_power ?? 0) * 100)}%`;
 
     // 2. Camera image is now sent as a binary WebSocket frame (P3) — handled in onmessage
@@ -1683,61 +1695,54 @@ function showGamepadWidget(show) {
     if (!widget) return;
     if (show) {
         widget.style.display = 'flex';
-        if (sliders) sliders.style.visibility = 'hidden';
+        if (sliders) sliders.style.display = 'none';
     } else {
         widget.style.display = 'none';
-        if (sliders) sliders.style.visibility = '';
+        if (sliders) sliders.style.display = '';
     }
 }
 
 function drawGamepadWidget(axes, buttons) {
-    const canvas = document.getElementById('gamepad-canvas');
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    const W = canvas.width, H = canvas.height;
-    ctx.clearRect(0, 0, W, H);
+    const thumbL = document.getElementById('gp-thumb-l');
+    const thumbR = document.getElementById('gp-thumb-r');
+    
+    if (thumbL && axes.length >= 2) {
+        const ax = axes[0] || 0;
+        const ay = axes[1] || 0;
+        const maxTravel = 10;
+        thumbL.style.transform = `translate(${ax * maxTravel}px, ${ay * maxTravel}px)`;
+    }
 
-    const R = 38;           // outer circle radius
-    const DOT = 7;          // stick-dot radius
-    const DEAD = 0.12;      // dead-zone fraction
-    const centres = [
-        { x: 60,  y: 56, axX: 0, axY: 1, label: 'ROT/STR' },
-        { x: 160, y: 56, axX: 2, axY: 3, label: 'FWD/STR' },
-    ];
+    if (thumbR && axes.length >= 4) {
+        const ax = axes[2] || 0;
+        const ay = axes[3] || 0;
+        const maxTravel = 10;
+        thumbR.style.transform = `translate(${ax * maxTravel}px, ${ay * maxTravel}px)`;
+    }
 
-    centres.forEach(({ x, y, axX, axY, label }) => {
-        // Outer ring
-        ctx.beginPath();
-        ctx.arc(x, y, R, 0, Math.PI * 2);
-        ctx.strokeStyle = '#334155';
-        ctx.lineWidth = 2;
-        ctx.stroke();
+    for (let i = 0; i < 4; i++) {
+        const btn = document.getElementById(`gp-btn-${i}`);
+        if (btn) {
+            if (buttons[i] && buttons[i].pressed) {
+                btn.classList.add('pressed');
+            } else {
+                btn.classList.remove('pressed');
+            }
+        }
+    }
+    
+    const dpadIds = {12: 'up', 13: 'down', 14: 'left', 15: 'right'};
+    for (const [idx, dir] of Object.entries(dpadIds)) {
+        const dp = document.getElementById(`gp-dpad-${dir}`);
+        if (dp) {
+            if (buttons[idx] && buttons[idx].pressed) {
+                dp.classList.add('gp-dpad-pressed');
+            } else {
+                dp.classList.remove('gp-dpad-pressed');
+            }
+        }
+    }
 
-        // Dead-zone ring
-        ctx.beginPath();
-        ctx.arc(x, y, R * DEAD * 3.5, 0, Math.PI * 2);
-        ctx.strokeStyle = '#475569';
-        ctx.lineWidth = 1;
-        ctx.stroke();
-
-        // Stick dot
-        const ax = axes[axX] || 0;
-        const ay = axes[axY] || 0;
-        const dx = ax * (R - DOT - 2);
-        const dy = ay * (R - DOT - 2);
-        ctx.beginPath();
-        ctx.arc(x + dx, y + dy, DOT, 0, Math.PI * 2);
-        ctx.fillStyle = '#60a5fa';
-        ctx.fill();
-
-        // Label
-        ctx.fillStyle = '#64748b';
-        ctx.font = '9px monospace';
-        ctx.textAlign = 'center';
-        ctx.fillText(label, x, y + R + 13);
-    });
-
-    // Button pills
     const pillDefs = [
         { idx: 0, label: '✕ Stop',   color: '#f87171' },
         { idx: 2, label: '□ Detect', color: '#a78bfa' },
@@ -1746,17 +1751,16 @@ function drawGamepadWidget(axes, buttons) {
     const pillContainer = document.getElementById('gamepad-btns');
     if (pillContainer) {
         if (!pillContainer.children.length) {
-            // Build pills once
             pillDefs.forEach(({ label }, i) => {
                 const pill = document.createElement('span');
-                pill.id = `gp-btn-${i}`;
+                pill.id = `gp-pill-${i}`;
                 pill.style.cssText = 'padding: 0.15rem 0.5rem; border-radius: 999px; border: 1px solid #334155; background: var(--bg-secondary); color: #64748b; transition: all 0.1s;';
                 pill.textContent = label;
                 pillContainer.appendChild(pill);
             });
         }
         pillDefs.forEach(({ idx, color }, i) => {
-            const pill = document.getElementById(`gp-btn-${i}`);
+            const pill = document.getElementById(`gp-pill-${i}`);
             if (!pill) return;
             const pressed = buttons[idx] && buttons[idx].pressed;
             pill.style.background = pressed ? color : 'var(--bg-secondary)';

@@ -296,10 +296,38 @@
                         </div>
 
                         <!-- Gamepad Widget (hidden until controller connects) -->
-                        <div id="gamepad-widget" style="display: none; flex-direction: column; align-items: center; gap: 0.5rem; padding: 0.5rem 0;">
-                            <canvas id="gamepad-canvas" width="220" height="110"
-                                style="border-radius: 8px; background: var(--bg-secondary);"></canvas>
-                            <div id="gamepad-btns" style="display: flex; gap: 0.5rem; font-size: 0.65rem;"></div>
+                        <div id="gamepad-widget" style="display: none; flex-direction: column; align-items: center; justify-content: center; gap: 0.5rem; padding: 0.5rem 0; width: 100%;">
+                            <div class="gp-ui-container">
+                                <div class="gp-body">
+                                    <div class="gp-shoulder gp-shoulder-l"></div>
+                                    <div class="gp-shoulder gp-shoulder-r"></div>
+                                    <div class="gp-dpad">
+                                        <div class="gp-dpad-part gp-dpad-v"></div>
+                                        <div class="gp-dpad-part gp-dpad-h"></div>
+                                        <div class="gp-dpad-dir gp-dpad-up" id="gp-dpad-up"></div>
+                                        <div class="gp-dpad-dir gp-dpad-right" id="gp-dpad-right"></div>
+                                        <div class="gp-dpad-dir gp-dpad-down" id="gp-dpad-down"></div>
+                                        <div class="gp-dpad-dir gp-dpad-left" id="gp-dpad-left"></div>
+                                    </div>
+                                    <div class="gp-buttons">
+                                        <div class="gp-btn gp-btn-y" id="gp-btn-3">△</div>
+                                        <div class="gp-btn gp-btn-b" id="gp-btn-1">○</div>
+                                        <div class="gp-btn gp-btn-a" id="gp-btn-0">✕</div>
+                                        <div class="gp-btn gp-btn-x" id="gp-btn-2">□</div>
+                                    </div>
+                                    <div class="gp-stick gp-stick-l" id="gp-stick-left-base">
+                                        <div class="gp-stick-thumb" id="gp-thumb-l"></div>
+                                    </div>
+                                    <div class="gp-stick gp-stick-r" id="gp-stick-right-base">
+                                        <div class="gp-stick-thumb" id="gp-thumb-r"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="gp-labels-container">
+                                <span style="margin-left:25px;">ROT/STR</span>
+                                <span style="margin-right:25px;">FWD/STR</span>
+                            </div>
+                            <div id="gamepad-btns" style="display: flex; gap: 0.5rem; font-size: 0.65rem; margin-top: 5px;"></div>
                         </div>
                     </div>
 
@@ -311,25 +339,25 @@
                             <div class="motor-card">
                                 <h3>Front-L</h3>
                                 <div id="m1-pos" class="motor-value">0</div>
-                                <div class="motor-label" style="font-size: 0.5rem;">ticks</div>
+                                <div id="m1-pos-label" class="motor-label" style="font-size: 0.5rem;">ticks</div>
                                 <div id="m1-power" class="motor-value mt-1" style="font-size: 0.7rem;">0%</div>
                             </div>
                             <div class="motor-card">
                                 <h3>Front-R</h3>
                                 <div id="m2-pos" class="motor-value">0</div>
-                                <div class="motor-label" style="font-size: 0.5rem;">ticks</div>
+                                <div id="m2-pos-label" class="motor-label" style="font-size: 0.5rem;">ticks</div>
                                 <div id="m2-power" class="motor-value mt-1" style="font-size: 0.7rem;">0%</div>
                             </div>
                             <div class="motor-card">
                                 <h3>Rear-L</h3>
                                 <div id="m3-pos" class="motor-value">0</div>
-                                <div class="motor-label" style="font-size: 0.5rem;">ticks</div>
+                                <div id="m3-pos-label" class="motor-label" style="font-size: 0.5rem;">ticks</div>
                                 <div id="m3-power" class="motor-value mt-1" style="font-size: 0.7rem;">0%</div>
                             </div>
                             <div class="motor-card">
                                 <h3>Rear-R</h3>
                                 <div id="m4-pos" class="motor-value">0</div>
-                                <div class="motor-label" style="font-size: 0.5rem;">ticks</div>
+                                <div id="m4-pos-label" class="motor-label" style="font-size: 0.5rem;">ticks</div>
                                 <div id="m4-power" class="motor-value mt-1" style="font-size: 0.7rem;">0%</div>
                             </div>
                         </div>
