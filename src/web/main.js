@@ -479,7 +479,7 @@ function drawNavMap() {
             const len = 14;
             ctx.save();
             ctx.translate(rcanvas.x, rcanvas.y);
-            ctx.rotate(theta);  // Yahboom X3 reports CW-positive yaw; canvas is also CW-positive
+            ctx.rotate(theta + Math.PI);  // +π: Yahboom CW-positive yaw, arrow tip points forward
             ctx.fillStyle = '#1c27a5ff';
             ctx.beginPath();
             ctx.moveTo(len, 0);
