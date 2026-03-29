@@ -441,16 +441,16 @@ function drawNavMap() {
 
     // 3.5 Live lidar scan overlay (robot frame → world frame → canvas pixels)
     const scanPts = state.latestData.lidarPoints;
-    const rpose   = state.latestData.robotPose;
+    const rpose = state.latestData.robotPose;
     if (state.lidarEnabled && scanPts && scanPts.length >= 2 && rpose && state.nav.mapMeta) {
-        const rx   = rpose.x / 100.0;   // cm → metres
-        const ry   = rpose.y / 100.0;
+        const rx = rpose.x / 100.0;   // cm → metres
+        const ry = rpose.y / 100.0;
         const cosT = Math.cos(rpose.theta);
         const sinT = Math.sin(rpose.theta);
         // CW-positive theta + server lidar frame (+x=fwd, +y=right):
         // wx = rx + lx*cosT - ly*sinT
         // wy = ry - lx*sinT - ly*cosT
-        ctx.fillStyle = 'rgba(34, 197, 94, 0.7)';  // green, matching drawLidar
+        ctx.fillStyle = 'rgba(226, 25, 25, 0.7)';  // green, matching drawLidar
         for (let i = 0; i + 1 < scanPts.length; i += 2) {
             const lx = scanPts[i];
             const ly = scanPts[i + 1];
@@ -902,7 +902,7 @@ function handleMessage(data) {
         state.nav._pendingImgSrc = src;
         img.onload = () => {
             if (img.src !== state.nav._pendingImgSrc) return; // stale load — discard
-            state.nav.mapMeta  = captureMeta;
+            state.nav.mapMeta = captureMeta;
             state.nav.mapImage = img;
             drawNavMap();
             updateNavHint();
@@ -1826,7 +1826,7 @@ function drawGamepadWidget(axes, buttons) {
     // Face buttons
     const faceMap = [
         { idx: 0, id: 'face-a', on: 'hsl(220,80%,60%)', off: 'hsl(220,45%,22%)' },
-        { idx: 1, id: 'face-b', on: 'hsl(0,80%,60%)',   off: 'hsl(0,45%,22%)'   },
+        { idx: 1, id: 'face-b', on: 'hsl(0,80%,60%)', off: 'hsl(0,45%,22%)' },
         { idx: 2, id: 'face-x', on: 'hsl(270,80%,60%)', off: 'hsl(270,45%,22%)' },
         { idx: 3, id: 'face-y', on: 'hsl(120,80%,45%)', off: 'hsl(120,45%,22%)' },
     ];
