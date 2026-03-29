@@ -1898,15 +1898,23 @@ function pollGamepad() {
         if (Math.abs(ry) < deadzone) ry = 0;
         if (Math.abs(lx) < deadzone) lx = 0;
 
-        const vx    = -ry;   // Right stick Y up → forward (positive vx)
-        const vy    = -rx;   // Right stick X right → strafe right (inverted payload)
-        const omega = -lx;   // Left stick X right → rotate CW (negative omega = CW)
+        // R2 (right trigger) boosts move speed from 0.6 up to 1.0
+        const BASE_SCALE = 0.6;
+        const r2 = gamepad.buttons[7] ? gamepad.buttons[7].value : 0;
+        const MOVE_SCALE = BASE_SCALE + r2 * (1.0 - BASE_SCALE);
+
+        const vx    = -ry * MOVE_SCALE;  // Right stick Y up → forward (positive vx)
+        const vy    = -rx * MOVE_SCALE;  // Right stick X right → strafe right (inverted payload)
+        const omega = -lx;               // Left stick X right → rotate CW (negative omega = CW)
 
         const vxR    = Math.round(vx    * 100) / 100;
         const vyR    = Math.round(vy    * 100) / 100;
         const omegaR = Math.round(omega * 100) / 100;
 
-        if (Math.abs(vxR - state.lastVx) > 0.02 ||
+        // Always send while sticks are active so the motion watchdog is fed continuously
+        const anyActive = vxR !== 0 || vyR !== 0 || omegaR !== 0;
+        if (anyActive ||
+            Math.abs(vxR - state.lastVx) > 0.02 ||
             Math.abs(vyR - state.lastVy) > 0.02 ||
             Math.abs(omegaR - state.lastOmega) > 0.02) {
 
