@@ -169,6 +169,11 @@ motion_queue = None
 # the YDLidar and Rosmaster serial ports are owned exclusively by the ROS2
 # stack (ydlidar_ros2_driver + Mcnamu_driver_X3).
 # =============================================================================
+import math as _math
+_SCAN_ANGLE_MAX = _math.radians(100)  # ±100° → ~200° front arc (front-mounted TOF lidar)
+_SCAN_MIN_RANGE = 0.15                # metres — filters robot-chassis reflections
+
+
 class ROS2Bridge:
     """
     Drop-in adapter that mimics YDLidarDriver.get_points_xy() and
@@ -356,14 +361,22 @@ class ROS2Bridge:
             return dict(self._pose_m)
 
     def _scan_cb(self, msg):
-        """Convert LaserScan → flat [x0,y0,x1,y1,…] (same format as YDLidarDriver)."""
-        import math
+        """Convert LaserScan → flat [x0,y0,x1,y1,…] (same format as YDLidarDriver).
+
+        Applies the same corrections as YDLidarDriver:
+          - X negated (FLIP_HORIZONTAL) to match physical front-facing orientation
+          - Angle filter: ±_SCAN_ANGLE_MAX (~200° front arc)
+          - Min range: _SCAN_MIN_RANGE to discard robot-chassis reflections
+        """
         flat: list[float] = []
         for i, r in enumerate(msg.ranges):
-            if msg.range_min < r < msg.range_max:
-                angle = msg.angle_min + i * msg.angle_increment
-                flat.append(r * math.cos(angle))
-                flat.append(r * math.sin(angle))
+            if r < _SCAN_MIN_RANGE or not (msg.range_min < r < msg.range_max):
+                continue
+            angle = msg.angle_min + i * msg.angle_increment
+            if abs(angle) > _SCAN_ANGLE_MAX:
+                continue
+            flat.append(-r * _math.cos(angle))   # negate X to match FLIP_HORIZONTAL
+            flat.append( r * _math.sin(angle))
         with self._lock:
             self._points = flat
 
@@ -1255,9 +1268,12 @@ async def broadcast_loop():
                 },
             }
 
-            # Push SLAM map update when a new OccupancyGrid has arrived from /map
-            if ros_bridge and (map_upd := ros_bridge.pop_map_update()):
-                websockets.broadcast(connected_clients, json.dumps(map_upd))
+            # Push SLAM map update when a new OccupancyGrid has arrived from /map.
+            # Run in executor: numpy + cv2.imencode + base64 must not block the event loop.
+            if ros_bridge:
+                map_upd = await loop.run_in_executor(None, ros_bridge.pop_map_update)
+                if map_upd:
+                    websockets.broadcast(connected_clients, json.dumps(map_upd))
 
             websockets.broadcast(connected_clients, json.dumps(msg))
 
