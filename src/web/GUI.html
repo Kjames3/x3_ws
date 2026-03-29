@@ -307,38 +307,41 @@
                         </div>
 
                         <!-- Gamepad Widget (hidden until controller connects) -->
-                        <div id="gamepad-widget" style="display: none; flex-direction: column; align-items: center; justify-content: center; gap: 0.5rem; padding: 0.5rem 0; width: 100%;">
-                            <div class="gp-ui-container">
-                                <div class="gp-body">
-                                    <div class="gp-shoulder gp-shoulder-l"></div>
-                                    <div class="gp-shoulder gp-shoulder-r"></div>
-                                    <div class="gp-dpad">
-                                        <div class="gp-dpad-part gp-dpad-v"></div>
-                                        <div class="gp-dpad-part gp-dpad-h"></div>
-                                        <div class="gp-dpad-dir gp-dpad-up" id="gp-dpad-up"></div>
-                                        <div class="gp-dpad-dir gp-dpad-right" id="gp-dpad-right"></div>
-                                        <div class="gp-dpad-dir gp-dpad-down" id="gp-dpad-down"></div>
-                                        <div class="gp-dpad-dir gp-dpad-left" id="gp-dpad-left"></div>
-                                    </div>
-                                    <div class="gp-buttons">
-                                        <div class="gp-btn gp-btn-y" id="gp-btn-3">△</div>
-                                        <div class="gp-btn gp-btn-b" id="gp-btn-1">○</div>
-                                        <div class="gp-btn gp-btn-a" id="gp-btn-0">✕</div>
-                                        <div class="gp-btn gp-btn-x" id="gp-btn-2">□</div>
-                                    </div>
-                                    <div class="gp-stick gp-stick-l" id="gp-stick-left-base">
-                                        <div class="gp-stick-thumb" id="gp-thumb-l"></div>
-                                    </div>
-                                    <div class="gp-stick gp-stick-r" id="gp-stick-right-base">
-                                        <div class="gp-stick-thumb" id="gp-thumb-r"></div>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="gp-labels-container">
-                                <span style="margin-left:25px;">ROT/STR</span>
-                                <span style="margin-right:25px;">FWD/STR</span>
-                            </div>
-                            <div id="gamepad-btns" style="display: flex; gap: 0.5rem; font-size: 0.65rem; margin-top: 5px;"></div>
+                        <div id="gamepad-widget" style="display: none; flex-direction: column; align-items: center; justify-content: center; gap: 0.25rem; padding: 0.25rem 0; width: 100%;">
+                            <svg id="gp-svg" width="100%" viewBox="0 80 441 315" style="max-width:300px;" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <!-- Controller body -->
+                                <path d="M220.5 92C200.5 92 154 92 128 92C95.5 92 66.5 109.5 55 137.5C43.5 165.5 4 271.1 4 317.5C4 363.9 17.5 378.5 49.5 378.5C81.5 378.5 105 294.5 150 294.5C195 294.5 220.5 294.5 220.5 294.5C220.5 294.5 245.5 294.5 290.5 294.5C335.5 294.5 359 378.5 391 378.5C423 378.5 436.5 363.9 436.5 317.5C436.5 271.1 397 165.5 385.5 137.5C374 109.5 345 92 312.5 92C286.5 92 240 92 220.5 92Z" stroke="hsl(210,40%,55%)" stroke-width="3" fill="hsl(218,25%,16%)"/>
+                                <!-- Circle bases -->
+                                <circle cx="113" cy="160" r="37.5" stroke="hsl(210,30%,35%)" stroke-width="2" fill="hsl(218,25%,12%)"/>
+                                <circle cx="166" cy="238" r="37.5" stroke="hsl(210,30%,35%)" stroke-width="2" fill="hsl(218,25%,12%)"/>
+                                <circle cx="278" cy="238" r="37.5" stroke="hsl(210,30%,35%)" stroke-width="2" fill="hsl(218,25%,12%)"/>
+                                <circle cx="329" cy="160" r="37.5" stroke="hsl(210,30%,35%)" stroke-width="2" fill="hsl(218,25%,12%)"/>
+                                <!-- Left analog stick thumb (base 166,238 — animates via JS) -->
+                                <circle id="LeftStick" cx="166" cy="238" r="22" fill="hsl(218,25%,28%)" stroke="hsl(210,50%,55%)" stroke-width="2.5"/>
+                                <!-- Right analog stick thumb (base 278,238 — animates via JS) -->
+                                <circle id="RightStick" cx="278" cy="238" r="22" fill="hsl(218,25%,28%)" stroke="hsl(210,50%,55%)" stroke-width="2.5"/>
+                                <!-- D-pad arrows (translate-53,-78 renders these over the top-left circle) -->
+                                <g transform="translate(-53,-78)">
+                                    <path id="dpad-up"    d="M177.669 222.335C180.793 219.21 180.816 213.997 176.868 212.014C176.327 211.743 175.776 211.491 175.215 211.258C172.182 210.002 168.931 209.355 165.648 209.355C162.365 209.355 159.114 210.002 156.081 211.258C155.521 211.491 154.969 211.743 154.429 212.014C150.48 213.997 150.503 219.21 153.627 222.335L159.991 228.698C163.116 231.823 168.181 231.823 171.305 228.698Z"    fill="hsl(218,25%,30%)" stroke="hsl(210,40%,50%)" stroke-width="2"/>
+                                    <path id="dpad-right" d="M181.447 249.669C184.571 252.793 189.785 252.816 191.768 248.868C192.039 248.327 192.291 247.776 192.523 247.215C193.78 244.182 194.426 240.931 194.426 237.648C194.426 234.365 193.78 231.114 192.523 228.081C192.291 227.521 192.039 226.969 191.768 226.429C189.785 222.48 184.571 222.503 181.447 225.627L175.083 231.991C171.959 235.116 171.959 240.181 175.083 243.305Z" fill="hsl(218,25%,30%)" stroke="hsl(210,40%,50%)" stroke-width="2"/>
+                                    <path id="dpad-down"  d="M153.627 253.961C150.503 257.086 150.48 262.299 154.429 264.282C154.969 264.553 155.521 264.804 156.081 265.038C159.114 266.294 162.365 266.941 165.648 266.941C168.931 266.941 172.182 266.294 175.215 265.038C175.776 264.804 176.327 264.553 176.868 264.282C180.816 262.299 180.793 257.086 177.669 253.961L171.305 247.598C168.181 244.473 163.116 244.473 159.991 247.598Z"  fill="hsl(218,25%,30%)" stroke="hsl(210,40%,50%)" stroke-width="2"/>
+                                    <path id="dpad-left"  d="M149.849 249.669C146.725 252.793 141.511 252.816 139.528 248.868C139.257 248.327 139.005 247.776 138.773 247.215C137.516 244.182 136.87 240.931 136.87 237.648C136.87 234.365 137.516 231.114 138.773 228.081C139.005 227.521 139.257 226.969 139.528 226.429C141.511 222.48 146.725 222.503 149.849 225.627L156.213 231.991C159.337 235.116 159.337 240.181 156.213 243.305Z"  fill="hsl(218,25%,30%)" stroke="hsl(210,40%,50%)" stroke-width="2"/>
+                                </g>
+                                <!-- Face buttons: △ Y(top) ○ B(right) ✕ A(bottom) □ X(left) -->
+                                <circle id="face-y" cx="329" cy="143" r="11" fill="hsl(120,45%,22%)" stroke="hsl(120,50%,42%)" stroke-width="2"/>
+                                <text x="329" y="147" text-anchor="middle" font-size="11" fill="hsl(120,50%,68%)" font-family="sans-serif">△</text>
+                                <circle id="face-b" cx="347" cy="160" r="11" fill="hsl(0,45%,22%)"   stroke="hsl(0,50%,42%)"   stroke-width="2"/>
+                                <text x="347" y="164" text-anchor="middle" font-size="11" fill="hsl(0,50%,68%)"   font-family="sans-serif">○</text>
+                                <circle id="face-a" cx="329" cy="177" r="11" fill="hsl(220,45%,22%)" stroke="hsl(220,50%,42%)" stroke-width="2"/>
+                                <text x="329" y="181" text-anchor="middle" font-size="11" fill="hsl(220,50%,68%)" font-family="sans-serif">✕</text>
+                                <circle id="face-x" cx="311" cy="160" r="11" fill="hsl(270,45%,22%)" stroke="hsl(270,50%,42%)" stroke-width="2"/>
+                                <text x="311" y="164" text-anchor="middle" font-size="11" fill="hsl(270,50%,68%)" font-family="sans-serif">□</text>
+                                <!-- R2 trigger bar (top-right grip) -->
+                                <text x="400" y="91" text-anchor="middle" font-size="9" fill="hsl(210,30%,55%)" font-family="sans-serif">R2</text>
+                                <rect x="370" y="93" width="40" height="9" rx="4" fill="hsl(218,25%,22%)" stroke="hsl(210,40%,40%)" stroke-width="1.5"/>
+                                <rect id="r2-bar" x="370" y="93" width="0" height="9" rx="4" fill="hsl(210,80%,55%)"/>
+                            </svg>
+                            <div id="gamepad-btns" style="display: flex; gap: 0.5rem; font-size: 0.65rem; margin-top: 2px;"></div>
                         </div>
                     </div>
 

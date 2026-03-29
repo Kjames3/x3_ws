@@ -1776,46 +1776,43 @@ function showGamepadWidget(show) {
 }
 
 function drawGamepadWidget(axes, buttons) {
-    const thumbL = document.getElementById('gp-thumb-l');
-    const thumbR = document.getElementById('gp-thumb-r');
-
-    if (thumbL && axes.length >= 2) {
-        const ax = axes[0] || 0;
-        const ay = axes[1] || 0;
-        const maxTravel = 10;
-        thumbL.style.transform = `translate(${ax * maxTravel}px, ${ay * maxTravel}px)`;
+    // Analog sticks — update SVG circle cx/cy
+    const maxTravel = 9;
+    const leftStick = document.getElementById('LeftStick');
+    if (leftStick && axes.length >= 2) {
+        leftStick.setAttribute('cx', 166 + (axes[0] || 0) * maxTravel);
+        leftStick.setAttribute('cy', 238 + (axes[1] || 0) * maxTravel);
+    }
+    const rightStick = document.getElementById('RightStick');
+    if (rightStick && axes.length >= 4) {
+        rightStick.setAttribute('cx', 278 + (axes[2] || 0) * maxTravel);
+        rightStick.setAttribute('cy', 238 + (axes[3] || 0) * maxTravel);
     }
 
-    if (thumbR && axes.length >= 4) {
-        const ax = axes[2] || 0;
-        const ay = axes[3] || 0;
-        const maxTravel = 10;
-        thumbR.style.transform = `translate(${ax * maxTravel}px, ${ay * maxTravel}px)`;
+    // D-pad arrows
+    const dpadMap = { 12: 'dpad-up', 13: 'dpad-down', 14: 'dpad-left', 15: 'dpad-right' };
+    for (const [idx, id] of Object.entries(dpadMap)) {
+        const el = document.getElementById(id);
+        if (el) el.setAttribute('fill', buttons[idx] && buttons[idx].pressed ? 'hsl(210,80%,60%)' : 'hsl(218,25%,30%)');
     }
 
-    for (let i = 0; i < 4; i++) {
-        const btn = document.getElementById(`gp-btn-${i}`);
-        if (btn) {
-            if (buttons[i] && buttons[i].pressed) {
-                btn.classList.add('pressed');
-            } else {
-                btn.classList.remove('pressed');
-            }
-        }
-    }
+    // Face buttons
+    const faceMap = [
+        { idx: 0, id: 'face-a', on: 'hsl(220,80%,60%)', off: 'hsl(220,45%,22%)' },
+        { idx: 1, id: 'face-b', on: 'hsl(0,80%,60%)',   off: 'hsl(0,45%,22%)'   },
+        { idx: 2, id: 'face-x', on: 'hsl(270,80%,60%)', off: 'hsl(270,45%,22%)' },
+        { idx: 3, id: 'face-y', on: 'hsl(120,80%,45%)', off: 'hsl(120,45%,22%)' },
+    ];
+    faceMap.forEach(({ idx, id, on, off }) => {
+        const el = document.getElementById(id);
+        if (el) el.setAttribute('fill', buttons[idx] && buttons[idx].pressed ? on : off);
+    });
 
-    const dpadIds = { 12: 'up', 13: 'down', 14: 'left', 15: 'right' };
-    for (const [idx, dir] of Object.entries(dpadIds)) {
-        const dp = document.getElementById(`gp-dpad-${dir}`);
-        if (dp) {
-            if (buttons[idx] && buttons[idx].pressed) {
-                dp.classList.add('gp-dpad-pressed');
-            } else {
-                dp.classList.remove('gp-dpad-pressed');
-            }
-        }
-    }
+    // R2 trigger bar
+    const r2Bar = document.getElementById('r2-bar');
+    if (r2Bar && buttons[7]) r2Bar.setAttribute('width', (buttons[7].value || 0) * 40);
 
+    // Button pills
     const pillDefs = [
         { idx: 0, label: '✕ Stop', color: '#f87171' },
         { idx: 2, label: '□ Detect', color: '#a78bfa' },
