@@ -49,6 +49,7 @@ const state = {
 
     // SLAM state
     slamActive: false,
+    liveMapInterval: null,   // setInterval handle for live map polling during SLAM
 
     // Navigation state
     nav: {
@@ -531,6 +532,19 @@ function initSlamControls() {
 
 function updateSlamStatus(active) {
     state.slamActive = active;
+
+    // Live map polling: request occupancy grid from server every 2 s while SLAM runs
+    if (state.liveMapInterval) {
+        clearInterval(state.liveMapInterval);
+        state.liveMapInterval = null;
+    }
+    if (active) {
+        sendMessage({ type: 'request_live_map' });   // immediate first fetch
+        state.liveMapInterval = setInterval(() => {
+            sendMessage({ type: 'request_live_map' });
+        }, 2000);
+    }
+
     const { startSlamBtn, stopSlamBtn, slamStatusText } = elements;
     if (startSlamBtn) startSlamBtn.style.display = active ? 'none'         : 'inline-block';
     if (stopSlamBtn)  stopSlamBtn.style.display  = active ? 'inline-block' : 'none';

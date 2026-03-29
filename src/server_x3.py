@@ -222,6 +222,7 @@ class ROS2Bridge:
         self._node.create_subscription(Image,          '/camera/image_raw', self._image_cb,  1)
         self._node.create_subscription(Image,          '/camera/depth_image', self._depth_cb, 1)
         self._node.create_subscription(Odometry,       '/odom',             self._odom_cb,  10)
+        self._node.create_subscription(Odometry,       '/odom_raw',         self._odom_cb,  10)
         self._node.create_subscription(Float32,        '/voltage',          self._voltage_cb, 10)
         self._node.create_subscription(OccupancyGrid,  '/map',              self._map_cb,    _map_qos)
         self._cmd_vel_pub = self._node.create_publisher(Twist, '/cmd_vel', 10)
@@ -1027,6 +1028,39 @@ async def handle_client(websocket):
                     else:
                         await websocket.send(json.dumps(
                             {"type": "map_data", "error": "Map not found"}))
+
+                elif msg_type == "request_live_map":
+                    # Client-side polling: GUI requests the latest occupancy grid during SLAM.
+                    # More reliable than server-push because it's decoupled from /map publish timing.
+                    if ros_bridge:
+                        grid = ros_bridge.get_occupancy_grid()
+                        if grid is not None:
+                            _loop = asyncio.get_event_loop()
+                            def _encode_live_map(g=grid):
+                                import numpy as np, cv2, base64
+                                try:
+                                    arr = np.array(g["data"], dtype=np.int16)
+                                    img = np.where(arr < 0, 128,
+                                                   np.where(arr == 0, 255, 0)).astype(np.uint8)
+                                    img = img.reshape(g["height"], g["width"])
+                                    img = np.flipud(img)
+                                    _, buf = cv2.imencode('.png', img)
+                                    return base64.b64encode(bytes(buf)).decode('utf-8')
+                                except Exception as exc:
+                                    logger.warning(f"request_live_map encode error: {exc}")
+                                    return None
+                            png_b64 = await _loop.run_in_executor(None, _encode_live_map)
+                            if png_b64:
+                                await websocket.send(json.dumps({
+                                    "type": "map_data",
+                                    "png_b64": png_b64,
+                                    "meta": {
+                                        "resolution": grid["resolution"],
+                                        "origin":     [grid["origin_x"], grid["origin_y"]],
+                                        "width":      grid["width"],
+                                        "height":     grid["height"],
+                                    },
+                                }))
 
                 # ── Frontier exploration messages ───────────────────────────
                 elif msg_type == "start_frontier_explore":

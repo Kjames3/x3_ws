@@ -267,21 +267,31 @@ class AstraCamera:
     def _open_depth(self):
         try:
             from openni import openni2
-            import openni as _openni_mod
-            # The pip 'openni' package bundles libOpenNI2.so + OpenNI2/Drivers/ together.
-            # Prepend its directory so the Orbbec USB driver (PS1080.so) is found first.
-            # System paths (/usr/local/lib etc.) often have the library but not the drivers.
-            pkg_dir = os.path.dirname(os.path.abspath(_openni_mod.__file__))
-            search = [pkg_dir] + self.OPENNI2_SEARCH_PATHS
-            lib_path = next(
-                (p for p in search if os.path.exists(os.path.join(p, "libOpenNI2.so"))),
-                None,
-            )
-            if lib_path is None:
-                logger.error("AstraCamera: libOpenNI2.so not found. "
-                             "Copy ARM64 libs from the Yahboom SDK to ~/x3_ws/src/")
-                return
-            openni2.initialize(lib_path)
+            # Attempt 1: no-arg init — uses LD_LIBRARY_PATH / OPENNI2_REDIST / system install.
+            # This is the right path when the Yahboom/Orbbec SDK is installed system-wide.
+            initialized = False
+            try:
+                openni2.initialize()
+                initialized = True
+                logger.debug("AstraCamera: OpenNI2 initialized via system default")
+            except Exception:
+                pass
+            # Attempt 2: explicit search (pip package dir first, then system paths).
+            if not initialized:
+                import openni as _openni_mod
+                pkg_dir = os.path.dirname(os.path.abspath(_openni_mod.__file__))
+                search = [pkg_dir] + self.OPENNI2_SEARCH_PATHS
+                lib_path = next(
+                    (p for p in search
+                     if os.path.exists(os.path.join(p, "libOpenNI2.so"))),
+                    None,
+                )
+                if lib_path is None:
+                    logger.error("AstraCamera: libOpenNI2.so not found. "
+                                 "Copy ARM64 libs from the Yahboom SDK to ~/x3_ws/src/")
+                    return
+                openni2.initialize(lib_path)
+                logger.debug(f"AstraCamera: OpenNI2 initialized from {lib_path}")
             self._oni_device = openni2.Device.open_any()
             self._depth_stream = self._oni_device.create_depth_stream()
             self._depth_stream.start()
