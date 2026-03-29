@@ -208,24 +208,24 @@ const elements = {
     launchGazeboBtn: document.getElementById('launch-gazebo-btn'),
 
     // Navigation panel
-    navMapCanvas:     document.getElementById('nav-map-canvas'),
-    navStatusBadge:   document.getElementById('nav-status-badge'),
-    navHint:          document.getElementById('nav-hint'),
-    launchNav2Btn:    document.getElementById('launch-nav2-btn'),
-    stopNav2Btn:      document.getElementById('stop-nav2-btn'),
-    setPoseBtn:       document.getElementById('set-pose-btn'),
-    cancelNavBtn:     document.getElementById('cancel-nav-btn'),
-    mapSelect:        document.getElementById('map-select'),
-    loadMapBtn:       document.getElementById('load-map-btn'),
-    slamModeCheck:    document.getElementById('slam-mode-check'),
+    navMapCanvas: document.getElementById('nav-map-canvas'),
+    navStatusBadge: document.getElementById('nav-status-badge'),
+    navHint: document.getElementById('nav-hint'),
+    launchNav2Btn: document.getElementById('launch-nav2-btn'),
+    stopNav2Btn: document.getElementById('stop-nav2-btn'),
+    setPoseBtn: document.getElementById('set-pose-btn'),
+    cancelNavBtn: document.getElementById('cancel-nav-btn'),
+    mapSelect: document.getElementById('map-select'),
+    loadMapBtn: document.getElementById('load-map-btn'),
+    slamModeCheck: document.getElementById('slam-mode-check'),
     navDistRemaining: document.getElementById('nav-dist-remaining'),
-    navGoalDisplay:   document.getElementById('nav-goal-display'),
+    navGoalDisplay: document.getElementById('nav-goal-display'),
     // SLAM controls
-    startSlamBtn:     document.getElementById('start-slam-btn'),
-    stopSlamBtn:      document.getElementById('stop-slam-btn'),
-    saveMapBtn:       document.getElementById('save-map-btn'),
-    mapNameInput:     document.getElementById('map-name-input'),
-    slamStatusText:   document.getElementById('slam-status-text'),
+    startSlamBtn: document.getElementById('start-slam-btn'),
+    stopSlamBtn: document.getElementById('stop-slam-btn'),
+    saveMapBtn: document.getElementById('save-map-btn'),
+    mapNameInput: document.getElementById('map-name-input'),
+    slamStatusText: document.getElementById('slam-status-text'),
 };
 
 // =================================================================
@@ -265,7 +265,7 @@ function initNavPanel() {
 
     // Match internal pixel resolution to display size
     const size = canvas.offsetWidth || 400;
-    canvas.width  = size;
+    canvas.width = size;
     canvas.height = size;
 
     canvas.addEventListener('click', handleNavMapClick);
@@ -274,8 +274,10 @@ function initNavPanel() {
         elements.launchNav2Btn.addEventListener('click', () => {
             const slam = elements.slamModeCheck?.checked || false;
             const mapName = elements.mapSelect?.value || '';
-            sendMessage({ type: 'launch_nav2', use_sim_time: state.serverMode === 'sim',
-                          map: mapName || null, slam });
+            sendMessage({
+                type: 'launch_nav2', use_sim_time: state.serverMode === 'sim',
+                map: mapName || null, slam
+            });
             elements.launchNav2Btn.textContent = '⏳ Launching…';
             elements.launchNav2Btn.disabled = true;
         });
@@ -328,7 +330,7 @@ function canvasPxToWorld(cx, cy) {
     const canvas = elements.navMapCanvas;
     if (!meta || !canvas) return null;
     const W = canvas.width, H = canvas.height;
-    const mapPxX = cx * (meta.width  / W);
+    const mapPxX = cx * (meta.width / W);
     const mapPxY = (H - cy) * (meta.height / H); // flip Y: ROS Y+ = up, canvas Y+ = down
     return {
         x: meta.origin[0] + mapPxX * meta.resolution,
@@ -345,7 +347,7 @@ function worldToCanvasPx(wx, wy) {
     const mapPxX = (wx - meta.origin[0]) / meta.resolution;
     const mapPxY = (wy - meta.origin[1]) / meta.resolution;
     return {
-        x:  mapPxX * (W / meta.width),
+        x: mapPxX * (W / meta.width),
         y: H - mapPxY * (H / meta.height),
     };
 }
@@ -354,8 +356,8 @@ function handleNavMapClick(e) {
     if (state.nav.status === 'UNAVAILABLE') return;
     const canvas = elements.navMapCanvas;
     const rect = canvas.getBoundingClientRect();
-    const cx = (e.clientX - rect.left) * (canvas.width  / rect.width);
-    const cy = (e.clientY - rect.top)  * (canvas.height / rect.height);
+    const cx = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const cy = (e.clientY - rect.top) * (canvas.height / rect.height);
 
     if (!state.nav.mapMeta) {
         if (elements.navHint) elements.navHint.textContent = 'Load a map first to set goals';
@@ -454,7 +456,7 @@ function drawNavMap() {
             ctx.beginPath();
             ctx.moveTo(len, 0);
             ctx.lineTo(-len * 0.5, -len * 0.5);
-            ctx.lineTo(-len * 0.5,  len * 0.5);
+            ctx.lineTo(-len * 0.5, len * 0.5);
             ctx.closePath();
             ctx.fill();
             ctx.restore();
@@ -471,8 +473,8 @@ function drawNavMap() {
 
 function updateNavStatus(nav) {
     if (!nav) return;
-    state.nav.status       = nav.state || 'UNAVAILABLE';
-    state.nav.path         = nav.path  || [];
+    state.nav.status = nav.state || 'UNAVAILABLE';
+    state.nav.path = nav.path || [];
     state.nav.distRemaining = nav.dist;
     if (nav.nav2_running !== undefined) state.nav.nav2Running = nav.nav2_running;
     if (nav.goal) state.nav.goal = nav.goal;
@@ -481,7 +483,7 @@ function updateNavStatus(nav) {
     const badge = elements.navStatusBadge;
     if (badge) {
         badge.textContent = state.nav.status;
-        badge.className   = 'nav-badge ' + state.nav.status.toLowerCase();
+        badge.className = 'nav-badge ' + state.nav.status.toLowerCase();
     }
 
     // Stats
@@ -523,7 +525,7 @@ function initSlamControls() {
     if (!startSlamBtn) return;
 
     startSlamBtn.addEventListener('click', () => sendMessage({ type: 'start_slam' }));
-    stopSlamBtn.addEventListener('click',  () => sendMessage({ type: 'stop_slam' }));
+    stopSlamBtn.addEventListener('click', () => sendMessage({ type: 'stop_slam' }));
     saveMapBtn.addEventListener('click', () => {
         const name = (mapNameInput?.value || '').trim() || 'slam_map';
         sendMessage({ type: 'save_map', name });
@@ -546,8 +548,8 @@ function updateSlamStatus(active) {
     }
 
     const { startSlamBtn, stopSlamBtn, slamStatusText } = elements;
-    if (startSlamBtn) startSlamBtn.style.display = active ? 'none'         : 'inline-block';
-    if (stopSlamBtn)  stopSlamBtn.style.display  = active ? 'inline-block' : 'none';
+    if (startSlamBtn) startSlamBtn.style.display = active ? 'none' : 'inline-block';
+    if (stopSlamBtn) stopSlamBtn.style.display = active ? 'inline-block' : 'none';
     if (slamStatusText) {
         slamStatusText.textContent = active
             ? 'SLAM mapping active — drive the robot to build the map'
@@ -797,8 +799,8 @@ function handleMessage(data) {
         }
 
         const styles = {
-            sim:    { text: 'SIM',    bg: '#92400e', color: '#fde68a', border: '#f59e0b' },
-            ros2:   { text: 'ROS2',   bg: '#1e3a5f', color: '#93c5fd', border: '#3b82f6' },
+            sim: { text: 'SIM', bg: '#92400e', color: '#fde68a', border: '#f59e0b' },
+            ros2: { text: 'ROS2', bg: '#1e3a5f', color: '#93c5fd', border: '#3b82f6' },
             direct: { text: 'DIRECT', bg: '#14532d', color: '#86efac', border: '#22c55e' },
         };
         const s = styles[mode] || styles.direct;
@@ -878,7 +880,7 @@ function handleMessage(data) {
             drawNavMap();
             updateNavHint();
             console.log(`[nav] Map loaded: ${data.meta.width}×${data.meta.height}px, ` +
-                        `res=${data.meta.resolution}m, origin=${data.meta.origin}`);
+                `res=${data.meta.resolution}m, origin=${data.meta.origin}`);
         };
         img.src = 'data:image/png;base64,' + data.png_b64;
         return;
@@ -1448,7 +1450,7 @@ function drawLidar(points) {
     ctx.fillStyle = '#22c55e';
     for (let i = 0; i < points.length; i += 2) {
         const x = cx - (points[i + 1] * scale);
-        const y = cy - (points[i]     * scale);
+        const y = cy - (points[i] * scale);
         ctx.fillRect(x - 1, y - 1, 2, 2);
     }
 
@@ -1761,8 +1763,8 @@ function handleBlurResponse(data) {
 // Gamepad Widget
 // =================================================================
 function showGamepadWidget(show) {
-    const widget    = document.getElementById('gamepad-widget');
-    const sliders   = document.querySelector('.sliders-container');
+    const widget = document.getElementById('gamepad-widget');
+    const sliders = document.querySelector('.sliders-container');
     if (!widget) return;
     if (show) {
         widget.style.display = 'flex';
@@ -1776,7 +1778,7 @@ function showGamepadWidget(show) {
 function drawGamepadWidget(axes, buttons) {
     const thumbL = document.getElementById('gp-thumb-l');
     const thumbR = document.getElementById('gp-thumb-r');
-    
+
     if (thumbL && axes.length >= 2) {
         const ax = axes[0] || 0;
         const ay = axes[1] || 0;
@@ -1801,8 +1803,8 @@ function drawGamepadWidget(axes, buttons) {
             }
         }
     }
-    
-    const dpadIds = {12: 'up', 13: 'down', 14: 'left', 15: 'right'};
+
+    const dpadIds = { 12: 'up', 13: 'down', 14: 'left', 15: 'right' };
     for (const [idx, dir] of Object.entries(dpadIds)) {
         const dp = document.getElementById(`gp-dpad-${dir}`);
         if (dp) {
@@ -1815,9 +1817,9 @@ function drawGamepadWidget(axes, buttons) {
     }
 
     const pillDefs = [
-        { idx: 0, label: '✕ Stop',   color: '#f87171' },
+        { idx: 0, label: '✕ Stop', color: '#f87171' },
         { idx: 2, label: '□ Detect', color: '#a78bfa' },
-        { idx: 3, label: '△ Auto',   color: '#34d399' },
+        { idx: 3, label: '△ Auto', color: '#34d399' },
     ];
     const pillContainer = document.getElementById('gamepad-btns');
     if (pillContainer) {
@@ -1835,7 +1837,7 @@ function drawGamepadWidget(axes, buttons) {
             if (!pill) return;
             const pressed = buttons[idx] && buttons[idx].pressed;
             pill.style.background = pressed ? color : 'var(--bg-secondary)';
-            pill.style.color      = pressed ? '#0f172a' : '#64748b';
+            pill.style.color = pressed ? '#0f172a' : '#64748b';
             pill.style.borderColor = pressed ? color : '#334155';
         });
     }
@@ -1913,16 +1915,16 @@ function pollGamepad() {
         if (Math.abs(lx) < deadzone) lx = 0;
 
         // R2 (right trigger) boosts move speed from 0.6 up to 1.0
-        const BASE_SCALE = 0.6;
+        const BASE_SCALE = 0.3;
         const r2 = gamepad.buttons[7] ? gamepad.buttons[7].value : 0;
-        const MOVE_SCALE = BASE_SCALE + r2 * (1.0 - BASE_SCALE);
+        const MOVE_SCALE = BASE_SCALE + r2 * (0.8 - BASE_SCALE);
 
-        const vx    = -ry * MOVE_SCALE;  // Right stick Y up → forward (positive vx)
-        const vy    = -rx * MOVE_SCALE;  // Right stick X right → strafe right (inverted payload)
+        const vx = -ry * MOVE_SCALE;  // Right stick Y up → forward (positive vx)
+        const vy = -rx * MOVE_SCALE;  // Right stick X right → strafe right (inverted payload)
         const omega = -lx;               // Left stick X right → rotate CW (negative omega = CW)
 
-        const vxR    = Math.round(vx    * 100) / 100;
-        const vyR    = Math.round(vy    * 100) / 100;
+        const vxR = Math.round(vx * 100) / 100;
+        const vyR = Math.round(vy * 100) / 100;
         const omegaR = Math.round(omega * 100) / 100;
 
         // Always send while sticks are active so the motion watchdog is fed continuously
@@ -1933,8 +1935,8 @@ function pollGamepad() {
             Math.abs(omegaR - state.lastOmega) > 0.02) {
 
             sendMessage({ type: "set_move", vx: vxR, vy: vyR, omega: omegaR });
-            state.lastVx    = vxR;
-            state.lastVy    = vyR;
+            state.lastVx = vxR;
+            state.lastVy = vyR;
             state.lastOmega = omegaR;
 
             // Mirror approximate forward power to UI sliders
