@@ -452,7 +452,7 @@ function drawNavMap() {
             ctx.save();
             ctx.translate(rcanvas.x, rcanvas.y);
             ctx.rotate(-theta); // canvas Y is flipped vs ROS
-            ctx.fillStyle = '#22d3ee';
+            ctx.fillStyle = '#1c27a5ff';
             ctx.beginPath();
             ctx.moveTo(len, 0);
             ctx.lineTo(-len * 0.5, -len * 0.5);
