@@ -439,6 +439,29 @@ function drawNavMap() {
         }
     }
 
+    // 3.5 Live lidar scan overlay (robot frame → world frame → canvas pixels)
+    const scanPts = state.latestData.lidarPoints;
+    const rpose   = state.latestData.robotPose;
+    if (state.lidarEnabled && scanPts && scanPts.length >= 2 && rpose && state.nav.mapMeta) {
+        const rx   = rpose.x / 100.0;   // cm → metres
+        const ry   = rpose.y / 100.0;
+        const cosT = Math.cos(rpose.theta);
+        const sinT = Math.sin(rpose.theta);
+        // CW-positive theta + server lidar frame (+x=fwd, +y=right):
+        // wx = rx + lx*cosT - ly*sinT
+        // wy = ry - lx*sinT - ly*cosT
+        ctx.fillStyle = 'rgba(34, 197, 94, 0.7)';  // green, matching drawLidar
+        for (let i = 0; i + 1 < scanPts.length; i += 2) {
+            const lx = scanPts[i];
+            const ly = scanPts[i + 1];
+            const cp = worldToCanvasPx(
+                rx + lx * cosT - ly * sinT,
+                ry - lx * sinT - ly * cosT
+            );
+            if (cp) ctx.fillRect(cp.x - 1, cp.y - 1, 2, 2);
+        }
+    }
+
     // 4. Robot pose (cyan arrow)
     const rp = state.latestData.robotPose;
     if (rp && state.nav.mapMeta) {
@@ -451,7 +474,7 @@ function drawNavMap() {
             const len = 14;
             ctx.save();
             ctx.translate(rcanvas.x, rcanvas.y);
-            ctx.rotate(-theta); // canvas Y is flipped vs ROS
+            ctx.rotate(theta);  // Yahboom X3 reports CW-positive yaw; canvas is also CW-positive
             ctx.fillStyle = '#1c27a5ff';
             ctx.beginPath();
             ctx.moveTo(len, 0);
@@ -646,7 +669,7 @@ function renderLoop(timestamp) {
         }
 
         // 4. Redraw nav map at ~10 FPS (robot pose updates continuously)
-        if (state.nav.mapImage && state.latestData.robotPose &&
+        if (state.nav.mapImage &&
             timestamp - (state.nav._lastDrawTime || 0) > 100) {
             drawNavMap();
             state.nav._lastDrawTime = timestamp;
@@ -871,18 +894,22 @@ function handleMessage(data) {
             console.warn(`[nav] Map load error: ${data.error}`);
             return;
         }
-        // Store metadata
-        state.nav.mapMeta = data.meta;
-        // Decode base64 PNG into an HTMLImageElement
+        // Capture meta in closure so this image always draws with its own metadata.
+        const captureMeta = data.meta;
         const img = new Image();
+        const src = 'data:image/png;base64,' + data.png_b64;
+        // Track the latest pending src; discard any earlier frame that arrives late.
+        state.nav._pendingImgSrc = src;
         img.onload = () => {
+            if (img.src !== state.nav._pendingImgSrc) return; // stale load — discard
+            state.nav.mapMeta  = captureMeta;
             state.nav.mapImage = img;
             drawNavMap();
             updateNavHint();
-            console.log(`[nav] Map loaded: ${data.meta.width}×${data.meta.height}px, ` +
-                `res=${data.meta.resolution}m, origin=${data.meta.origin}`);
+            console.log(`[nav] Map loaded: ${captureMeta.width}×${captureMeta.height}px, ` +
+                `res=${captureMeta.resolution}m, origin=${captureMeta.origin}`);
         };
-        img.src = 'data:image/png;base64,' + data.png_b64;
+        img.src = src;
         return;
     }
 
