@@ -267,12 +267,16 @@ class AstraCamera:
     def _open_depth(self):
         try:
             from openni import openni2
-            # Find libOpenNI2.so — try paths in order
-            lib_path = None
-            for p in self.OPENNI2_SEARCH_PATHS:
-                if os.path.exists(os.path.join(p, "libOpenNI2.so")):
-                    lib_path = p
-                    break
+            import openni as _openni_mod
+            # The pip 'openni' package bundles libOpenNI2.so + OpenNI2/Drivers/ together.
+            # Prepend its directory so the Orbbec USB driver (PS1080.so) is found first.
+            # System paths (/usr/local/lib etc.) often have the library but not the drivers.
+            pkg_dir = os.path.dirname(os.path.abspath(_openni_mod.__file__))
+            search = [pkg_dir] + self.OPENNI2_SEARCH_PATHS
+            lib_path = next(
+                (p for p in search if os.path.exists(os.path.join(p, "libOpenNI2.so"))),
+                None,
+            )
             if lib_path is None:
                 logger.error("AstraCamera: libOpenNI2.so not found. "
                              "Copy ARM64 libs from the Yahboom SDK to ~/x3_ws/src/")
