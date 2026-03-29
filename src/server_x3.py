@@ -332,23 +332,27 @@ class ROS2Bridge:
                 return None
             self._map_dirty = False
             g = dict(self._occupancy_grid)
-        # -1 (unknown) → 128 grey,  0 (free) → 255 white,  100 (occupied) → 0 black
-        arr = np.array(g["data"], dtype=np.int16)
-        img = np.where(arr < 0, 128, np.where(arr == 0, 255, 0)).astype(np.uint8)
-        img = img.reshape(g["height"], g["width"])
-        img = np.flipud(img)   # ROS origin is bottom-left; canvas expects top-left
-        _, buf = cv2.imencode('.png', img)
-        png_b64 = base64.b64encode(bytes(buf)).decode('utf-8')
-        return {
-            "type": "map_data",
-            "png_b64": png_b64,
-            "meta": {
-                "resolution": g["resolution"],
-                "origin": [g["origin_x"], g["origin_y"]],
-                "width":  g["width"],
-                "height": g["height"],
-            },
-        }
+        try:
+            # -1 (unknown) → 128 grey,  0 (free) → 255 white,  100 (occupied) → 0 black
+            arr = np.array(g["data"], dtype=np.int16)
+            img = np.where(arr < 0, 128, np.where(arr == 0, 255, 0)).astype(np.uint8)
+            img = img.reshape(g["height"], g["width"])
+            img = np.flipud(img)   # ROS origin is bottom-left; canvas expects top-left
+            _, buf = cv2.imencode('.png', img)
+            png_b64 = base64.b64encode(bytes(buf)).decode('utf-8')
+            return {
+                "type": "map_data",
+                "png_b64": png_b64,
+                "meta": {
+                    "resolution": g["resolution"],
+                    "origin": [g["origin_x"], g["origin_y"]],
+                    "width":  g["width"],
+                    "height": g["height"],
+                },
+            }
+        except Exception as e:
+            logger.warning(f"pop_map_update: PNG encode failed: {e}")
+            return None
 
     def get_occupancy_grid(self) -> dict | None:
         """Return the latest occupancy grid info dict, or None if not yet received."""
@@ -359,6 +363,16 @@ class ROS2Bridge:
         """Return the robot pose in metres: {x, y, theta}."""
         with self._lock:
             return dict(self._pose_m)
+
+    def get_pose_cm(self) -> dict:
+        """Return robot pose in centimetres — matches YDLidarDriver interface
+        so the broadcast_loop's hasattr(lidar, 'get_pose_cm') check succeeds."""
+        with self._lock:
+            return {
+                "x":     self._pose_m["x"] * 100.0,
+                "y":     self._pose_m["y"] * 100.0,
+                "theta": self._pose_m["theta"],
+            }
 
     def _scan_cb(self, msg):
         """Convert LaserScan → flat [x0,y0,x1,y1,…] (same format as YDLidarDriver).
