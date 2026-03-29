@@ -450,7 +450,8 @@ function drawNavMap() {
         // CW-positive theta + server lidar frame (+x=fwd, +y=right):
         // wx = rx + lx*cosT - ly*sinT
         // wy = ry - lx*sinT - ly*cosT
-        ctx.fillStyle = 'rgba(226, 25, 25, 0.7)';  // green, matching drawLidar
+        ctx.fillStyle = 'rgba(226, 25, 25, 0.9)';
+        ctx.beginPath();
         for (let i = 0; i + 1 < scanPts.length; i += 2) {
             const lx = scanPts[i];
             const ly = scanPts[i + 1];
@@ -458,8 +459,12 @@ function drawNavMap() {
                 rx + lx * cosT - ly * sinT,
                 ry - lx * sinT - ly * cosT
             );
-            if (cp) ctx.fillRect(cp.x - 1, cp.y - 1, 2, 2);
+            if (cp) {
+                ctx.moveTo(cp.x + 3, cp.y);
+                ctx.arc(cp.x, cp.y, 3, 0, Math.PI * 2);
+            }
         }
+        ctx.fill();
     }
 
     // 4. Robot pose (cyan arrow)

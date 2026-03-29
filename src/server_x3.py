@@ -388,8 +388,8 @@ class ROS2Bridge:
             if r < _SCAN_MIN_RANGE or not (msg.range_min < r < msg.range_max):
                 continue
             angle = msg.angle_min + i * msg.angle_increment
-            if abs(angle) > _SCAN_ANGLE_MAX:
-                continue
+            # if abs(angle) > _SCAN_ANGLE_MAX:  # temporarily disabled — full 360° sampling
+            #     continue
             flat.append( r * _math.cos(angle))   # lidar mounted 180° rotated — negate both axes
             flat.append(-r * _math.sin(angle))
         with self._lock:
