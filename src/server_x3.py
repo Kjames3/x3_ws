@@ -375,8 +375,8 @@ class ROS2Bridge:
             angle = msg.angle_min + i * msg.angle_increment
             if abs(angle) > _SCAN_ANGLE_MAX:
                 continue
-            flat.append(-r * _math.cos(angle))   # negate X to match FLIP_HORIZONTAL
-            flat.append( r * _math.sin(angle))
+            flat.append( r * _math.cos(angle))   # lidar mounted 180° rotated — negate both axes
+            flat.append(-r * _math.sin(angle))
         with self._lock:
             self._points = flat
 
