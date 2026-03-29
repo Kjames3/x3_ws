@@ -1,0 +1,8 @@
+# Orbbec Astra / Astra Pro depth camera
+# Grants read/write access to all users so OpenNI2 can open the device
+# without requiring root or a specific group membership.
+#
+# Install:
+#   sudo cp 99-orbbec.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+SUBSYSTEM=="usb", ATTR{idVendor}=="2bc5", MODE="0666", GROUP="plugdev"

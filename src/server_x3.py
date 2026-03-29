@@ -111,6 +111,7 @@ WS_PORT = 8081
 # GLOBAL STATE
 # =============================================================================
 ros_board = None
+ros_bridge = None   # ROS2Bridge instance when --ros2 or --sim; used for map streaming
 drive = None
 lidar = None
 camera = None
@@ -191,6 +192,8 @@ class ROS2Bridge:
         from nav_msgs.msg import Odometry, OccupancyGrid
         from std_msgs.msg import Float32
 
+        from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+
         rclpy.init(args=None)
         self._node = Node('x3_ws_bridge')
         self._lock = threading.Lock()
@@ -201,13 +204,21 @@ class ROS2Bridge:
         self._twist = {"vx": 0.0, "vy": 0.0, "wz": 0.0}   # body velocity m/s, rad/s
         self._voltage = 12.0               # volts, updated by /voltage subscriber
         self._occupancy_grid: dict | None = None  # latest OccupancyGrid info dict for frontier explorer
+        self._map_dirty = False
 
-        self._node.create_subscription(LaserScan,      '/scan',             self._scan_cb,  10)
+        # YDLidar publishes /scan as BEST_EFFORT; default (RELIABLE) causes a QoS mismatch
+        _scan_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
+        # SLAM Toolbox publishes /map as TRANSIENT_LOCAL; match so late-joining still gets the map
+        _map_qos = QoSProfile(depth=1,
+                              reliability=ReliabilityPolicy.RELIABLE,
+                              durability=DurabilityPolicy.TRANSIENT_LOCAL)
+
+        self._node.create_subscription(LaserScan,      '/scan',             self._scan_cb,  _scan_qos)
         self._node.create_subscription(Image,          '/camera/image_raw', self._image_cb,  1)
         self._node.create_subscription(Image,          '/camera/depth_image', self._depth_cb, 1)
         self._node.create_subscription(Odometry,       '/odom',             self._odom_cb,  10)
         self._node.create_subscription(Float32,        '/voltage',          self._voltage_cb, 10)
-        self._node.create_subscription(OccupancyGrid,  '/map',              self._map_cb,    1)
+        self._node.create_subscription(OccupancyGrid,  '/map',              self._map_cb,    _map_qos)
         self._cmd_vel_pub = self._node.create_publisher(Twist, '/cmd_vel', 10)
 
         self._spin_thread = threading.Thread(
@@ -305,6 +316,34 @@ class ROS2Bridge:
                 "origin_x":   msg.info.origin.position.x,
                 "origin_y":   msg.info.origin.position.y,
             }
+            self._map_dirty = True
+
+    def pop_map_update(self) -> dict | None:
+        """If a new map has arrived since last call, convert it to a PNG and return
+        a map_data message dict ready to JSON-encode and send to the GUI; else None."""
+        import numpy as np, cv2, base64
+        with self._lock:
+            if not self._map_dirty or self._occupancy_grid is None:
+                return None
+            self._map_dirty = False
+            g = dict(self._occupancy_grid)
+        # -1 (unknown) → 128 grey,  0 (free) → 255 white,  100 (occupied) → 0 black
+        arr = np.array(g["data"], dtype=np.int16)
+        img = np.where(arr < 0, 128, np.where(arr == 0, 255, 0)).astype(np.uint8)
+        img = img.reshape(g["height"], g["width"])
+        img = np.flipud(img)   # ROS origin is bottom-left; canvas expects top-left
+        _, buf = cv2.imencode('.png', img)
+        png_b64 = base64.b64encode(bytes(buf)).decode('utf-8')
+        return {
+            "type": "map_data",
+            "png_b64": png_b64,
+            "meta": {
+                "resolution": g["resolution"],
+                "origin": [g["origin_x"], g["origin_y"]],
+                "width":  g["width"],
+                "height": g["height"],
+            },
+        }
 
     def get_occupancy_grid(self) -> dict | None:
         """Return the latest occupancy grid info dict, or None if not yet received."""
@@ -569,7 +608,7 @@ def _save_map(name: str) -> tuple[bool, str]:
 
 
 def initialize_hardware():
-    global ros_board, drive, lidar, camera, model, oled, _gazebo_proc
+    global ros_board, ros_bridge, drive, lidar, camera, model, oled, _gazebo_proc
     global nav2_client, _ros2_stack_proc, frontier_explorer
 
     logger.info("="*50)
@@ -581,6 +620,7 @@ def initialize_hardware():
         # data as soon as Gazebo starts.  Gazebo itself is launched on-demand when
         # the user clicks "🚀 Gazebo" in the GUI (launch_gazebo WS message).
         bridge = ROS2Bridge()
+        ros_bridge = bridge
         drive = bridge
         lidar = bridge
         camera = bridge   # bridge provides get_frame() from /camera/image_raw
@@ -599,6 +639,7 @@ def initialize_hardware():
         import time as _time; _time.sleep(3.0)
         logger.info("ROS2 mode: creating bridge — subscribing to hardware topics")
         bridge = ROS2Bridge()
+        ros_bridge = bridge
         drive = bridge
         lidar = bridge
         # camera intentionally left unset — falls through to AstraCamera init below
@@ -1213,6 +1254,10 @@ async def broadcast_loop():
                     "battery_pct": batt_pct,
                 },
             }
+
+            # Push SLAM map update when a new OccupancyGrid has arrived from /map
+            if ros_bridge and (map_upd := ros_bridge.pop_map_update()):
+                websockets.broadcast(connected_clients, json.dumps(map_upd))
 
             websockets.broadcast(connected_clients, json.dumps(msg))
 
