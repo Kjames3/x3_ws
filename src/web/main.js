@@ -2037,14 +2037,19 @@ function pollGamepad() {
         if (Math.abs(ry) < deadzone) ry = 0;
         if (Math.abs(lx) < deadzone) lx = 0;
 
-        // R2 (right trigger) boosts move speed from 0.6 up to 1.0
-        const BASE_SCALE = 0.3;
+        // R2 (right trigger) boosts move speed; low base for slow/accurate SLAM driving
+        const BASE_SCALE = 0.10;   // no R2: ~0.10 m/s — slow crawl, good for SLAM
+        const FAST_SCALE = 0.45;   // full R2: ~0.45 m/s — normal travel speed
         const r2 = gamepad.buttons[7] ? gamepad.buttons[7].value : 0;
-        const MOVE_SCALE = BASE_SCALE + r2 * (0.8 - BASE_SCALE);
+        const MOVE_SCALE = BASE_SCALE + r2 * (FAST_SCALE - BASE_SCALE);
+        const ROT_SCALE  = 0.35   + r2 * (1.5 - 0.35);  // rotation scales with R2 too
 
-        const vx = -ry * MOVE_SCALE;  // Right stick Y up → forward (positive vx)
-        const vy = -rx * MOVE_SCALE;  // Right stick X right → strafe right (inverted payload)
-        const omega = -lx;               // Left stick X right → rotate CW (negative omega = CW)
+        // Quadratic expo: fine control at low deflections, full speed at max stick
+        const expo = v => Math.sign(v) * Math.pow(Math.abs(v), 2);
+
+        const vx    = -expo(ry) * MOVE_SCALE;  // Right stick Y up → forward (positive vx)
+        const vy    = -expo(rx) * MOVE_SCALE;  // Right stick X right → strafe right
+        const omega = -expo(lx) * ROT_SCALE;   // Left stick X right → rotate CW
 
         const vxR = Math.round(vx * 100) / 100;
         const vyR = Math.round(vy * 100) / 100;
