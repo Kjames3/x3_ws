@@ -16,6 +16,9 @@ import json
 import logging
 import argparse
 import base64
+import functools
+import http.server
+import struct
 import numpy as np
 import cv2
 import websockets
@@ -106,6 +109,8 @@ INFERENCE_SIZE = 640
 
 # WebSocket port (must match GUI DEFAULT_PORT)
 WS_PORT = 8081
+# HTTP port for serving static GUI files (required for Web Workers to load)
+HTTP_PORT = 8080
 
 # =============================================================================
 # GLOBAL STATE
@@ -330,10 +335,20 @@ class ROS2Bridge:
             }
             self._map_dirty = True
 
-    def pop_map_update(self) -> dict | None:
-        """If a new map has arrived since last call, convert it to a PNG and return
-        a map_data message dict ready to JSON-encode and send to the GUI; else None."""
-        import numpy as np, cv2, base64
+    def pop_map_update(self) -> bytes | None:
+        """If a new map has arrived since last call, return a binary MAPU frame; else None.
+
+        Frame layout (big-endian header):
+            4 bytes  magic       b'MAPU'
+            4 bytes  uint32      width
+            4 bytes  uint32      height
+            4 bytes  float32     resolution (metres/pixel)
+            4 bytes  float32     origin_x
+            4 bytes  float32     origin_y
+            N bytes  uint8[]     pixel data, row-major, top-left origin
+                                 (128=unknown, 255=free, 0=occupied)
+        """
+        import numpy as np
         with self._lock:
             if not self._map_dirty or self._occupancy_grid is None:
                 return None
@@ -343,22 +358,15 @@ class ROS2Bridge:
             # -1 (unknown) → 128 grey,  0 (free) → 255 white,  100 (occupied) → 0 black
             arr = np.array(g["data"], dtype=np.int16)
             img = np.where(arr < 0, 128, np.where(arr == 0, 255, 0)).astype(np.uint8)
-            img = img.reshape(g["height"], g["width"])
-            img = np.flipud(img)   # ROS origin is bottom-left; canvas expects top-left
-            _, buf = cv2.imencode('.png', img)
-            png_b64 = base64.b64encode(bytes(buf)).decode('utf-8')
-            return {
-                "type": "map_data",
-                "png_b64": png_b64,
-                "meta": {
-                    "resolution": g["resolution"],
-                    "origin": [g["origin_x"], g["origin_y"]],
-                    "width":  g["width"],
-                    "height": g["height"],
-                },
-            }
+            img = np.flipud(img.reshape(g["height"], g["width"]))  # ROS bottom-left → canvas top-left
+            header = struct.pack('>4sIIfff',
+                                 b'MAPU',
+                                 g["width"], g["height"],
+                                 g["resolution"],
+                                 g["origin_x"], g["origin_y"])
+            return header + img.tobytes()
         except Exception as e:
-            logger.warning(f"pop_map_update: PNG encode failed: {e}")
+            logger.warning(f"pop_map_update: binary encode failed: {e}")
             return None
 
     def get_occupancy_grid(self) -> dict | None:
@@ -1286,12 +1294,16 @@ async def broadcast_loop():
             if img_bytes:
                 websockets.broadcast(connected_clients, img_bytes)
 
+            # Step 1: send lidar as binary Float32Array (LIDR header + little-endian floats)
+            if scan_points:
+                lidr_payload = b'LIDR' + struct.pack(f'<{len(scan_points)}f', *scan_points)
+                websockets.broadcast(connected_clients, lidr_payload)
+
             # 8. Build readout (P10: removed always-None/False fields; P3: no "image" key)
             nav_status = nav2_client.get_status() if nav2_client else {"state": "UNAVAILABLE"}
             msg = {
                 "type": "readout",
                 "depth_image": depth_str,
-                "lidar_points": scan_points,
                 "robot_pose": pose,
                 "m1_pos": m1_enc,
                 "m2_pos": m2_enc,
@@ -1323,11 +1335,11 @@ async def broadcast_loop():
             }
 
             # Push SLAM map update when a new OccupancyGrid has arrived from /map.
-            # Run in executor: numpy + cv2.imencode + base64 must not block the event loop.
+            # Run in executor: numpy array conversion must not block the event loop.
             if ros_bridge:
                 map_upd = await loop.run_in_executor(None, ros_bridge.pop_map_update)
                 if map_upd:
-                    websockets.broadcast(connected_clients, json.dumps(map_upd))
+                    websockets.broadcast(connected_clients, map_upd)  # raw bytes (MAPU frame)
 
             websockets.broadcast(connected_clients, json.dumps(msg))
 
@@ -1391,8 +1403,19 @@ async def oled_loop():
         await asyncio.sleep(5)
 
 
+def _start_http_server():
+    """Serve src/web/ over HTTP so Web Workers can load via http:// instead of file://."""
+    web_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web')
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=web_dir)
+    httpd = http.server.HTTPServer(('0.0.0.0', HTTP_PORT), handler)
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+    logger.info(f"GUI available at http://0.0.0.0:{HTTP_PORT}/GUI.html")
+
+
 async def main():
     global motion_queue
+    _start_http_server()
     initialize_hardware()
     motion_queue = asyncio.Queue(maxsize=2)
     async with websockets.serve(handle_client, "0.0.0.0", WS_PORT):
