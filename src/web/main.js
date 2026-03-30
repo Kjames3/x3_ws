@@ -55,6 +55,9 @@ const state = {
     slamActive: false,
     liveMapInterval: null,   // setInterval handle for live map polling during SLAM
 
+    // Web Worker for offscreen lidar rendering (Step 2)
+    lidarWorker: null,
+
     // Navigation state
     nav: {
         status: 'UNAVAILABLE',
@@ -63,8 +66,20 @@ const state = {
         distRemaining: null,
         mapMode: 'navigate', // 'navigate' | 'set_pose'
         mapMeta: null,       // {resolution, origin:[x,y], width, height}
-        mapImage: null,      // HTMLImageElement of the loaded map PNG
+        mapImage: null,      // HTMLImageElement of the loaded map PNG (legacy JSON path)
+        mapBitmap: null,     // ImageBitmap from binary MAPU frame (Step 3)
+        _prevBitmap: null,   // previous bitmap kept so we can call .close()
+        rawPixels: null,     // Uint8Array of latest costmap pixels for WebGL re-render
+        rawPixelW: 0,
+        rawPixelH: 0,
         nav2Running: false,
+        // WebGL state for costmap texture (Step 4)
+        webgl: {
+            gl: null, program: null, texture: null,
+            posBuffer: null, texBuffer: null,
+            aPosLoc: -1, aTexLoc: -1, uSampLoc: null,
+            ready: false,
+        },
     },
 };
 
@@ -212,6 +227,7 @@ const elements = {
     launchGazeboBtn: document.getElementById('launch-gazebo-btn'),
 
     // Navigation panel
+    navMapWebGLCanvas: document.getElementById('nav-map-webgl-canvas'),
     navMapCanvas: document.getElementById('nav-map-canvas'),
     navStatusBadge: document.getElementById('nav-status-badge'),
     navHint: document.getElementById('nav-hint'),
@@ -260,6 +276,172 @@ function updateLabelToggleBtn(btn, labelsOn) {
 }
 
 // =================================================================
+// Lidar Worker (Step 2)
+// =================================================================
+function initLidarWorker() {
+    const canvas = elements.lidarCanvas;
+    if (!canvas || !canvas.transferControlToOffscreen) {
+        console.warn('[lidar] OffscreenCanvas not supported — using main-thread rendering');
+        return;
+    }
+    try {
+        const offscreen = canvas.transferControlToOffscreen();
+        const worker = new Worker('lidar-worker.js');
+        worker.onerror = (e) => {
+            console.error('[lidar-worker] error:', e);
+            state.lidarWorker = null;
+        };
+        worker.postMessage({ type: 'init', canvas: offscreen }, [offscreen]);
+        state.lidarWorker = worker;
+        elements.lidarCtx = null; // canvas control transferred; main-thread ctx is now invalid
+    } catch (e) {
+        console.warn('[lidar] Worker init failed:', e);
+    }
+}
+
+// =================================================================
+// WebGL Costmap Texture (Step 4)
+// =================================================================
+function initNavMapWebGL() {
+    const glCanvas = elements.navMapWebGLCanvas;
+    if (!glCanvas) return;
+
+    const refCanvas = elements.navMapCanvas;
+    if (refCanvas) {
+        glCanvas.width  = refCanvas.width  || 400;
+        glCanvas.height = refCanvas.height || 400;
+    }
+
+    const gl = glCanvas.getContext('webgl', { alpha: false, antialias: false });
+    if (!gl) {
+        console.warn('[navWebGL] WebGL not supported — falling back to 2D drawImage');
+        return;
+    }
+
+    const vsSource = `
+        attribute vec2 aPos;
+        attribute vec2 aTexCoord;
+        varying vec2 vTexCoord;
+        void main() {
+            gl_Position = vec4(aPos, 0.0, 1.0);
+            vTexCoord = aTexCoord;
+        }`;
+
+    const fsSource = `
+        precision mediump float;
+        varying vec2 vTexCoord;
+        uniform sampler2D uSampler;
+        void main() {
+            float lum = texture2D(uSampler, vTexCoord).r;
+            gl_FragColor = vec4(lum, lum, lum, 1.0);
+        }`;
+
+    function compileShader(type, src) {
+        const s = gl.createShader(type);
+        gl.shaderSource(s, src);
+        gl.compileShader(s);
+        if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+            console.error('[navWebGL] Shader error:', gl.getShaderInfoLog(s));
+            gl.deleteShader(s);
+            return null;
+        }
+        return s;
+    }
+
+    const vs = compileShader(gl.VERTEX_SHADER,   vsSource);
+    const fs = compileShader(gl.FRAGMENT_SHADER, fsSource);
+    if (!vs || !fs) return;
+
+    const program = gl.createProgram();
+    gl.attachShader(program, vs);
+    gl.attachShader(program, fs);
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        console.error('[navWebGL] Link error:', gl.getProgramInfoLog(program));
+        return;
+    }
+
+    // Full-screen quad: NDC [-1,1]. UV y is flipped so (0,0) = top-left of texture.
+    const posBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+        -1, -1,   1, -1,   -1,  1,
+         1, -1,   1,  1,   -1,  1,
+    ]), gl.STATIC_DRAW);
+
+    const texBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, texBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+        0, 1,   1, 1,   0, 0,
+        1, 1,   1, 0,   0, 0,
+    ]), gl.STATIC_DRAW);
+
+    const texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+    // Cache attribute/uniform locations
+    const wgl = state.nav.webgl;
+    wgl.gl        = gl;
+    wgl.program   = program;
+    wgl.texture   = texture;
+    wgl.posBuffer = posBuffer;
+    wgl.texBuffer = texBuffer;
+    wgl.aPosLoc   = gl.getAttribLocation(program,  'aPos');
+    wgl.aTexLoc   = gl.getAttribLocation(program,  'aTexCoord');
+    wgl.uSampLoc  = gl.getUniformLocation(program, 'uSampler');
+    wgl.ready     = true;
+
+    // Handle context loss gracefully
+    glCanvas.addEventListener('webglcontextlost', (e) => {
+        e.preventDefault();
+        wgl.ready = false;
+        console.warn('[navWebGL] Context lost — falling back to 2D drawImage');
+    });
+    glCanvas.addEventListener('webglcontextrestored', () => initNavMapWebGL());
+
+    console.log('[navWebGL] WebGL context initialised');
+}
+
+function renderCostmapWebGL(pixelData, width, height) {
+    const wgl = state.nav.webgl;
+    const { gl, program, texture, posBuffer, texBuffer,
+            aPosLoc, aTexLoc, uSampLoc } = wgl;
+    if (!gl || !program) return;
+
+    const glCanvas = elements.navMapWebGLCanvas;
+    const refCanvas = elements.navMapCanvas;
+    if (refCanvas && (glCanvas.width !== refCanvas.width || glCanvas.height !== refCanvas.height)) {
+        glCanvas.width  = refCanvas.width;
+        glCanvas.height = refCanvas.height;
+    }
+    gl.viewport(0, 0, glCanvas.width, glCanvas.height);
+
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, width, height, 0,
+                  gl.LUMINANCE, gl.UNSIGNED_BYTE, pixelData);
+
+    gl.useProgram(program);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
+    gl.enableVertexAttribArray(aPosLoc);
+    gl.vertexAttribPointer(aPosLoc, 2, gl.FLOAT, false, 0, 0);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, texBuffer);
+    gl.enableVertexAttribArray(aTexLoc);
+    gl.vertexAttribPointer(aTexLoc, 2, gl.FLOAT, false, 0, 0);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.uniform1i(uSampLoc, 0);
+
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+}
+
+// =================================================================
 // Navigation Panel
 // =================================================================
 
@@ -269,8 +451,13 @@ function initNavPanel() {
 
     // Match internal pixel resolution to display size
     const size = canvas.offsetWidth || 400;
-    canvas.width = size;
+    canvas.width  = size;
     canvas.height = size;
+    // Keep WebGL canvas in sync
+    if (elements.navMapWebGLCanvas) {
+        elements.navMapWebGLCanvas.width  = size;
+        elements.navMapWebGLCanvas.height = size;
+    }
 
     canvas.addEventListener('click', handleNavMapClick);
 
@@ -393,18 +580,24 @@ function drawNavMap() {
 
     ctx.clearRect(0, 0, W, H);
 
-    // 1. Map background (image or dark grid)
-    if (state.nav.mapImage) {
-        ctx.drawImage(state.nav.mapImage, 0, 0, W, H);
+    // 1. Map background — WebGL texture (Step 4) > ImageBitmap (Step 3) > legacy img > dark grid
+    if (state.nav.webgl.ready && state.nav.rawPixels) {
+        renderCostmapWebGL(state.nav.rawPixels, state.nav.rawPixelW, state.nav.rawPixelH);
+        ctx.drawImage(elements.navMapWebGLCanvas, 0, 0, W, H);
     } else {
-        ctx.fillStyle = '#060e1a';
-        ctx.fillRect(0, 0, W, H);
-        ctx.strokeStyle = '#1e3a5f';
-        ctx.lineWidth = 1;
-        const step = W / 10;
-        for (let i = 0; i <= 10; i++) {
-            ctx.beginPath(); ctx.moveTo(i * step, 0); ctx.lineTo(i * step, H); ctx.stroke();
-            ctx.beginPath(); ctx.moveTo(0, i * step); ctx.lineTo(W, i * step); ctx.stroke();
+        const mapSource = state.nav.mapBitmap || state.nav.mapImage;
+        if (mapSource) {
+            ctx.drawImage(mapSource, 0, 0, W, H);
+        } else {
+            ctx.fillStyle = '#060e1a';
+            ctx.fillRect(0, 0, W, H);
+            ctx.strokeStyle = '#1e3a5f';
+            ctx.lineWidth = 1;
+            const step = W / 10;
+            for (let i = 0; i <= 10; i++) {
+                ctx.beginPath(); ctx.moveTo(i * step, 0); ctx.lineTo(i * step, H); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(0, i * step); ctx.lineTo(W, i * step); ctx.stroke();
+            }
         }
     }
 
@@ -654,6 +847,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Init Navigation Panel
     initNavPanel();
+    initLidarWorker();   // Step 2: transfer lidar canvas to Web Worker
+    initNavMapWebGL();   // Step 4: init WebGL context for costmap texture
 
     // Init SLAM Controls
     initSlamControls();
@@ -677,14 +872,14 @@ function renderLoop(timestamp) {
         // 2. Update UI from latest data
         updateUI();
 
-        // 3. Draw Lidar
+        // 3. Draw Lidar (main-thread fallback when worker not available)
         if (state.lidarEnabled && state.needsLidarUpdate) {
-            drawLidar(state.latestData.lidarPoints);
+            if (!state.lidarWorker) drawLidar(state.latestData.lidarPoints);
             state.needsLidarUpdate = false;
         }
 
         // 4. Redraw nav map at ~10 FPS (robot pose updates continuously)
-        if (state.nav.mapImage &&
+        if ((state.nav.mapImage || state.nav.mapBitmap) &&
             timestamp - (state.nav._lastDrawTime || 0) > 100) {
             drawNavMap();
             state.nav._lastDrawTime = timestamp;
@@ -714,6 +909,7 @@ function connect() {
     const serverUrl = getServerAddress();
     console.log(`Connecting to ${serverUrl}`);
     state.ws = new WebSocket(serverUrl);
+    state.ws.binaryType = 'arraybuffer';
 
     state.ws.onopen = () => {
         state.connected = true;
@@ -745,15 +941,8 @@ function connect() {
     };
 
     state.ws.onmessage = (event) => {
-        // P3: binary frame = raw JPEG camera image (no base64 round-trip)
-        if (event.data instanceof Blob) {
-            if (elements.cameraFeed) {
-                const oldSrc = elements.cameraFeed.src;
-                elements.cameraFeed.src = URL.createObjectURL(event.data);
-                elements.cameraFeed.style.display = 'block';
-                if (elements.cameraPlaceholder) elements.cameraPlaceholder.style.display = 'none';
-                if (oldSrc.startsWith('blob:')) URL.revokeObjectURL(oldSrc);
-            }
+        if (event.data instanceof ArrayBuffer) {
+            handleBinaryFrame(event.data);
             return;
         }
         try {
@@ -816,6 +1005,92 @@ function sendMessage(data) {
     if (state.ws && state.ws.readyState === WebSocket.OPEN) {
         state.ws.send(JSON.stringify(data));
     }
+}
+
+// =================================================================
+// Binary Frame Handling (Steps 1, 3)
+// =================================================================
+function handleBinaryFrame(buf) {
+    const tag = String.fromCharCode(...new Uint8Array(buf, 0, 4));
+
+    if (tag === 'LIDR') {
+        const pts = new Float32Array(buf, 4);
+        state.latestData.lidarPoints = pts;
+        state.needsLidarUpdate = true;
+
+        // Obstacle proximity rumble — flat [x0,y0,x1,y1,...] in metres (robot frame)
+        if (pts.length >= 2) {
+            const OBSTACLE_THRESHOLD = 0.35;
+            let minDist = Infinity;
+            for (let i = 0; i < pts.length; i += 2) {
+                const d = Math.sqrt(pts[i] * pts[i] + pts[i + 1] * pts[i + 1]);
+                if (d < minDist) minDist = d;
+            }
+            const now = Date.now();
+            if (minDist < OBSTACLE_THRESHOLD && now - state.lastObstacleRumble > 1000) {
+                state.lastObstacleRumble = now;
+                const intensity = Math.max(0.2, 1 - (minDist / OBSTACLE_THRESHOLD));
+                rumble(intensity * 0.7, intensity * 0.4, 200);
+            }
+        }
+
+        // Dispatch to lidar worker if active (Step 2); keep pts in state for nav map overlay
+        if (state.lidarWorker) {
+            const copy = pts.buffer.slice(0);
+            state.lidarWorker.postMessage({ type: 'draw', buffer: copy }, [copy]);
+        }
+        return;
+    }
+
+    if (tag === 'MAPU') {
+        handleMapuFrame(buf);
+        return;
+    }
+
+    // Fallback: untagged binary = raw camera JPEG
+    const blob = new Blob([buf], { type: 'image/jpeg' });
+    if (elements.cameraFeed) {
+        const oldSrc = elements.cameraFeed.src;
+        elements.cameraFeed.src = URL.createObjectURL(blob);
+        elements.cameraFeed.style.display = 'block';
+        if (elements.cameraPlaceholder) elements.cameraPlaceholder.style.display = 'none';
+        if (oldSrc.startsWith('blob:')) URL.revokeObjectURL(oldSrc);
+    }
+}
+
+function handleMapuFrame(buf) {
+    const dv = new DataView(buf);
+    const width      = dv.getUint32(4,  false);
+    const height     = dv.getUint32(8,  false);
+    const resolution = dv.getFloat32(12, false);
+    const origin_x   = dv.getFloat32(16, false);
+    const origin_y   = dv.getFloat32(20, false);
+    const pixels     = new Uint8Array(buf, 24);
+
+    // Store raw pixels so WebGL can re-render on canvas resize (Step 4)
+    state.nav.rawPixels = pixels;
+    state.nav.rawPixelW = width;
+    state.nav.rawPixelH = height;
+
+    const meta = { resolution, origin: [origin_x, origin_y], width, height };
+
+    // Grayscale → RGBA for ImageData
+    const rgba = new Uint8ClampedArray(width * height * 4);
+    for (let i = 0; i < pixels.length; i++) {
+        rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = pixels[i];
+        rgba[i * 4 + 3] = 255;
+    }
+
+    createImageBitmap(new ImageData(rgba, width, height)).then(bitmap => {
+        state.nav.mapMeta = meta;
+        if (state.nav._prevBitmap) state.nav._prevBitmap.close();
+        state.nav.mapBitmap = bitmap;
+        state.nav._prevBitmap = bitmap;
+        if (state.nav.webgl.ready) renderCostmapWebGL(pixels, width, height);
+        drawNavMap();
+        updateNavHint();
+        console.log(`[nav] Map (binary) loaded: ${width}×${height}px, res=${resolution}m`);
+    }).catch(e => console.error('[nav] createImageBitmap failed:', e));
 }
 
 // =================================================================
@@ -934,28 +1209,6 @@ function handleMessage(data) {
         state.latestData.robotPose = data.robot_pose;
         state.latestData.targetPose = data.target_pose;
         state.latestData.trajectory = data.trajectory; // 3D Trajectory
-
-        if (data.lidar_points) {
-            state.latestData.lidarPoints = data.lidar_points;
-            state.needsLidarUpdate = true;
-
-            // Obstacle proximity rumble — flat [x0,y0,x1,y1,...] in metres (robot frame)
-            const pts = data.lidar_points;
-            if (pts && pts.length >= 2) {
-                const OBSTACLE_THRESHOLD = 0.35; // metres
-                let minDist = Infinity;
-                for (let i = 0; i < pts.length; i += 2) {
-                    const d = Math.sqrt(pts[i] * pts[i] + pts[i + 1] * pts[i + 1]);
-                    if (d < minDist) minDist = d;
-                }
-                const now = Date.now();
-                if (minDist < OBSTACLE_THRESHOLD && now - state.lastObstacleRumble > 1000) {
-                    state.lastObstacleRumble = now;
-                    const intensity = Math.max(0.2, 1 - (minDist / OBSTACLE_THRESHOLD));
-                    rumble(intensity * 0.7, intensity * 0.4, 200);
-                }
-            }
-        }
 
         if (data.detections !== undefined) {
             state.latestData.detections = data.detections;

@@ -467,7 +467,12 @@
             <div class="card-body">
                 <!-- Map canvas + overlay container -->
                 <div style="position: relative; width: 100%;">
-                    <canvas id="nav-map-canvas" class="nav-canvas"></canvas>
+                    <!-- WebGL canvas renders the costmap texture (Step 4); sits behind the 2D overlay -->
+                    <canvas id="nav-map-webgl-canvas" class="nav-canvas"
+                            style="position:absolute; top:0; left:0; pointer-events:none;"></canvas>
+                    <!-- 2D canvas: overlays (path, robot arrow, goal, lidar dots) + click target -->
+                    <canvas id="nav-map-canvas" class="nav-canvas"
+                            style="position:relative; background:transparent;"></canvas>
                     <div id="nav-hint" class="nav-hint">Connect in --ros2 or --sim mode to enable navigation</div>
                 </div>
 
