@@ -217,6 +217,10 @@ class ROS2Bridge:
         _map_qos = QoSProfile(depth=1,
                               reliability=ReliabilityPolicy.RELIABLE,
                               durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        # Nav2 costmap topics use VOLATILE durability
+        _costmap_qos = QoSProfile(depth=1,
+                                  reliability=ReliabilityPolicy.RELIABLE,
+                                  durability=DurabilityPolicy.VOLATILE)
 
         self._node.create_subscription(LaserScan,      '/scan',             self._scan_cb,  _scan_qos)
         self._node.create_subscription(Image,          '/camera/image_raw', self._image_cb,  1)
@@ -225,6 +229,8 @@ class ROS2Bridge:
         self._node.create_subscription(Odometry,       '/odom_raw',         self._odom_cb,  10)
         self._node.create_subscription(Float32,        '/voltage',          self._voltage_cb, 10)
         self._node.create_subscription(OccupancyGrid,  '/map',              self._map_cb,    _map_qos)
+        self._node.create_subscription(OccupancyGrid,  '/global_costmap/costmap',
+                                       self._map_cb,   _costmap_qos)
         self._cmd_vel_pub = self._node.create_publisher(Twist, '/cmd_vel', 10)
 
         self._spin_thread = threading.Thread(

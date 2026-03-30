@@ -44,6 +44,10 @@ const state = {
     // Logging
     logThrottle: 0,
 
+    // Rumble throttle timestamps
+    lastBatteryRumble: 0,
+    lastObstacleRumble: 0,
+
     // Server mode (from hello message)
     serverMode: 'direct',
 
@@ -501,7 +505,13 @@ function drawNavMap() {
 
 function updateNavStatus(nav) {
     if (!nav) return;
+    const prevNavStatus = state.nav.status;
     state.nav.status = nav.state || 'UNAVAILABLE';
+
+    // Rumble once when goal is successfully reached
+    if (prevNavStatus !== 'SUCCEEDED' && state.nav.status === 'SUCCEEDED') {
+        rumble(0.5, 1.0, 600);
+    }
     state.nav.path = nav.path || [];
     state.nav.distRemaining = nav.dist;
     if (nav.nav2_running !== undefined) state.nav.nav2Running = nav.nav2_running;
@@ -928,6 +938,23 @@ function handleMessage(data) {
         if (data.lidar_points) {
             state.latestData.lidarPoints = data.lidar_points;
             state.needsLidarUpdate = true;
+
+            // Obstacle proximity rumble — flat [x0,y0,x1,y1,...] in metres (robot frame)
+            const pts = data.lidar_points;
+            if (pts && pts.length >= 2) {
+                const OBSTACLE_THRESHOLD = 0.35; // metres
+                let minDist = Infinity;
+                for (let i = 0; i < pts.length; i += 2) {
+                    const d = Math.sqrt(pts[i] * pts[i] + pts[i + 1] * pts[i + 1]);
+                    if (d < minDist) minDist = d;
+                }
+                const now = Date.now();
+                if (minDist < OBSTACLE_THRESHOLD && now - state.lastObstacleRumble > 1000) {
+                    state.lastObstacleRumble = now;
+                    const intensity = Math.max(0.2, 1 - (minDist / OBSTACLE_THRESHOLD));
+                    rumble(intensity * 0.7, intensity * 0.4, 200);
+                }
+            }
         }
 
         if (data.detections !== undefined) {
@@ -1233,7 +1260,15 @@ function updatePowerUI() {
 
         if (pct > 50) elements.powerBatteryPct.style.color = 'var(--accent-green)';
         else if (pct > 20) elements.powerBatteryPct.style.color = 'var(--accent-yellow)';
-        else elements.powerBatteryPct.style.color = 'var(--accent-red)';
+        else {
+            elements.powerBatteryPct.style.color = 'var(--accent-red)';
+            // Rumble warning at most once every 30 s
+            const now = Date.now();
+            if (now - state.lastBatteryRumble > 30000) {
+                state.lastBatteryRumble = now;
+                rumble(0.8, 0.5, 400);
+            }
+        }
     }
 
     // Estimate Time
@@ -1890,7 +1925,22 @@ window.addEventListener("gamepaddisconnected", (e) => {
     }
 });
 
-const buttonDebounce = { square: false, triangle: false };
+const buttonDebounce = { square: false, triangle: false, dUp: false, dDown: false, dLeft: false };
+
+// Trigger rumble on the connected gamepad if it supports vibration.
+// weakMagnitude = high-frequency motor, strongMagnitude = low-frequency motor (both 0–1).
+function rumble(weakMagnitude, strongMagnitude, duration = 200) {
+    if (state.gamepadIndex === null) return;
+    const gp = navigator.getGamepads()[state.gamepadIndex];
+    if (gp && gp.vibrationActuator) {
+        gp.vibrationActuator.playEffect('dual-rumble', {
+            startDelay: 0,
+            duration,
+            weakMagnitude,
+            strongMagnitude,
+        });
+    }
+}
 
 function pollGamepad() {
     if (state.gamepadIndex === null || !state.connected) return;
@@ -1901,6 +1951,7 @@ function pollGamepad() {
     if (gamepad.buttons[0].pressed) {
         sendMessage({ type: "stop" });
         if (state.isAutoDriving) sendMessage({ type: "stop_auto_drive" });
+        rumble(1.0, 1.0, 500);
         return;
     }
 
@@ -1922,6 +1973,49 @@ function pollGamepad() {
         }
     } else if (!gamepad.buttons[3].pressed) {
         buttonDebounce.triangle = false;
+    }
+
+    // D-pad toggles (buttons 12–14)
+    // Up  (12) → Lidar
+    // Down(13) → Depth Camera
+    // Left(14) → Map
+    const dUp = gamepad.buttons[12];
+    if (dUp && dUp.pressed && !buttonDebounce.dUp) {
+        buttonDebounce.dUp = true;
+        state.lidarEnabled = !state.lidarEnabled;
+        if (elements.lidarToggle) elements.lidarToggle.classList.toggle('active', state.lidarEnabled);
+        if (state.connected) sendMessage({ type: 'toggle_lidar', enabled: state.lidarEnabled });
+        if (!state.lidarEnabled && elements.lidarCtx)
+            elements.lidarCtx.fillRect(0, 0, elements.lidarCanvas.width, elements.lidarCanvas.height);
+        rumble(0.4, 0.0, 120);
+    } else if (!dUp || !dUp.pressed) {
+        buttonDebounce.dUp = false;
+    }
+
+    const dDown = gamepad.buttons[13];
+    if (dDown && dDown.pressed && !buttonDebounce.dDown) {
+        buttonDebounce.dDown = true;
+        if (state.connected) {
+            state.depthEnabled = !state.depthEnabled;
+            if (elements.depthToggle) elements.depthToggle.classList.toggle('active', state.depthEnabled);
+            updateCameraLayout();
+            sendMessage({ type: 'toggle_depth', enabled: state.depthEnabled });
+        }
+        rumble(0.4, 0.0, 120);
+    } else if (!dDown || !dDown.pressed) {
+        buttonDebounce.dDown = false;
+    }
+
+    const dLeft = gamepad.buttons[14];
+    if (dLeft && dLeft.pressed && !buttonDebounce.dLeft) {
+        buttonDebounce.dLeft = true;
+        state.mapEnabled = !state.mapEnabled;
+        if (elements.mapToggle) elements.mapToggle.classList.toggle('active', state.mapEnabled);
+        updateCameraLayout();
+        if (state.mapEnabled) drawNavMap();
+        rumble(0.4, 0.0, 120);
+    } else if (!dLeft || !dLeft.pressed) {
+        buttonDebounce.dLeft = false;
     }
 
     // 4. Joystick Drive (Holonomic Mecanum)
