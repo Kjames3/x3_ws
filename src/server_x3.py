@@ -157,7 +157,7 @@ connected_clients = set()
 # =============================================================================
 # Watchdog: stop motors if no command received within this many seconds.
 # Normal joystick input arrives at 20-50 Hz so 500 ms is unambiguously a drop.
-MOTION_WATCHDOG_TIMEOUT = 0.5
+MOTION_WATCHDOG_TIMEOUT = 0.15
 
 # asyncio.Queue for decoupled motion commands — created in main() so it runs
 # inside the event loop.  Handlers enqueue (vx, vy, omega) tuples; motion_loop()
@@ -1345,16 +1345,37 @@ async def broadcast_loop():
 
         await asyncio.sleep(0.05)  # 20 FPS cap
 
-async def motion_loop():
-    """Dedicated 100 Hz motion command consumer.
+def _step_toward(current: float, target: float, accel: float, decel: float) -> float:
+    """Advance current toward target by at most accel or decel per step."""
+    diff = target - current
+    is_decelerating = (target == 0.0) or (abs(target) < abs(current)) or (target * current < 0)
+    step = decel if is_decelerating else accel
+    if abs(diff) <= step:
+        return target
+    return current + (step if diff > 0 else -step)
 
-    Drains motion_queue and calls drive.move() at consistent low latency,
-    independent of broadcast_loop timing and lidar GIL contention.
+
+async def motion_loop():
+    """Dedicated 100 Hz motion command consumer with velocity ramping.
+
+    Maintains a ramped velocity that smoothly tracks commanded targets.
+    - Ramp-up prevents firmware PID integral windup / overshoot.
+    - Ramp-down sends a descending sequence to the Rosmaster so its internal
+      PID converges to zero quickly instead of coasting for ~1 s.
 
     Safety watchdog: if no command arrives within MOTION_WATCHDOG_TIMEOUT
-    seconds (e.g. dropped WebSocket), motors are stopped automatically.
+    seconds, target is zeroed and the ramp brings motors to a smooth stop.
     Watchdog is suppressed while Nav2 auto-drive is active.
     """
+    # Ramp rates per tick at 100 Hz
+    _ACCEL      = 0.015   # m/s  per tick = 1.5 m/s²  ramp-up
+    _DECEL      = 0.04    # m/s  per tick = 4.0 m/s²  ramp-down (~113 ms from 0.45 → 0)
+    _OACCEL     = 0.05    # rad/s per tick ramp-up
+    _ODECEL     = 0.12    # rad/s per tick ramp-down
+
+    _target_vx = _target_vy = _target_omega = 0.0
+    _ramp_vx   = _ramp_vy   = _ramp_omega   = 0.0
+
     _last_cmd_time = time.monotonic()
     _watchdog_fired = False
 
@@ -1363,6 +1384,7 @@ async def motion_loop():
             await asyncio.sleep(0.01)
             continue
 
+        # 1. Drain latest command from queue
         cmd = None
         try:
             cmd = motion_queue.get_nowait()
@@ -1370,17 +1392,30 @@ async def motion_loop():
             pass
 
         if cmd is not None:
-            vx, vy, omega = cmd
-            if drive:
-                drive.move(vx, vy, omega)
+            _target_vx, _target_vy, _target_omega = cmd
             _last_cmd_time = time.monotonic()
             _watchdog_fired = False
-        elif not is_auto_driving and not _watchdog_fired:
+
+        # 2. Watchdog: zero targets if input has been silent too long
+        if not is_auto_driving and not _watchdog_fired:
             if time.monotonic() - _last_cmd_time > MOTION_WATCHDOG_TIMEOUT:
-                if drive:
-                    drive.move(0.0, 0.0, 0.0)
+                _target_vx = _target_vy = _target_omega = 0.0
                 _watchdog_fired = True
-                logger.debug("motion_loop: watchdog fired — motors stopped")
+                logger.debug("motion_loop: watchdog fired — ramping to stop")
+
+        # 3. Record whether anything is in motion before updating the ramp
+        was_moving = (_ramp_vx != 0.0 or _ramp_vy != 0.0 or _ramp_omega != 0.0 or
+                      _target_vx != 0.0 or _target_vy != 0.0 or _target_omega != 0.0)
+
+        # 4. Step ramp toward target
+        _ramp_vx    = _step_toward(_ramp_vx,    _target_vx,    _ACCEL,  _DECEL)
+        _ramp_vy    = _step_toward(_ramp_vy,    _target_vy,    _ACCEL,  _DECEL)
+        _ramp_omega = _step_toward(_ramp_omega, _target_omega, _OACCEL, _ODECEL)
+
+        # 5. Send to hardware while moving; the `was_moving` flag ensures one
+        #    final drive.move(0,0,0) is sent on the tick the ramp reaches zero.
+        if drive and (was_moving or _ramp_vx != 0.0 or _ramp_vy != 0.0 or _ramp_omega != 0.0):
+            drive.move(_ramp_vx, _ramp_vy, _ramp_omega)
 
         await asyncio.sleep(0.01)  # 100 Hz
 
