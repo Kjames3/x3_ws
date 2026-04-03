@@ -17,6 +17,7 @@ const state = {
     lastVx: 0,
     lastVy: 0,
     lastOmega: 0,
+    stopFrameCount: 0,
     sessionStartTime: 0,
     sessionTimerInterval: null,
 
@@ -2308,13 +2309,20 @@ function pollGamepad() {
         const vyR = Math.round(vy * 100) / 100;
         const omegaR = Math.round(omega * 100) / 100;
 
-        // Always send while sticks are active so the motion watchdog is fed continuously
+        // Send while sticks are active; on release, keep sending zeros for ~333 ms
+        // (20 frames at 60 fps) so controller Bluetooth drift or a dropped message
+        // doesn't leave the server with a stale non-zero target.
         const anyActive = vxR !== 0 || vyR !== 0 || omegaR !== 0;
-        if (anyActive ||
-            Math.abs(vxR - state.lastVx) > 0.02 ||
-            Math.abs(vyR - state.lastVy) > 0.02 ||
-            Math.abs(omegaR - state.lastOmega) > 0.02) {
+        let shouldSend = false;
+        if (anyActive) {
+            state.stopFrameCount = 20;  // arm continuous stop on release
+            shouldSend = true;
+        } else if (state.stopFrameCount > 0) {
+            state.stopFrameCount--;
+            shouldSend = true;          // keep sending zeros until counter expires
+        }
 
+        if (shouldSend) {
             sendMessage({ type: "set_move", vx: vxR, vy: vyR, omega: omegaR });
             state.lastVx = vxR;
             state.lastVy = vyR;
