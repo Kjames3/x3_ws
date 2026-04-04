@@ -207,7 +207,7 @@ class ROS2Bridge:
         rclpy.init(args=None)
         self._node = Node('x3_ws_bridge')
         self._lock = threading.Lock()
-        self._points: list[float] = []
+        self._points: np.ndarray = np.empty(0, dtype=np.float32)
         self._latest_frame = None          # cv2 BGR ndarray from Gazebo RGB camera
         self._latest_depth = None          # cv2 BGR ndarray from Gazebo depth camera
         self._pose_m = {"x": 0.0, "y": 0.0, "theta": 0.0}  # metres + radians
@@ -326,7 +326,7 @@ class ROS2Bridge:
         """Store the latest OccupancyGrid from SLAM Toolbox (/map topic)."""
         with self._lock:
             self._occupancy_grid = {
-                "data":       list(msg.data),
+                "data":       np.array(msg.data, dtype=np.int8),
                 "width":      msg.info.width,
                 "height":     msg.info.height,
                 "resolution": msg.info.resolution,
@@ -348,15 +348,14 @@ class ROS2Bridge:
             N bytes  uint8[]     pixel data, row-major, top-left origin
                                  (128=unknown, 255=free, 0=occupied)
         """
-        import numpy as np
         with self._lock:
             if not self._map_dirty or self._occupancy_grid is None:
                 return None
             self._map_dirty = False
-            g = dict(self._occupancy_grid)
+            g = {**self._occupancy_grid, "data": self._occupancy_grid["data"].copy()}
         try:
             # -1 (unknown) → 128 grey,  0 (free) → 255 white,  100 (occupied) → 0 black
-            arr = np.array(g["data"], dtype=np.int16)
+            arr = g["data"].astype(np.int16)
             img = np.where(arr < 0, 128, np.where(arr == 0, 255, 0)).astype(np.uint8)
             img = np.flipud(img.reshape(g["height"], g["width"]))  # ROS bottom-left → canvas top-left
             header = struct.pack('>4sIIfff',
@@ -390,22 +389,20 @@ class ROS2Bridge:
             }
 
     def _scan_cb(self, msg):
-        """Convert LaserScan → flat [x0,y0,x1,y1,…] (same format as YDLidarDriver).
-
-        Applies the same corrections as YDLidarDriver:
-          - X negated (FLIP_HORIZONTAL) to match physical front-facing orientation
-          - Angle filter: ±_SCAN_ANGLE_MAX (~200° front arc)
-          - Min range: _SCAN_MIN_RANGE to discard robot-chassis reflections
-        """
-        flat: list[float] = []
-        for i, r in enumerate(msg.ranges):
-            if r < _SCAN_MIN_RANGE or not (msg.range_min < r < msg.range_max):
-                continue
-            angle = msg.angle_min + i * msg.angle_increment
-            # if abs(angle) > _SCAN_ANGLE_MAX:  # temporarily disabled — full 360° sampling
-            #     continue
-            flat.append( r * _math.cos(angle))   # lidar mounted 180° rotated — negate both axes
-            flat.append(-r * _math.sin(angle))
+        ranges = np.array(msg.ranges, dtype=np.float32)
+        angles = np.arange(len(ranges), dtype=np.float32) * msg.angle_increment + msg.angle_min
+        mask = (
+            (ranges > _SCAN_MIN_RANGE) &
+            (ranges > msg.range_min) &
+            (ranges < msg.range_max)
+        )
+        r = ranges[mask]
+        a = angles[mask]
+        xs =  r * np.cos(a)   # flip already handled by sign in broadcast
+        ys = -r * np.sin(a)
+        flat = np.empty(len(xs) * 2, dtype=np.float32)
+        flat[0::2] = xs
+        flat[1::2] = ys
         with self._lock:
             self._points = flat
 
@@ -416,9 +413,9 @@ class ROS2Bridge:
         if n == 0:
             return []
         if n <= max_points:
-            return list(pts)
+            return pts.tolist()
         step = max(1, n // max_points)
-        return np.array(pts, dtype=np.float32).reshape(-1, 2)[::step].ravel().tolist()
+        return pts.reshape(-1, 2)[::step].ravel().tolist()
 
     def move(self, vx: float, vy: float, omega: float):
         from geometry_msgs.msg import Twist
@@ -1051,9 +1048,9 @@ async def handle_client(websocket):
                         if grid is not None:
                             _loop = asyncio.get_event_loop()
                             def _encode_live_map(g=grid):
-                                import numpy as np, cv2, base64
+                                import cv2, base64
                                 try:
-                                    arr = np.array(g["data"], dtype=np.int16)
+                                    arr = g["data"].astype(np.int16)
                                     img = np.where(arr < 0, 128,
                                                    np.where(arr == 0, 255, 0)).astype(np.uint8)
                                     img = img.reshape(g["height"], g["width"])

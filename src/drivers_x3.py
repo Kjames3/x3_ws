@@ -505,40 +505,42 @@ class YDLidarDriver:
         JSON serialisation and decimation are both cheaper than list-of-lists.
         """
         import ydlidar
-        scan   = ydlidar.LaserScan()
+        scan = ydlidar.LaserScan()
         x_sign = -1.0 if self.FLIP_HORIZONTAL else 1.0
+        
+        # LLOL idea: rolling buffer — flush every SUB_SCAN_DEG degrees
+        SUB_SCAN_DEG = 45  # tune: smaller = lower latency, less context per update
+        _partial_xs, _partial_ys = [], []
+        _last_angle_deg = None
+
         while self._running and ydlidar.os_isOk():
             if self._laser.doProcessSimple(scan):
                 raw = scan.points
-                if raw:
-                    # Pull C++ values into numpy arrays in one pass
-                    angles = np.fromiter(
-                        (pt.angle for pt in raw), dtype=np.float32, count=len(raw)
-                    )
-                    ranges = np.fromiter(
-                        (pt.range for pt in raw), dtype=np.float32, count=len(raw)
-                    )
-                    # Vectorised filter + polar→cartesian
-                    mask = (
-                        (ranges > self.MIN_RANGE) &
-                        (ranges < self.MAX_RANGE) &
-                        (np.abs(angles) <= self.SCAN_ANGLE_MAX)
-                    )
-                    a, r  = angles[mask], ranges[mask]
-                    xs    = (x_sign * r * np.cos(a)).astype(np.float32)
-                    ys    = (r * np.sin(a)).astype(np.float32)
-                    flat       = np.empty(len(xs) * 2, dtype=np.float32)
-                    flat[0::2] = xs
-                    flat[1::2] = ys
-                else:
-                    flat = np.empty(0, dtype=np.float32)
-                with self._lock:
-                    self._points = flat
+                if not raw:
+                    continue
+                angles = np.fromiter((pt.angle for pt in raw), dtype=np.float32, count=len(raw))
+                ranges = np.fromiter((pt.range for pt in raw), dtype=np.float32, count=len(raw))
+                mask = (
+                    (ranges > self.MIN_RANGE) &
+                    (ranges < self.MAX_RANGE) &
+                    (np.abs(angles) <= self.SCAN_ANGLE_MAX)
+                )
+                a, r = angles[mask], ranges[mask]
+                xs = (x_sign * r * np.cos(a)).astype(np.float32)
+                ys = (r * np.sin(a)).astype(np.float32)
+                
+                # --- LLOL sub-scan: flush when arc crosses SUB_SCAN_DEG boundary ---
+                if len(a) > 0:
+                    current_deg = np.degrees(a[-1])
+                    if _last_angle_deg is None or abs(current_deg - _last_angle_deg) >= SUB_SCAN_DEG:
+                        _last_angle_deg = current_deg
+                        flat = np.empty(len(xs) * 2, dtype=np.float32)
+                        flat[0::2] = xs
+                        flat[1::2] = ys
+                        with self._lock:
+                            self._points = flat  # publish partial arc immediately
+                        _partial_xs, _partial_ys = [], []
             else:
-                # No scan data ready — release the GIL so the asyncio event loop
-                # can process WebSocket messages (movement commands) between polls.
-                # At 8 Hz scan rate there is ~125 ms between full scans; 1 ms sleep
-                # adds negligible latency while eliminating GIL starvation.
                 time.sleep(0.001)
 
     def get_points_xy(self, max_points=512):

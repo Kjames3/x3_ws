@@ -251,7 +251,7 @@ class FrontierExplorer:
                 if self._state == STATE_STOPPED:
                     return "STOPPED"
 
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.05)
 
 
 # ---------------------------------------------------------------------------
