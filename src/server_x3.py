@@ -72,17 +72,14 @@ from frontier_explorer import FrontierExplorer
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-parser = argparse.ArgumentParser(description='Yahboom X3 Control Server')
+parser = argparse.ArgumentParser(description='Yahboom X3 Control Server (ROS2 hardware mode by default)')
 parser.add_argument('--sim', action='store_true', help='Run in simulation mode (laptop, Gazebo on demand)')
-parser.add_argument('--ros2', action='store_true',
-                    help='ROS2 bridge mode: subscribe /scan and /cmd_vel via rclpy. '
-                         'Works with local hardware bringup OR remote Gazebo on the laptop.')
 parser.add_argument('--domain-id', type=int, default=None, dest='domain_id',
                     help='ROS_DOMAIN_ID for multi-machine ROS2 (must match laptop). '
                          'Overrides the ROS_DOMAIN_ID environment variable.')
 args = parser.parse_args()
-SIM_MODE   = args.sim
-ROS2_MODE  = args.ros2
+SIM_MODE  = args.sim
+ROS2_MODE = not args.sim  # ROS2 hardware bridge is the default; only --sim disables it
 
 # Apply ROS_DOMAIN_ID early — must be set before rclpy.init() inside ROS2Bridge
 if args.domain_id is not None:
@@ -116,7 +113,7 @@ HTTP_PORT = 8080
 # GLOBAL STATE
 # =============================================================================
 ros_board = None
-ros_bridge = None   # ROS2Bridge instance when --ros2 or --sim; used for map streaming
+ros_bridge = None   # ROS2Bridge instance (always active unless --sim); used for map streaming
 drive = None
 lidar = None
 camera = None
@@ -125,7 +122,7 @@ oled = None
 nav2_client = None    # Nav2Client instance (ROS2/sim modes only)
 frontier_explorer = None  # FrontierExplorer instance (ROS2 mode only)
 _gazebo_proc    = None   # subprocess handle when --sim auto-launches Gazebo
-_ros2_stack_proc = None  # subprocess handle when --ros2 auto-launches x3_bringup
+_ros2_stack_proc = None  # subprocess handle for x3_bringup (launched by default in ROS2 mode)
 _slam_proc      = None   # subprocess handle when SLAM Toolbox is running
 
 detection_enabled = False
@@ -157,7 +154,7 @@ connected_clients = set()
 # =============================================================================
 # Watchdog: stop motors if no command received within this many seconds.
 # Normal joystick input arrives at 20-50 Hz so 500 ms is unambiguously a drop.
-MOTION_WATCHDOG_TIMEOUT = 0.15
+MOTION_WATCHDOG_TIMEOUT = 0.50
 
 # asyncio.Queue for decoupled motion commands — created in main() so it runs
 # inside the event loop.  Handlers enqueue (vx, vy, omega) tuples; motion_loop()
@@ -885,7 +882,7 @@ async def handle_client(websocket):
         camera._has_clients = True  # P7: allow capture loop to store frames
 
     # Tell the client what mode the server is running in
-    _mode = "sim" if SIM_MODE else "ros2" if ROS2_MODE else "direct"
+    _mode = "sim" if SIM_MODE else "ros2"
     await websocket.send(json.dumps({"type": "hello", "mode": _mode}))
 
     try:
@@ -1412,7 +1409,7 @@ async def motion_loop():
     """
     # Ramp rates per tick at 100 Hz
     _ACCEL      = 0.04    # m/s  per tick = 4.0 m/s²  ramp-up (25 ms to 0.10 m/s)
-    _DECEL      = 0.04    # m/s  per tick = 4.0 m/s²  ramp-down (~113 ms from 0.45 → 0)
+    _DECEL      = 0.02    # m/s  per tick = 2.0 m/s²  ramp-down (~225 ms from 0.45 → 0)
     _OACCEL     = 0.05    # rad/s per tick ramp-up
     _ODECEL     = 0.12    # rad/s per tick ramp-down
 

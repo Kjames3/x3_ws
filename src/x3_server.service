@@ -12,21 +12,18 @@ SupplementaryGroups=plugdev
 WorkingDirectory=/home/jetson/x3_ws/src
 
 # ── Launch mode ────────────────────────────────────────────────────────────────
-# Default: direct hardware mode (serial Rosmaster + YDLidar)
+# Default: ROS2 hardware bridge mode (launches x3_bringup, subscribes /scan + /cmd_vel)
 ExecStart=/bin/bash -c 'source /opt/ros/humble/setup.bash && source /home/jetson/x3_ws/install/setup.bash && exec python3 /home/jetson/x3_ws/src/server_x3.py $SERVER_ARGS'
 
 # To switch modes without editing this file, override SERVER_ARGS in
 #   /etc/systemd/system/x3_server.service.d/override.conf
-#
-# ROS2 bridge mode (use when ros2_bringup is running):
-#   Environment=SERVER_ARGS=--ros2
 #
 # Simulation / no hardware:
 #   Environment=SERVER_ARGS=--sim
 #
 # Apply with:  sudo systemctl daemon-reload && sudo systemctl restart x3_server
 
-Environment=SERVER_ARGS=--ros2 --domain-id 42
+Environment=SERVER_ARGS=--domain-id 42
 # ──────────────────────────────────────────────────────────────────────────────
 
 Restart=on-failure

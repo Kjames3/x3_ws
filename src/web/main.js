@@ -2397,14 +2397,14 @@ function pollGamepad() {
         if (Math.abs(lx) < deadzone) lx = 0;
 
         // R2 (right trigger) boosts move speed; low base for slow/accurate SLAM driving
-        const BASE_SCALE = 0.10;   // no R2: ~0.10 m/s — slow crawl, good for SLAM
-        const FAST_SCALE = 0.45;   // full R2: ~0.45 m/s — normal travel speed
+        const BASE_SCALE = 0.20;   // no R2: ~0.20 m/s — confident default, above stiction
+        const FAST_SCALE = 0.40;   // full R2: ~0.40 m/s — moderate boost (2× not 4.5×)
         const r2 = gamepad.buttons[7] ? gamepad.buttons[7].value : 0;
         const MOVE_SCALE = BASE_SCALE + r2 * (FAST_SCALE - BASE_SCALE);
-        const ROT_SCALE = 0.35 + r2 * (1.5 - 0.35);  // rotation scales with R2 too
+        const ROT_SCALE = 0.50 + r2 * (1.5 - 0.50);  // rotation scales with R2 too
 
         // Quadratic expo: fine control at low deflections, full speed at max stick
-        const expo = v => Math.sign(v) * Math.pow(Math.abs(v), 2);
+        const expo = v => Math.sign(v) * Math.pow(Math.abs(v), 1.5);
 
         const vx = -expo(ry) * MOVE_SCALE;  // Right stick Y up → forward (positive vx)
         const vy = -expo(rx) * MOVE_SCALE;  // Right stick X right → strafe right
@@ -2420,7 +2420,7 @@ function pollGamepad() {
         const anyActive = vxR !== 0 || vyR !== 0 || omegaR !== 0;
         let shouldSend = false;
         if (anyActive) {
-            state.stopFrameCount = 20;  // arm continuous stop on release
+            state.stopFrameCount = 6;   // arm continuous stop on release (~100 ms)
             shouldSend = true;
         } else if (state.stopFrameCount > 0) {
             state.stopFrameCount--;
