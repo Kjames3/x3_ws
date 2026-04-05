@@ -210,6 +210,16 @@ class FrontierExplorer:
                 # 6. Wait for goal to finish
                 result = await self._wait_for_nav2()
 
+                # If Nav2 was unavailable the robot never moved — don't mark this
+                # frontier as visited or we'll exhaust all frontiers without exploring.
+                if result == "UNAVAILABLE":
+                    logger.warning("FrontierExplorer: Nav2 unavailable, pausing 5 s then retrying")
+                    with self._lock:
+                        self._state = STATE_SELECTING
+                        self._current_goal = None
+                    await asyncio.sleep(5.0)
+                    continue
+
                 self._visited_frontiers.append(goal)
                 with self._lock:
                     self._frontiers_visited += 1

@@ -719,6 +719,17 @@ function updateNavStatus(nav) {
     if (nav.nav2_running !== undefined) state.nav.nav2Running = nav.nav2_running;
     if (nav.goal) state.nav.goal = nav.goal;
 
+    // Gate frontier button: needs both SLAM active and Nav2 running
+    if (elements.frontierBtn) {
+        const nav2Up = !!state.nav.nav2Running;
+        elements.frontierBtn.disabled = !state.slamActive || !nav2Up;
+        elements.frontierBtn.title = !state.slamActive
+            ? 'Start SLAM mapping first'
+            : !nav2Up
+                ? 'Launch Nav2 first to enable Auto-Explore'
+                : 'Autonomously explore unmapped areas using frontier-based navigation';
+    }
+
     // Badge
     const badge = elements.navStatusBadge;
     if (badge) {
@@ -790,7 +801,7 @@ function updateSlamStatus(active) {
         }
     }
 
-    const { startSlamBtn, stopSlamBtn, slamStatusText, frontierBtn } = elements;
+    const { startSlamBtn, stopSlamBtn, slamStatusText } = elements;
     if (startSlamBtn) startSlamBtn.style.display = active ? 'none' : 'inline-block';
     if (stopSlamBtn) stopSlamBtn.style.display = active ? 'inline-block' : 'none';
     if (slamStatusText) {
@@ -798,8 +809,7 @@ function updateSlamStatus(active) {
             ? 'SLAM active — drive to build map, or use Auto-Explore below'
             : '';
     }
-    // Enable/disable frontier button based on SLAM state
-    if (frontierBtn) frontierBtn.disabled = !active;
+    // Frontier button gating is owned by updateNavStatus (requires SLAM + Nav2)
 }
 
 const FRONTIER_STATE_COLORS = {

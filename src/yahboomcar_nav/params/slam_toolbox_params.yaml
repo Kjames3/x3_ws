@@ -30,7 +30,7 @@ slam_toolbox:
 
     # Timing
     transform_publish_period: 0.02   # 50 Hz TF
-    map_update_interval: 1.0         # seconds between map saves/updates
+    map_update_interval: 0.5         # seconds between map saves/updates
     tf_buffer_duration: 30.0
 
     # Solver

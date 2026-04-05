@@ -215,6 +215,7 @@ class ROS2Bridge:
         self._voltage = 12.0               # volts, updated by /voltage subscriber
         self._occupancy_grid: dict | None = None  # latest OccupancyGrid info dict for frontier explorer
         self._map_dirty = False
+        self._last_mapu_sent: float = 0.0        # monotonic timestamp of last MAPU frame sent
 
         # YDLidar publishes /scan as BEST_EFFORT; default (RELIABLE) causes a QoS mismatch
         _scan_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
@@ -346,10 +347,14 @@ class ROS2Bridge:
             N bytes  uint8[]     pixel data, row-major, top-left origin
                                  (128=unknown, 255=free, 0=occupied)
         """
+        _HEARTBEAT = 5.0   # re-send even if map unchanged, so display never freezes
         with self._lock:
-            if not self._map_dirty or self._occupancy_grid is None:
+            now = time.monotonic()
+            heartbeat_due = (now - self._last_mapu_sent) >= _HEARTBEAT
+            if (not self._map_dirty and not heartbeat_due) or self._occupancy_grid is None:
                 return None
             self._map_dirty = False
+            self._last_mapu_sent = now
             g = {**self._occupancy_grid, "data": self._occupancy_grid["data"].copy()}
         try:
             # -1 (unknown) → 128 grey,  0 (free) → 255 white,  100 (occupied) → 0 black
@@ -1100,7 +1105,15 @@ async def handle_client(websocket):
                 elif msg_type == "toggle_frontier":
                     enabled = data.get("enabled", False)
                     if enabled:
-                        if frontier_explorer and ROS2_MODE:
+                        nav_running = (nav2_client and
+                                       nav2_client.get_status().get("nav2_running", False))
+                        if not nav_running:
+                            await websocket.send(json.dumps({
+                                "type": "frontier_explore_result",
+                                "success": False,
+                                "msg": "Nav2 must be running before starting Auto-Explore. Launch Nav2 first.",
+                            }))
+                        elif frontier_explorer and ROS2_MODE:
                             ok = frontier_explorer.start()
                             await websocket.send(json.dumps({
                                 "type": "frontier_explore_result",
@@ -1111,7 +1124,7 @@ async def handle_client(websocket):
                             await websocket.send(json.dumps({
                                 "type": "frontier_explore_result",
                                 "success": False,
-                                "msg": "Frontier exploration requires ROS2 mode with Nav2 running",
+                                "msg": "Frontier exploration requires ROS2 mode",
                             }))
                     else:
                         if frontier_explorer:
