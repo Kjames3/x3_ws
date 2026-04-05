@@ -497,10 +497,6 @@
                         <input type="checkbox" id="slam-mode-check">
                         SLAM Mode
                     </label>
-                    <label style="display:flex; align-items:center; gap:0.3rem; font-size:0.75rem; color:var(--text-secondary); cursor:pointer; margin-left:1rem;" title="Enable autonomous Frontier Mapping exploration">
-                        <input type="checkbox" id="frontier-toggle">
-                        Frontier
-                    </label>
                 </div>
 
                 <!-- Stats row -->
@@ -530,6 +526,23 @@
                     <button id="save-map-btn" class="btn-nav-sm">💾 Save Map</button>
                 </div>
                 <div id="slam-status-text" class="nav-hint" style="margin-top: 0.3rem;"></div>
+
+                <!-- Frontier Explorer -->
+                <div style="margin: 0.6rem 0 0.3rem; font-size: 0.7rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em;">
+                    Auto-Explore (Frontier)
+                </div>
+                <div class="nav-controls" style="align-items: center; gap: 0.5rem;">
+                    <button id="frontier-btn" class="btn-nav" title="Autonomously explore unmapped areas using frontier-based exploration. Requires Nav2 running." disabled>
+                        🤖 Start Auto-Explore
+                    </button>
+                    <span id="frontier-state-badge" style="font-size:0.7rem; padding:0.15rem 0.4rem; border-radius:4px; background:var(--bg-tertiary); color:var(--text-muted);">IDLE</span>
+                </div>
+                <div style="margin-top: 0.3rem; font-size: 0.7rem; color: var(--text-muted);">
+                    <span id="frontier-stats" style="display:none;">
+                        Visited <b id="frontier-visited">0</b> / <b id="frontier-found">0</b> frontiers
+                    </span>
+                </div>
+                <div id="frontier-status-text" class="nav-hint" style="margin-top: 0.2rem;"></div>
             </div>
         </div>
 

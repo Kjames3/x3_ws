@@ -56,6 +56,9 @@ const state = {
     slamActive: false,
     liveMapInterval: null,   // setInterval handle for live map polling during SLAM
 
+    // Frontier explorer state
+    frontierActive: false,
+
     // Web Worker for offscreen lidar rendering (Step 2)
     lidarWorker: null,
 
@@ -118,7 +121,12 @@ const elements = {
     mapToggle: document.getElementById('map-toggle'),
     minimapPanel: document.getElementById('minimap-panel'),
     miniMapCanvas: document.getElementById('mini-map-canvas'),
-    frontierToggle: document.getElementById('frontier-toggle'),
+    frontierBtn: document.getElementById('frontier-btn'),
+    frontierStateBadge: document.getElementById('frontier-state-badge'),
+    frontierStats: document.getElementById('frontier-stats'),
+    frontierVisited: document.getElementById('frontier-visited'),
+    frontierFound: document.getElementById('frontier-found'),
+    frontierStatusText: document.getElementById('frontier-status-text'),
     detectionToggle: document.getElementById('detection-toggle'),
     detectionPanel: document.getElementById('detection-panel'),
     detectionCount: document.getElementById('detection-count'),
@@ -309,11 +317,11 @@ function initNavMapWebGL() {
 
     const refCanvas = elements.navMapCanvas;
     if (refCanvas) {
-        glCanvas.width  = refCanvas.width  || 400;
+        glCanvas.width = refCanvas.width || 400;
         glCanvas.height = refCanvas.height || 400;
     }
 
-    const gl = glCanvas.getContext('webgl', { alpha: false, antialias: false });
+    const gl = glCanvas.getContext('webgl', { alpha: false, antialias: false, preserveDrawingBuffer: true });
     if (!gl) {
         console.warn('[navWebGL] WebGL not supported — falling back to 2D drawImage');
         return;
@@ -349,7 +357,7 @@ function initNavMapWebGL() {
         return s;
     }
 
-    const vs = compileShader(gl.VERTEX_SHADER,   vsSource);
+    const vs = compileShader(gl.VERTEX_SHADER, vsSource);
     const fs = compileShader(gl.FRAGMENT_SHADER, fsSource);
     if (!vs || !fs) return;
 
@@ -366,15 +374,15 @@ function initNavMapWebGL() {
     const posBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
-        -1, -1,   1, -1,   -1,  1,
-         1, -1,   1,  1,   -1,  1,
+        -1, -1, 1, -1, -1, 1,
+        1, -1, 1, 1, -1, 1,
     ]), gl.STATIC_DRAW);
 
     const texBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, texBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
-        0, 1,   1, 1,   0, 0,
-        1, 1,   1, 0,   0, 0,
+        0, 1, 1, 1, 0, 0,
+        1, 1, 1, 0, 0, 0,
     ]), gl.STATIC_DRAW);
 
     const texture = gl.createTexture();
@@ -386,15 +394,15 @@ function initNavMapWebGL() {
 
     // Cache attribute/uniform locations
     const wgl = state.nav.webgl;
-    wgl.gl        = gl;
-    wgl.program   = program;
-    wgl.texture   = texture;
+    wgl.gl = gl;
+    wgl.program = program;
+    wgl.texture = texture;
     wgl.posBuffer = posBuffer;
     wgl.texBuffer = texBuffer;
-    wgl.aPosLoc   = gl.getAttribLocation(program,  'aPos');
-    wgl.aTexLoc   = gl.getAttribLocation(program,  'aTexCoord');
-    wgl.uSampLoc  = gl.getUniformLocation(program, 'uSampler');
-    wgl.ready     = true;
+    wgl.aPosLoc = gl.getAttribLocation(program, 'aPos');
+    wgl.aTexLoc = gl.getAttribLocation(program, 'aTexCoord');
+    wgl.uSampLoc = gl.getUniformLocation(program, 'uSampler');
+    wgl.ready = true;
 
     // Handle context loss gracefully
     glCanvas.addEventListener('webglcontextlost', (e) => {
@@ -410,20 +418,20 @@ function initNavMapWebGL() {
 function renderCostmapWebGL(pixelData, width, height) {
     const wgl = state.nav.webgl;
     const { gl, program, texture, posBuffer, texBuffer,
-            aPosLoc, aTexLoc, uSampLoc } = wgl;
+        aPosLoc, aTexLoc, uSampLoc } = wgl;
     if (!gl || !program) return;
 
     const glCanvas = elements.navMapWebGLCanvas;
     const refCanvas = elements.navMapCanvas;
     if (refCanvas && (glCanvas.width !== refCanvas.width || glCanvas.height !== refCanvas.height)) {
-        glCanvas.width  = refCanvas.width;
+        glCanvas.width = refCanvas.width;
         glCanvas.height = refCanvas.height;
     }
     gl.viewport(0, 0, glCanvas.width, glCanvas.height);
 
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, width, height, 0,
-                  gl.LUMINANCE, gl.UNSIGNED_BYTE, pixelData);
+        gl.LUMINANCE, gl.UNSIGNED_BYTE, pixelData);
 
     gl.useProgram(program);
 
@@ -452,11 +460,11 @@ function initNavPanel() {
 
     // Match internal pixel resolution to display size
     const size = canvas.offsetWidth || 400;
-    canvas.width  = size;
+    canvas.width = size;
     canvas.height = size;
     // Keep WebGL canvas in sync
     if (elements.navMapWebGLCanvas) {
-        elements.navMapWebGLCanvas.width  = size;
+        elements.navMapWebGLCanvas.width = size;
         elements.navMapWebGLCanvas.height = size;
     }
 
@@ -765,27 +773,85 @@ function initSlamControls() {
 }
 
 function updateSlamStatus(active) {
+    const wasActive = state.slamActive;
     state.slamActive = active;
 
-    // Live map polling: request occupancy grid from server every 2 s while SLAM runs
-    if (state.liveMapInterval) {
-        clearInterval(state.liveMapInterval);
-        state.liveMapInterval = null;
-    }
-    if (active) {
-        sendMessage({ type: 'request_live_map' });   // immediate first fetch
-        state.liveMapInterval = setInterval(() => {
-            sendMessage({ type: 'request_live_map' });
-        }, 2000);
+    // Live map polling: only reset the interval when SLAM state actually transitions
+    if (active !== wasActive) {
+        if (state.liveMapInterval) {
+            clearInterval(state.liveMapInterval);
+            state.liveMapInterval = null;
+        }
+        if (active) {
+            sendMessage({ type: 'request_live_map' });   // immediate first fetch
+            state.liveMapInterval = setInterval(() => {
+                sendMessage({ type: 'request_live_map' });
+            }, 2000);
+        }
     }
 
-    const { startSlamBtn, stopSlamBtn, slamStatusText } = elements;
+    const { startSlamBtn, stopSlamBtn, slamStatusText, frontierBtn } = elements;
     if (startSlamBtn) startSlamBtn.style.display = active ? 'none' : 'inline-block';
     if (stopSlamBtn) stopSlamBtn.style.display = active ? 'inline-block' : 'none';
     if (slamStatusText) {
         slamStatusText.textContent = active
-            ? 'SLAM mapping active — drive the robot to build the map'
+            ? 'SLAM active — drive to build map, or use Auto-Explore below'
             : '';
+    }
+    // Enable/disable frontier button based on SLAM state
+    if (frontierBtn) frontierBtn.disabled = !active;
+}
+
+const FRONTIER_STATE_COLORS = {
+    IDLE:       { bg: 'var(--bg-tertiary)', color: 'var(--text-muted)' },
+    SELECTING:  { bg: '#1e3a5f',            color: '#60a5fa' },
+    EXPLORING:  { bg: '#14532d',            color: '#4ade80' },
+    COMPLETE:   { bg: '#1a2e1a',            color: '#86efac' },
+    STOPPED:    { bg: '#3b1515',            color: '#f87171' },
+};
+
+function updateFrontierStatus(frontier) {
+    const { frontierBtn, frontierStateBadge, frontierStats,
+            frontierVisited, frontierFound, frontierStatusText } = elements;
+    if (!frontierStateBadge) return;
+
+    const fstate = frontier.frontier_state || 'IDLE';
+    const isActive = fstate === 'EXPLORING' || fstate === 'SELECTING';
+    state.frontierActive = isActive;
+
+    // Badge color
+    const scheme = FRONTIER_STATE_COLORS[fstate] || FRONTIER_STATE_COLORS.IDLE;
+    frontierStateBadge.textContent = fstate;
+    frontierStateBadge.style.background = scheme.bg;
+    frontierStateBadge.style.color = scheme.color;
+
+    // Button label
+    if (frontierBtn) {
+        frontierBtn.textContent = isActive ? '⏹ Stop Auto-Explore' : '🤖 Start Auto-Explore';
+        frontierBtn.classList.toggle('btn-nav-danger', isActive);
+    }
+
+    // Stats
+    if (frontierStats) {
+        const hasStats = frontier.frontiers_found > 0 || frontier.frontiers_visited > 0;
+        frontierStats.style.display = hasStats ? 'inline' : 'none';
+        if (frontierVisited) frontierVisited.textContent = frontier.frontiers_visited;
+        if (frontierFound)   frontierFound.textContent   = frontier.frontiers_found;
+    }
+
+    // Status hint
+    if (frontierStatusText) {
+        if (fstate === 'EXPLORING' && frontier.current_goal) {
+            const [gx, gy] = frontier.current_goal;
+            frontierStatusText.textContent =
+                `Navigating to frontier (${gx.toFixed(2)}, ${gy.toFixed(2)})`;
+        } else if (fstate === 'COMPLETE') {
+            frontierStatusText.textContent = 'Exploration complete — all frontiers visited';
+        } else if (fstate === 'SELECTING') {
+            frontierStatusText.textContent = 'Selecting next frontier…';
+        } else {
+            frontierStatusText.textContent = '';
+        }
     }
 }
 
@@ -880,7 +946,7 @@ function renderLoop(timestamp) {
         }
 
         // 4. Redraw nav map at ~10 FPS (robot pose updates continuously)
-        if ((state.nav.mapImage || state.nav.mapBitmap) &&
+        if ((state.nav.mapImage || state.nav.mapBitmap || state.slamActive) &&
             timestamp - (state.nav._lastDrawTime || 0) > 100) {
             drawNavMap();
             state.nav._lastDrawTime = timestamp;
@@ -1061,12 +1127,12 @@ function handleBinaryFrame(buf) {
 
 function handleMapuFrame(buf) {
     const dv = new DataView(buf);
-    const width      = dv.getUint32(4,  false);
-    const height     = dv.getUint32(8,  false);
+    const width = dv.getUint32(4, false);
+    const height = dv.getUint32(8, false);
     const resolution = dv.getFloat32(12, false);
-    const origin_x   = dv.getFloat32(16, false);
-    const origin_y   = dv.getFloat32(20, false);
-    const pixels     = new Uint8Array(buf, 24);
+    const origin_x = dv.getFloat32(16, false);
+    const origin_y = dv.getFloat32(20, false);
+    const pixels = new Uint8Array(buf, 24);
 
     // Store raw pixels so WebGL can re-render on canvas resize (Step 4)
     state.nav.rawPixels = pixels;
@@ -1180,6 +1246,21 @@ function handleMessage(data) {
         return;
     }
 
+    if (data.type === "slam_started") {
+        const { slamStatusText } = elements;
+        if (slamStatusText && data.msg) slamStatusText.textContent = data.msg;
+        return;
+    }
+
+    if (data.type === "frontier_explore_result") {
+        const { frontierStatusText } = elements;
+        if (frontierStatusText) {
+            frontierStatusText.textContent = data.msg || '';
+            frontierStatusText.style.color = data.success ? 'var(--text-secondary)' : '#f87171';
+        }
+        return;
+    }
+
     if (data.type === "map_data") {
         if (data.error) {
             console.warn(`[nav] Map load error: ${data.error}`);
@@ -1234,6 +1315,7 @@ function handleMessage(data) {
         // Update navigation panel status
         if (data.nav) updateNavStatus(data.nav);
         if (data.slam_active !== undefined) updateSlamStatus(data.slam_active);
+        if (data.frontier) updateFrontierStatus(data.frontier);
 
         state.needs3DUpdate = true;
 
@@ -1976,12 +2058,19 @@ if (elements.mapToggle) elements.mapToggle.addEventListener('click', () => {
     state.mapEnabled = !state.mapEnabled;
     elements.mapToggle.classList.toggle('active', state.mapEnabled);
     updateCameraLayout();
-    if (state.mapEnabled) drawNavMap();
+    if (state.mapEnabled) {
+        drawNavMap();
+        if (state.connected && (state.serverMode === 'ros2' || state.serverMode === 'sim')) {
+            if (!state.slamActive) sendMessage({ type: 'start_slam' });
+            sendMessage({ type: 'request_live_map' });
+        }
+    }
 });
 
-if (elements.frontierToggle) elements.frontierToggle.addEventListener('change', (e) => {
+if (elements.frontierBtn) elements.frontierBtn.addEventListener('click', () => {
     if (!state.connected) return;
-    sendMessage({ type: 'toggle_frontier', enabled: e.target.checked });
+    const enabling = !state.frontierActive;
+    sendMessage({ type: 'toggle_frontier', enabled: enabling });
 });
 
 if (elements.detectionToggle) elements.detectionToggle.addEventListener('click', () => {
@@ -2266,7 +2355,13 @@ function pollGamepad() {
         state.mapEnabled = !state.mapEnabled;
         if (elements.mapToggle) elements.mapToggle.classList.toggle('active', state.mapEnabled);
         updateCameraLayout();
-        if (state.mapEnabled) drawNavMap();
+        if (state.mapEnabled) {
+            drawNavMap();
+            if (state.connected && (state.serverMode === 'ros2' || state.serverMode === 'sim')) {
+                if (!state.slamActive) sendMessage({ type: 'start_slam' });
+                sendMessage({ type: 'request_live_map' });
+            }
+        }
         rumble(0.4, 0.0, 120);
     } else if (!dLeft || !dLeft.pressed) {
         buttonDebounce.dLeft = false;
@@ -2296,13 +2391,13 @@ function pollGamepad() {
         const FAST_SCALE = 0.45;   // full R2: ~0.45 m/s — normal travel speed
         const r2 = gamepad.buttons[7] ? gamepad.buttons[7].value : 0;
         const MOVE_SCALE = BASE_SCALE + r2 * (FAST_SCALE - BASE_SCALE);
-        const ROT_SCALE  = 0.35   + r2 * (1.5 - 0.35);  // rotation scales with R2 too
+        const ROT_SCALE = 0.35 + r2 * (1.5 - 0.35);  // rotation scales with R2 too
 
         // Quadratic expo: fine control at low deflections, full speed at max stick
         const expo = v => Math.sign(v) * Math.pow(Math.abs(v), 2);
 
-        const vx    = -expo(ry) * MOVE_SCALE;  // Right stick Y up → forward (positive vx)
-        const vy    = -expo(rx) * MOVE_SCALE;  // Right stick X right → strafe right
+        const vx = -expo(ry) * MOVE_SCALE;  // Right stick Y up → forward (positive vx)
+        const vy = -expo(rx) * MOVE_SCALE;  // Right stick X right → strafe right
         const omega = -expo(lx) * ROT_SCALE;   // Left stick X right → rotate CW
 
         const vxR = Math.round(vx * 100) / 100;

@@ -234,8 +234,6 @@ class ROS2Bridge:
         self._node.create_subscription(Odometry,       '/odom_raw',         self._odom_cb,  10)
         self._node.create_subscription(Float32,        '/voltage',          self._voltage_cb, 10)
         self._node.create_subscription(OccupancyGrid,  '/map',              self._map_cb,    _map_qos)
-        self._node.create_subscription(OccupancyGrid,  '/global_costmap/costmap',
-                                       self._map_cb,   _costmap_qos)
         self._cmd_vel_pub = self._node.create_publisher(Twist, '/cmd_vel', 10)
 
         self._spin_thread = threading.Thread(
@@ -1099,13 +1097,48 @@ async def handle_client(websocket):
                         }))
 
                 # ── SLAM messages ───────────────────────────────────────────
+                elif msg_type == "toggle_frontier":
+                    enabled = data.get("enabled", False)
+                    if enabled:
+                        if frontier_explorer and ROS2_MODE:
+                            ok = frontier_explorer.start()
+                            await websocket.send(json.dumps({
+                                "type": "frontier_explore_result",
+                                "success": ok,
+                                "msg": "Frontier exploration started" if ok else "Already exploring",
+                            }))
+                        else:
+                            await websocket.send(json.dumps({
+                                "type": "frontier_explore_result",
+                                "success": False,
+                                "msg": "Frontier exploration requires ROS2 mode with Nav2 running",
+                            }))
+                    else:
+                        if frontier_explorer:
+                            frontier_explorer.stop()
+                            await websocket.send(json.dumps({
+                                "type": "frontier_explore_result",
+                                "success": True,
+                                "msg": "Frontier exploration stopped",
+                            }))
+
                 elif msg_type == "start_slam":
                     global _slam_proc
                     if _slam_proc is None or _slam_proc.poll() is not None:
                         _slam_proc = _launch_slam(use_sim_time=SIM_MODE)
                         logger.info("SLAM Toolbox launched")
+                        await websocket.send(json.dumps({
+                            "type": "slam_started",
+                            "success": True,
+                            "msg": "SLAM Toolbox launching...",
+                        }))
                     else:
                         logger.info("SLAM already running")
+                        await websocket.send(json.dumps({
+                            "type": "slam_started",
+                            "success": True,
+                            "msg": "SLAM already running",
+                        }))
 
                 elif msg_type == "stop_slam":
                     if _slam_proc is not None and _slam_proc.poll() is None:
