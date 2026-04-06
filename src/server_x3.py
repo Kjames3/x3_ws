@@ -1408,8 +1408,8 @@ async def motion_loop():
     Watchdog is suppressed while Nav2 auto-drive is active.
     """
     # Ramp rates per tick at 100 Hz
-    _ACCEL      = 0.04    # m/s  per tick = 4.0 m/s²  ramp-up (25 ms to 0.10 m/s)
-    _DECEL      = 0.02    # m/s  per tick = 2.0 m/s²  ramp-down (~225 ms from 0.45 → 0)
+    _ACCEL      = 0.04    # m/s  per tick = 4.0 m/s²  ramp-up
+    _DECEL      = 0.08    # m/s  per tick = 8.0 m/s²  ramp-down — fast direction changes
     _OACCEL     = 0.05    # rad/s per tick ramp-up
     _ODECEL     = 0.12    # rad/s per tick ramp-down
 

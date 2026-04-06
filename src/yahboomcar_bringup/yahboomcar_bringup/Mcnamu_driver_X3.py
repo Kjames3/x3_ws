@@ -74,22 +74,37 @@ class yahboomcar_driver(Node):
 		self.edition.data = 1.0
 		self.car.create_receive_threading()
 	#callback function
-	def cmd_vel_callback(self,msg):
-        # 小车运动控制，订阅者回调函数
-        # Car motion control, subscriber callback function
+	def cmd_vel_callback(self, msg):
+		# Compute mecanum kinematics here and send per-wheel PWM via set_motor().
+		# set_car_motion() has a firmware limitation where only the first non-zero
+		# axis is applied (priority: vx > vy > omega), which breaks combined inputs
+		# such as driving forward while rotating or strafing while rotating.
 		if not isinstance(msg, Twist): return
-        # 下发线速度和角速度
-        # Issue linear vel and angular vel
-		vx = msg.linear.x*1.0
-        #vy = msg.linear.y/1000.0*180.0/3.1416    #Radian system
-		vy = msg.linear.y*1.0
-		angular = msg.angular.z*1.0     # wait for chang
-		self.car.set_car_motion(vx, vy, angular)
-		'''print("cmd_vx: ",vx)
-		print("cmd_vy: ",vy)
-		print("cmd_angular: ",angular)'''
-        #rospy.loginfo("nav_use_rot:{}".format(self.nav_use_rotvel))
-        #print(self.nav_use_rotvel)
+		vx    = msg.linear.x
+		vy    = msg.linear.y
+		omega = msg.angular.z
+
+		# Mecanum wheel mixing: M1=FL, M2=FR, M3=RL, M4=RR
+		# L: angular-to-wheel contribution factor (approx. half-wheelbase + half-track
+		#    in metres for the X3).  Increase L to make rotation feel more responsive.
+		L     = 0.15
+		# SCALE: maps m/s → PWM units [-100, 100].  At SCALE=200, 0.5 m/s → 100 PWM.
+		#        Lower SCALE to reduce top speed; raise it if motors stall at low inputs.
+		SCALE = 200.0
+
+		fl = (vx + vy + omega * L) * SCALE
+		fr = (vx - vy - omega * L) * SCALE
+		rl = (vx - vy + omega * L) * SCALE
+		rr = (vx + vy - omega * L) * SCALE
+
+		# Proportional normalisation: if any wheel exceeds ±100, scale all down
+		# together so the commanded ratio between wheels is preserved.
+		max_val = max(abs(fl), abs(fr), abs(rl), abs(rr))
+		if max_val > 100.0:
+			factor = 100.0 / max_val
+			fl *= factor; fr *= factor; rl *= factor; rr *= factor
+
+		self.car.set_motor(int(fl), int(fr), int(rl), int(rr))
 	def RGBLightcallback(self,msg):
         # 流水灯控制，服务端回调函数 RGBLight control
 		if not isinstance(msg, Int32): return
