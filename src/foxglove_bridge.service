@@ -15,7 +15,7 @@ Group=jetson
 ExecStart=/bin/bash -c '\
   source /opt/ros/humble/setup.bash && \
   source /home/jetson/x3_ws/install/local_setup.bash 2>/dev/null || true && \
-  exec ros2 launch foxglove_bridge foxglove_bridge.launch.xml \
+  exec ros2 launch foxglove_bridge foxglove_bridge_launch.xml \
     port:=8765 \
     address:=0.0.0.0 \
     send_buffer_limit:=10000000'
