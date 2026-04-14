@@ -30,7 +30,7 @@ ExecStart=/bin/bash -c '\
 #
 # Apply with:  sudo systemctl daemon-reload && sudo systemctl restart x3_server
 
-Environment=SERVER_ARGS=--domain-id 42
+Environment="SERVER_ARGS=--domain-id 42"
 Environment=ROS_DOMAIN_ID=42
 # ──────────────────────────────────────────────────────────────────────────────
 
