@@ -196,9 +196,12 @@ write_udev_rule() {
 }
 
 write_udev_rule /etc/udev/rules.d/99-orbbec.rules \
-'# Orbbec Astra / Astra Pro SC
+'# Orbbec Astra / Astra Pro SC — USB permissions
 SUBSYSTEM=="usb", ATTR{idVendor}=="2bc5", MODE="0666", GROUP="plugdev"
-SUBSYSTEM=="usb", ATTR{idVendor}=="1d27", MODE="0666", GROUP="plugdev"'
+SUBSYSTEM=="usb", ATTR{idVendor}=="1d27", MODE="0666", GROUP="plugdev"
+# Orbbec Astra Pro SC — RGB (UVC) interface: create stable /dev/camera_depth symlink
+# idVendor=2bc5 idProduct=0501 is the UVC webcam interface of the Astra Pro SC
+SUBSYSTEM=="video4linux", ATTRS{idVendor}=="2bc5", ATTRS{idProduct}=="0501", SYMLINK+="camera_depth", MODE="0666", GROUP="plugdev"'
 
 write_udev_rule /etc/udev/rules.d/60-ydlidar.rules \
 '# YDLidar — stable /dev/ydlidar symlink (CP2102 / PL2303 / CH340)

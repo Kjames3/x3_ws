@@ -38,7 +38,8 @@ Restart=on-failure
 RestartSec=5
 
 # Give hardware (serial, I2C, USB) time to enumerate after boot
-ExecStartPre=/bin/sleep 5
+# Orbbec camera and Rosmaster can take 10+ seconds on a cold boot
+ExecStartPre=/bin/sleep 10
 
 # Environment
 Environment=PYTHONUNBUFFERED=1

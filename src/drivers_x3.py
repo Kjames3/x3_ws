@@ -270,6 +270,7 @@ class AstraCamera:
             # Attempt 1: no-arg init — uses LD_LIBRARY_PATH / OPENNI2_REDIST / system install.
             # This is the right path when the Yahboom/Orbbec SDK is installed system-wide.
             initialized = False
+            lib_path = "system default"
             try:
                 openni2.initialize()
                 initialized = True
