@@ -28,54 +28,57 @@ colcon test-result --verbose
 
 ## Running the System
 
-### Option A — Direct hardware (no ROS2)
-```bash
-python3 src/server_x3.py
-```
+ROS2 hardware bridge mode is the **default**. The `--sim` flag disables it for simulation.
 
-### Option B — Physical robot with full ROS2 stack
+### Option A — Physical robot with full ROS2 stack (default)
 ```bash
 bash scripts/jetson_bringup.sh [DOMAIN_ID]          # default domain 42
-python3 src/server_x3.py --ros2 --domain-id 42
+python3 src/server_x3.py --domain-id 42
 ```
 
-### Option C — Simulation on laptop (cross-machine)
+### Option B — Simulation on laptop (cross-machine)
 ```bash
 bash scripts/laptop_sim.sh [DOMAIN_ID]              # on laptop
-python3 src/server_x3.py --ros2 --domain-id 42      # on Jetson
+python3 src/server_x3.py --domain-id 42             # on Jetson
 ```
 
-### Option D — Full simulation on one machine
+### Option C — Full simulation on one machine
 ```bash
 python3 src/server_x3.py --sim
 ```
 
 ### Auto-start via systemd
 ```bash
-# Service file: src/x3_server.service
+# Service file: src/x3_server.service (runs with --domain-id 42 by default)
+# Override mode via /etc/systemd/system/x3_server.service.d/override.conf
 systemctl start x3_server
+# View logs:
+journalctl -u x3_server -f
 ```
 
 ## Architecture
 
 ### Control Flow
 ```
-Browser (WebSocket :8081)
+Browser (HTTP :8080 for GUI files, WebSocket :8081 for control)
     │
     └─ src/server_x3.py          # Main async WebSocket server
          ├─ Direct serial ──────→ Rosmaster controller (/dev/ttyCH341USB0)
          │                        └─ Motors, battery, OLED
-         └─ ROS2 DDS ──────────→ /cmd_vel, /scan, /odom, /imu/data topics
+         └─ ROS2Bridge (default) → /cmd_vel pub; /scan /odom /odom_raw
+                                    /map /voltage /camera/image_raw subs
 ```
 
 ### Key Source Files
-- **[src/server_x3.py](src/server_x3.py)** — Main WebSocket server (1154 lines). Handles browser connections, telemetry broadcast loop, ROS2 bridge initialization, YOLO inference dispatch.
+- **[src/server_x3.py](src/server_x3.py)** — Main WebSocket server. Handles browser connections, telemetry broadcast loop, ROS2Bridge initialization, YOLO inference dispatch, motion watchdog queue (100 Hz drain), SLAM/Nav2 lifecycle.
 - **[src/drivers_x3.py](src/drivers_x3.py)** — Hardware abstraction: Rosmaster serial (motors, battery), YDLidar X3, Astra Pro camera (RGB/depth), OLED, mecanum kinematics.
 - **[src/nav2_client.py](src/nav2_client.py)** — Nav2 action client: `navigate_to()`, `set_initial_pose()`, goal tracking with path sampling.
-- **[src/navigation_fsm.py](src/navigation_fsm.py)** — YOLO-driven target tracking FSM (IDLE → SEARCHING → APPROACHING → ARRIVED).
-- **[src/robot_state.py](src/robot_state.py)** — EKF odometry fusing wheel encoders + IMU heading.
+- **[src/navigation_fsm.py](src/navigation_fsm.py)** — YOLO-driven target tracking FSM (IDLE → SEARCHING → APPROACHING → ARRIVED → AVOIDING → RETURNING).
+- **[src/frontier_explorer.py](src/frontier_explorer.py)** — Autonomous frontier-based exploration: finds free/unknown boundaries on the SLAM OccupancyGrid, clusters them, and sends nearest centroid to Nav2.
 - **[src/trt_detector.py](src/trt_detector.py)** — TensorRT YOLO wrapper loading `.engine` files, mimics Ultralytics API.
 - **[src/Rosmaster_Lib.py](src/Rosmaster_Lib.py)** — Yahboom official low-level serial protocol library (motors, IMU, battery).
+
+YOLO models live under `src/yolo_models/` in subdirectories (`cans_models/`, `default/`). The active model is resolved by `find_model_path()` which recursively searches for `<name>.pt`.
 
 ### ROS2 Packages
 - **yahboomcar_base_node** (C++) — Dead-reckoning odometry from encoder ticks; publishes `/odom_raw` and TF.
@@ -108,8 +111,9 @@ Default domain is 0. Scripts use domain ID 42 for Jetson/laptop isolation. Serve
 - **[src/yahboomcar_nav/params/slam_toolbox_params.yaml](src/yahboomcar_nav/params/slam_toolbox_params.yaml)** — SLAM Toolbox config
 
 ## Web GUI
-- **[src/web/GUI.html](src/web/GUI.html)** — Single-page app: joystick control, camera feed, lidar visualization, SLAM map canvas, Nav2 goal clicking, telemetry display.
-- **[src/web/main.js](src/web/main.js)** — WebSocket client; camera frames received as binary WebSocket messages (not JSON) for performance.
+- **[src/web/GUI.html](src/web/GUI.html)** — Single-page app: joystick control, camera feed, lidar visualization, SLAM map canvas, Nav2 goal clicking, telemetry display. Served via HTTP :8080 (required so Web Workers can load `lidar-worker.js`).
+- **[src/web/main.js](src/web/main.js)** — WebSocket client; camera frames received as **binary** WebSocket messages (not JSON).
+- **[src/web/lidar-worker.js](src/web/lidar-worker.js)** — Web Worker that decodes and transforms lidar point arrays off the main thread.
 
 ## Maps
 Saved maps are stored as `.pgm`/`.yaml` pairs in `src/yahboomcar_nav/maps/`. New maps are created via the "Start SLAM" button in the GUI and saved through the server's map-save handler.
