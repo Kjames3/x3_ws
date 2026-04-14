@@ -54,7 +54,6 @@ const state = {
 
     // SLAM state
     slamActive: false,
-    liveMapInterval: null,   // setInterval handle for live map polling during SLAM
 
     // Frontier explorer state
     frontierActive: false,
@@ -69,7 +68,7 @@ const state = {
         path: [],            // [[x, y], ...] in metres
         distRemaining: null,
         mapMode: 'navigate', // 'navigate' | 'set_pose'
-        mapMeta: null,       // {resolution, origin:[x,y], width, height}
+        mapMeta: null,       // {resolution, origin:[x,y], originYaw, width, height}
         mapImage: null,      // HTMLImageElement of the loaded map PNG (legacy JSON path)
         mapBitmap: null,     // ImageBitmap from binary MAPU frame (Step 3)
         _prevBitmap: null,   // previous bitmap kept so we can call .close()
@@ -530,8 +529,14 @@ function canvasPxToWorld(cx, cy) {
     const canvas = elements.navMapCanvas;
     if (!meta || !canvas) return null;
     const W = canvas.width, H = canvas.height;
-    const mapPxX = cx * (meta.width / W);
-    const mapPxY = (H - cy) * (meta.height / H); // flip Y: ROS Y+ = up, canvas Y+ = down
+    // Undo canvas rotation: translate to centre, rotate by +yaw, translate back
+    const yaw = meta.originYaw || 0;
+    const cosY = Math.cos(yaw), sinY = Math.sin(yaw);
+    const dx = cx - W / 2, dy = cy - H / 2;
+    const rcx = dx * cosY - dy * sinY + W / 2;
+    const rcy = dx * sinY + dy * cosY + H / 2;
+    const mapPxX = rcx * (meta.width / W);
+    const mapPxY = (H - rcy) * (meta.height / H); // flip Y: ROS Y+ = up, canvas Y+ = down
     return {
         x: meta.origin[0] + mapPxX * meta.resolution,
         y: meta.origin[1] + mapPxY * meta.resolution,
@@ -546,9 +551,16 @@ function worldToCanvasPx(wx, wy) {
     const W = canvas.width, H = canvas.height;
     const mapPxX = (wx - meta.origin[0]) / meta.resolution;
     const mapPxY = (wy - meta.origin[1]) / meta.resolution;
+    // Axis-aligned canvas position before rotation
+    const rx = mapPxX * (W / meta.width);
+    const ry = H - mapPxY * (H / meta.height);
+    // Apply canvas rotation around centre
+    const yaw = meta.originYaw || 0;
+    const cosY = Math.cos(-yaw), sinY = Math.sin(-yaw);
+    const dx = rx - W / 2, dy = ry - H / 2;
     return {
-        x: mapPxX * (W / meta.width),
-        y: H - mapPxY * (H / meta.height),
+        x: dx * cosY - dy * sinY + W / 2,
+        y: dx * sinY + dy * cosY + H / 2,
     };
 }
 
@@ -590,13 +602,22 @@ function drawNavMap() {
     ctx.clearRect(0, 0, W, H);
 
     // 1. Map background — WebGL texture (Step 4) > ImageBitmap (Step 3) > legacy img > dark grid
+    const _yaw = (state.nav.mapMeta && state.nav.mapMeta.originYaw) || 0;
     if (state.nav.webgl.ready && state.nav.rawPixels) {
         renderCostmapWebGL(state.nav.rawPixels, state.nav.rawPixelW, state.nav.rawPixelH);
-        ctx.drawImage(elements.navMapWebGLCanvas, 0, 0, W, H);
+        ctx.save();
+        ctx.translate(W / 2, H / 2);
+        ctx.rotate(-_yaw);
+        ctx.drawImage(elements.navMapWebGLCanvas, -W / 2, -H / 2, W, H);
+        ctx.restore();
     } else {
         const mapSource = state.nav.mapBitmap || state.nav.mapImage;
         if (mapSource) {
-            ctx.drawImage(mapSource, 0, 0, W, H);
+            ctx.save();
+            ctx.translate(W / 2, H / 2);
+            ctx.rotate(-_yaw);
+            ctx.drawImage(mapSource, -W / 2, -H / 2, W, H);
+            ctx.restore();
         } else {
             ctx.fillStyle = '#060e1a';
             ctx.fillRect(0, 0, W, H);
@@ -787,18 +808,12 @@ function updateSlamStatus(active) {
     const wasActive = state.slamActive;
     state.slamActive = active;
 
-    // Live map polling: only reset the interval when SLAM state actually transitions
-    if (active !== wasActive) {
-        if (state.liveMapInterval) {
-            clearInterval(state.liveMapInterval);
-            state.liveMapInterval = null;
-        }
-        if (active) {
-            sendMessage({ type: 'request_live_map' });   // immediate first fetch
-            state.liveMapInterval = setInterval(() => {
-                sendMessage({ type: 'request_live_map' });
-            }, 2000);
-        }
+    // On SLAM activation, reset the frame counter so the first-frame deferral
+    // in handleMapuFrame suppresses the unsettled initial map, and request an
+    // immediate map frame. Subsequent frames arrive via map_push_loop server push.
+    if (active && !wasActive) {
+        state.nav._mapUpdateCount = 0;
+        sendMessage({ type: 'request_live_map' });
     }
 
     const { startSlamBtn, stopSlamBtn, slamStatusText } = elements;
@@ -956,7 +971,7 @@ function renderLoop(timestamp) {
         }
 
         // 4. Redraw nav map at ~10 FPS (robot pose updates continuously)
-        if ((state.nav.mapImage || state.nav.mapBitmap || state.slamActive) &&
+        if ((state.nav.mapImage || state.nav.mapBitmap || state.nav.rawPixels || state.slamActive) &&
             timestamp - (state.nav._lastDrawTime || 0) > 100) {
             drawNavMap();
             state.nav._lastDrawTime = timestamp;
@@ -1137,21 +1152,34 @@ function handleBinaryFrame(buf) {
 
 function handleMapuFrame(buf) {
     const dv = new DataView(buf);
-    const width = dv.getUint32(4, false);
-    const height = dv.getUint32(8, false);
+    const width      = dv.getUint32(4,  false);
+    const height     = dv.getUint32(8,  false);
     const resolution = dv.getFloat32(12, false);
-    const origin_x = dv.getFloat32(16, false);
-    const origin_y = dv.getFloat32(20, false);
-    const pixels = new Uint8Array(buf, 24);
+    const origin_x   = dv.getFloat32(16, false);
+    const origin_y   = dv.getFloat32(20, false);
+    const origin_yaw = dv.getFloat32(24, false);  // map frame Z-rotation (radians)
+    const pixels     = new Uint8Array(buf, 28);   // pixel data starts at byte 28
 
-    // Store raw pixels so WebGL can re-render on canvas resize (Step 4)
-    state.nav.rawPixels = pixels;
-    state.nav.rawPixelW = width;
-    state.nav.rawPixelH = height;
+    // Suppress the first map frame — SLAM Toolbox's initial publish often has an
+    // unsettled origin that snaps to the corrected value on the second frame (~500 ms later).
+    state.nav._mapUpdateCount = (state.nav._mapUpdateCount || 0) + 1;
+    if (state.nav._mapUpdateCount < 2) return;
 
-    const meta = { resolution, origin: [origin_x, origin_y], width, height };
+    // Store raw pixels and meta immediately so WebGL + render loop can draw without
+    // waiting for the async createImageBitmap call below.
+    state.nav.rawPixels  = pixels;
+    state.nav.rawPixelW  = width;
+    state.nav.rawPixelH  = height;
+    state.nav.mapMeta    = { resolution, origin: [origin_x, origin_y], originYaw: origin_yaw, width, height };
+    state.nav.mapImage   = null;  // MAPU binary path is now the sole source of truth
 
-    // Grayscale → RGBA for ImageData
+    // Draw immediately via WebGL if ready — don't wait for ImageBitmap
+    if (state.nav.webgl.ready) {
+        renderCostmapWebGL(pixels, width, height);
+        drawNavMap();
+    }
+
+    // Grayscale → RGBA for ImageBitmap fallback (used when WebGL not available)
     const rgba = new Uint8ClampedArray(width * height * 4);
     for (let i = 0; i < pixels.length; i++) {
         rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = pixels[i];
@@ -1159,14 +1187,12 @@ function handleMapuFrame(buf) {
     }
 
     createImageBitmap(new ImageData(rgba, width, height)).then(bitmap => {
-        state.nav.mapMeta = meta;
         if (state.nav._prevBitmap) state.nav._prevBitmap.close();
-        state.nav.mapBitmap = bitmap;
+        state.nav.mapBitmap  = bitmap;
         state.nav._prevBitmap = bitmap;
-        if (state.nav.webgl.ready) renderCostmapWebGL(pixels, width, height);
         drawNavMap();
         updateNavHint();
-        console.log(`[nav] Map (binary) loaded: ${width}×${height}px, res=${resolution}m`);
+        console.log(`[nav] Map (binary) loaded: ${width}×${height}px, res=${resolution}m, yaw=${origin_yaw.toFixed(3)}rad`);
     }).catch(e => console.error('[nav] createImageBitmap failed:', e));
 }
 

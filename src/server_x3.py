@@ -320,6 +320,10 @@ class ROS2Bridge:
 
     def _map_cb(self, msg):
         """Store the latest OccupancyGrid from SLAM Toolbox (/map topic)."""
+        import math as _math
+        q = msg.info.origin.orientation
+        origin_yaw = _math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                                  1.0 - 2.0 * (q.y * q.y + q.z * q.z))
         with self._lock:
             self._occupancy_grid = {
                 "data":       np.array(msg.data, dtype=np.int8),
@@ -328,6 +332,7 @@ class ROS2Bridge:
                 "resolution": msg.info.resolution,
                 "origin_x":   msg.info.origin.position.x,
                 "origin_y":   msg.info.origin.position.y,
+                "origin_yaw": origin_yaw,
             }
             self._map_dirty = True
 
@@ -341,8 +346,10 @@ class ROS2Bridge:
             4 bytes  float32     resolution (metres/pixel)
             4 bytes  float32     origin_x
             4 bytes  float32     origin_y
+            4 bytes  float32     origin_yaw  (radians, map frame Z-rotation)
             N bytes  uint8[]     pixel data, row-major, top-left origin
                                  (128=unknown, 255=free, 0=occupied)
+            Pixel data starts at byte offset 28.
         """
         _HEARTBEAT = 5.0   # re-send even if map unchanged, so display never freezes
         with self._lock:
@@ -358,15 +365,22 @@ class ROS2Bridge:
             arr = g["data"].astype(np.int16)
             img = np.where(arr < 0, 128, np.where(arr == 0, 255, 0)).astype(np.uint8)
             img = np.flipud(img.reshape(g["height"], g["width"]))  # ROS bottom-left → canvas top-left
-            header = struct.pack('>4sIIfff',
+            header = struct.pack('>4sIIffff',
                                  b'MAPU',
                                  g["width"], g["height"],
                                  g["resolution"],
-                                 g["origin_x"], g["origin_y"])
+                                 g["origin_x"], g["origin_y"],
+                                 g.get("origin_yaw", 0.0))
             return header + img.tobytes()
         except Exception as e:
             logger.warning(f"pop_map_update: binary encode failed: {e}")
             return None
+
+    def force_map_dirty(self):
+        """Force the next pop_map_update() call to return a frame immediately."""
+        with self._lock:
+            self._map_dirty = True
+            self._last_mapu_sent = 0.0
 
     def get_occupancy_grid(self) -> dict | None:
         """Return the latest occupancy grid info dict, or None if not yet received."""
@@ -1041,37 +1055,15 @@ async def handle_client(websocket):
                             {"type": "map_data", "error": "Map not found"}))
 
                 elif msg_type == "request_live_map":
-                    # Client-side polling: GUI requests the latest occupancy grid during SLAM.
-                    # More reliable than server-push because it's decoupled from /map publish timing.
+                    # Client requests the current map (e.g. on reconnect or SLAM start).
+                    # Force a MAPU binary frame immediately via the same push path so there
+                    # is only one delivery mechanism — no competing JSON/binary race.
                     if ros_bridge:
-                        grid = ros_bridge.get_occupancy_grid()
-                        if grid is not None:
-                            _loop = asyncio.get_event_loop()
-                            def _encode_live_map(g=grid):
-                                import cv2, base64
-                                try:
-                                    arr = g["data"].astype(np.int16)
-                                    img = np.where(arr < 0, 128,
-                                                   np.where(arr == 0, 255, 0)).astype(np.uint8)
-                                    img = img.reshape(g["height"], g["width"])
-                                    img = np.flipud(img)
-                                    _, buf = cv2.imencode('.png', img)
-                                    return base64.b64encode(bytes(buf)).decode('utf-8')
-                                except Exception as exc:
-                                    logger.warning(f"request_live_map encode error: {exc}")
-                                    return None
-                            png_b64 = await _loop.run_in_executor(None, _encode_live_map)
-                            if png_b64:
-                                await websocket.send(json.dumps({
-                                    "type": "map_data",
-                                    "png_b64": png_b64,
-                                    "meta": {
-                                        "resolution": grid["resolution"],
-                                        "origin":     [grid["origin_x"], grid["origin_y"]],
-                                        "width":      grid["width"],
-                                        "height":     grid["height"],
-                                    },
-                                }))
+                        ros_bridge.force_map_dirty()
+                        _loop = asyncio.get_event_loop()
+                        frame = await _loop.run_in_executor(None, ros_bridge.pop_map_update)
+                        if frame:
+                            await websocket.send(frame)
 
                 # ── Frontier exploration messages ───────────────────────────
                 elif msg_type == "start_frontier_explore":
@@ -1374,13 +1366,6 @@ async def broadcast_loop():
                 },
             }
 
-            # Push SLAM map update when a new OccupancyGrid has arrived from /map.
-            # Run in executor: numpy array conversion must not block the event loop.
-            if ros_bridge:
-                map_upd = await loop.run_in_executor(None, ros_bridge.pop_map_update)
-                if map_upd:
-                    websockets.broadcast(connected_clients, map_upd)  # raw bytes (MAPU frame)
-
             websockets.broadcast(connected_clients, json.dumps(msg))
 
         await asyncio.sleep(0.05)  # 20 FPS cap
@@ -1393,6 +1378,20 @@ def _step_toward(current: float, target: float, accel: float, decel: float) -> f
     if abs(diff) <= step:
         return target
     return current + (step if diff > 0 else -step)
+
+
+async def map_push_loop():
+    """Push MAPU binary frames to all clients at 2 Hz (matching SLAM map_update_interval).
+
+    Runs independently of broadcast_loop so map encoding never starves motion_loop.
+    """
+    loop = asyncio.get_event_loop()
+    while True:
+        if ros_bridge and connected_clients:
+            frame = await loop.run_in_executor(None, ros_bridge.pop_map_update)
+            if frame:
+                websockets.broadcast(connected_clients, frame)
+        await asyncio.sleep(0.5)
 
 
 async def motion_loop():
@@ -1495,7 +1494,7 @@ async def main():
     motion_queue = asyncio.Queue(maxsize=2)
     async with websockets.serve(handle_client, "0.0.0.0", WS_PORT):
         logger.info(f"Server started on ws://0.0.0.0:{WS_PORT}")
-        await asyncio.gather(broadcast_loop(), motion_loop(), oled_loop())
+        await asyncio.gather(broadcast_loop(), motion_loop(), oled_loop(), map_push_loop())
 
 if __name__ == "__main__":
     try:
