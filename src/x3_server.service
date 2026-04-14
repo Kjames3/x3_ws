@@ -13,7 +13,14 @@ WorkingDirectory=/home/jetson/x3_ws/src
 
 # ── Launch mode ────────────────────────────────────────────────────────────────
 # Default: ROS2 hardware bridge mode (launches x3_bringup, subscribes /scan + /cmd_vel)
-ExecStart=/bin/bash -c 'source /opt/ros/humble/setup.bash && source /home/jetson/x3_ws/install/setup.bash && exec python3 /home/jetson/x3_ws/src/server_x3.py $SERVER_ARGS'
+#
+# ROS2 Humble is sourced explicitly here because systemd does NOT read ~/.bashrc.
+# The workspace local_setup is sourced with || true so the service still starts
+# if the workspace hasn't been built yet (ROS2 base will still be available).
+ExecStart=/bin/bash -c '\
+  source /opt/ros/humble/setup.bash && \
+  source /home/jetson/x3_ws/install/local_setup.bash 2>/dev/null || true && \
+  exec python3 /home/jetson/x3_ws/src/server_x3.py $SERVER_ARGS'
 
 # To switch modes without editing this file, override SERVER_ARGS in
 #   /etc/systemd/system/x3_server.service.d/override.conf
@@ -24,6 +31,7 @@ ExecStart=/bin/bash -c 'source /opt/ros/humble/setup.bash && source /home/jetson
 # Apply with:  sudo systemctl daemon-reload && sudo systemctl restart x3_server
 
 Environment=SERVER_ARGS=--domain-id 42
+Environment=ROS_DOMAIN_ID=42
 # ──────────────────────────────────────────────────────────────────────────────
 
 Restart=on-failure
