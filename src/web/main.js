@@ -303,6 +303,7 @@ function initLidarWorker() {
         console.warn('[lidar] OffscreenCanvas not supported — using main-thread rendering');
         return;
     }
+    if (state.lidarWorker) return;  // already initialised — guard against double DOMContentLoaded
     try {
         const offscreen = canvas.transferControlToOffscreen();
         const worker = new Worker('lidar-worker.js');
@@ -1144,7 +1145,7 @@ function connectFoxglove() {
 
     const url = getFoxgloveAddress();
     console.log(`[foxglove] Connecting to ${url}`);
-    const ws = new WebSocket(url);
+    const ws = new WebSocket(url, ['foxglove.websocket.v1']);
     ws.binaryType = 'arraybuffer';
     fg.ws = ws;
 
