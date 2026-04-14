@@ -171,17 +171,10 @@ motion_queue = None
 # the YDLidar and Rosmaster serial ports are owned exclusively by the ROS2
 # stack (ydlidar_ros2_driver + Mcnamu_driver_X3).
 # =============================================================================
-import math as _math
-_SCAN_ANGLE_MAX = _math.radians(100)  # ±100° → ~200° front arc (front-mounted TOF lidar)
-_SCAN_MIN_RANGE = 0.15                # metres — filters robot-chassis reflections
-
-
 class ROS2Bridge:
     """
-    Drop-in adapter that mimics YDLidarDriver.get_points_xy() and
-    MecanumDrive.move() over ROS2 topics.
+    Adapter that drives the robot over ROS2 topics and relays sensor data.
 
-      /scan  (sensor_msgs/LaserScan) → get_points_xy()
       /cmd_vel (geometry_msgs/Twist) ← move(vx, vy, omega)
 
     Velocity scaling matches Mcnamu_driver_X3.py defaults:
@@ -194,7 +187,7 @@ class ROS2Bridge:
     def __init__(self):
         import rclpy
         from rclpy.node import Node
-        from sensor_msgs.msg import LaserScan, Image
+        from sensor_msgs.msg import Image
         from geometry_msgs.msg import Twist
         from nav_msgs.msg import Odometry, OccupancyGrid
         from std_msgs.msg import Float32
@@ -204,18 +197,13 @@ class ROS2Bridge:
         rclpy.init(args=None)
         self._node = Node('x3_ws_bridge')
         self._lock = threading.Lock()
-        self._points: np.ndarray = np.empty(0, dtype=np.float32)
         self._latest_frame = None          # cv2 BGR ndarray from Gazebo RGB camera
         self._latest_depth = None          # cv2 BGR ndarray from Gazebo depth camera
         self._pose_m = {"x": 0.0, "y": 0.0, "theta": 0.0}  # metres + radians
         self._twist = {"vx": 0.0, "vy": 0.0, "wz": 0.0}   # body velocity m/s, rad/s
         self._voltage = 12.0               # volts, updated by /voltage subscriber
         self._occupancy_grid: dict | None = None  # latest OccupancyGrid info dict for frontier explorer
-        self._map_dirty = False
-        self._last_mapu_sent: float = 0.0        # monotonic timestamp of last MAPU frame sent
 
-        # YDLidar publishes /scan as BEST_EFFORT; default (RELIABLE) causes a QoS mismatch
-        _scan_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
         # SLAM Toolbox publishes /map as TRANSIENT_LOCAL; match so late-joining still gets the map
         _map_qos = QoSProfile(depth=1,
                               reliability=ReliabilityPolicy.RELIABLE,
@@ -225,7 +213,6 @@ class ROS2Bridge:
                                   reliability=ReliabilityPolicy.RELIABLE,
                                   durability=DurabilityPolicy.VOLATILE)
 
-        self._node.create_subscription(LaserScan,      '/scan',             self._scan_cb,  _scan_qos)
         self._node.create_subscription(Image,          '/camera/image_raw', self._image_cb,  1)
         self._node.create_subscription(Image,          '/camera/depth_image', self._depth_cb, 1)
         self._node.create_subscription(Odometry,       '/odom',             self._odom_cb,  10)
@@ -237,7 +224,7 @@ class ROS2Bridge:
         self._spin_thread = threading.Thread(
             target=rclpy.spin, args=(self._node,), daemon=True)
         self._spin_thread.start()
-        logger.info("ROS2Bridge: spinning — subscribed /scan /camera/image_raw /odom /voltage /map, publishing /cmd_vel")
+        logger.info("ROS2Bridge: spinning — subscribed /camera/image_raw /odom /voltage /map, publishing /cmd_vel")
 
     def _image_cb(self, msg):
         """Convert sensor_msgs/Image (RGB_INT8 from Fortress) to cv2 BGR ndarray."""
@@ -334,54 +321,6 @@ class ROS2Bridge:
                 "origin_y":   msg.info.origin.position.y,
                 "origin_yaw": origin_yaw,
             }
-            self._map_dirty = True
-
-    def pop_map_update(self) -> bytes | None:
-        """If a new map has arrived since last call, return a binary MAPU frame; else None.
-
-        Frame layout (big-endian header):
-            4 bytes  magic       b'MAPU'
-            4 bytes  uint32      width
-            4 bytes  uint32      height
-            4 bytes  float32     resolution (metres/pixel)
-            4 bytes  float32     origin_x
-            4 bytes  float32     origin_y
-            4 bytes  float32     origin_yaw  (radians, map frame Z-rotation)
-            N bytes  uint8[]     pixel data, row-major, top-left origin
-                                 (128=unknown, 255=free, 0=occupied)
-            Pixel data starts at byte offset 28.
-        """
-        _HEARTBEAT = 5.0   # re-send even if map unchanged, so display never freezes
-        with self._lock:
-            now = time.monotonic()
-            heartbeat_due = (now - self._last_mapu_sent) >= _HEARTBEAT
-            if (not self._map_dirty and not heartbeat_due) or self._occupancy_grid is None:
-                return None
-            self._map_dirty = False
-            self._last_mapu_sent = now
-            g = {**self._occupancy_grid, "data": self._occupancy_grid["data"].copy()}
-        try:
-            # -1 (unknown) → 128 grey,  0 (free) → 255 white,  100 (occupied) → 0 black
-            arr = g["data"].astype(np.int16)
-            img = np.where(arr < 0, 128, np.where(arr == 0, 255, 0)).astype(np.uint8)
-            img = np.flipud(img.reshape(g["height"], g["width"]))  # ROS bottom-left → canvas top-left
-            header = struct.pack('>4sIIffff',
-                                 b'MAPU',
-                                 g["width"], g["height"],
-                                 g["resolution"],
-                                 g["origin_x"], g["origin_y"],
-                                 g.get("origin_yaw", 0.0))
-            return header + img.tobytes()
-        except Exception as e:
-            logger.warning(f"pop_map_update: binary encode failed: {e}")
-            return None
-
-    def force_map_dirty(self):
-        """Force the next pop_map_update() call to return a frame immediately."""
-        with self._lock:
-            self._map_dirty = True
-            self._last_mapu_sent = 0.0
-
     def get_occupancy_grid(self) -> dict | None:
         """Return the latest occupancy grid info dict, or None if not yet received."""
         with self._lock:
@@ -401,35 +340,6 @@ class ROS2Bridge:
                 "y":     self._pose_m["y"] * 100.0,
                 "theta": self._pose_m["theta"],
             }
-
-    def _scan_cb(self, msg):
-        ranges = np.array(msg.ranges, dtype=np.float32)
-        angles = np.arange(len(ranges), dtype=np.float32) * msg.angle_increment + msg.angle_min
-        mask = (
-            (ranges > _SCAN_MIN_RANGE) &
-            (ranges > msg.range_min) &
-            (ranges < msg.range_max)
-        )
-        r = ranges[mask]
-        a = angles[mask]
-        xs =  r * np.cos(a)   # flip already handled by sign in broadcast
-        ys = -r * np.sin(a)
-        flat = np.empty(len(xs) * 2, dtype=np.float32)
-        flat[0::2] = xs
-        flat[1::2] = ys
-        with self._lock:
-            self._points = flat
-
-    def get_points_xy(self, max_points: int = 512) -> list[float]:
-        with self._lock:
-            pts = self._points
-        n = len(pts) // 2
-        if n == 0:
-            return []
-        if n <= max_points:
-            return pts.tolist()
-        step = max(1, n // max_points)
-        return pts.reshape(-1, 2)[::step].ravel().tolist()
 
     def move(self, vx: float, vy: float, omega: float):
         from geometry_msgs.msg import Twist
@@ -681,10 +591,10 @@ def initialize_hardware():
         frontier_explorer = FrontierExplorer(nav2_client, bridge)
         logger.info("Nav2Client + FrontierExplorer initialized (sim mode) — click 🚀 Gazebo in GUI to start simulation")
     elif ROS2_MODE:
-        # ROS2 bridge mode: subscribe to /scan, /odom, publish /cmd_vel.
+        # ROS2 bridge mode: subscribe to /odom, /map, /camera, /voltage; publish /cmd_vel.
+        # /scan is served directly to the browser via foxglove_bridge (port 8765).
         # Auto-launches x3_bringup.launch.py (hardware drivers: Mcnamu_driver_X3,
-        # base_node_X3, IMU filter, EKF, YDLidar) so /cmd_vel drives the real motors
-        # and real /scan + /odom are published.
+        # base_node_X3, IMU filter, EKF, YDLidar) so /cmd_vel drives the real motors.
         # Camera stays as direct USB (AstraCamera) — falls through to init below.
         logger.info("ROS2 mode: launching hardware bringup stack...")
         _ros2_stack_proc = _launch_ros2_stack()
@@ -1054,17 +964,6 @@ async def handle_client(websocket):
                         await websocket.send(json.dumps(
                             {"type": "map_data", "error": "Map not found"}))
 
-                elif msg_type == "request_live_map":
-                    # Client requests the current map (e.g. on reconnect or SLAM start).
-                    # Force a MAPU binary frame immediately via the same push path so there
-                    # is only one delivery mechanism — no competing JSON/binary race.
-                    if ros_bridge:
-                        ros_bridge.force_map_dirty()
-                        _loop = asyncio.get_event_loop()
-                        frame = await _loop.run_in_executor(None, ros_bridge.pop_map_update)
-                        if frame:
-                            await websocket.send(frame)
-
                 # ── Frontier exploration messages ───────────────────────────
                 elif msg_type == "start_frontier_explore":
                     if frontier_explorer and ROS2_MODE:
@@ -1292,8 +1191,7 @@ async def broadcast_loop():
                     return base64.b64encode(dbuf).decode('utf-8')
                 depth_str = await loop.run_in_executor(None, _get_depth)
 
-            # 5. Lidar points (only when toggle is on)
-            scan_points = lidar.get_points_xy() if (lidar and lidar_enabled) else []
+            # 5. Lidar points — served via Foxglove bridge (/scan topic); not sent here
 
             # 6. Robot pose — from /odom (ROS2/sim) or zeros if unavailable
             if hasattr(lidar, 'get_pose_cm'):
@@ -1325,11 +1223,6 @@ async def broadcast_loop():
             # P3: send camera frame as a binary WebSocket message (raw JPEG, no base64)
             if img_bytes:
                 websockets.broadcast(connected_clients, img_bytes)
-
-            # Step 1: send lidar as binary Float32Array (LIDR header + little-endian floats)
-            if scan_points:
-                lidr_payload = b'LIDR' + struct.pack(f'<{len(scan_points)}f', *scan_points)
-                websockets.broadcast(connected_clients, lidr_payload)
 
             # 8. Build readout (P10: removed always-None/False fields; P3: no "image" key)
             nav_status = nav2_client.get_status() if nav2_client else {"state": "UNAVAILABLE"}
@@ -1378,20 +1271,6 @@ def _step_toward(current: float, target: float, accel: float, decel: float) -> f
     if abs(diff) <= step:
         return target
     return current + (step if diff > 0 else -step)
-
-
-async def map_push_loop():
-    """Push MAPU binary frames to all clients at 2 Hz (matching SLAM map_update_interval).
-
-    Runs independently of broadcast_loop so map encoding never starves motion_loop.
-    """
-    loop = asyncio.get_event_loop()
-    while True:
-        if ros_bridge and connected_clients:
-            frame = await loop.run_in_executor(None, ros_bridge.pop_map_update)
-            if frame:
-                websockets.broadcast(connected_clients, frame)
-        await asyncio.sleep(0.5)
 
 
 async def motion_loop():
@@ -1494,7 +1373,7 @@ async def main():
     motion_queue = asyncio.Queue(maxsize=2)
     async with websockets.serve(handle_client, "0.0.0.0", WS_PORT):
         logger.info(f"Server started on ws://0.0.0.0:{WS_PORT}")
-        await asyncio.gather(broadcast_loop(), motion_loop(), oled_loop(), map_push_loop())
+        await asyncio.gather(broadcast_loop(), motion_loop(), oled_loop())
 
 if __name__ == "__main__":
     try:

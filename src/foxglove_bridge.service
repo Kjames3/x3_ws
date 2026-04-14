@@ -1,0 +1,45 @@
+[Unit]
+Description=Foxglove WebSocket Bridge (ROS2 Humble)
+After=network.target x3_server.service
+Wants=network.target
+# Start after x3_server so ROS2 nodes (SLAM, Nav2, bringup) are already up
+After=x3_server.service
+
+[Service]
+Type=simple
+User=jetson
+Group=jetson
+
+# ── ROS2 sourcing ──────────────────────────────────────────────────────────────
+# systemd does NOT read ~/.bashrc, so ROS2 must be sourced explicitly.
+ExecStart=/bin/bash -c '\
+  source /opt/ros/humble/setup.bash && \
+  source /home/jetson/x3_ws/install/local_setup.bash 2>/dev/null || true && \
+  exec ros2 launch foxglove_bridge foxglove_bridge.launch.xml \
+    port:=8765 \
+    address:=0.0.0.0 \
+    send_buffer_limit:=10000000'
+
+Environment=ROS_DOMAIN_ID=42
+
+Restart=on-failure
+RestartSec=5
+
+# Wait for x3_server and its ROS2 stack to finish coming up before the bridge
+# tries to discover topics (x3_server has a 10s pre-sleep, so 15s here is safe)
+ExecStartPre=/bin/sleep 15
+
+# Logging — view with: journalctl -u foxglove_bridge -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=foxglove_bridge
+
+[Install]
+WantedBy=multi-user.target
+
+# ── Install instructions ───────────────────────────────────────────────────────
+# sudo cp ~/x3_ws/src/foxglove_bridge.service /etc/systemd/system/foxglove_bridge.service
+# sudo systemctl daemon-reload
+# sudo systemctl enable foxglove_bridge
+# sudo systemctl start foxglove_bridge
+# journalctl -u foxglove_bridge -f

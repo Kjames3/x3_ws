@@ -61,6 +61,17 @@ const state = {
     // Web Worker for offscreen lidar rendering (Step 2)
     lidarWorker: null,
 
+    // Foxglove WebSocket bridge connection state
+    foxglove: {
+        ws: null,             // raw WebSocket to foxglove_bridge (:8765)
+        channelMap: {},       // subscriptionId (number) → topic string
+        topicToSubId: {},     // topic string → subscriptionId
+        topicToChannelId: {}, // topic string → channelId (for unsubscribe)
+        subIdCounter: 1,      // auto-increment subscription ID
+        reconnectTimer: null,
+        reconnectDelay: 1000, // ms, doubles on each failure up to 10 000
+    },
+
     // Navigation state
     nav: {
         status: 'UNAVAILABLE',
@@ -1016,6 +1027,9 @@ function connect() {
         // Start session timer
         if (state.sessionTimerInterval) clearInterval(state.sessionTimerInterval);
         state.sessionTimerInterval = setInterval(updateSessionTimer, 1000);
+
+        // Connect Foxglove bridge for /map and /scan (non-fatal if bridge not running)
+        connectFoxglove();
     };
 
     state.ws.onclose = () => {
@@ -1023,6 +1037,7 @@ function connect() {
         updateConnectionStatus('disconnected');
         if (elements.controlArea) elements.controlArea.classList.add('disabled-overlay');
         state.ws = null;
+        disconnectFoxglove();
     };
 
     state.ws.onerror = () => {
@@ -1030,6 +1045,7 @@ function connect() {
         updateConnectionStatus('error');
         if (elements.controlArea) elements.controlArea.classList.add('disabled-overlay');
         state.ws = null;
+        disconnectFoxglove();
     };
 
     state.ws.onmessage = (event) => {
@@ -1052,6 +1068,181 @@ function getServerAddress() {
         return `ws://${hostInput.value}:${DEFAULT_PORT}`;
     }
     return `ws://besto.local:${DEFAULT_PORT}`;
+}
+
+function getFoxgloveAddress() {
+    const hostInput = elements.robotIp;
+    const host = (hostInput && hostInput.value && hostInput.value !== '192.168.1.X')
+        ? hostInput.value
+        : 'besto.local';
+    return `ws://${host}:8765`;
+}
+
+// =================================================================
+// Foxglove Bridge Utilities
+// =================================================================
+
+/**
+ * Convert a sensor_msgs/LaserScan JSON object (from Foxglove JSON encoding)
+ * into a Float32Array([x0,y0,x1,y1,...]) in metres, robot frame.
+ * Mirrors ROS2Bridge._scan_cb but runs entirely client-side.
+ */
+function foxgloveScanToXY(scan) {
+    const { angle_min, angle_increment, range_min, range_max, ranges } = scan;
+    const MIN_RANGE = Math.max(range_min, 0.15);
+    const pts = [];
+    for (let i = 0; i < ranges.length; i++) {
+        const r = ranges[i];
+        if (!isFinite(r) || r < MIN_RANGE || r > range_max) continue;
+        const angle = angle_min + i * angle_increment;
+        pts.push(r * Math.cos(angle), -(r * Math.sin(angle)));
+    }
+    return new Float32Array(pts);
+}
+
+/**
+ * Convert a nav_msgs/OccupancyGrid JSON object into the pixel buffer and
+ * metadata used by the nav map renderer. Mirrors pop_map_update() pixel logic.
+ * Returns { pixels:Uint8Array, width, height, resolution, origin_x, origin_y, origin_yaw }
+ */
+function foxgloveGridToPixels(grid) {
+    const { width, height, resolution } = grid.info;
+    const origin_x  = grid.info.origin.position.x;
+    const origin_y  = grid.info.origin.position.y;
+    const q         = grid.info.origin.orientation;
+    const origin_yaw = Math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                                   1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+    const data = grid.data;  // Int8Array or plain Array: -1=unknown, 0=free, 100=occupied
+
+    // Map occupancy values → greyscale: unknown→128, free→255, occupied→0
+    const flat = new Uint8Array(width * height);
+    for (let i = 0; i < data.length; i++) {
+        const v = data[i];
+        flat[i] = v < 0 ? 128 : v === 0 ? 255 : 0;
+    }
+
+    // flipud: ROS maps have row 0 at the bottom; canvas has row 0 at the top
+    const pixels = new Uint8Array(width * height);
+    for (let row = 0; row < height; row++) {
+        const srcRow = height - 1 - row;
+        pixels.set(flat.subarray(srcRow * width, (srcRow + 1) * width), row * width);
+    }
+
+    return { pixels, width, height, resolution, origin_x, origin_y, origin_yaw };
+}
+
+// =================================================================
+// Foxglove WebSocket Client
+// =================================================================
+
+function connectFoxglove() {
+    const fg = state.foxglove;
+
+    // Don't open a second connection while one is live or pending
+    if (fg.ws && (fg.ws.readyState === WebSocket.OPEN ||
+                  fg.ws.readyState === WebSocket.CONNECTING)) return;
+
+    const url = getFoxgloveAddress();
+    console.log(`[foxglove] Connecting to ${url}`);
+    const ws = new WebSocket(url);
+    ws.binaryType = 'arraybuffer';
+    fg.ws = ws;
+
+    ws.onopen = () => {
+        console.log('[foxglove] Bridge connected');
+        fg.reconnectDelay = 1000;  // reset backoff on success
+        // Reset map frame counter so first-frame suppression re-applies on reconnect
+        state.nav._mapUpdateCount = 0;
+    };
+
+    ws.onmessage = (event) => {
+        if (event.data instanceof ArrayBuffer) {
+            handleFoxgloveBinaryFrame(event.data);
+        } else {
+            try {
+                handleFoxgloveTextMessage(JSON.parse(event.data));
+            } catch (e) {
+                console.error('[foxglove] Text parse error:', e);
+            }
+        }
+    };
+
+    ws.onclose = () => {
+        console.warn(`[foxglove] Connection closed — retrying in ${fg.reconnectDelay}ms`);
+        fg.ws = null;
+        _resetFoxgloveSubscriptions();
+        // Only reconnect if the main server is still connected
+        if (state.connected) {
+            fg.reconnectTimer = setTimeout(() => {
+                fg.reconnectDelay = Math.min(fg.reconnectDelay * 2, 10000);
+                connectFoxglove();
+            }, fg.reconnectDelay);
+        }
+    };
+
+    ws.onerror = () => {
+        // onclose will fire immediately after onerror, which handles retry
+        console.warn('[foxglove] WebSocket error — bridge may not be running');
+    };
+}
+
+function disconnectFoxglove() {
+    const fg = state.foxglove;
+    if (fg.reconnectTimer) {
+        clearTimeout(fg.reconnectTimer);
+        fg.reconnectTimer = null;
+    }
+    if (fg.ws) {
+        fg.ws.onclose = null;  // suppress auto-reconnect
+        fg.ws.close();
+        fg.ws = null;
+    }
+    _resetFoxgloveSubscriptions();
+    console.log('[foxglove] Disconnected');
+}
+
+function _resetFoxgloveSubscriptions() {
+    const fg = state.foxglove;
+    fg.channelMap      = {};
+    fg.topicToSubId    = {};
+    fg.topicToChannelId = {};
+    fg.subIdCounter    = 1;
+}
+
+/**
+ * Send an unsubscribe message for a specific topic (e.g. when lidar is toggled off).
+ */
+function foxgloveUnsubscribe(topic) {
+    const fg = state.foxglove;
+    const subId = fg.topicToSubId[topic];
+    if (subId === undefined) return;
+    if (fg.ws && fg.ws.readyState === WebSocket.OPEN) {
+        fg.ws.send(JSON.stringify({ op: 'unsubscribe', subscriptionIds: [subId] }));
+    }
+    delete fg.channelMap[subId];
+    delete fg.topicToSubId[topic];
+    delete fg.topicToChannelId[topic];
+}
+
+/**
+ * Re-subscribe to a topic that was previously unsubscribed (e.g. when lidar re-enabled).
+ * No-op if already subscribed or channel not yet advertised.
+ */
+function foxgloveResubscribe(topic) {
+    const fg = state.foxglove;
+    if (fg.topicToSubId[topic] !== undefined) return;  // already subscribed
+    const channelId = fg.topicToChannelId[topic];
+    if (channelId === undefined) return;  // channel not yet seen from server
+    const subId = fg.subIdCounter++;
+    fg.channelMap[subId]      = topic;
+    fg.topicToSubId[topic]    = subId;
+    if (fg.ws && fg.ws.readyState === WebSocket.OPEN) {
+        fg.ws.send(JSON.stringify({
+            op: 'subscribe',
+            subscriptions: [{ id: subId, channelId, encoding: 'json' }],
+        }));
+        console.log(`[foxglove] Re-subscribed to ${topic}`);
+    }
 }
 
 function updateConnectionStatus(status) {
@@ -1194,6 +1385,133 @@ function handleMapuFrame(buf) {
         updateNavHint();
         console.log(`[nav] Map (binary) loaded: ${width}×${height}px, res=${resolution}m, yaw=${origin_yaw.toFixed(3)}rad`);
     }).catch(e => console.error('[nav] createImageBitmap failed:', e));
+}
+
+// =================================================================
+// Foxglove Bridge Handlers
+// =================================================================
+
+/**
+ * Process a decoded LaserScan message from the Foxglove bridge.
+ * Updates lidar state and dispatches to the worker — same downstream path
+ * as the LIDR binary frame handler, so the rest of the UI is unchanged.
+ */
+function handleFoxgloveScan(msg) {
+    const pts = foxgloveScanToXY(msg);
+    state.latestData.lidarPoints = pts;
+    state.needsLidarUpdate = true;
+
+    // Obstacle proximity rumble (mirrors LIDR path)
+    if (pts.length >= 2) {
+        const OBSTACLE_THRESHOLD = 0.35;
+        let minDist = Infinity;
+        for (let i = 0; i < pts.length; i += 2) {
+            const d = Math.sqrt(pts[i] * pts[i] + pts[i + 1] * pts[i + 1]);
+            if (d < minDist) minDist = d;
+        }
+        const now = Date.now();
+        if (minDist < OBSTACLE_THRESHOLD && now - state.lastObstacleRumble > 1000) {
+            state.lastObstacleRumble = now;
+            const intensity = Math.max(0.2, 1 - (minDist / OBSTACLE_THRESHOLD));
+            rumble(intensity * 0.7, intensity * 0.4, 200);
+        }
+    }
+
+    if (state.lidarWorker) {
+        // pts is a freshly allocated Float32Array (byteOffset=0), safe to transfer
+        const copy = pts.buffer.slice(0);
+        state.lidarWorker.postMessage({ type: 'draw', buffer: copy }, [copy]);
+    }
+}
+
+/**
+ * Process a decoded OccupancyGrid message from the Foxglove bridge.
+ * Replaces the MAPU binary push path — identical downstream rendering.
+ */
+function handleFoxgloveMap(msg) {
+    // Suppress the first frame — SLAM Toolbox's initial publish has an unsettled
+    // origin that snaps to the corrected value on the second frame (~500 ms later).
+    state.nav._mapUpdateCount = (state.nav._mapUpdateCount || 0) + 1;
+    if (state.nav._mapUpdateCount < 2) return;
+
+    const { pixels, width, height, resolution, origin_x, origin_y, origin_yaw }
+        = foxgloveGridToPixels(msg);
+
+    state.nav.rawPixels  = pixels;
+    state.nav.rawPixelW  = width;
+    state.nav.rawPixelH  = height;
+    state.nav.mapMeta    = { resolution, origin: [origin_x, origin_y], originYaw: origin_yaw, width, height };
+    state.nav.mapImage   = null;
+
+    if (state.nav.webgl.ready) {
+        renderCostmapWebGL(pixels, width, height);
+        drawNavMap();
+    }
+
+    const rgba = new Uint8ClampedArray(width * height * 4);
+    for (let i = 0; i < pixels.length; i++) {
+        rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = pixels[i];
+        rgba[i * 4 + 3] = 255;
+    }
+    createImageBitmap(new ImageData(rgba, width, height)).then(bitmap => {
+        if (state.nav._prevBitmap) state.nav._prevBitmap.close();
+        state.nav.mapBitmap  = bitmap;
+        state.nav._prevBitmap = bitmap;
+        drawNavMap();
+        updateNavHint();
+        console.log(`[foxglove] Map: ${width}×${height}px, res=${resolution}m, yaw=${origin_yaw.toFixed(3)}rad`);
+    }).catch(e => console.error('[foxglove] createImageBitmap failed:', e));
+}
+
+/**
+ * Parse a Foxglove binary MessageData frame and dispatch to the right handler.
+ * Frame layout: [1B opcode=0x01][4B subscriptionId uint32 LE][8B timestamp uint64 LE][N bytes JSON payload]
+ */
+function handleFoxgloveBinaryFrame(buf) {
+    const view = new DataView(buf);
+    const opcode = view.getUint8(0);
+    if (opcode !== 0x01) return;  // only handle MessageData frames
+    const subId   = view.getUint32(1, true);  // little-endian
+    // bytes 5-12 are timestamp (uint64) — unused
+    const payload = new Uint8Array(buf, 13);
+    let msg;
+    try {
+        msg = JSON.parse(new TextDecoder().decode(payload));
+    } catch (e) {
+        console.error('[foxglove] JSON parse error:', e);
+        return;
+    }
+    const topic = state.foxglove.channelMap[subId];
+    if (topic === '/scan') handleFoxgloveScan(msg);
+    else if (topic === '/map') handleFoxgloveMap(msg);
+}
+
+/**
+ * Handle Foxglove text-frame control messages (serverInfo, advertise, unadvertise).
+ * On advertise, subscribe to /map and /scan with JSON encoding.
+ */
+function handleFoxgloveTextMessage(obj) {
+    if (obj.op !== 'advertise') return;
+
+    const fg = state.foxglove;
+    const TOPICS = ['/map', '/scan'];
+
+    const subs = [];
+    for (const ch of obj.channels) {
+        if (!TOPICS.includes(ch.topic)) continue;
+        if (fg.topicToSubId[ch.topic] !== undefined) continue;  // already subscribed
+
+        const subId = fg.subIdCounter++;
+        fg.channelMap[subId]          = ch.topic;
+        fg.topicToSubId[ch.topic]     = subId;
+        fg.topicToChannelId[ch.topic] = ch.id;
+        subs.push({ id: subId, channelId: ch.id, encoding: 'json' });
+    }
+
+    if (subs.length > 0 && fg.ws && fg.ws.readyState === WebSocket.OPEN) {
+        fg.ws.send(JSON.stringify({ op: 'subscribe', subscriptions: subs }));
+        console.log('[foxglove] Subscribed:', subs.map(s => fg.channelMap[s.id]));
+    }
 }
 
 // =================================================================
@@ -2120,6 +2438,9 @@ if (elements.lidarToggle) elements.lidarToggle.addEventListener('click', () => {
     state.lidarEnabled = !state.lidarEnabled;
     elements.lidarToggle.classList.toggle('active', state.lidarEnabled);
     if (state.connected) sendMessage({ type: "toggle_lidar", enabled: state.lidarEnabled });
+    // Gate Foxglove /scan subscription to match lidar enabled state
+    if (state.lidarEnabled) foxgloveResubscribe('/scan');
+    else foxgloveUnsubscribe('/scan');
     if (!state.lidarEnabled && elements.lidarCtx) {
         elements.lidarCtx.fillStyle = '#000';
         elements.lidarCtx.fillRect(0, 0, elements.lidarCanvas.width, elements.lidarCanvas.height);
@@ -2364,6 +2685,8 @@ function pollGamepad() {
         state.lidarEnabled = !state.lidarEnabled;
         if (elements.lidarToggle) elements.lidarToggle.classList.toggle('active', state.lidarEnabled);
         if (state.connected) sendMessage({ type: 'toggle_lidar', enabled: state.lidarEnabled });
+        if (state.lidarEnabled) foxgloveResubscribe('/scan');
+        else foxgloveUnsubscribe('/scan');
         if (!state.lidarEnabled && elements.lidarCtx)
             elements.lidarCtx.fillRect(0, 0, elements.lidarCanvas.width, elements.lidarCanvas.height);
         rumble(0.4, 0.0, 120);

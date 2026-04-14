@@ -7,25 +7,30 @@ WebSocket-based control server and ROS2 navigation stack for the **Yahboom X3 me
 ## Architecture
 
 ```
-Laptop browser ──── WebSocket (port 8081) ────► server_x3.py  (Jetson)
-                                                      │
-                                         ┌────────────┴────────────┐
-                                  direct serial            ROS2 DDS (--ros2)
-                                         │                         │
-                               Rosmaster + YDLidar        /cmd_vel  /scan  /odom
-                                                                    │
-                                                 ┌──────────────────┴──────────────────┐
-                                           Jetson (physical)               Laptop (sim)
-                                           x3_bringup.launch.py            x3_gazebo.launch.py
-                                           (Mcnamu_driver + EKF + lidar)   (Ignition Fortress)
+Laptop browser
+  │
+  ├── WebSocket (port 8081) ────► server_x3.py  (Jetson)
+  │                                     │
+  │                        ┌────────────┴────────────┐
+  │                 direct serial            ROS2 DDS
+  │                        │                         │
+  │              Rosmaster + YDLidar        /cmd_vel  /odom  /map
+  │                                         /camera   /voltage
+  │
+  └── WebSocket (port 8765) ────► foxglove_bridge  (Jetson)
+                                        │
+                                  /map  /scan  (raw ROS2 messages,
+                                               JSON-encoded)
 ```
 
-| Mode | Flag | Runs on | ROS2 topics come from |
-|------|------|---------|----------------------|
-| **Direct hardware** | *(none)* | Jetson | — (direct serial) |
-| **Physical robot** | `--ros2` | Jetson | `jetson_bringup.sh` (local) |
-| **Cross-machine sim** | `--ros2 --domain-id N` | Jetson | `laptop_sim.sh` on laptop |
-| **Laptop-only sim** | `--sim` | Laptop | Gazebo (via 🚀 button) |
+### What each connection carries
+
+| Connection | Port | Handles |
+|---|---|---|
+| `server_x3.py` | 8081 | Camera JPEG, YOLO detections, battery/power, motor commands, SLAM lifecycle, map save/load |
+| `foxglove_bridge` | 8765 | `/map` OccupancyGrid (live SLAM map), `/scan` LaserScan (full lidar scan) |
+
+The browser opens both connections automatically on connect. The Foxglove connection is non-fatal — camera, motors, and YOLO continue working if the bridge is not running.
 
 ---
 
@@ -43,7 +48,8 @@ sudo apt install \
   ros-humble-robot-state-publisher \
   ros-humble-joint-state-publisher \
   ros-humble-imu-filter-madgwick \
-  ros-humble-tf2-ros
+  ros-humble-tf2-ros \
+  ros-humble-foxglove-bridge
 ```
 
 ### Python (server_x3.py dependencies)
@@ -57,6 +63,8 @@ sudo python3 setup.py install
 
 ### YDLidar C++ SDK (required before colcon build)
 
+Handled automatically by `scripts/install.sh`. To install manually:
+
 ```bash
 git clone https://github.com/YDLIDAR/YDLidar-SDK.git ~/YDLidar-SDK
 cd ~/YDLidar-SDK && mkdir build && cd build
@@ -66,33 +74,60 @@ sudo make install && sudo ldconfig
 
 ---
 
+## Setup (first time)
+
+Run the setup script from the workspace root. It installs all dependencies, builds the workspace, writes udev rules, and configures `.bashrc`:
+
+```bash
+cd ~/x3_ws
+bash scripts/install.sh
+# After completion:
+sudo reboot
+```
+
+The script handles:
+- APT system libraries and ROS2 Humble packages
+- Python dependencies (ultralytics, websockets, etc.)
+- YDLidar C++ SDK build and install
+- Git submodule init (`ydlidar_ros2_driver`)
+- udev rules (YDLidar, Rosmaster, Orbbec camera symlinks)
+- User group membership (dialout, i2c, video, plugdev)
+- Full `colcon build --symlink-install`
+- `.bashrc` sourcing and aliases (`cb`, `cs`)
+
+Pass `--sim` to also install `ros-humble-ros-gz` (Gazebo simulation):
+
+```bash
+bash scripts/install.sh --sim
+```
+
+---
+
 ## Build
 
 ```bash
 cd ~/x3_ws
 source /opt/ros/humble/setup.bash
-colcon build --packages-select \
+colcon build --symlink-install --packages-select \
   yahboomcar_msgs \
   yahboomcar_description \
   yahboomcar_base_node \
   yahboomcar_bringup \
   yahboomcar_nav \
   ydlidar_ros2_driver
-source install/setup.bash
+source install/local_setup.bash
 ```
+
+> **Note:** With `--symlink-install`, changes to Python files, launch files, and YAML params take effect immediately without rebuilding. Only C++ packages (`yahboomcar_base_node`, `ydlidar_ros2_driver`) require a rebuild when their source changes.
 
 > **Tip:** If colcon picks up miniconda's Python and fails on `catkin_pkg` or `empy`, run:
 > ```bash
 > pip install catkin_pkg "empy==3.3.4" lark
 > ```
-> Then retry the build. See [scripts/build_ros2.sh](scripts/build_ros2.sh) for a one-shot setup script.
 
 ---
 
 ## Running
-
-The server **always runs on the Jetson** (robot). The browser connects from your laptop.
-Gazebo simulation also runs on the laptop — both machines communicate via ROS2 DDS over the LAN.
 
 ### Option A — Direct hardware mode (no ROS2 stack)
 
@@ -104,54 +139,40 @@ cd ~/x3_ws/src
 python3 server_x3.py
 ```
 
-Open `http://<jetson-ip>:8081` in your browser.
+Open `http://<jetson-ip>:8080/GUI.html` in your browser.
 
 ### Option B — Physical robot with ROS2 stack (SLAM / Nav2)
 
-Full ROS2 stack for SLAM, EKF odometry, and Nav2 autonomous navigation.
+Full ROS2 stack for SLAM, EKF odometry, Nav2 autonomous navigation, and Foxglove bridge.
 
 ```bash
 # Jetson — Terminal 1: hardware drivers + EKF + lidar
 bash ~/x3_ws/scripts/jetson_bringup.sh
 
-# Jetson — Terminal 2: server
+# Jetson — Terminal 2: WebSocket control server
 cd ~/x3_ws/src
-python3 server_x3.py --ros2 --domain-id 42
+python3 server_x3.py --domain-id 42
+
+# Jetson — Terminal 3: Foxglove bridge (map + lidar to browser)
+source /opt/ros/humble/setup.bash
+ros2 launch foxglove_bridge foxglove_bridge.launch.xml \
+  port:=8765 address:=0.0.0.0 send_buffer_limit:=10000000
 ```
 
-Open `http://<jetson-ip>:8081`. Use the GUI **Start SLAM** button to begin mapping.
+Open `http://<jetson-ip>:8080/GUI.html`. Use the GUI **Start SLAM** button to begin mapping.
 
 ### Option C — Cross-machine simulation (Gazebo on laptop, server on Jetson)
-
-Gazebo runs on your laptop and publishes the same ROS2 topics that the physical robot
-hardware would. The server on the Jetson receives them transparently via DDS — the GUI
-experience is identical to Option B.
-
-**Requirements:**
-- Both machines on the same LAN (UDP multicast must not be blocked)
-- Same `ROS_DOMAIN_ID` on both machines (the scripts default to `42`)
-- ROS2 Humble and this workspace built on the laptop (`bash scripts/build_ros2.sh`)
-- Ignition Fortress on the laptop: `sudo apt install ros-humble-ros-gz`
 
 ```bash
 # Laptop — Gazebo simulation
 bash ~/x3_ws/scripts/laptop_sim.sh
 
-# Jetson — server (same domain ID)
+# Jetson — server
 cd ~/x3_ws/src
-python3 server_x3.py --ros2 --domain-id 42
+python3 server_x3.py --domain-id 42
 ```
 
-Open `http://<jetson-ip>:8081`. The GUI connects to the Jetson server; the Jetson's
-ROS2Bridge receives topics from Gazebo on the laptop via DDS discovery.
-
-> **Tip:** Both scripts accept an optional domain ID argument:
-> `bash scripts/laptop_sim.sh 7`  /  `python3 server_x3.py --ros2 --domain-id 7`
-> They must match. Any integer 0–101 works; avoid 0 on a busy network.
-
 ### Option D — Laptop-only simulation (dev mode, no Jetson needed)
-
-Run everything on the laptop — useful for pure GUI / logic development without any robot.
 
 ```bash
 # Laptop
@@ -164,33 +185,53 @@ python3 server_x3.py --sim
 
 ## GUI Feature Availability by Mode
 
-| Feature | Direct hardware | `--ros2` | `--sim` |
-|---------|----------------|----------|---------|
+| Feature | Direct hardware | ROS2 mode | `--sim` |
+|---------|----------------|-----------|---------|
 | Camera feed (RGB) | ✅ Astra Pro | ✅ Astra Pro | ❌ |
-| Depth toggle | ✅ (if depth enabled) | ✅ (if depth enabled) | ❌ |
-| Lidar view | ✅ YDLidar | ✅ via `/scan` topic | ❌ |
+| Depth toggle | ✅ (if enabled) | ✅ (if enabled) | ❌ |
+| Lidar view | ✅ YDLidar (serial) | ✅ via Foxglove `/scan` | ❌ |
+| SLAM map | ❌ | ✅ via Foxglove `/map` | ✅ (Gazebo) |
 | Motor control | ✅ direct serial | ✅ via `/cmd_vel` | ✅ (no-op) |
 | YOLO detection | ✅ | ✅ | ❌ |
 | Power / battery | ✅ | ✅ | ❌ |
-| SLAM map (RViz) | ❌ | ✅ | ✅ (Gazebo) |
+| Nav2 navigation | ❌ | ✅ | ✅ (Gazebo) |
 
-> **Depth toggle**: Requires the `enable_depth=True` flag in `AstraCamera`. Currently disabled by default — enable it in `initialize_hardware()` if your Astra Pro depth stream is needed.
+> **Depth toggle**: Requires `enable_depth=True` in `AstraCamera`. Disabled by default — enable in `initialize_hardware()` if needed.
+
+> **Lidar / Map in ROS2 mode**: Requires `foxglove_bridge` to be running on port 8765. The GUI connects automatically and retries with exponential backoff if the bridge is temporarily unavailable.
 
 ---
 
-## systemd Service (auto-start on boot)
+## systemd Services (auto-start on boot)
+
+Two services run on the Jetson: the control server and the Foxglove bridge.
+
+### Install both services
 
 ```bash
 sudo cp ~/x3_ws/src/x3_server.service /etc/systemd/system/
+sudo cp ~/x3_ws/src/foxglove_bridge.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable x3_server
-sudo systemctl start x3_server
-
-# View logs
-journalctl -u x3_server -f
+sudo systemctl enable x3_server foxglove_bridge
+sudo systemctl start x3_server foxglove_bridge
 ```
 
-### Switching modes without editing the service file
+### View logs
+
+```bash
+journalctl -u x3_server -f
+journalctl -u foxglove_bridge -f
+```
+
+### Service startup sequence
+
+```
+Boot
+ └─ x3_server        starts after 10 s (hardware enumeration)
+     └─ foxglove_bridge  starts after 15 s (waits for ROS2 stack)
+```
+
+### Switching server mode without editing the service file
 
 Create a drop-in override:
 
@@ -199,15 +240,37 @@ sudo mkdir -p /etc/systemd/system/x3_server.service.d/
 sudo nano /etc/systemd/system/x3_server.service.d/override.conf
 ```
 
-Contents for ROS2 bridge mode:
+Contents for simulation mode:
 ```ini
 [Service]
-Environment=SERVER_ARGS=--ros2
+Environment="SERVER_ARGS=--sim"
 ```
 
 Apply:
 ```bash
 sudo systemctl daemon-reload && sudo systemctl restart x3_server
+```
+
+### Desktop vs. headless boot
+
+Disabling the desktop (GNOME) frees ~300–500 MB RAM and 5–15% CPU — recommended for robot operation:
+
+```bash
+# Disable desktop (takes effect on next boot)
+sudo systemctl set-default multi-user.target
+
+# Re-enable desktop temporarily (current session only)
+sudo systemctl start gdm3
+
+# Re-enable desktop permanently
+sudo systemctl set-default graphical.target
+```
+
+### Jetson performance mode
+
+```bash
+sudo nvpmodel -m 0      # max power mode (persists across reboots)
+sudo jetson_clocks      # lock clocks to max (current session)
 ```
 
 ---
@@ -216,7 +279,7 @@ sudo systemctl daemon-reload && sudo systemctl restart x3_server
 
 | Parameter | Value |
 |-----------|-------|
-| Port | `/dev/ttyUSB0` |
+| Port | `/dev/ttyUSB0` (symlink: `/dev/ydlidar`) |
 | Baud rate | 512000 |
 | Lidar type | `TYPE_TOF` (0) |
 | Single channel | `true` |
@@ -231,21 +294,30 @@ sudo systemctl daemon-reload && sudo systemctl restart x3_server
 ```
 x3_ws/
 ├── src/
-│   ├── server_x3.py          # Main WebSocket server
-│   ├── drivers_x3.py         # Camera, lidar, motor drivers
-│   ├── x3_server.service     # systemd unit file
-│   ├── web/                  # Browser GUI (HTML/CSS/JS)
-│   ├── yahboomcar_base_node/ # ROS2: dead-reckoning odometry
-│   ├── yahboomcar_bringup/   # ROS2: hardware bringup launch
-│   ├── yahboomcar_description/ # URDF / robot model
-│   ├── yahboomcar_msgs/      # Custom ROS2 message types
-│   ├── yahboomcar_nav/       # SLAM + Nav2 launch & params
-│   ├── yahboomcar_rviz/      # RViz configs
-│   └── ydlidar_ros2_driver/  # YDLidar ROS2 node
+│   ├── server_x3.py              # Main WebSocket server (port 8081)
+│   ├── drivers_x3.py             # Camera, lidar, motor drivers
+│   ├── nav2_client.py            # Nav2 action client
+│   ├── navigation_fsm.py         # YOLO-driven target tracking FSM
+│   ├── frontier_explorer.py      # Autonomous frontier exploration
+│   ├── trt_detector.py           # TensorRT YOLO wrapper
+│   ├── Rosmaster_Lib.py          # Yahboom serial protocol library
+│   ├── x3_server.service         # systemd: control server
+│   ├── foxglove_bridge.service   # systemd: Foxglove WebSocket bridge
+│   ├── web/
+│   │   ├── GUI.html              # Single-page browser GUI
+│   │   ├── main.js               # WebSocket client + Foxglove client
+│   │   └── lidar-worker.js       # Web Worker: lidar canvas rendering
+│   ├── yahboomcar_base_node/     # ROS2 C++: dead-reckoning odometry
+│   ├── yahboomcar_bringup/       # ROS2: hardware bringup launch
+│   ├── yahboomcar_description/   # URDF / robot model
+│   ├── yahboomcar_msgs/          # Custom ROS2 message types
+│   ├── yahboomcar_nav/           # SLAM + Nav2 launch & params
+│   ├── yahboomcar_rviz/          # RViz configs
+│   └── ydlidar_ros2_driver/      # YDLidar ROS2 driver (git submodule)
 ├── scripts/
-│   └── build_ros2.sh         # One-shot dependency + build script
-├── PERFORMANCE_PLAN.md       # Optimization notes
-└── README.md                 # This file
+│   ├── install.sh                # Full first-time setup script
+│   └── build_ros2.sh             # Workspace build + YDLidar SDK
+└── README.md
 ```
 
 ---
@@ -272,52 +344,41 @@ ros2 run rviz2 rviz2
 # Save the current SLAM map
 ros2 service call /slam_toolbox/save_map slam_toolbox/srv/SaveMap \
   "{name: {data: 'my_map'}}"
+
+# Check Foxglove bridge topics
+ros2 topic list | grep -E "scan|map|odom"
 ```
 
 ---
 
 ## SLAM Toolbox Mapping Workflow
 
-The X3 uses [SLAM Toolbox](https://github.com/SteveMacenski/slam_toolbox) for real-time lidar-based
-mapping. The resulting map can be saved and immediately used for autonomous navigation with Nav2.
+The X3 uses [SLAM Toolbox](https://github.com/SteveMacenski/slam_toolbox) for real-time lidar-based mapping. The map is streamed live to the browser via the Foxglove bridge.
 
 ### Via the GUI (recommended)
 
-1. Launch the server in the appropriate mode:
-   ```bash
-   # Simulation
-   python3 src/server_x3.py --sim
-
-   # Physical robot
-   python3 src/server_x3.py --ros2
-   ```
-2. In the Navigation card, click **Start SLAM**. The status text will confirm mapping is active.
-3. Drive the robot around (use the joystick or WASD keys) to build the map.
-4. When coverage is complete, type a name in the map name field and click **Save Map**.
-5. The new map will appear in the **Map** dropdown in the Navigation card.
-6. To use the map for autonomous navigation: select it, click **Launch Nav2**, then set an
-   initial pose and click a goal on the map canvas.
-7. Click **Stop SLAM** when done mapping (frees CPU for navigation).
+1. Start the server and Foxglove bridge (or use systemd auto-start).
+2. In the Navigation card, click **Start SLAM**. The live map will appear in the canvas within ~1 second.
+3. Drive the robot around (joystick or WASD) to build the map.
+4. Type a name in the map name field and click **Save Map**.
+5. To use the map for autonomous navigation: select it from the dropdown, click **Launch Nav2**, set an initial pose, then click a goal on the map canvas.
+6. Click **Stop SLAM** when done (frees CPU for navigation).
 
 ### Via the CLI
 
 ```bash
-# Terminal 1 — Gazebo (sim only)
-ros2 launch yahboomcar_nav x3_gazebo.launch.py
-
-# Terminal 2 — SLAM Toolbox (sim)
-ros2 launch yahboomcar_nav x3_slam_sim.launch.py
-
-# Terminal 2 — SLAM Toolbox (physical robot)
+# SLAM Toolbox (physical robot)
 ros2 launch yahboomcar_nav x3_slam.launch.py
+
+# SLAM Toolbox (simulation)
+ros2 launch yahboomcar_nav x3_slam_sim.launch.py
 
 # Save the finished map
 ros2 service call /slam_toolbox/save_map slam_toolbox/srv/SaveMap \
-  '{name: {data: "/home/kamren/x3_ws/src/yahboomcar_nav/maps/mymap"}}'
+  '{name: {data: "/home/jetson/x3_ws/src/yahboomcar_nav/maps/mymap"}}'
 ```
 
-Maps are saved as `<name>.pgm` + `<name>.yaml` pairs in
-`src/yahboomcar_nav/maps/` and are automatically discovered by the server.
+Maps are saved as `<name>.pgm` + `<name>.yaml` pairs in `src/yahboomcar_nav/maps/` and are automatically discovered by the server.
 
 ---
 
@@ -325,31 +386,26 @@ Maps are saved as `<name>.pgm` + `<name>.yaml` pairs in
 
 ### Trajectory Smoother: SavitzkyGolay → ConstrainedSmoother
 
-The current smoother (`SavitzkyGolayFilterSmoother`) post-processes the global path with a
-fixed-window polynomial filter. It produces smooth trajectories but has no awareness of the
-costmap, so it can occasionally clip corners near obstacles.
+The current smoother (`SavitzkyGolayFilterSmoother`) post-processes the global path with a fixed-window polynomial filter. It produces smooth trajectories but has no awareness of the costmap, so it can occasionally clip corners near obstacles.
 
-The planned upgrade is to **`ConstrainedSmootherServer`**, which optimises path curvature as a
-constrained minimisation problem against the costmap. Benefits:
+The planned upgrade is **`ConstrainedSmootherServer`**, which optimises path curvature as a constrained minimisation problem against the costmap. Benefits:
 
 - Paths respect robot footprint and inflation layer throughout
 - Better clearance in narrow corridors
 - Tunable cost weights (path length vs curvature vs clearance)
 
-Configuration location: `src/yahboomcar_nav/params/nav2_params_x3.yaml` — `smoother_server` block.
+Configuration: `src/yahboomcar_nav/params/nav2_params_x3.yaml` — `smoother_server` block.
 
 ### Mapping: SLAM Toolbox → RTAB-Map
 
-The current pipeline uses SLAM Toolbox (lidar-only 2D occupancy mapping). The planned upgrade is
-**RTAB-Map**, which fuses the Orbbec Astra Pro depth camera with the YDLidar. Benefits:
+The current pipeline uses SLAM Toolbox (lidar-only 2D occupancy mapping). The planned upgrade is **RTAB-Map**, which fuses the Orbbec Astra Pro depth camera with the YDLidar. Benefits:
 
-- **Visual loop closure** — camera-based place recognition is far more distinctive than
-  lidar scan-shape matching, drastically reducing drift over large areas or after long loops.
-- **Optional 3D reconstruction** — point cloud / OctoMap alongside the 2D occupancy grid for
-  richer environment understanding.
-- **Improved re-localisation** — RTAB-Map's appearance-based memory is more robust when
-  returning to previously-visited areas after a long absence.
+- **Visual loop closure** — camera-based place recognition is far more distinctive than lidar scan-shape matching, drastically reducing drift over large areas or after long loops.
+- **Optional 3D reconstruction** — point cloud / OctoMap alongside the 2D occupancy grid.
+- **Improved re-localisation** — RTAB-Map's appearance-based memory is more robust when returning to previously-visited areas after a long absence.
 
-Infrastructure already present in the repository:
-- `navigation_rtabmap_launch.py`
-- `rtabmap_nav_params.yaml`
+Infrastructure already present: `navigation_rtabmap_launch.py`, `rtabmap_nav_params.yaml`.
+
+### TF / Odometry via Foxglove
+
+The Foxglove bridge also exposes `/tf`. A future enhancement would subscribe to `/tf` client-side and use the `map → base_footprint` transform for robot pose overlay on the map canvas, replacing the current `/odom`-based pose estimate.
