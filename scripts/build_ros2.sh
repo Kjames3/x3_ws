@@ -55,7 +55,8 @@ source /opt/ros/humble/setup.bash
 echo ""
 echo "[4/4] Building ROS2 packages..."
 cd "$WS_DIR"
-colcon build --packages-select \
+colcon build --symlink-install \
+    --packages-select \
     yahboomcar_msgs \
     yahboomcar_description \
     yahboomcar_base_node \
