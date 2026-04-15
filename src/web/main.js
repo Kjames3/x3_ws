@@ -200,7 +200,7 @@ const elements = {
     // Lidar
     lidarToggle: document.getElementById('lidar-toggle'),
     lidarCanvas: document.getElementById('lidar-canvas'),
-    lidarCtx: document.getElementById('lidar-canvas') ? document.getElementById('lidar-canvas').getContext('2d') : null,
+    lidarCtx: null,  // set by initLidarWorker (must not create context before transferControlToOffscreen)
 
     // Motors Controls
     leftSlider: document.getElementById('left-slider'),
@@ -299,11 +299,15 @@ function updateLabelToggleBtn(btn, labelsOn) {
 // =================================================================
 function initLidarWorker() {
     const canvas = elements.lidarCanvas;
-    if (!canvas || !canvas.transferControlToOffscreen) {
+    if (!canvas) return;
+    if (state.lidarWorker) return;  // already initialised — guard against double DOMContentLoaded
+
+    if (!canvas.transferControlToOffscreen) {
+        // Fallback: browser doesn't support OffscreenCanvas — render on main thread
+        elements.lidarCtx = canvas.getContext('2d');
         console.warn('[lidar] OffscreenCanvas not supported — using main-thread rendering');
         return;
     }
-    if (state.lidarWorker) return;  // already initialised — guard against double DOMContentLoaded
     try {
         const offscreen = canvas.transferControlToOffscreen();
         const worker = new Worker('lidar-worker.js');
@@ -313,9 +317,11 @@ function initLidarWorker() {
         };
         worker.postMessage({ type: 'init', canvas: offscreen }, [offscreen]);
         state.lidarWorker = worker;
-        elements.lidarCtx = null; // canvas control transferred; main-thread ctx is now invalid
+        // elements.lidarCtx stays null — canvas control is with the worker
     } catch (e) {
-        console.warn('[lidar] Worker init failed:', e);
+        // Fallback: transfer failed (canvas already has a context elsewhere) — use main thread
+        elements.lidarCtx = canvas.getContext('2d');
+        console.warn('[lidar] Worker init failed, falling back to main-thread:', e);
     }
 }
 
@@ -1471,10 +1477,32 @@ function handleFoxgloveMap(msg) {
 function handleFoxgloveBinaryFrame(buf) {
     const view = new DataView(buf);
     const opcode = view.getUint8(0);
+
+    // Debug: log first frame of each opcode to identify format
+    if (!handleFoxgloveBinaryFrame._logged) handleFoxgloveBinaryFrame._logged = {};
+    if (!handleFoxgloveBinaryFrame._logged[opcode]) {
+        handleFoxgloveBinaryFrame._logged[opcode] = true;
+        const hex = Array.from(new Uint8Array(buf, 0, Math.min(buf.byteLength, 24)))
+            .map(b => b.toString(16).padStart(2, '0')).join(' ');
+        console.log(`[foxglove] First binary frame opcode=0x${opcode.toString(16).padStart(2,'0')} len=${buf.byteLength} bytes: ${hex}`);
+    }
+
     if (opcode !== 0x01) return;  // only handle MessageData frames
     const subId   = view.getUint32(1, true);  // little-endian
     // bytes 5-12 are timestamp (uint64) — unused
     const payload = new Uint8Array(buf, 13);
+    const firstByte = payload[0];
+
+    // Detect encoding: JSON starts with '{', CDR starts with 0x00/0x01
+    if (firstByte !== 0x7b /* '{' */) {
+        if (!handleFoxgloveBinaryFrame._logged['cdr_warn']) {
+            handleFoxgloveBinaryFrame._logged['cdr_warn'] = true;
+            const phex = Array.from(payload.slice(0, 8)).map(b => b.toString(16).padStart(2,'0')).join(' ');
+            console.warn(`[foxglove] Payload is not JSON (first byte=0x${firstByte.toString(16)}, likely CDR). Payload start: ${phex}`);
+        }
+        return;
+    }
+
     let msg;
     try {
         msg = JSON.parse(new TextDecoder().decode(payload));
