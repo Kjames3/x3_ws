@@ -1470,49 +1470,94 @@ function handleFoxgloveMap(msg) {
     }).catch(e => console.error('[foxglove] createImageBitmap failed:', e));
 }
 
+// ── CDR decoder ──────────────────────────────────────────────────────────────
+// foxglove_bridge 3.x (Foxglove SDK) always sends ROS2 native CDR serialisation.
+// CDR stream: 4-byte encapsulation header [0x00, 0x01, 0x00, 0x00] (LE), then payload.
+// All alignment is relative to the start of the CDR stream (including the header bytes).
+
+class CDRReader {
+    constructor(buf, streamStart) {
+        this.view = new DataView(buf);
+        this.base = streamStart;
+        this.offset = streamStart + 4;  // skip CDR encapsulation header
+        this.le = true;
+    }
+    _align(n) {
+        const rem = (this.offset - this.base) % n;
+        if (rem) this.offset += n - rem;
+    }
+    readInt8()   { return this.view.getInt8(this.offset++); }
+    readInt32()  { this._align(4); const v = this.view.getInt32 (this.offset, this.le); this.offset += 4; return v; }
+    readUint32() { this._align(4); const v = this.view.getUint32(this.offset, this.le); this.offset += 4; return v; }
+    readFloat32(){ this._align(4); const v = this.view.getFloat32(this.offset, this.le); this.offset += 4; return v; }
+    readFloat64(){ this._align(8); const v = this.view.getFloat64(this.offset, this.le); this.offset += 8; return v; }
+    readString() {
+        const len = this.readUint32();
+        const s = new TextDecoder().decode(new Uint8Array(this.view.buffer, this.offset, len > 0 ? len - 1 : 0));
+        this.offset += len;
+        return s;
+    }
+    readFloat32Array(n) {
+        this._align(4);
+        const arr = new Float32Array(n);
+        for (let i = 0; i < n; i++) { arr[i] = this.view.getFloat32(this.offset, this.le); this.offset += 4; }
+        return arr;
+    }
+    readInt8Array(n) {
+        const arr = new Int8Array(n);
+        for (let i = 0; i < n; i++) arr[i] = this.view.getInt8(this.offset++);
+        return arr;
+    }
+}
+
+function parseLaserScanCDR(buf, payloadOffset) {
+    const r = new CDRReader(buf, payloadOffset);
+    const sec = r.readInt32(), nanosec = r.readUint32(), frame_id = r.readString();
+    const angle_min = r.readFloat32(), angle_max = r.readFloat32();
+    const angle_increment = r.readFloat32(), time_increment = r.readFloat32();
+    const scan_time = r.readFloat32(), range_min = r.readFloat32(), range_max = r.readFloat32();
+    const ranges      = r.readFloat32Array(r.readUint32());
+    const intensities = r.readFloat32Array(r.readUint32());
+    return { header: { stamp: { sec, nanosec }, frame_id },
+             angle_min, angle_max, angle_increment, time_increment,
+             scan_time, range_min, range_max,
+             ranges: Array.from(ranges), intensities: Array.from(intensities) };
+}
+
+function parseOccupancyGridCDR(buf, payloadOffset) {
+    const r = new CDRReader(buf, payloadOffset);
+    const sec = r.readInt32(), nanosec = r.readUint32(), frame_id = r.readString();
+    const lt_sec = r.readInt32(), lt_nanosec = r.readUint32();
+    const resolution = r.readFloat32(), width = r.readUint32(), height = r.readUint32();
+    const px = r.readFloat64(), py = r.readFloat64(), pz = r.readFloat64();
+    const qx = r.readFloat64(), qy = r.readFloat64(), qz = r.readFloat64(), qw = r.readFloat64();
+    const data = r.readInt8Array(r.readUint32());
+    return { header: { stamp: { sec, nanosec }, frame_id },
+             info: { map_load_time: { sec: lt_sec, nanosec: lt_nanosec },
+                     resolution, width, height,
+                     origin: { position: { x: px, y: py, z: pz },
+                               orientation: { x: qx, y: qy, z: qz, w: qw } } },
+             data: Array.from(data) };
+}
+
 /**
- * Parse a Foxglove binary MessageData frame and dispatch to the right handler.
- * Frame layout: [1B opcode=0x01][4B subscriptionId uint32 LE][8B timestamp uint64 LE][N bytes JSON payload]
+ * Parse a Foxglove binary MessageData frame (opcode 0x01) and dispatch.
+ * Frame: [1B opcode][4B subId uint32 LE][8B timestamp uint64 LE][CDR payload]
+ * foxglove_bridge 3.x always uses CDR serialisation regardless of subscription encoding.
  */
 function handleFoxgloveBinaryFrame(buf) {
     const view = new DataView(buf);
-    const opcode = view.getUint8(0);
-
-    // Debug: log first frame of each opcode to identify format
-    if (!handleFoxgloveBinaryFrame._logged) handleFoxgloveBinaryFrame._logged = {};
-    if (!handleFoxgloveBinaryFrame._logged[opcode]) {
-        handleFoxgloveBinaryFrame._logged[opcode] = true;
-        const hex = Array.from(new Uint8Array(buf, 0, Math.min(buf.byteLength, 24)))
-            .map(b => b.toString(16).padStart(2, '0')).join(' ');
-        console.log(`[foxglove] First binary frame opcode=0x${opcode.toString(16).padStart(2,'0')} len=${buf.byteLength} bytes: ${hex}`);
-    }
-
-    if (opcode !== 0x01) return;  // only handle MessageData frames
-    const subId   = view.getUint32(1, true);  // little-endian
-    // bytes 5-12 are timestamp (uint64) — unused
-    const payload = new Uint8Array(buf, 13);
-    const firstByte = payload[0];
-
-    // Detect encoding: JSON starts with '{', CDR starts with 0x00/0x01
-    if (firstByte !== 0x7b /* '{' */) {
-        if (!handleFoxgloveBinaryFrame._logged['cdr_warn']) {
-            handleFoxgloveBinaryFrame._logged['cdr_warn'] = true;
-            const phex = Array.from(payload.slice(0, 8)).map(b => b.toString(16).padStart(2,'0')).join(' ');
-            console.warn(`[foxglove] Payload is not JSON (first byte=0x${firstByte.toString(16)}, likely CDR). Payload start: ${phex}`);
-        }
-        return;
-    }
-
-    let msg;
-    try {
-        msg = JSON.parse(new TextDecoder().decode(payload));
-    } catch (e) {
-        console.error('[foxglove] JSON parse error:', e);
-        return;
-    }
+    if (view.getUint8(0) !== 0x01) return;  // only MessageData frames
+    const subId = view.getUint32(1, true);
     const topic = state.foxglove.channelMap[subId];
-    if (topic === '/scan') handleFoxgloveScan(msg);
-    else if (topic === '/map') handleFoxgloveMap(msg);
+    if (!topic) return;
+    const payloadOffset = 13;  // CDR stream starts at byte 13
+    try {
+        if (topic === '/scan') handleFoxgloveScan(parseLaserScanCDR(buf, payloadOffset));
+        else if (topic === '/map') handleFoxgloveMap(parseOccupancyGridCDR(buf, payloadOffset));
+    } catch (e) {
+        console.error('[foxglove] CDR parse error for', topic, ':', e);
+    }
 }
 
 /**
@@ -1534,7 +1579,7 @@ function handleFoxgloveTextMessage(obj) {
         fg.channelMap[subId]          = ch.topic;
         fg.topicToSubId[ch.topic]     = subId;
         fg.topicToChannelId[ch.topic] = ch.id;
-        subs.push({ id: subId, channelId: ch.id, encoding: 'json' });
+        subs.push({ id: subId, channelId: ch.id });  // bridge 3.x always sends CDR; encoding field is ignored
     }
 
     if (subs.length > 0 && fg.ws && fg.ws.readyState === WebSocket.OPEN) {
