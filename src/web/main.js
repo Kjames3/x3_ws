@@ -1145,7 +1145,7 @@ function connectFoxglove() {
 
     const url = getFoxgloveAddress();
     console.log(`[foxglove] Connecting to ${url}`);
-    const ws = new WebSocket(url, ['foxglove.websocket.v1']);
+    const ws = new WebSocket(url, ['foxglove.sdk.v1']);
     ws.binaryType = 'arraybuffer';
     fg.ws = ws;
 
