@@ -1527,11 +1527,16 @@ function parseLaserScanCDR(buf, payloadOffset) {
 function parseOccupancyGridCDR(buf, payloadOffset) {
     const r = new CDRReader(buf, payloadOffset);
     const sec = r.readInt32(), nanosec = r.readUint32(), frame_id = r.readString();
+    console.log(`[cdr] after header: frame_id="${frame_id}" offset=${r.offset} (CDR pos ${r.offset-r.base})`);
     const lt_sec = r.readInt32(), lt_nanosec = r.readUint32();
     const resolution = r.readFloat32(), width = r.readUint32(), height = r.readUint32();
+    console.log(`[cdr] after meta: ${width}×${height} res=${resolution} offset=${r.offset} (CDR pos ${r.offset-r.base})`);
     const px = r.readFloat64(), py = r.readFloat64(), pz = r.readFloat64();
     const qx = r.readFloat64(), qy = r.readFloat64(), qz = r.readFloat64(), qw = r.readFloat64();
-    const data = r.readInt8Array(r.readUint32());
+    console.log(`[cdr] after origin: origin=(${px.toFixed(2)},${py.toFixed(2)}) offset=${r.offset} (CDR pos ${r.offset-r.base})`);
+    const dataCount = r.readUint32();
+    console.log(`[cdr] dataCount=${dataCount} expected=${width*height} offset=${r.offset} bufLen=${buf.byteLength} remaining=${buf.byteLength-r.offset}`);
+    const data = r.readInt8Array(dataCount);
     return { header: { stamp: { sec, nanosec }, frame_id },
              info: { map_load_time: { sec: lt_sec, nanosec: lt_nanosec },
                      resolution, width, height,
