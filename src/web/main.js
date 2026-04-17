@@ -1478,7 +1478,10 @@ function handleFoxgloveMap(msg) {
 class CDRReader {
     constructor(buf, streamStart) {
         this.view = new DataView(buf);
-        this.base = streamStart;
+        // ROS2/FastDDS aligns from CDR DATA start (after the 4-byte encapsulation header),
+        // not from the CDR stream start. Using streamStart+4 as the alignment base ensures
+        // float64 fields (e.g. Pose origin) get correct 8-byte padding.
+        this.base = streamStart + 4;
         this.offset = streamStart + 4;  // skip CDR encapsulation header
         this.le = true;
     }
