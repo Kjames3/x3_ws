@@ -713,8 +713,8 @@ def _get_ssid() -> str:
 # MOTION: Convert tank-drive (left/right power) to mecanum (vx, vy, omega)
 # =============================================================================
 
-def _enqueue_motion(vx: float, vy: float, omega: float):
-    """Put a (vx, vy, omega) command onto motion_queue.
+def _enqueue_motion(vx: float, vy: float, omega: float, instant: bool = False):
+    """Put a (vx, vy, omega, instant) command onto motion_queue.
 
     Drops the oldest entry when the queue is full so stale commands never
     accumulate — the newest command always wins.
@@ -727,7 +727,7 @@ def _enqueue_motion(vx: float, vy: float, omega: float):
         except asyncio.QueueEmpty:
             pass
     try:
-        motion_queue.put_nowait((vx, vy, omega))
+        motion_queue.put_nowait((vx, vy, omega, instant))
     except asyncio.QueueFull:
         pass  # race: another coroutine filled it between our drain and put
 
@@ -833,7 +833,7 @@ async def handle_client(websocket):
                     # Keep display globals in sync so motor status card updates
                     current_left_power  = max(-1.0, min(1.0, vx - omega))
                     current_right_power = max(-1.0, min(1.0, vx + omega))
-                    _enqueue_motion(vx, vy, omega)
+                    _enqueue_motion(vx, vy, omega, instant=True)
 
                 elif msg_type == "move":
                     # D-pad direction buttons
@@ -1286,10 +1286,10 @@ async def motion_loop():
     Watchdog is suppressed while Nav2 auto-drive is active.
     """
     # Ramp rates per tick at 100 Hz
-    _ACCEL      = 0.04    # m/s  per tick = 4.0 m/s²  ramp-up
-    _DECEL      = 0.08    # m/s  per tick = 8.0 m/s²  ramp-down — fast direction changes
-    _OACCEL     = 0.05    # rad/s per tick ramp-up
-    _ODECEL     = 0.12    # rad/s per tick ramp-down
+    _ACCEL      = 0.2     # m/s  per tick = 20.0 m/s²  ramp-up (increased for more responsive control)
+    _DECEL      = 0.4     # m/s  per tick = 40.0 m/s²  ramp-down — fast direction changes
+    _OACCEL     = 0.25    # rad/s per tick ramp-up
+    _ODECEL     = 0.5     # rad/s per tick ramp-down
 
     _target_vx = _target_vy = _target_omega = 0.0
     _ramp_vx   = _ramp_vy   = _ramp_omega   = 0.0
@@ -1310,7 +1310,15 @@ async def motion_loop():
             pass
 
         if cmd is not None:
-            _target_vx, _target_vy, _target_omega = cmd
+            if len(cmd) == 4:
+                _target_vx, _target_vy, _target_omega, instant = cmd
+            else:
+                _target_vx, _target_vy, _target_omega = cmd
+                instant = False
+            if instant:
+                _ramp_vx = _target_vx
+                _ramp_vy = _target_vy
+                _ramp_omega = _target_omega
             _last_cmd_time = time.monotonic()
             _watchdog_fired = False
 
