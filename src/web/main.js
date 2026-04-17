@@ -1228,7 +1228,7 @@ function foxgloveUnsubscribe(topic) {
     }
     delete fg.channelMap[subId];
     delete fg.topicToSubId[topic];
-    delete fg.topicToChannelId[topic];
+    // Keep topicToChannelId so foxgloveResubscribe can find the channel again
 }
 
 /**
@@ -1308,21 +1308,21 @@ function handleBinaryFrame(buf) {
         state.latestData.lidarPoints = pts;
         state.needsLidarUpdate = true;
 
-        // Obstacle proximity rumble — flat [x0,y0,x1,y1,...] in metres (robot frame)
-        if (pts.length >= 2) {
-            const OBSTACLE_THRESHOLD = 0.35;
-            let minDist = Infinity;
-            for (let i = 0; i < pts.length; i += 2) {
-                const d = Math.sqrt(pts[i] * pts[i] + pts[i + 1] * pts[i + 1]);
-                if (d < minDist) minDist = d;
-            }
-            const now = Date.now();
-            if (minDist < OBSTACLE_THRESHOLD && now - state.lastObstacleRumble > 1000) {
-                state.lastObstacleRumble = now;
-                const intensity = Math.max(0.2, 1 - (minDist / OBSTACLE_THRESHOLD));
-                rumble(intensity * 0.7, intensity * 0.4, 200);
-            }
-        }
+        // Obstacle proximity rumble disabled
+        // if (pts.length >= 2) {
+        //     const OBSTACLE_THRESHOLD = 0.35;
+        //     let minDist = Infinity;
+        //     for (let i = 0; i < pts.length; i += 2) {
+        //         const d = Math.sqrt(pts[i] * pts[i] + pts[i + 1] * pts[i + 1]);
+        //         if (d < minDist) minDist = d;
+        //     }
+        //     const now = Date.now();
+        //     if (minDist < OBSTACLE_THRESHOLD && now - state.lastObstacleRumble > 1000) {
+        //         state.lastObstacleRumble = now;
+        //         const intensity = Math.max(0.2, 1 - (minDist / OBSTACLE_THRESHOLD));
+        //         rumble(intensity * 0.7, intensity * 0.4, 200);
+        //     }
+        // }
 
         // Dispatch to lidar worker if active (Step 2); keep pts in state for nav map overlay
         if (state.lidarWorker) {
@@ -1408,21 +1408,21 @@ function handleFoxgloveScan(msg) {
     state.latestData.lidarPoints = pts;
     state.needsLidarUpdate = true;
 
-    // Obstacle proximity rumble (mirrors LIDR path)
-    if (pts.length >= 2) {
-        const OBSTACLE_THRESHOLD = 0.35;
-        let minDist = Infinity;
-        for (let i = 0; i < pts.length; i += 2) {
-            const d = Math.sqrt(pts[i] * pts[i] + pts[i + 1] * pts[i + 1]);
-            if (d < minDist) minDist = d;
-        }
-        const now = Date.now();
-        if (minDist < OBSTACLE_THRESHOLD && now - state.lastObstacleRumble > 1000) {
-            state.lastObstacleRumble = now;
-            const intensity = Math.max(0.2, 1 - (minDist / OBSTACLE_THRESHOLD));
-            rumble(intensity * 0.7, intensity * 0.4, 200);
-        }
-    }
+    // Obstacle proximity rumble disabled
+    // if (pts.length >= 2) {
+    //     const OBSTACLE_THRESHOLD = 0.35;
+    //     let minDist = Infinity;
+    //     for (let i = 0; i < pts.length; i += 2) {
+    //         const d = Math.sqrt(pts[i] * pts[i] + pts[i + 1] * pts[i + 1]);
+    //         if (d < minDist) minDist = d;
+    //     }
+    //     const now = Date.now();
+    //     if (minDist < OBSTACLE_THRESHOLD && now - state.lastObstacleRumble > 1000) {
+    //         state.lastObstacleRumble = now;
+    //         const intensity = Math.max(0.2, 1 - (minDist / OBSTACLE_THRESHOLD));
+    //         rumble(intensity * 0.7, intensity * 0.4, 200);
+    //     }
+    // }
 
     if (state.lidarWorker) {
         // pts is a freshly allocated Float32Array (byteOffset=0), safe to transfer

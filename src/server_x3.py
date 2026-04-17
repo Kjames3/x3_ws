@@ -570,6 +570,44 @@ def _save_map(name: str) -> tuple[bool, str]:
         return False, str(exc)
 
 
+def _encode_mapu(grid: dict) -> bytes | None:
+    """Encode an OccupancyGrid dict as a MAPU binary WebSocket frame.
+
+    Frame layout (big-endian):
+      4B  tag 'MAPU'
+      4B  width  (uint32)
+      4B  height (uint32)
+      4B  resolution (float32)
+      4B  origin_x   (float32)
+      4B  origin_y   (float32)
+      4B  origin_yaw (float32)
+      N×1B pixel data (uint8): unknown=128, free=255, occupied=0
+    """
+    try:
+        data   = grid["data"]          # np.int8 array, row-0 = south (ROS convention)
+        w      = grid["width"]
+        h      = grid["height"]
+        res    = grid["resolution"]
+        ox     = grid["origin_x"]
+        oy     = grid["origin_y"]
+        oyaw   = grid["origin_yaw"]
+
+        # Map OccupancyGrid values → grayscale pixels
+        pixels = np.empty(len(data), dtype=np.uint8)
+        pixels[data < 0]   = 128   # unknown
+        pixels[data == 0]  = 255   # free
+        pixels[data > 0]   = 0     # occupied
+
+        # Flip rows: ROS row-0 is at the bottom; canvas row-0 is at the top
+        pixels = pixels.reshape(h, w)[::-1, :].reshape(-1)
+
+        header = struct.pack('>4sIIffff', b'MAPU', w, h, res, ox, oy, oyaw)
+        return header + pixels.tobytes()
+    except Exception as exc:
+        logger.warning(f"_encode_mapu failed: {exc}")
+        return None
+
+
 def initialize_hardware():
     global ros_board, ros_bridge, drive, lidar, camera, model, oled, _gazebo_proc
     global nav2_client, _ros2_stack_proc, frontier_explorer
@@ -639,6 +677,8 @@ def initialize_hardware():
         else:
             logger.info(f"Loading YOLO (CPU): {YOLO_MODEL}")
             model = YOLO(YOLO_MODEL)
+        _class_list = [f"{k}:{v}" for k, v in sorted((model.names or {}).items())]
+        logger.info(f"YOLO classes ({len(_class_list)}): {', '.join(_class_list) or '(none loaded)'}")
     except Exception as e:
         logger.error(f"YOLO Load Failed: {e}")
 
@@ -714,11 +754,7 @@ def _get_ssid() -> str:
 # =============================================================================
 
 def _enqueue_motion(vx: float, vy: float, omega: float, instant: bool = False):
-    """Put a (vx, vy, omega, instant) command onto motion_queue.
-
-    Drops the oldest entry when the queue is full so stale commands never
-    accumulate — the newest command always wins.
-    """
+    """Enqueue a motion command; drops the oldest entry when full so stale commands never accumulate."""
     if motion_queue is None:
         return
     if motion_queue.full():
@@ -1050,6 +1086,14 @@ async def handle_client(websocket):
                             logger.warning(f"Failed to stop SLAM: {exc}")
                         _slam_proc = None
 
+                elif msg_type == "request_live_map":
+                    if ros_bridge is not None:
+                        grid = ros_bridge.get_occupancy_grid()
+                        if grid:
+                            frame_bytes = _encode_mapu(grid)
+                            if frame_bytes:
+                                await websocket.send(frame_bytes)
+
                 elif msg_type == "save_map":
                     map_name = data.get("name", "slam_map").strip() or "slam_map"
                     ok, msg_text = _save_map(map_name)
@@ -1286,10 +1330,10 @@ async def motion_loop():
     Watchdog is suppressed while Nav2 auto-drive is active.
     """
     # Ramp rates per tick at 100 Hz
-    _ACCEL      = 0.2     # m/s  per tick = 20.0 m/s²  ramp-up (increased for more responsive control)
-    _DECEL      = 0.4     # m/s  per tick = 40.0 m/s²  ramp-down — fast direction changes
-    _OACCEL     = 0.25    # rad/s per tick ramp-up
-    _ODECEL     = 0.5     # rad/s per tick ramp-down
+    _ACCEL      = 0.2     # m/s  per tick = 20.0 m/s²
+    _DECEL      = 0.4     # m/s  per tick = 40.0 m/s²
+    _OACCEL     = 0.25    # rad/s per tick
+    _ODECEL     = 0.5     # rad/s per tick
 
     _target_vx = _target_vy = _target_omega = 0.0
     _ramp_vx   = _ramp_vy   = _ramp_omega   = 0.0
@@ -1310,11 +1354,7 @@ async def motion_loop():
             pass
 
         if cmd is not None:
-            if len(cmd) == 4:
-                _target_vx, _target_vy, _target_omega, instant = cmd
-            else:
-                _target_vx, _target_vy, _target_omega = cmd
-                instant = False
+            _target_vx, _target_vy, _target_omega, instant = cmd
             if instant:
                 _ramp_vx = _target_vx
                 _ramp_vy = _target_vy
@@ -1364,6 +1404,32 @@ async def oled_loop():
         await asyncio.sleep(5)
 
 
+async def map_push_loop():
+    """Push SLAM OccupancyGrid to all connected clients at ~1 Hz when SLAM is active.
+
+    Sends a MAPU binary frame whenever the grid has been updated since the last push,
+    giving real-time map updates regardless of foxglove_bridge QoS configuration.
+    """
+    _last_grid_id = None
+    while True:
+        await asyncio.sleep(1.0)
+        if not connected_clients or ros_bridge is None:
+            continue
+        if _slam_proc is None or _slam_proc.poll() is not None:
+            continue
+        grid = ros_bridge.get_occupancy_grid()
+        if grid is None:
+            continue
+        # Use grid dimensions + data length as a cheap change fingerprint
+        grid_id = (grid["width"], grid["height"], len(grid["data"]))
+        if grid_id == _last_grid_id:
+            continue
+        _last_grid_id = grid_id
+        frame_bytes = _encode_mapu(grid)
+        if frame_bytes:
+            websockets.broadcast(connected_clients, frame_bytes)
+
+
 def _start_http_server():
     """Serve src/web/ over HTTP so Web Workers can load via http:// instead of file://."""
     web_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web')
@@ -1381,7 +1447,7 @@ async def main():
     motion_queue = asyncio.Queue(maxsize=2)
     async with websockets.serve(handle_client, "0.0.0.0", WS_PORT):
         logger.info(f"Server started on ws://0.0.0.0:{WS_PORT}")
-        await asyncio.gather(broadcast_loop(), motion_loop(), oled_loop())
+        await asyncio.gather(broadcast_loop(), motion_loop(), oled_loop(), map_push_loop())
 
 if __name__ == "__main__":
     try:
