@@ -36,14 +36,16 @@ Laptop prerequisites:
   - Same LAN as Jetson with matching ROS_DOMAIN_ID
 
 Topics consumed from Jetson (no local drivers needed):
-  /robot_description   — URDF for RobotModel display
-  /scan                — YDLidar LaserScan (~8 Hz)
-  /odom                — EKF-fused odometry
-  /map                 — SLAM OccupancyGrid (when SLAM is running)
-  /camera/image_raw    — Orbbec Astra RGB image
-  /camera/depth_image  — Orbbec Astra depth image (32FC1, metres)
-  /camera/camera_info  — Camera intrinsics (required by DepthCloud display)
-  /tf + /tf_static     — Full TF tree (map→odom→base_footprint→sensors)
+  /robot_description          — URDF for RobotModel display
+  /scan                       — YDLidar LaserScan (~8 Hz)
+  /odom                       — EKF-fused odometry
+  /map                        — SLAM OccupancyGrid (when SLAM is running)
+  /camera/depth/image_raw     — Orbbec Astra depth image (16UC1, millimetres)
+  /camera/depth/camera_info   — Depth camera intrinsics (required by DepthCloud)
+  /tf + /tf_static            — Full TF tree (odom→base_footprint→sensors)
+
+NOTE: The Orbbec camera driver is NOT started by x3_bringup.launch.py.
+Start it separately on the Jetson before recording or visualising depth data.
 """
 
 import os
