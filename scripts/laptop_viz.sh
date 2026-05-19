@@ -2,28 +2,40 @@
 # laptop_viz.sh — Open RViz2 on the laptop to visualise the X3 robot.
 #
 # Usage:
-#   bash scripts/laptop_viz.sh [DOMAIN_ID [JETSON_IP]]
+#   bash scripts/laptop_viz.sh <JETSON_IP> [DOMAIN_ID]
 #
-# Examples:
-#   bash scripts/laptop_viz.sh              # domain 42, multicast discovery
-#   bash scripts/laptop_viz.sh 42           # same, explicit domain
-#   bash scripts/laptop_viz.sh 42 10.0.0.5  # unicast to Jetson (use if topics missing)
+# Example:
+#   bash scripts/laptop_viz.sh 10.13.244.35
+#   bash scripts/laptop_viz.sh 10.13.244.35 42
+#
+# Find the Jetson IP with:  hostname -I   (run on Jetson)
 #
 # Prerequisites:
 #   - ROS2 Humble installed at /opt/ros/humble/
 #   - This workspace built (colcon build) so package share paths are available
-#   - Jetson running x3_server.service and orbbec_depth.service
-#   - Both machines on the same LAN with the same DOMAIN_ID
+#   - Jetson running all three services: fastdds_discovery, x3_server, orbbec_depth
 #
 # RViz shows: robot model, YDLidar scan, depth image (2D), depth cloud (3D), SLAM map.
 
 set -e
 
-DOMAIN_ID=${1:-42}
-JETSON_IP=${2:-""}
+if [ -z "$1" ]; then
+    echo "Usage: bash scripts/laptop_viz.sh <JETSON_IP> [DOMAIN_ID]"
+    echo "  JETSON_IP  IP address of the Jetson (required — run 'hostname -I' on Jetson)"
+    echo "  DOMAIN_ID  ROS domain ID (default: 42)"
+    echo ""
+    echo "Example: bash scripts/laptop_viz.sh 10.13.244.35"
+    exit 1
+fi
+
+JETSON_IP="$1"
+DOMAIN_ID="${2:-42}"
 
 export ROS_DOMAIN_ID="$DOMAIN_ID"
-export ROS_LOCALHOST_ONLY=0        # must be 0 for cross-machine DDS
+export ROS_LOCALHOST_ONLY=0
+# Point this machine at the Jetson's FastDDS discovery server.
+# This bypasses multicast and works on school/enterprise WiFi with client isolation.
+export ROS_DISCOVERY_SERVER="${JETSON_IP}:11811"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -31,49 +43,15 @@ WS_ROOT="$(dirname "$SCRIPT_DIR")"
 source /opt/ros/humble/setup.bash
 source "$WS_ROOT/install/setup.bash"
 
-# ── Optional unicast peer discovery ──────────────────────────────────────────
-# WiFi routers often block UDP multicast, preventing ROS2 DDS from finding the
-# Jetson automatically. Providing the Jetson IP writes a FastDDS XML profile
-# that adds the Jetson as an explicit unicast peer, bypassing multicast.
-if [ -n "$JETSON_IP" ]; then
-    FASTDDS_XML="/tmp/fastdds_x3_unicast.xml"
-    cat > "$FASTDDS_XML" << XML
-<?xml version="1.0" encoding="UTF-8" ?>
-<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
-  <participant profile_name="default_participant" is_default_profile="true">
-    <rtps>
-      <builtin>
-        <initialPeersList>
-          <locator>
-            <udpv4>
-              <address>${JETSON_IP}</address>
-              <port>7412</port>
-            </udpv4>
-          </locator>
-          <locator>
-            <udpv4>
-              <address>${JETSON_IP}</address>
-              <port>7413</port>
-            </udpv4>
-          </locator>
-        </initialPeersList>
-      </builtin>
-    </rtps>
-  </participant>
-</profiles>
-XML
-    export FASTRTPS_DEFAULT_PROFILES_FILE="$FASTDDS_XML"
-    echo "[laptop_viz] Unicast peer: $JETSON_IP (FastDDS XML: $FASTDDS_XML)"
-fi
-
-echo "[laptop_viz] ROS_DOMAIN_ID=$DOMAIN_ID  ROS_LOCALHOST_ONLY=0"
+echo "[laptop_viz] ROS_DOMAIN_ID=$DOMAIN_ID"
+echo "[laptop_viz] ROS_DISCOVERY_SERVER=$ROS_DISCOVERY_SERVER"
 echo "[laptop_viz] Workspace: $WS_ROOT"
 echo ""
 
-# ── Verify topics are reachable before launching RViz ────────────────────────
-echo "[laptop_viz] Waiting for Jetson topics (up to 10s)..."
+# ── Verify discovery server is reachable ─────────────────────────────────────
+echo "[laptop_viz] Waiting for Jetson topics (up to 15s)..."
 FOUND=0
-for i in $(seq 1 10); do
+for i in $(seq 1 15); do
     if ros2 topic list 2>/dev/null | grep -q "/scan"; then
         FOUND=1
         break
@@ -83,17 +61,16 @@ done
 
 if [ "$FOUND" -eq 0 ]; then
     echo ""
-    echo "[laptop_viz] WARNING: No topics visible after 10s. Common fixes:"
-    echo "  1. Re-run with Jetson IP:  bash scripts/laptop_viz.sh $DOMAIN_ID <jetson-ip>"
-    echo "     Find Jetson IP with:    hostname -I   (run on Jetson)"
-    echo "  2. Confirm both machines:  echo \$ROS_DOMAIN_ID  (must both be $DOMAIN_ID)"
-    echo "  3. On the Jetson check:    sudo systemctl status x3_server orbbec_depth"
-    echo "  4. Firewall: sudo ufw allow in proto udp to any port 7400:7500"
+    echo "[laptop_viz] WARNING: No topics visible. Check:"
+    echo "  On Jetson: sudo systemctl status fastdds_discovery x3_server orbbec_depth"
+    echo "  On Jetson: journalctl -u fastdds_discovery -n 20"
+    echo "  Port reachable? nc -uvz $JETSON_IP 11811"
+    echo "  Firewall:   sudo ufw allow 11811/udp   (run on Jetson)"
     echo ""
-    echo "[laptop_viz] Launching RViz anyway — displays will populate when topics appear."
+    echo "[laptop_viz] Launching RViz anyway..."
 else
     echo "[laptop_viz] Topics found:"
-    ros2 topic list 2>/dev/null | grep -E "/scan|/odom|/camera|/map|/robot_description" | sed 's/^/  /'
+    ros2 topic list 2>/dev/null | grep -E "/scan|/odom|/camera|/map|/robot_description|/tf" | sed 's/^/  /'
 fi
 echo ""
 

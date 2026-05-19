@@ -25,6 +25,7 @@ ExecStart=/bin/bash -c '\
 ExecStartPre=/bin/sleep 20
 
 Environment=ROS_DOMAIN_ID=42
+Environment="ROS_DISCOVERY_SERVER=127.0.0.1:11811"
 Environment=PYTHONUNBUFFERED=1
 
 # NOTE: Do NOT toggle the "Depth" button in the web GUI while this service

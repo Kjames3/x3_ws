@@ -1,0 +1,28 @@
+[Unit]
+Description=FastDDS Discovery Server — ROS2 peer rendezvous for cross-machine DDS
+# Must start before x3_server and orbbec_depth so their nodes can register.
+After=network.target
+Before=x3_server.service orbbec_depth.service
+
+[Service]
+Type=simple
+User=jetson
+Group=jetson
+
+# fastdds is installed alongside ROS2 Humble.
+# -i 0   : server ID 0 (must match ROS_DISCOVERY_SERVER on all clients)
+# -l 0.0 : listen on all interfaces (WiFi + Ethernet)
+# -p 11811: standard FastDDS discovery port
+ExecStart=/bin/bash -c '\
+  source /opt/ros/humble/setup.bash && \
+  exec fastdds discovery -i 0 -l 0.0.0.0 -p 11811'
+
+Restart=on-failure
+RestartSec=3
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fastdds_discovery
+
+[Install]
+WantedBy=multi-user.target

@@ -32,6 +32,10 @@ ExecStart=/bin/bash -c '\
 
 Environment="SERVER_ARGS=--domain-id 42"
 Environment=ROS_DOMAIN_ID=42
+# Point all ROS2 nodes to the local FastDDS discovery server instead of multicast.
+# This is required on school/enterprise WiFi which blocks UDP multicast and
+# client-to-client UDP.  The discovery server runs as fastdds_discovery.service.
+Environment="ROS_DISCOVERY_SERVER=127.0.0.1:11811"
 # ──────────────────────────────────────────────────────────────────────────────
 
 Restart=on-failure
