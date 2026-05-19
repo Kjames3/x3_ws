@@ -32,4 +32,4 @@ echo "[laptop_viz] Workspace: $WS_ROOT"
 echo "[laptop_viz] Tip: ensure jetson_bringup.sh is running on the robot with the same domain ID."
 echo ""
 
-exec ros2 launch yahboomcar_nav x3_remote_viz.launch.py "$@"
+exec ros2 launch yahboomcar_nav x3_remote_viz.launch.py
