@@ -1,0 +1,42 @@
+[Unit]
+Description=Orbbec Astra Pro Depth Camera — publishes /camera/depth/image_raw
+# Start after x3_server so the ROS2 bringup stack is already up.
+# If x3_server hasn't been installed, replace with network.target.
+After=x3_server.service network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=jetson
+Group=jetson
+SupplementaryGroups=plugdev
+
+# WorkingDirectory MUST be x3_ws/src so that libOpenNI2.so and the
+# OpenNI2/Drivers/ directory are found by the openni Python package.
+WorkingDirectory=/home/jetson/x3_ws/src
+
+ExecStart=/bin/bash -c '\
+  source /opt/ros/humble/setup.bash && \
+  source /home/jetson/x3_ws/install/local_setup.bash 2>/dev/null || true && \
+  exec python3 /home/jetson/EE_244_Final_Project/robot/orbbec_depth_node.py'
+
+# Wait for x3_server (and its 10s ExecStartPre sleep) to finish initialising
+# before this node starts. Avoids a race where ROS2 env isn't ready yet.
+ExecStartPre=/bin/sleep 20
+
+Environment=ROS_DOMAIN_ID=42
+Environment=PYTHONUNBUFFERED=1
+
+# NOTE: Do NOT toggle the "Depth" button in the web GUI while this service
+# is running — server_x3.py would try to open the same OpenNI2 device and fail.
+# For data collection, depth is served by this node via /camera/depth/image_raw.
+
+Restart=on-failure
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=orbbec_depth
+
+[Install]
+WantedBy=multi-user.target

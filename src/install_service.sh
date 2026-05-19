@@ -1,32 +1,45 @@
 #!/bin/bash
-# Install and enable the x3_server systemd service.
+# Install and enable the x3_server and orbbec_depth systemd services.
 # Run with: sudo bash install_service.sh
 
 set -e
 
-SERVICE_SRC="$(dirname "$(realpath "$0")")/x3_server.service"
-SERVICE_DST="/etc/systemd/system/x3_server.service"
+SCRIPT_DIR="$(dirname "$(realpath "$0")")"
 
 if [ "$EUID" -ne 0 ]; then
     echo "Run as root: sudo bash install_service.sh"
     exit 1
 fi
 
-echo "Copying service file to $SERVICE_DST..."
-cp "$SERVICE_SRC" "$SERVICE_DST"
+install_service() {
+    local name="$1"
+    local src="$SCRIPT_DIR/${name}.service"
+    local dst="/etc/systemd/system/${name}.service"
+
+    if [ ! -f "$src" ]; then
+        echo "SKIP: $src not found"
+        return
+    fi
+    echo "Installing $name..."
+    cp "$src" "$dst"
+    systemctl enable "$name"
+    systemctl restart "$name"
+    echo "  ✓ $name enabled and started"
+}
 
 echo "Reloading systemd daemon..."
 systemctl daemon-reload
 
-echo "Enabling x3_server (auto-start on boot)..."
-systemctl enable x3_server
-
-echo "Starting x3_server now..."
-systemctl start x3_server
+install_service x3_server
+install_service orbbec_depth
 
 echo ""
-echo "Done. Useful commands:"
-echo "  sudo systemctl status x3_server   # check status"
-echo "  journalctl -u x3_server -f        # live logs"
-echo "  sudo systemctl stop x3_server     # stop manually"
-echo "  sudo systemctl disable x3_server  # remove from autostart"
+echo "Done. Both services are enabled (auto-start on boot)."
+echo ""
+echo "Useful commands:"
+echo "  sudo systemctl status x3_server      # web server + ROS2 bringup"
+echo "  sudo systemctl status orbbec_depth   # depth camera publisher"
+echo "  journalctl -u x3_server -f           # x3 live logs"
+echo "  journalctl -u orbbec_depth -f        # depth camera live logs"
+echo "  sudo systemctl stop orbbec_depth     # stop depth (e.g. to use GUI depth toggle)"
+echo "  sudo systemctl disable orbbec_depth  # remove from autostart"
