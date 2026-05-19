@@ -19,17 +19,29 @@
 
 set -e
 
-if [ -z "$1" ]; then
+# Auto-detect argument order — accept IP then domain or domain then IP
+_is_ip() { echo "$1" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; }
+
+JETSON_IP=""
+DOMAIN_ID=42
+for arg in "$@"; do
+    if _is_ip "$arg"; then
+        JETSON_IP="$arg"
+    elif [[ "$arg" =~ ^[0-9]+$ ]]; then
+        DOMAIN_ID="$arg"
+    fi
+done
+
+if [ -z "$JETSON_IP" ]; then
     echo "Usage: bash scripts/laptop_viz.sh <JETSON_IP> [DOMAIN_ID]"
-    echo "  JETSON_IP  IP address of the Jetson (required — run 'hostname -I' on Jetson)"
-    echo "  DOMAIN_ID  ROS domain ID (default: 42)"
+    echo "  JETSON_IP  IP of the Jetson — run 'hostname -I' on Jetson to find it"
+    echo "  DOMAIN_ID  ROS domain (default: 42)"
     echo ""
     echo "Example: bash scripts/laptop_viz.sh 10.13.244.35"
+    echo "Example: bash scripts/laptop_viz.sh 10.13.244.35 42"
+    echo "Example: bash scripts/laptop_viz.sh 42 10.13.244.35   # order doesn't matter"
     exit 1
 fi
-
-JETSON_IP="$1"
-DOMAIN_ID="${2:-42}"
 
 export ROS_DOMAIN_ID="$DOMAIN_ID"
 export ROS_LOCALHOST_ONLY=0
