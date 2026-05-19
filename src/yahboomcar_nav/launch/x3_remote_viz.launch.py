@@ -6,26 +6,44 @@ Does NOT start any hardware drivers — connect to the Jetson over ROS_DOMAIN_ID
 
 Arguments:
   rvizconfig  <path>  Absolute path to a .rviz file.
-                      Default: map.rviz (live /scan + SLAM map view).
+                      Default: x3_full_viz.rviz — robot model + lidar + RGB camera
+                               + depth image + DepthCloud (3D point cloud) + SLAM map.
+                      Pass map.rviz for a minimal SLAM/lidar-only view.
                       Pass nav.rviz for the Nav2 goal-clicking view.
 
 Usage (run on laptop while jetson_bringup.sh is running on the robot):
 
-  # Live SLAM map view (default) — see lidar scan + map being built
+  # Convenience wrapper (sets ROS_DOMAIN_ID automatically):
+  bash scripts/laptop_viz.sh [DOMAIN_ID]       # default domain 42
+
+  # Full view (default) — robot + lidar + camera + depth cloud + map
   export ROS_DOMAIN_ID=42
   ros2 launch yahboomcar_nav x3_remote_viz.launch.py
 
-  # Nav2 goal view — see costmaps, planned path, click to set goals
+  # Lidar + SLAM map only (lightweight)
+  export ROS_DOMAIN_ID=42
+  ros2 launch yahboomcar_nav x3_remote_viz.launch.py \\
+      rvizconfig:=$(ros2 pkg prefix yahboomcar_nav)/share/yahboomcar_nav/rviz/map.rviz
+
+  # Nav2 goal view — costmaps, planned path, click to set goals
   export ROS_DOMAIN_ID=42
   ros2 launch yahboomcar_nav x3_remote_viz.launch.py \\
       rvizconfig:=$(ros2 pkg prefix yahboomcar_nav)/share/yahboomcar_nav/rviz/nav.rviz
 
-Map viewing workflow after saving a map in the GUI:
-  Jetson:  ros2 launch yahboomcar_nav x3_nav2.launch.py \\
-               map:=$HOME/x3_ws/src/yahboomcar_nav/maps/<map_name>.yaml
-  Laptop:  export ROS_DOMAIN_ID=42
-           ros2 launch yahboomcar_nav x3_remote_viz.launch.py \\
-               rvizconfig:=.../rviz/nav.rviz
+Laptop prerequisites:
+  - ROS2 Humble installed (/opt/ros/humble/)
+  - This workspace built: colcon build --packages-select yahboomcar_nav yahboomcar_description yahboomcar_msgs
+  - Same LAN as Jetson with matching ROS_DOMAIN_ID
+
+Topics consumed from Jetson (no local drivers needed):
+  /robot_description   — URDF for RobotModel display
+  /scan                — YDLidar LaserScan (~8 Hz)
+  /odom                — EKF-fused odometry
+  /map                 — SLAM OccupancyGrid (when SLAM is running)
+  /camera/image_raw    — Orbbec Astra RGB image
+  /camera/depth_image  — Orbbec Astra depth image (32FC1, metres)
+  /camera/camera_info  — Camera intrinsics (required by DepthCloud display)
+  /tf + /tf_static     — Full TF tree (map→odom→base_footprint→sensors)
 """
 
 import os
@@ -46,10 +64,11 @@ def generate_launch_description():
     # between map.rviz (SLAM) and nav.rviz (Nav2) or a custom file.
     rviz_config_arg = DeclareLaunchArgument(
         name='rvizconfig',
-        default_value=os.path.join(nav_pkg, 'rviz', 'map.rviz'),
+        default_value=os.path.join(nav_pkg, 'rviz', 'x3_full_viz.rviz'),
         description=(
             'Absolute path to RViz2 config file. '
-            'map.rviz = live SLAM view (/scan + /map). '
+            'x3_full_viz.rviz = full view (robot + lidar + camera + depth + map). '
+            'map.rviz = SLAM-only view (/scan + /map). '
             'nav.rviz = Nav2 goal tool (costmaps + path).'
         ),
     )
