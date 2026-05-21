@@ -101,7 +101,14 @@ def generate_launch_description():
         package='imu_filter_madgwick',
         executable='imu_filter_madgwick_node',
         output='screen',
-        parameters=[imu_filter_cfg],
+        parameters=[
+            imu_filter_cfg,
+            {
+                'use_mag': False,
+                'publish_tf': False,
+                'fixed_frame': 'odom',
+            }
+        ],
         remappings=[('/imu/data_raw', '/imu/data_raw')]
     )
 
