@@ -57,6 +57,9 @@ if [[ -z "${ROS_DISCOVERY_SERVER:-}" ]]; then
     export ROS_DISCOVERY_SERVER="127.0.0.1:11811"
 fi
 
+# Force Super Client mode so that CLI/introspection tools can query the DDS topology
+export ROS_SUPER_CLIENT=TRUE
+
 # ── Setup ──────────────────────────────────────────────────────────────────────
 mkdir -p "${OUTPUT_DIR}"
 

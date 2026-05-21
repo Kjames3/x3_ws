@@ -112,6 +112,7 @@ def generate_launch_description():
         name='ekf_filter_node',
         output='screen',
         parameters=[ekf_cfg],
+        remappings=[('/odometry/filtered', '/odom')],
     )
 
     # ── YDLidar ───────────────────────────────────────────────────────
