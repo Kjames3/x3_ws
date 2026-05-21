@@ -95,10 +95,23 @@ class yahboomcar_driver(Node):
 		#        Lower SCALE to reduce top speed; raise it if motors stall at low inputs.
 		SCALE = 200.0
 
-		fl = (vx + vy + omega * L) * SCALE
-		fr = (vx - vy - omega * L) * SCALE
-		rl = (vx - vy + omega * L) * SCALE
-		rr = (vx + vy - omega * L) * SCALE
+		# Correct Mecanum equations for the X3 chassis layout:
+		# vy > 0 (left strafe): FL -, RL +, FR +, RR -
+		# omega > 0 (CCW left turn): FL -, RL -, FR +, RR +
+		fl = (vx - vy - omega * L) * SCALE
+		fr = (vx + vy + omega * L) * SCALE
+		rl = (vx + vy - omega * L) * SCALE
+		rr = (vx - vy + omega * L) * SCALE
+
+		# Apply deadband compensation to overcome static friction on floor.
+		# When commanded velocities are non-zero, active motors must receive at least
+		# min_pwm to physically overcome friction and start rotating smoothly.
+		min_pwm = 28.0
+		if abs(vx) > 0.001 or abs(vy) > 0.001 or abs(omega) > 0.001:
+			fl = fl + min_pwm if fl > 0.1 else (fl - min_pwm if fl < -0.1 else 0.0)
+			fr = fr + min_pwm if fr > 0.1 else (fr - min_pwm if fr < -0.1 else 0.0)
+			rl = rl + min_pwm if rl > 0.1 else (rl - min_pwm if rl < -0.1 else 0.0)
+			rr = rr + min_pwm if rr > 0.1 else (rr - min_pwm if rr < -0.1 else 0.0)
 
 		# Proportional normalisation: if any wheel exceeds ±100, scale all down
 		# together so the commanded ratio between wheels is preserved.
@@ -194,7 +207,14 @@ class yahboomcar_driver(Node):
 def main():
 	rclpy.init() 
 	driver = yahboomcar_driver('driver_node')
-	rclpy.spin(driver)
+	try:
+		rclpy.spin(driver)
+	except BaseException:
+		pass
+	finally:
+		driver.car.set_motor(0, 0, 0, 0)
+		driver.destroy_node()
+		rclpy.shutdown()
 
 '''if __name__ == '__main__':
 	main()'''
