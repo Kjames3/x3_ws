@@ -445,6 +445,7 @@ def _launch_ros2_stack():
     install_setup = os.path.join(ws_root, 'install', 'setup.bash')
 
     child_env = os.environ.copy()
+    child_env['ROS_DISCOVERY_SERVER'] = '127.0.0.1:11811'
     # Strip conda dirs — they inject Python 3.13 which breaks rclpy C extensions
     child_env['PATH'] = ':'.join(
         p for p in child_env.get('PATH', '').split(':')
@@ -496,6 +497,7 @@ def _launch_slam(use_sim_time: bool = False):
     launch_file = f'x3_slam_sim.launch.py {st_arg}'
 
     child_env = os.environ.copy()
+    child_env['ROS_DISCOVERY_SERVER'] = '127.0.0.1:11811'
     child_env.setdefault('DISPLAY', ':0')
     # Strip conda dirs so system Python 3.10 is used for ROS2 nodes
     clean_path = ':'.join(
@@ -541,6 +543,7 @@ def _save_map(name: str) -> tuple[bool, str]:
 
     install_setup = os.path.join(ws_root, 'install', 'setup.bash')
     child_env = os.environ.copy()
+    child_env['ROS_DISCOVERY_SERVER'] = '127.0.0.1:11811'
     clean_path = ':'.join(
         p for p in child_env.get('PATH', '').split(':')
         if 'conda' not in p.lower()

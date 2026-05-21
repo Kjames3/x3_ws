@@ -975,9 +975,10 @@ document.addEventListener('DOMContentLoaded', () => {
 // Render Loop (Centralized Update)
 // =================================================================
 function renderLoop(timestamp) {
+    // 1. Poll Gamepad (auto-discovers and visualizes sticks even if offline)
+    pollGamepad();
+
     if (state.connected) {
-        // 1. Poll Gamepad
-        pollGamepad();
 
         // 2. Update UI from latest data
         updateUI();
@@ -2725,9 +2726,34 @@ function rumble(weakMagnitude, strongMagnitude, duration = 200) {
 }
 
 function pollGamepad() {
-    if (state.gamepadIndex === null || !state.connected) return;
-    const gamepad = navigator.getGamepads()[state.gamepadIndex];
+    let gamepad = null;
+    if (state.gamepadIndex !== null) {
+        gamepad = navigator.getGamepads()[state.gamepadIndex];
+    }
+
+    // Robust Auto-Discovery Fallback: Scan navigator.getGamepads() if none registered
+    if (!gamepad) {
+        const gps = navigator.getGamepads();
+        for (let i = 0; i < gps.length; i++) {
+            if (gps[i]) {
+                state.gamepadIndex = i;
+                gamepad = gps[i];
+                if (elements.controllerName) elements.controllerName.textContent = gamepad.id.substring(0, 30);
+                if (elements.gamepadIndicator) elements.gamepadIndicator.classList.add('connected');
+                if (elements.gamepadStatusText) elements.gamepadStatusText.textContent = '✓ Connected';
+                showGamepadWidget(true);
+                break;
+            }
+        }
+    }
+
     if (!gamepad) return;
+
+    // Draw live stick + button visualization regardless of WebSocket connection status
+    drawGamepadWidget(gamepad.axes, gamepad.buttons);
+
+    // Only process robot control commands if we are actually connected to the WebSocket server
+    if (!state.connected) return;
 
     // 1. E-Stop (X / Cross / Button 0)
     if (gamepad.buttons[0].pressed) {
@@ -2876,9 +2902,6 @@ function pollGamepad() {
             }
         }
     }
-
-    // Draw live stick + button visualization
-    drawGamepadWidget(gamepad.axes, gamepad.buttons);
 }
 
 // Keyboard Support

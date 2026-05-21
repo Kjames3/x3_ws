@@ -15,6 +15,7 @@ set -e
 
 DOMAIN_ID="${1:-42}"
 export ROS_DOMAIN_ID="$DOMAIN_ID"
+export ROS_DISCOVERY_SERVER="127.0.0.1:11811"
 
 WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
