@@ -305,7 +305,8 @@ class AstraCamera:
         except ImportError:
             logger.warning("AstraCamera: openni not installed — depth unavailable (pip install openni)")
         except Exception as e:
-            logger.error(f"AstraCamera: depth init failed: {e}")
+            err_msg = getattr(e, 'message', None) or str(getattr(e, 'status', e))
+            logger.error(f"AstraCamera: depth init failed: {err_msg}")
 
     def _close_depth(self):
         """Stop and release the OpenNI2 depth stream."""
@@ -349,7 +350,8 @@ class AstraCamera:
             coloured = cv2.applyColorMap(self._depth_buf_8, cv2.COLORMAP_JET, self._depth_buf_col)
             return cv2.flip(coloured, 1)
         except Exception as e:
-            logger.error(f"AstraCamera: depth read error: {e}")
+            err_msg = getattr(e, 'message', None) or str(getattr(e, 'status', e))
+            logger.error(f"AstraCamera: depth read error: {err_msg}")
             return None
 
     def cleanup(self):

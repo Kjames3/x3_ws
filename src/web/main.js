@@ -18,6 +18,7 @@ const state = {
     lastVy: 0,
     lastOmega: 0,
     stopFrameCount: 0,
+    lastSendTime: 0,
     sessionStartTime: 0,
     sessionTimerInterval: null,
 
@@ -2869,11 +2870,11 @@ function pollGamepad() {
         if (Math.abs(lx) < deadzone) lx = 0;
 
         // R2 (right trigger) boosts move speed; low base for slow/accurate SLAM driving
-        const BASE_SCALE = 0.15;   // no R2: ~30 PWM — safely above motor stall
-        const FAST_SCALE = 0.35;   // full R2: ~70 PWM — moderate travel speed
+        const BASE_SCALE = 0.20;   // no R2: ~40 PWM
+        const FAST_SCALE = 0.45;   // full R2: ~90 PWM
         const r2 = gamepad.buttons[7] ? gamepad.buttons[7].value : 0;
         const MOVE_SCALE = BASE_SCALE + r2 * (FAST_SCALE - BASE_SCALE);
-        const ROT_SCALE = 0.35 + r2 * (1.2 - 0.35);  // rotation scales with R2 too
+        const ROT_SCALE = 0.85 + r2 * (1.8 - 0.85);  // Increased base for instant torque
 
         // Quadratic expo: fine control at low deflections, full speed at max stick
         const expo = v => Math.sign(v) * Math.pow(Math.abs(v), 1.5);
@@ -2900,20 +2901,27 @@ function pollGamepad() {
         }
 
         if (shouldSend) {
-            sendMessage({ type: "set_move", vx: vxR, vy: vyR, omega: omegaR });
-            state.lastVx = vxR;
-            state.lastVy = vyR;
-            state.lastOmega = omegaR;
+            const now = Date.now();
+            const timeSinceLastSend = now - (state.lastSendTime || 0);
+            
+            // Throttle to 20 Hz (50 ms) to avoid TCP queueing lag, but always send stops instantly.
+            if (timeSinceLastSend >= 50 || !anyActive) {
+                sendMessage({ type: "set_move", vx: vxR, vy: vyR, omega: omegaR });
+                state.lastSendTime = now;
+                state.lastVx = vxR;
+                state.lastVy = vyR;
+                state.lastOmega = omegaR;
 
-            // Mirror approximate forward power to UI sliders
-            const approxPower = Math.max(-1, Math.min(1, vxR));
-            if (elements.leftSlider) {
-                elements.leftSlider.value = Math.round(approxPower * 100);
-                updateVisuals(elements.leftSlider.value, elements.leftFill, elements.leftThumb);
-            }
-            if (elements.rightSlider) {
-                elements.rightSlider.value = Math.round(approxPower * 100);
-                updateVisuals(elements.rightSlider.value, elements.rightFill, elements.rightThumb);
+                // Mirror approximate forward power to UI sliders
+                const approxPower = Math.max(-1, Math.min(1, vxR));
+                if (elements.leftSlider) {
+                    elements.leftSlider.value = Math.round(approxPower * 100);
+                    updateVisuals(elements.leftSlider.value, elements.leftFill, elements.leftThumb);
+                }
+                if (elements.rightSlider) {
+                    elements.rightSlider.value = Math.round(approxPower * 100);
+                    updateVisuals(elements.rightSlider.value, elements.rightFill, elements.rightThumb);
+                }
             }
         }
     }

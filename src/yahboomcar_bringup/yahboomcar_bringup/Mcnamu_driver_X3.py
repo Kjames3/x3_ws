@@ -90,7 +90,7 @@ class yahboomcar_driver(Node):
 		# Mecanum wheel mixing: M1=FL, M2=FR, M3=RL, M4=RR
 		# L: angular-to-wheel contribution factor (approx. half-wheelbase + half-track
 		#    in metres for the X3).  Increase L to make rotation feel more responsive.
-		L     = 0.15
+		L     = 0.30
 		# SCALE: maps m/s → PWM units [-100, 100].  At SCALE=200, 0.5 m/s → 100 PWM.
 		#        Lower SCALE to reduce top speed; raise it if motors stall at low inputs.
 		SCALE = 200.0
