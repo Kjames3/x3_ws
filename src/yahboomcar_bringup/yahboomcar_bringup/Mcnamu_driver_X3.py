@@ -73,6 +73,8 @@ class yahboomcar_driver(Node):
 		self.edition = Float32()
 		self.edition.data = 1.0
 		self.car.create_receive_threading()
+		self.last_cmd_time = self.get_clock().now()
+		self.watchdog_timeout = 0.5
 	#callback function
 	def cmd_vel_callback(self, msg):
 		# Compute mecanum kinematics here and send per-wheel PWM via set_motor().
@@ -80,6 +82,7 @@ class yahboomcar_driver(Node):
 		# axis is applied (priority: vx > vy > omega), which breaks combined inputs
 		# such as driving forward while rotating or strafing while rotating.
 		if not isinstance(msg, Twist): return
+		self.last_cmd_time = self.get_clock().now()
 		vx    = msg.linear.x
 		vy    = msg.linear.y
 		omega = msg.angular.z
@@ -119,6 +122,11 @@ class yahboomcar_driver(Node):
 
 	#pub data
 	def pub_data(self):
+		# Safety watchdog: if no command received for > 0.5s, stop motors
+		dt = (self.get_clock().now() - self.last_cmd_time).nanoseconds / 1e9
+		if dt > self.watchdog_timeout:
+			self.car.set_motor(0, 0, 0, 0)
+
 		time_stamp = Clock().now()
 		imu = Imu()
 		twist = Twist()

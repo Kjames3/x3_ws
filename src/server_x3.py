@@ -357,7 +357,11 @@ class ROS2Bridge:
 
     def cleanup(self):
         import rclpy
+        import time
         try:
+            logger.info("ROS2Bridge: sending stop command before shutdown...")
+            self.stop()
+            time.sleep(0.2)  # Allow DDS to flush stop packet
             self._node.destroy_node()
             rclpy.shutdown()
         except Exception:
@@ -1324,22 +1328,18 @@ def _step_toward(current: float, target: float, accel: float, decel: float) -> f
 
 
 async def motion_loop():
-    """Dedicated 100 Hz motion command consumer with velocity ramping.
+    """Dedicated 20 Hz motion command consumer with velocity ramping.
 
     Maintains a ramped velocity that smoothly tracks commanded targets.
-    - Ramp-up prevents firmware PID integral windup / overshoot.
-    - Ramp-down sends a descending sequence to the Rosmaster so its internal
-      PID converges to zero quickly instead of coasting for ~1 s.
-
-    Safety watchdog: if no command arrives within MOTION_WATCHDOG_TIMEOUT
-    seconds, target is zeroed and the ramp brings motors to a smooth stop.
-    Watchdog is suppressed while Nav2 auto-drive is active.
+    - Runs at 20 Hz to avoid flooding DDS buffers and causing network command latency.
+    - Continuously publishes cmd_vel as an active keep-alive heartbeat.
+    - Safety watchdog: zero targets if input silent for too long.
     """
-    # Ramp rates per tick at 100 Hz
-    _ACCEL      = 0.2     # m/s  per tick = 20.0 m/s²
-    _DECEL      = 0.4     # m/s  per tick = 40.0 m/s²
-    _OACCEL     = 0.25    # rad/s per tick
-    _ODECEL     = 0.5     # rad/s per tick
+    # Ramp rates per tick at 20 Hz
+    _ACCEL      = 0.5     # m/s  per tick
+    _DECEL      = 1.0     # m/s  per tick
+    _OACCEL     = 0.8     # rad/s per tick
+    _ODECEL     = 1.6     # rad/s per tick
 
     _target_vx = _target_vy = _target_omega = 0.0
     _ramp_vx   = _ramp_vy   = _ramp_omega   = 0.0
@@ -1349,7 +1349,7 @@ async def motion_loop():
 
     while True:
         if motion_queue is None:
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.05)
             continue
 
         # 1. Drain latest command from queue
@@ -1375,21 +1375,16 @@ async def motion_loop():
                 _watchdog_fired = True
                 logger.debug("motion_loop: watchdog fired — ramping to stop")
 
-        # 3. Record whether anything is in motion before updating the ramp
-        was_moving = (_ramp_vx != 0.0 or _ramp_vy != 0.0 or _ramp_omega != 0.0 or
-                      _target_vx != 0.0 or _target_vy != 0.0 or _target_omega != 0.0)
-
-        # 4. Step ramp toward target
+        # 3. Step ramp toward target
         _ramp_vx    = _step_toward(_ramp_vx,    _target_vx,    _ACCEL,  _DECEL)
         _ramp_vy    = _step_toward(_ramp_vy,    _target_vy,    _ACCEL,  _DECEL)
         _ramp_omega = _step_toward(_ramp_omega, _target_omega, _OACCEL, _ODECEL)
 
-        # 5. Send to hardware while moving; the `was_moving` flag ensures one
-        #    final drive.move(0,0,0) is sent on the tick the ramp reaches zero.
-        if drive and (was_moving or _ramp_vx != 0.0 or _ramp_vy != 0.0 or _ramp_omega != 0.0):
+        # 4. Continuous active heartbeat to hardware at 20 Hz
+        if drive:
             drive.move(_ramp_vx, _ramp_vy, _ramp_omega)
 
-        await asyncio.sleep(0.01)  # 100 Hz
+        await asyncio.sleep(0.05)  # 20 Hz
 
 
 async def oled_loop():
