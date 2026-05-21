@@ -906,7 +906,10 @@ document.addEventListener('DOMContentLoaded', () => {
     setTimeout(init3DViewport, 100);
 
     // Initialize logic
-    const savedIP = localStorage.getItem('viam_robot_ip');
+    let savedIP = localStorage.getItem('viam_robot_ip');
+    if (!savedIP && window.location.hostname && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+        savedIP = window.location.hostname;
+    }
     if (savedIP && elements.robotIp) {
         elements.robotIp.value = savedIP;
     }
@@ -1075,14 +1078,26 @@ function getServerAddress() {
     if (hostInput && hostInput.value && hostInput.value !== '192.168.1.X') {
         return `ws://${hostInput.value}:${DEFAULT_PORT}`;
     }
+    const pageHost = window.location.hostname;
+    if (pageHost && pageHost !== 'localhost' && pageHost !== '127.0.0.1') {
+        return `ws://${pageHost}:${DEFAULT_PORT}`;
+    }
     return `ws://besto.local:${DEFAULT_PORT}`;
 }
 
 function getFoxgloveAddress() {
     const hostInput = elements.robotIp;
-    const host = (hostInput && hostInput.value && hostInput.value !== '192.168.1.X')
+    let host = (hostInput && hostInput.value && hostInput.value !== '192.168.1.X')
         ? hostInput.value
-        : 'besto.local';
+        : '';
+    if (!host) {
+        const pageHost = window.location.hostname;
+        if (pageHost && pageHost !== 'localhost' && pageHost !== '127.0.0.1') {
+            host = pageHost;
+        } else {
+            host = 'besto.local';
+        }
+    }
     return `ws://${host}:8765`;
 }
 

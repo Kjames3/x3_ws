@@ -85,6 +85,9 @@ ROS2_MODE = not args.sim  # ROS2 hardware bridge is the default; only --sim disa
 if args.domain_id is not None:
     os.environ['ROS_DOMAIN_ID'] = str(args.domain_id)
 
+if ROS2_MODE:
+    os.environ['ROS_DISCOVERY_SERVER'] = '127.0.0.1:11811'
+
 # Hardware Ports
 # SERIAL_PORT auto-detected in drivers_x3 (/dev/ttyCH341USB0 or /dev/ttyUSB0)
 LIDAR_PORT = "/dev/ttyUSB0"   # YDLidar (ROSMASTER is on ttyCH341USB0, so USB0 is free)
