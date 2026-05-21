@@ -24,22 +24,26 @@ _is_ip() { echo "$1" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; }
 
 JETSON_IP=""
 DOMAIN_ID=42
+EXTRA_ARGS=()
 for arg in "$@"; do
     if _is_ip "$arg"; then
         JETSON_IP="$arg"
     elif [[ "$arg" =~ ^[0-9]+$ ]]; then
         DOMAIN_ID="$arg"
+    else
+        EXTRA_ARGS+=("$arg")
     fi
 done
 
 if [ -z "$JETSON_IP" ]; then
-    echo "Usage: bash scripts/laptop_viz.sh <JETSON_IP> [DOMAIN_ID]"
+    echo "Usage: bash scripts/laptop_viz.sh <JETSON_IP> [DOMAIN_ID] [extra_launch_arguments]"
     echo "  JETSON_IP  IP of the Jetson — run 'hostname -I' on Jetson to find it"
     echo "  DOMAIN_ID  ROS domain (default: 42)"
     echo ""
     echo "Example: bash scripts/laptop_viz.sh 10.13.244.35"
     echo "Example: bash scripts/laptop_viz.sh 10.13.244.35 42"
     echo "Example: bash scripts/laptop_viz.sh 42 10.13.244.35   # order doesn't matter"
+    echo "Example: bash scripts/laptop_viz.sh 10.13.244.35 rvizconfig:=nav.rviz"
     exit 1
 fi
 
@@ -58,6 +62,9 @@ source "$WS_ROOT/install/setup.bash"
 echo "[laptop_viz] ROS_DOMAIN_ID=$DOMAIN_ID"
 echo "[laptop_viz] ROS_DISCOVERY_SERVER=$ROS_DISCOVERY_SERVER"
 echo "[laptop_viz] Workspace: $WS_ROOT"
+if [ ${#EXTRA_ARGS[@]} -ne 0 ]; then
+    echo "[laptop_viz] Extra launch args: ${EXTRA_ARGS[*]}"
+fi
 echo ""
 
 # ── Verify discovery server is reachable ─────────────────────────────────────
@@ -86,4 +93,13 @@ else
 fi
 echo ""
 
-exec ros2 launch yahboomcar_nav x3_remote_viz.launch.py
+echo "========================================================================="
+echo " TIME SYNCHRONIZATION TIP:"
+echo " ROS2 TF transforms require precise clock synchronization between machines."
+echo " If the robot model is missing/red or does not move in accordance to"
+echo " reality in RViz, please synchronize your laptop's clock with the Jetson:"
+echo "   sudo date -s \"\$(ssh jetson@$JETSON_IP date -R)\""
+echo "========================================================================="
+echo ""
+
+exec ros2 launch yahboomcar_nav x3_remote_viz.launch.py "${EXTRA_ARGS[@]}"
