@@ -74,7 +74,7 @@ from frontier_explorer import FrontierExplorer
 # =============================================================================
 parser = argparse.ArgumentParser(description='Yahboom X3 Control Server (ROS2 hardware mode by default)')
 parser.add_argument('--sim', action='store_true', help='Run in simulation mode (laptop, Gazebo on demand)')
-parser.add_argument('--domain-id', type=int, default=None, dest='domain_id',
+parser.add_argument('--domain-id', type=int, default=42, dest='domain_id',
                     help='ROS_DOMAIN_ID for multi-machine ROS2 (must match laptop). '
                          'Overrides the ROS_DOMAIN_ID environment variable.')
 args = parser.parse_args()
