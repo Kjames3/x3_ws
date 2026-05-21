@@ -15,6 +15,8 @@
 #   /camera/depth/image_raw   — Orbbec Astra Pro depth stream (16UC1)
 #   /scan                     — YDLidar X3 laser scan
 #   /odom                     — EKF-fused odometry (robot position/velocity)
+#   /tf                       — Dynamic coordinate frame transforms
+#   /tf_static                — Static coordinate frame transforms
 #
 # After recording, transfer the bag to your laptop:
 #   scp -r <JETSON_IP>:~/bags/domain_adapt/ ~/EE_244_Final_Project/bags/
