@@ -15,7 +15,7 @@ Group=jetson
 # -p 11811: standard FastDDS discovery port
 ExecStart=/bin/bash -c '\
   source /opt/ros/humble/setup.bash && \
-  exec fastdds discovery -i 0 -l 0.0.0.0 -p 11811'
+  exec fastdds discovery -i 0 -l 0.0.0.0 -p 11811 -t 0.0.0.0 -q 11811'
 
 Restart=on-failure
 RestartSec=3

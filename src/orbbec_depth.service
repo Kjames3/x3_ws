@@ -18,6 +18,19 @@ WorkingDirectory=/home/jetson/x3_ws/src
 ExecStart=/bin/bash -c '\
   source /opt/ros/humble/setup.bash && \
   source /home/jetson/x3_ws/install/local_setup.bash 2>/dev/null || true && \
+  JETSON_IP="" && \
+  for ip in $(hostname -I); do \
+    if [[ ! "$ip" =~ ^172\. ]]; then \
+      JETSON_IP="$ip" && \
+      break; \
+    fi; \
+  done && \
+  if [ -n "$JETSON_IP" ]; then \
+    export ROS_DISCOVERY_SERVER="TCPv4:[$JETSON_IP]:11811"; \
+  else \
+    export ROS_DISCOVERY_SERVER="TCPv4:[127.0.0.1]:11811"; \
+  fi && \
+  export FASTDDS_BUILTIN_TRANSPORTS=LARGE_DATA && \
   exec python3 /home/jetson/EE_244_Final_Project/robot/orbbec_depth_node.py'
 
 # Wait for x3_server (and its 10s ExecStartPre sleep) to finish initialising
@@ -25,7 +38,8 @@ ExecStart=/bin/bash -c '\
 ExecStartPre=/bin/sleep 20
 
 Environment=ROS_DOMAIN_ID=42
-Environment="ROS_DISCOVERY_SERVER=127.0.0.1:11811"
+Environment="ROS_DISCOVERY_SERVER=TCPv4:[127.0.0.1]:11811"
+Environment="FASTDDS_BUILTIN_TRANSPORTS=LARGE_DATA"
 Environment=PYTHONUNBUFFERED=1
 
 # NOTE: Do NOT toggle the "Depth" button in the web GUI while this service

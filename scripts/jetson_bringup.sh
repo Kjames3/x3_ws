@@ -15,7 +15,20 @@ set -e
 
 DOMAIN_ID="${1:-42}"
 export ROS_DOMAIN_ID="$DOMAIN_ID"
-export ROS_DISCOVERY_SERVER="127.0.0.1:11811"
+
+# Resolve Jetson's active IP to avoid loopback (127.0.0.1) locator advertising in FastDDS
+JETSON_IP=""
+for ip in $(hostname -I); do
+    if [[ ! "$ip" =~ ^172\. ]]; then
+        JETSON_IP="$ip"
+        break
+    fi
+done
+if [ -n "$JETSON_IP" ]; then
+    export ROS_DISCOVERY_SERVER="${JETSON_IP}:11811"
+else
+    export ROS_DISCOVERY_SERVER="127.0.0.1:11811"
+fi
 
 WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 

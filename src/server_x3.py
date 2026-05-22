@@ -85,8 +85,30 @@ ROS2_MODE = not args.sim  # ROS2 hardware bridge is the default; only --sim disa
 if args.domain_id is not None:
     os.environ['ROS_DOMAIN_ID'] = str(args.domain_id)
 
+def _resolve_discovery_server() -> str:
+    """Resolve the active IP address to use for the FastDDS Discovery Server.
+    Avoids 127.0.0.1 loopback locator advertising to ensure multi-machine connection works.
+    """
+    env_val = os.environ.get('ROS_DISCOVERY_SERVER')
+    if env_val:
+        return env_val
+    try:
+        result = subprocess.run(
+            ['hostname', '-I'], capture_output=True, text=True, timeout=2
+        )
+        ips = result.stdout.strip().split()
+        if ips:
+            # Filter out docker interface IP if possible, prefer 10.x or 192.x
+            for ip in ips:
+                if not ip.startswith('172.'):
+                    return f"{ip}:11811"
+            return f"{ips[0]}:11811"
+    except Exception:
+        pass
+    return "127.0.0.1:11811"
+
 if ROS2_MODE:
-    os.environ['ROS_DISCOVERY_SERVER'] = '127.0.0.1:11811'
+    os.environ['ROS_DISCOVERY_SERVER'] = _resolve_discovery_server()
 
 # Hardware Ports
 # SERIAL_PORT auto-detected in drivers_x3 (/dev/ttyCH341USB0 or /dev/ttyUSB0)
@@ -452,7 +474,7 @@ def _launch_ros2_stack():
     install_setup = os.path.join(ws_root, 'install', 'setup.bash')
 
     child_env = os.environ.copy()
-    child_env['ROS_DISCOVERY_SERVER'] = '127.0.0.1:11811'
+    child_env['ROS_DISCOVERY_SERVER'] = os.environ.get('ROS_DISCOVERY_SERVER', '127.0.0.1:11811')
     # Strip conda dirs — they inject Python 3.13 which breaks rclpy C extensions
     child_env['PATH'] = ':'.join(
         p for p in child_env.get('PATH', '').split(':')
@@ -504,7 +526,7 @@ def _launch_slam(use_sim_time: bool = False):
     launch_file = f'x3_slam_sim.launch.py {st_arg}'
 
     child_env = os.environ.copy()
-    child_env['ROS_DISCOVERY_SERVER'] = '127.0.0.1:11811'
+    child_env['ROS_DISCOVERY_SERVER'] = os.environ.get('ROS_DISCOVERY_SERVER', '127.0.0.1:11811')
     child_env.setdefault('DISPLAY', ':0')
     # Strip conda dirs so system Python 3.10 is used for ROS2 nodes
     clean_path = ':'.join(
@@ -550,7 +572,7 @@ def _save_map(name: str) -> tuple[bool, str]:
 
     install_setup = os.path.join(ws_root, 'install', 'setup.bash')
     child_env = os.environ.copy()
-    child_env['ROS_DISCOVERY_SERVER'] = '127.0.0.1:11811'
+    child_env['ROS_DISCOVERY_SERVER'] = os.environ.get('ROS_DISCOVERY_SERVER', '127.0.0.1:11811')
     clean_path = ':'.join(
         p for p in child_env.get('PATH', '').split(':')
         if 'conda' not in p.lower()

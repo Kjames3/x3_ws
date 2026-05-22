@@ -49,9 +49,10 @@ fi
 
 export ROS_DOMAIN_ID="$DOMAIN_ID"
 export ROS_LOCALHOST_ONLY=0
-# Point this machine at the Jetson's FastDDS discovery server.
+# Point this machine at the Jetson's FastDDS discovery server over TCP.
 # This bypasses multicast and works on school/enterprise WiFi with client isolation.
-export ROS_DISCOVERY_SERVER="${JETSON_IP}:11811"
+export ROS_DISCOVERY_SERVER="TCPv4:[${JETSON_IP}]:11811"
+export ROS_SUPER_CLIENT=TRUE
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(dirname "$SCRIPT_DIR")"
