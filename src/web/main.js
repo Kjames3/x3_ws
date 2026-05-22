@@ -2874,7 +2874,7 @@ function pollGamepad() {
         const FAST_SCALE = 0.45;   // full R2: ~90 PWM
         const r2 = gamepad.buttons[7] ? gamepad.buttons[7].value : 0;
         const MOVE_SCALE = BASE_SCALE + r2 * (FAST_SCALE - BASE_SCALE);
-        const ROT_SCALE = 0.85 + r2 * (1.8 - 0.85);  // Increased base for instant torque
+        const ROT_SCALE = 0.5 + r2 * (1.0 - 0.5);
 
         // Quadratic expo: fine control at low deflections, full speed at max stick
         const expo = v => Math.sign(v) * Math.pow(Math.abs(v), 1.5);
