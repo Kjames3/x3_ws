@@ -30,7 +30,6 @@ ExecStart=/bin/bash -c '\
   else \
     export ROS_DISCOVERY_SERVER="TCPv4:[127.0.0.1]:11811"; \
   fi && \
-  export FASTDDS_BUILTIN_TRANSPORTS=LARGE_DATA && \
   exec python3 /home/jetson/EE_244_Final_Project/robot/orbbec_depth_node.py'
 
 # Wait for x3_server (and its 10s ExecStartPre sleep) to finish initialising
@@ -39,6 +38,9 @@ ExecStartPre=/bin/sleep 20
 
 Environment=ROS_DOMAIN_ID=42
 Environment="ROS_DISCOVERY_SERVER=TCPv4:[127.0.0.1]:11811"
+# LARGE_DATA: SHM (intra-Jetson) + UDPv4 + TCPv4 transports.
+# UDP is bidirectional on this network so the laptop can receive topic data.
+# TCPv4 handles large messages (depth frames ~615 KB exceed UDP max segment).
 Environment="FASTDDS_BUILTIN_TRANSPORTS=LARGE_DATA"
 Environment=PYTHONUNBUFFERED=1
 

@@ -200,8 +200,11 @@ class AstraCamera:
         Return the correct /dev/videoX path for the Orbbec RGB camera.
         Priority:
           1. /dev/camera_depth  (udev symlink, most reliable)
-          2. Scan /dev/video0..7 and match by USB vendor/product via sysfs
-          3. Fall back to /dev/video0
+          2. Scan /dev/video0..9 and match by USB vendor/product via sysfs.
+             The sysfs 'device' symlink points to the USB interface node
+             (e.g. 1-2.2.1.1:1.0).  One level up (..) is the USB device node
+             which holds idVendor/idProduct.
+          3. Fall back to the first /dev/videoN that exists
         """
         import glob
 
@@ -211,23 +214,28 @@ class AstraCamera:
 
         # 2. sysfs scan — find which videoX belongs to the Orbbec RGB
         for video_path in sorted(glob.glob("/dev/video?")):
-            dev_name = os.path.basename(video_path)   # e.g. "video0"
-            # Walk sysfs looking for the matching idVendor/idProduct
-            for sys_path in glob.glob(f"/sys/class/video4linux/{dev_name}/device/../../../*"):
-                vendor_file = os.path.join(sys_path, "idVendor")
-                product_file = os.path.join(sys_path, "idProduct")
-                try:
-                    with open(vendor_file) as f:
-                        vendor = f.read().strip()
-                    with open(product_file) as f:
-                        product = f.read().strip()
-                    if vendor == self.ORBBEC_RGB_VENDOR and product == self.ORBBEC_RGB_PRODUCT:
-                        return video_path
-                except Exception:
-                    continue
+            dev_name = os.path.basename(video_path)
+            # device → USB interface; device/.. → USB device with idVendor/idProduct
+            vendor_file  = f"/sys/class/video4linux/{dev_name}/device/../idVendor"
+            product_file = f"/sys/class/video4linux/{dev_name}/device/../idProduct"
+            try:
+                with open(vendor_file) as f:
+                    vendor = f.read().strip()
+                with open(product_file) as f:
+                    product = f.read().strip()
+                if vendor == self.ORBBEC_RGB_VENDOR and product == self.ORBBEC_RGB_PRODUCT:
+                    logger.debug(f"AstraCamera: found Orbbec RGB at {video_path} via sysfs")
+                    return video_path
+            except Exception:
+                continue
 
-        # 3. last resort
-        logger.warning("AstraCamera: could not identify Orbbec RGB device via sysfs, trying /dev/video0")
+        # 3. last resort — use the first video device that exists
+        for n in range(10):
+            path = f"/dev/video{n}"
+            if os.path.exists(path):
+                logger.warning(f"AstraCamera: sysfs detection failed, falling back to {path}")
+                return path
+        logger.warning("AstraCamera: no /dev/videoN found")
         return "/dev/video0"
 
     def _open_rgb(self):

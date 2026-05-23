@@ -33,17 +33,25 @@ ufw allow 11811/tcp comment "FastDDS discovery server (TCP)"
 ufw allow 11811/udp comment "FastDDS discovery server (UDP)"
 echo "  [OK] 11811/tcp + 11811/udp  (FastDDS discovery)"
 
-# ── DDS RTPS data traffic ─────────────────────────────────────────────────────
+# ── TCP RTPS data transport (school WiFi — UDP between subnets is blocked) ────
+# fastdds_tcp_server.xml configures the Jetson to listen on 11812/tcp for all
+# RTPS data traffic.  The laptop (fastdds_tcp_client.xml) connects to this port
+# and also listens on 11813/tcp for return subscriptions (e.g. /goal_pose).
+# Open these on BOTH machines so data can flow in both directions.
+ufw allow 11812/tcp comment "FastDDS RTPS data — Jetson TCP listener"
+ufw allow 11813/tcp comment "FastDDS RTPS data — laptop TCP listener"
+echo "  [OK] 11812/tcp              (Jetson RTPS TCP data port)"
+echo "  [OK] 11813/tcp              (laptop RTPS TCP data port)"
+
+# ── DDS RTPS data traffic (UDP — kept for same-subnet / wired setups) ─────────
 # Port formula (RTPS spec): PB=7400, DG=250
 #   metatraffic base = 7400 + domain * 250
-#   user data base   = base + 1
-#   unicast per participant = base + participantId * 2 + offset
 # For domain 42: base = 17900. Opening 17880–18200 covers ~150 participants.
 BASE=$(( 7400 + DOMAIN_ID * 250 ))
 START=$(( BASE - 20 ))
 END=$(( BASE + 300 ))
-ufw allow "${START}:${END}/udp" comment "DDS RTPS data (domain $DOMAIN_ID)"
-echo "  [OK] ${START}:${END}/udp         (DDS RTPS data, domain $DOMAIN_ID)"
+ufw allow "${START}:${END}/udp" comment "DDS RTPS data UDP (domain $DOMAIN_ID)"
+echo "  [OK] ${START}:${END}/udp         (DDS RTPS data UDP, domain $DOMAIN_ID)"
 
 # ── Web GUI (Jetson / server side only) ───────────────────────────────────────
 if [ "$GUI_PORTS" != "no-gui" ]; then
@@ -54,7 +62,7 @@ fi
 
 echo ""
 echo "[firewall] UFW rules added. Current status:"
-ufw status numbered | grep -E "11811|${START}|8080|8081|Status" | sed 's/^/  /'
+ufw status numbered | grep -E "11811|11812|11813|${START}|8080|8081|Status" | sed 's/^/  /'
 echo ""
 echo "Done. Run this script on the OTHER machine too (Jetson or laptop)."
 echo "No reboot needed — rules take effect immediately."

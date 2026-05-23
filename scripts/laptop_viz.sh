@@ -54,6 +54,11 @@ export ROS_LOCALHOST_ONLY=0
 export ROS_DISCOVERY_SERVER="TCPv4:[${JETSON_IP}]:11811"
 export ROS_SUPER_CLIENT=TRUE
 
+# Keep the default FastDDS transport (SHM + UDPv4).  UDP is bidirectional on
+# this network so no custom XML profile is needed on the laptop.
+# The Jetson uses fastdds_tcp_server.xml (SHM+UDP+TCP) so both sides have
+# compatible UDP locators for RTPS data exchange.
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(dirname "$SCRIPT_DIR")"
 
@@ -63,15 +68,27 @@ source "$WS_ROOT/install/setup.bash"
 echo "[laptop_viz] ROS_DOMAIN_ID=$DOMAIN_ID"
 echo "[laptop_viz] ROS_DISCOVERY_SERVER=$ROS_DISCOVERY_SERVER"
 echo "[laptop_viz] Workspace: $WS_ROOT"
+if [ -n "${FASTDDS_DEFAULT_PROFILES_FILE:-}" ]; then
+    echo "[laptop_viz] FastDDS profile: $FASTDDS_DEFAULT_PROFILES_FILE"
+fi
 if [ ${#EXTRA_ARGS[@]} -ne 0 ]; then
     echo "[laptop_viz] Extra launch args: ${EXTRA_ARGS[*]}"
 fi
 echo ""
 
+# Restart the ROS2 daemon with the updated env vars (discovery server address,
+# domain ID, super-client mode).  A stale daemon started without these vars
+# won't see any Jetson topics.  The new daemon inherits the env already exported
+# above, so it connects to the correct discovery server immediately.
+ros2 daemon stop 2>/dev/null || true
+ros2 daemon start 2>/dev/null
+
 # ── Verify discovery server is reachable ─────────────────────────────────────
-echo "[laptop_viz] Waiting for Jetson topics (up to 15s)..."
+# The daemon needs a few seconds to perform participant discovery via the server.
+# Poll ros2 topic list (uses the daemon) until /scan appears or 30s elapses.
+echo "[laptop_viz] Waiting for Jetson topics (up to 30s)..."
 FOUND=0
-for i in $(seq 1 15); do
+for i in $(seq 1 30); do
     if ros2 topic list 2>/dev/null | grep -q "/scan"; then
         FOUND=1
         break

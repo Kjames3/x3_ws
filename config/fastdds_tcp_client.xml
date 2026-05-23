@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+  fastdds_tcp_client.xml — FastDDS profile for the laptop (subscriber side).
+
+  School/enterprise WiFi blocks UDP between clients on different subnets.
+  This profile configures the laptop to use TCP-only RTPS data transport:
+    - TCPv4: connects to the Jetson's TCP data port (11812) to receive topics
+             and listens on port 11813 so the Jetson can subscribe to laptop
+             topics (e.g. /goal_pose from RViz Nav2 goal tool).
+
+  Participant discovery still uses the FastDDS discovery server (port 11811).
+  The Jetson's TCP data endpoint (11812) is learned from the discovery server —
+  no hard-coded Jetson IP needed in this file.
+
+  Activate via env:  FASTDDS_DEFAULT_PROFILES_FILE=<ws>/config/fastdds_tcp_client.xml
+  Firewall (laptop): sudo ufw allow 11813/tcp  (if UFW is enabled)
+-->
+<dds xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <profiles>
+
+    <transport_descriptors>
+
+      <!--
+        TCPv4 transport.
+        Listening on port 11813 allows the Jetson to push data back to the
+        laptop (e.g. subscriptions initiated by the Jetson side).
+        maxMessageSize covers 640×480 depth frames (~615 KB).
+      -->
+      <transport_descriptor>
+        <transport_id>tcp4_transport</transport_id>
+        <type>TCPv4</type>
+        <listening_ports>
+          <port>11813</port>
+        </listening_ports>
+        <sendBufferSize>4194304</sendBufferSize>
+        <receiveBufferSize>4194304</receiveBufferSize>
+        <maxMessageSize>4194304</maxMessageSize>
+      </transport_descriptor>
+
+    </transport_descriptors>
+
+    <participant profile_name="default_participant" is_default_profile="true">
+      <rtps>
+        <userTransports>
+          <transport_id>tcp4_transport</transport_id>
+        </userTransports>
+        <useBuiltinTransports>false</useBuiltinTransports>
+      </rtps>
+    </participant>
+
+  </profiles>
+</dds>

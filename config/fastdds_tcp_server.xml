@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+  fastdds_tcp_server.xml — FastDDS profile for the Jetson (publisher side).
+
+  School/enterprise WiFi blocks UDP between clients on different subnets.
+  This profile replaces the default UDP RTPS data transport with:
+    - SHM  : for fast intra-Jetson communication (no network overhead)
+    - TCPv4: for cross-machine data, listening on port 11812
+
+  The laptop connects TO port 11812 on the Jetson to receive topics.
+  All RTPS data (scan, odom, depth, tf …) flows over this TCP connection.
+  Participant discovery still uses the FastDDS discovery server (port 11811).
+
+  Deploy to Jetson:  /home/jetson/x3_ws/config/fastdds_tcp_server.xml
+  Activate via env:  FASTDDS_DEFAULT_PROFILES_FILE=/home/jetson/x3_ws/config/fastdds_tcp_server.xml
+  Firewall:          sudo ufw allow 11812/tcp  (on Jetson)
+-->
+<dds xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <profiles>
+
+    <transport_descriptors>
+
+      <!-- Shared-memory transport for same-machine node-to-node traffic -->
+      <transport_descriptor>
+        <transport_id>shm_transport</transport_id>
+        <type>SHM</type>
+      </transport_descriptor>
+
+      <!-- UDPv4 for cross-machine RTPS data (laptop ↔ Jetson via UDP) -->
+      <transport_descriptor>
+        <transport_id>udpv4_transport</transport_id>
+        <type>UDPv4</type>
+        <sendBufferSize>1048576</sendBufferSize>
+        <receiveBufferSize>4194304</receiveBufferSize>
+        <maxMessageSize>65500</maxMessageSize>
+      </transport_descriptor>
+
+      <!--
+        TCPv4 for large messages (depth frames ~615 KB exceed UDP max).
+        Listening on port 11812 so the laptop can connect directly if needed.
+        Note: if port 11812 is already in use by another participant on this
+        machine, FastDDS will silently fall back to a system-assigned port.
+        The laptop uses UDP as the primary transport; TCP is supplementary.
+      -->
+      <transport_descriptor>
+        <transport_id>tcp4_transport</transport_id>
+        <type>TCPv4</type>
+        <listening_ports>
+          <port>11812</port>
+        </listening_ports>
+        <sendBufferSize>4194304</sendBufferSize>
+        <receiveBufferSize>4194304</receiveBufferSize>
+        <maxMessageSize>4194304</maxMessageSize>
+      </transport_descriptor>
+
+    </transport_descriptors>
+
+    <participant profile_name="default_participant" is_default_profile="true">
+      <rtps>
+        <userTransports>
+          <transport_id>shm_transport</transport_id>
+          <transport_id>udpv4_transport</transport_id>
+          <transport_id>tcp4_transport</transport_id>
+        </userTransports>
+        <useBuiltinTransports>false</useBuiltinTransports>
+      </rtps>
+    </participant>
+
+  </profiles>
+</dds>
