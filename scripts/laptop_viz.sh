@@ -54,13 +54,13 @@ export ROS_LOCALHOST_ONLY=0
 export ROS_DISCOVERY_SERVER="TCPv4:[${JETSON_IP}]:11811"
 export ROS_SUPER_CLIENT=TRUE
 
-# Keep the default FastDDS transport (SHM + UDPv4).  UDP is bidirectional on
-# this network so no custom XML profile is needed on the laptop.
-# The Jetson uses fastdds_tcp_server.xml (SHM+UDP+TCP) so both sides have
-# compatible UDP locators for RTPS data exchange.
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(dirname "$SCRIPT_DIR")"
+
+# Use the TCP client profile for ROS2 RTPS data transport. This ensures large
+# messages like LiDAR /scan and depth camera image_raw flow reliably over TCP
+# on networks where UDP client-to-client traffic is blocked (e.g. school/enterprise WiFi).
+export FASTDDS_DEFAULT_PROFILES_FILE="$WS_ROOT/config/fastdds_tcp_client.xml"
 
 source /opt/ros/humble/setup.bash
 source "$WS_ROOT/install/setup.bash"

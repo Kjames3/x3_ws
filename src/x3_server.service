@@ -48,10 +48,7 @@ Environment=ROS_DOMAIN_ID=42
 # This is required on school/enterprise WiFi which blocks UDP multicast and
 # client-to-client UDP.  The discovery server runs as fastdds_discovery.service.
 Environment="ROS_DISCOVERY_SERVER=TCPv4:[127.0.0.1]:11811"
-# LARGE_DATA: SHM (intra-Jetson) + UDPv4 + TCPv4 transports.
-# UDP is bidirectional on this network so the laptop can receive topic data.
-# TCPv4 handles large messages (depth frames ~615 KB exceed UDP max segment).
-Environment="FASTDDS_BUILTIN_TRANSPORTS=LARGE_DATA"
+Environment="FASTDDS_DEFAULT_PROFILES_FILE=/home/jetson/x3_ws/config/fastdds_tcp_server.xml"
 # ──────────────────────────────────────────────────────────────────────────────
 
 Restart=on-failure
