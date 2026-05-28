@@ -53,12 +53,25 @@ fi
 
 # Check ROS_DISCOVERY_SERVER
 if [[ -z "${ROS_DISCOVERY_SERVER:-}" ]]; then
-    echo "[INFO] ROS_DISCOVERY_SERVER not set — defaulting to 127.0.0.1:11811"
-    export ROS_DISCOVERY_SERVER="127.0.0.1:11811"
+    echo "[INFO] ROS_DISCOVERY_SERVER not set — defaulting to TCPv4:[127.0.0.1]:11811"
+    export ROS_DISCOVERY_SERVER="TCPv4:[127.0.0.1]:11811"
 fi
 
 # Force Super Client mode so that CLI/introspection tools can query the DDS topology
 export ROS_SUPER_CLIENT=TRUE
+
+# Load the FastDDS TCP Server profile on the Jetson (or local path on laptop if run there)
+if [[ -f "/home/jetson/x3_ws/config/fastdds_tcp_server.xml" ]]; then
+    export FASTDDS_DEFAULT_PROFILES_FILE="/home/jetson/x3_ws/config/fastdds_tcp_server.xml"
+elif [[ -f "$(dirname "$0")/config/fastdds_tcp_server.xml" ]]; then
+    export FASTDDS_DEFAULT_PROFILES_FILE="$(dirname "$0")/config/fastdds_tcp_server.xml"
+fi
+
+# Restart the ROS2 daemon so it inherits the correct DDS network settings immediately
+echo "  [$(date +%H:%M:%S)] Restarting ROS2 daemon with updated discovery configuration..."
+ros2 daemon stop &>/dev/null || true
+ros2 daemon start &>/dev/null
+sleep 2
 
 # ── Setup ──────────────────────────────────────────────────────────────────────
 mkdir -p "${OUTPUT_DIR}"
