@@ -53,8 +53,38 @@ fi
 
 # Check ROS_DISCOVERY_SERVER
 if [[ -z "${ROS_DISCOVERY_SERVER:-}" ]]; then
-    echo "[INFO] ROS_DISCOVERY_SERVER not set — defaulting to TCPv4:[127.0.0.1]:11811"
-    export ROS_DISCOVERY_SERVER="TCPv4:[127.0.0.1]:11811"
+    # 1. Try to detect from running server_x3.py process environment (most reliable!)
+    PID=$(pgrep -f "server_x3.py" | head -n 1 || echo "")
+    DETECTED=""
+    if [[ -n "$PID" ]]; then
+        RUNNING_ENV=$(cat "/proc/${PID}/environ" 2>/dev/null | tr '\0' '\n' | grep "ROS_DISCOVERY_SERVER=" || echo "")
+        if [[ "$RUNNING_ENV" =~ ROS_DISCOVERY_SERVER=(TCPv4:\[[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\]:11811) ]]; then
+            DETECTED="${BASH_REMATCH[1]}"
+        elif [[ "$RUNNING_ENV" =~ ROS_DISCOVERY_SERVER=(TCPv4:\[127\.0\.0\.1\]:11811) ]]; then
+            DETECTED="${BASH_REMATCH[1]}"
+        fi
+    fi
+
+    if [[ -n "$DETECTED" ]]; then
+        echo "  [$(date +%H:%M:%S)] Auto-detected active discovery server from running robot service: $DETECTED"
+        export ROS_DISCOVERY_SERVER="$DETECTED"
+    else
+        # 2. Fallback: Dynamically match current WiFi IP or loopback
+        JETSON_IP=""
+        for ip in $(hostname -I); do
+            if [[ ! "$ip" =~ ^172\. ]]; then
+                JETSON_IP="$ip"
+                break
+            fi
+        done
+        if [ -n "$JETSON_IP" ]; then
+            echo "  [$(date +%H:%M:%S)] No running robot process found — resolved active IP: TCPv4:[$JETSON_IP]:11811"
+            export ROS_DISCOVERY_SERVER="TCPv4:[$JETSON_IP]:11811"
+        else
+            echo "  [$(date +%H:%M:%S)] No network IP found — defaulting to TCPv4:[127.0.0.1]:11811"
+            export ROS_DISCOVERY_SERVER="TCPv4:[127.0.0.1]:11811"
+        fi
+    fi
 fi
 
 # Force Super Client mode so that CLI/introspection tools can query the DDS topology
@@ -165,6 +195,10 @@ if [[ -d "${BAG_PATH}" ]]; then
     SIZE=$(du -sh "${BAG_PATH}" | cut -f1)
     echo "  Bag saved:   ${BAG_PATH}"
     echo "  Bag size:    ${SIZE}"
+    echo ""
+    echo "  --- Recorded Bag Details ---"
+    ros2 bag info "${BAG_PATH}" 2>/dev/null || echo "    [WARN] Could not parse bag info."
+    echo "  ----------------------------"
     echo ""
     echo "  Next steps:"
     echo "    scp -r ${BAG_PATH} <YOUR_LAPTOP_USER>@<LAPTOP_IP>:~/EE_244_Final_Project/bags/"
