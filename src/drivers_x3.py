@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 # Serial Config
 if os.path.exists("/dev/ttyCH341USB0"):
     SERIAL_PORT = "/dev/ttyCH341USB0"
+elif os.path.exists("/dev/ttyCH341USB1"):
+    SERIAL_PORT = "/dev/ttyCH341USB1"
 else:
     SERIAL_PORT = "/dev/ttyUSB0"  # Fallback for standard kernel driver
 
@@ -313,7 +315,10 @@ class AstraCamera:
         except ImportError:
             logger.warning("AstraCamera: openni not installed — depth unavailable (pip install openni)")
         except Exception as e:
-            err_msg = getattr(e, 'message', None) or str(getattr(e, 'status', e))
+            try:
+                err_msg = getattr(e, 'message', None) or str(getattr(e, 'status', "depth init error"))
+            except Exception:
+                err_msg = "Unknown OpenNI2 error (possibly camera in use by another process)"
             logger.error(f"AstraCamera: depth init failed: {err_msg}")
 
     def _close_depth(self):

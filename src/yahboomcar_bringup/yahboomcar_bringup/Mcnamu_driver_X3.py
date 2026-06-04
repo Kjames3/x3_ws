@@ -53,6 +53,18 @@ class yahboomcar_driver(Node):
 		self.angular_limit = self.get_parameter('angular_limit').get_parameter_value().double_value
 		print (self.angular_limit)
 
+		# Kinematic geometry: (half_wheelbase + half_track_width) from URDF.
+		# URDF wheel positions: x=±0.08 m, y=±0.0845 m → factor = 0.08+0.0845 = 0.1645
+		self.declare_parameter('wheel_separation_factor', 0.165)
+		# Per-wheel gain corrections for motor asymmetry.
+		# Robot drifts right → right motors are stronger → lower gain_fr / gain_rr.
+		# Tune in ~0.02 steps: drive straight, reduce the fast side until drift stops.
+		# Live-tune without restart: ros2 param set /driver_node gain_fr 0.93
+		self.declare_parameter('gain_fl', 1.00)
+		self.declare_parameter('gain_fr', 0.95)
+		self.declare_parameter('gain_rl', 1.00)
+		self.declare_parameter('gain_rr', 0.95)
+
 		#create subcriber
 		self.sub_cmd_vel = self.create_subscription(Twist,"cmd_vel",self.cmd_vel_callback,1)
 		self.sub_RGBLight = self.create_subscription(Int32,"RGBLight",self.RGBLightcallback,100)
@@ -88,20 +100,21 @@ class yahboomcar_driver(Node):
 		omega = msg.angular.z
 
 		# Mecanum wheel mixing: M1=FL, M2=FR, M3=RL, M4=RR
-		# L: angular-to-wheel contribution factor (approx. half-wheelbase + half-track
-		#    in metres for the X3).  Increase L to make rotation feel more responsive.
-		L     = 0.30
+		L     = self.get_parameter('wheel_separation_factor').value
 		# SCALE: maps m/s → PWM units [-100, 100].  At SCALE=200, 0.5 m/s → 100 PWM.
-		#        Lower SCALE to reduce top speed; raise it if motors stall at low inputs.
 		SCALE = 200.0
+		GAIN_FL = self.get_parameter('gain_fl').value
+		GAIN_FR = self.get_parameter('gain_fr').value
+		GAIN_RL = self.get_parameter('gain_rl').value
+		GAIN_RR = self.get_parameter('gain_rr').value
 
 		# Correct Mecanum equations for the X3 chassis layout:
 		# vy > 0 (left strafe): FL -, RL +, FR +, RR -
 		# omega > 0 (CCW left turn): FL -, RL -, FR +, RR +
-		fl = (vx - vy - omega * L) * SCALE
-		fr = (vx + vy + omega * L) * SCALE
-		rl = (vx + vy - omega * L) * SCALE
-		rr = (vx - vy + omega * L) * SCALE
+		fl = (vx - vy - omega * L) * SCALE * GAIN_FL
+		fr = (vx + vy + omega * L) * SCALE * GAIN_FR
+		rl = (vx + vy - omega * L) * SCALE * GAIN_RL
+		rr = (vx - vy + omega * L) * SCALE * GAIN_RR
 
 		# Apply deadband compensation to overcome static friction on floor.
 		# When commanded velocities are non-zero, active motors must receive at least
@@ -120,7 +133,9 @@ class yahboomcar_driver(Node):
 			factor = 100.0 / max_val
 			fl *= factor; fr *= factor; rl *= factor; rr *= factor
 
-		self.car.set_motor(int(fl), int(fr), int(rl), int(rr))
+		# Hardware wiring: M1=FL, M2=RL, M3=FR, M4=RR
+		# (M2 and M3 cables are swapped on the Rosmaster board)
+		self.car.set_motor(int(fl), int(rl), int(fr), int(rr))
 	def RGBLightcallback(self,msg):
         # 流水灯控制，服务端回调函数 RGBLight control
 		if not isinstance(msg, Int32): return
@@ -186,11 +201,14 @@ class yahboomcar_driver(Node):
 		mag.magnetic_field.y = my*1.0
 		mag.magnetic_field.z = mz*1.0
 		
-		# 将小车当前的线速度和角速度发布出去
 		# Publish the current linear vel and angular vel of the car
+		# NOTE: The firmware's angular velocity (from get_motion_data) is incorrect
+		# because M2/M3 encoder cables are swapped on the board — the firmware
+		# computes ~0 angular velocity during pure rotation.  Use the IMU gyro gz
+		# (which reads the physical sensor directly) as the angular velocity source.
 		twist.linear.x = vx *1.0
 		twist.linear.y = vy *1.0
-		twist.angular.z = angular*1.0    
+		twist.angular.z = gz   # Use IMU gyro instead of firmware's wrong vz
 		self.velPublisher.publish(twist)
 		# print("ax: %.5f, ay: %.5f, az: %.5f" % (ax, ay, az))
 		# print("gx: %.5f, gy: %.5f, gz: %.5f" % (gx, gy, gz))

@@ -52,7 +52,7 @@ async def print_status(jetson_ip, ws_port):
     uri = f"ws://{jetson_ip}:{ws_port}"
     print(f"{BLUE}[DDS Helper] Connecting to {uri}...{RESET}")
     try:
-        async with websockets.connect(uri, timeout=3.0) as ws:
+        async with websockets.connect(uri, open_timeout=3.0) as ws:
             # First message should be hello
             hello_msg = await receive_until_type(ws, "hello", timeout=2.0)
             if hello_msg:
@@ -91,25 +91,34 @@ async def start_mapping(jetson_ip, ws_port):
     uri = f"ws://{jetson_ip}:{ws_port}"
     print(f"{BLUE}[DDS Helper] Connecting to {uri}...{RESET}")
     try:
-        async with websockets.connect(uri, timeout=3.0) as ws:
+        async with websockets.connect(uri, open_timeout=3.0) as ws:
             # Wait for hello
             await receive_until_type(ws, "hello", timeout=2.0)
-            
-            # Send command to launch Nav2 + SLAM Toolbox
-            cmd = {"type": "launch_nav2", "slam": True}
-            print(f"{BLUE}[DDS Helper] Sending command to start SLAM & Nav2 on Jetson...{RESET}")
+
+            # Use start_slam (not launch_nav2) so the server runs _launch_slam() which
+            # uses x3_slam_sim.launch.py with our custom slam_toolbox_params.yaml:
+            #   - async_slam_toolbox_node (not sync — better real-time throughput)
+            #   - our tuned map_update_interval, loop closure params, etc.
+            # The hardware drivers (Mcnamu_driver, EKF, YDLidar) are already running
+            # from x3_bringup.launch.py launched by server_x3.py at startup.
+            cmd = {"type": "start_slam"}
+            print(f"{BLUE}[DDS Helper] Sending command to start SLAM Toolbox on Jetson...{RESET}")
             await ws.send(json.dumps(cmd))
-            
-            # Wait for launch result
-            res = await receive_until_type(ws, "nav2_launch_result", timeout=8.0)
+
+            # Wait for slam_started result
+            res = await receive_until_type(ws, "slam_started", timeout=8.0)
             if res and res.get("success"):
-                print(f"{GREEN}✓ Nav2 + SLAM Toolbox successfully triggered!{RESET}")
-                print(f"{GREEN}  Message: {res.get('msg')}{RESET}")
-                print(f"{YELLOW}  Please wait a few seconds for the costmaps and map topics to initialize.{RESET}")
+                msg = res.get("msg", "")
+                if "already" in msg.lower():
+                    print(f"{GREEN}✓ SLAM Toolbox is already running on the Jetson.{RESET}")
+                else:
+                    print(f"{GREEN}✓ SLAM Toolbox successfully started!{RESET}")
+                    print(f"{GREEN}  Message: {msg}{RESET}")
+                    print(f"{YELLOW}  Please wait a few seconds for the map topics to initialize.{RESET}")
                 return 0
             else:
                 msg = res.get("msg") if res else "No response from server"
-                print(f"{RED}✗ Failed to start mapping: {msg}{RESET}")
+                print(f"{RED}✗ Failed to start SLAM: {msg}{RESET}")
                 return 1
     except Exception as exc:
         print(f"{RED}✗ Error connecting to websocket: {exc}{RESET}")
@@ -119,7 +128,7 @@ async def stop_mapping(jetson_ip, ws_port):
     uri = f"ws://{jetson_ip}:{ws_port}"
     print(f"{BLUE}[DDS Helper] Connecting to {uri}...{RESET}")
     try:
-        async with websockets.connect(uri, timeout=3.0) as ws:
+        async with websockets.connect(uri, open_timeout=3.0) as ws:
             await receive_until_type(ws, "hello", timeout=2.0)
             
             print(f"{YELLOW}[DDS Helper] Stopping Nav2 & SLAM on Jetson...{RESET}")
@@ -136,7 +145,7 @@ async def save_map(jetson_ip, ws_port, map_name):
     uri = f"ws://{jetson_ip}:{ws_port}"
     print(f"{BLUE}[DDS Helper] Connecting to {uri}...{RESET}")
     try:
-        async with websockets.connect(uri, timeout=3.0) as ws:
+        async with websockets.connect(uri, open_timeout=3.0) as ws:
             await receive_until_type(ws, "hello", timeout=2.0)
             
             print(f"{BLUE}[DDS Helper] Saving map as '{map_name}'...{RESET}")

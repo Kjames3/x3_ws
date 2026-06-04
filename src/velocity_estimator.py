@@ -109,16 +109,18 @@ class VelocityEstimator:
         estimator.stop()
     """
 
-    def __init__(self, camera, lidar, robot_pose_fn=None):
+    def __init__(self, camera, lidar, robot_pose_fn=None, model_path=None):
         """
         camera:        AstraCamera instance (or ROS2Bridge)
         lidar:         YDLidarDriver instance (or ROS2Bridge)
         robot_pose_fn: callable returning {'x': m, 'y': m, 'theta': rad}
                        for ego-motion compensation. Pass None to skip.
+        model_path:    optional string path to the TorchScript model file
         """
         self.camera        = camera
         self.lidar         = lidar
         self.robot_pose_fn = robot_pose_fn
+        self.model_path    = model_path or MODEL_PATH
 
         self._model     = None
         self._scaler_X  = None
@@ -133,13 +135,13 @@ class VelocityEstimator:
 
     def _load_model(self):
         try:
-            self._model    = torch.jit.load(MODEL_PATH, map_location='cpu')
+            self._model    = torch.jit.load(self.model_path, map_location='cpu')
             self._model.eval()
             self._scaler_X = joblib.load(SCALER_X_PATH)
             self._scaler_y = joblib.load(SCALER_Y_PATH)
-            logger.info("VelocityEstimator: model and scalers loaded")
+            logger.info(f"VelocityEstimator: model {self.model_path} and scalers loaded")
         except Exception as e:
-            logger.error(f"VelocityEstimator: failed to load model: {e}")
+            logger.error(f"VelocityEstimator: failed to load model {self.model_path}: {e}")
 
     def _extract_depth_centroids(self, depth_frame):
         """
@@ -155,8 +157,8 @@ class VelocityEstimator:
         # Convert to grayscale — bright pixels are near objects
         gray = cv2.cvtColor(depth_frame, cv2.COLOR_BGR2GRAY)
 
-        # Threshold: keep pixels brighter than 180 (near objects)
-        _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+        # Threshold: keep pixels brighter than 120 (near objects)
+        _, thresh = cv2.threshold(gray, 120, 255, cv2.THRESH_BINARY)
 
         # Morphological cleanup
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))

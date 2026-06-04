@@ -186,8 +186,8 @@ class Nav2Client:
 
         cmd = [
             'ros2', 'launch', launch_file,
-            f'use_sim_time:={"true" if use_sim_time else "false"}',
-            f'slam:={"true" if slam else "false"}',
+            f'use_sim_time:={"True" if use_sim_time else "False"}',
+            f'slam:={"True" if slam else "False"}',
         ]
         if map_path:
             cmd.append(f'map:={map_path}')

@@ -9,7 +9,7 @@
 #   bash scripts/map_classroom.sh
 # =============================================================================
 
-set -euo pipefail
+set -eo pipefail
 
 # ── Color Definitions ────────────────────────────────────────────────────────
 GREEN="\033[92m"
@@ -131,8 +131,12 @@ else
     echo -e "${GREEN}✓ Success! Jetson topics detected on laptop:${RESET}"
     echo -e "  - /scan"
     echo -e "  - /map"
-    if echo "$TOPIC_LIST" | grep -q "/global_costmap/costmap"; then
-        echo -e "  - /global_costmap/costmap (Nav2)"
+    if echo "$TOPIC_LIST" | grep -q "/odom"; then
+        echo -e "  - /odom (EKF odometry — SLAM tracking active)"
+    else
+        echo -e "${YELLOW}  ⚠ Warning: /odom not visible — SLAM will use scan-matching only (slower).${RESET}"
+        echo -e "  If the map builds slowly or looks fragmented, check the Jetson:"
+        echo -e "    ${YELLOW}sudo systemctl restart x3_server${RESET}  then re-run this script."
     fi
 fi
 echo ""

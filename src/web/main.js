@@ -59,6 +59,9 @@ const state = {
     // Frontier explorer state
     frontierActive: false,
 
+    // P2P test state
+    p2pTestRunning: false,
+
     // Web Worker for offscreen lidar rendering (Step 2)
     lidarWorker: null,
 
@@ -266,6 +269,11 @@ const elements = {
     saveMapBtn: document.getElementById('save-map-btn'),
     mapNameInput: document.getElementById('map-name-input'),
     slamStatusText: document.getElementById('slam-status-text'),
+
+    // Velocity Estimator (EE244 Project)
+    velocityModelSelect: document.getElementById('velocity-model-select'),
+    velocityEstimatesContainer: document.getElementById('velocity-estimates-container'),
+    p2pTestBtn: document.getElementById('p2p-test-btn'),
 };
 
 // =================================================================
@@ -1646,6 +1654,10 @@ function handleMessage(data) {
         if (gazeboBtn) {
             gazeboBtn.style.display = mode === 'sim' ? 'inline-block' : 'none';
         }
+
+        if (data.active_velocity_model && elements.velocityModelSelect) {
+            elements.velocityModelSelect.value = data.active_velocity_model;
+        }
         return;
     }
 
@@ -1749,6 +1761,15 @@ function handleMessage(data) {
             state.latestData.detections = data.detections;
         }
 
+        if (data.velocity_estimates !== undefined) {
+            state.latestData.velocityEstimates = data.velocity_estimates;
+        }
+
+        if (data.p2p_test_running !== undefined) {
+            state.p2pTestRunning = data.p2p_test_running;
+            updateP2pButtonUI();
+        }
+
         if (data.fps_camera !== undefined) state.latestData.fps.cam = data.fps_camera;
         if (data.fps_detection !== undefined) state.latestData.fps.yolo = data.fps_detection;
 
@@ -1831,6 +1852,25 @@ function handleMessage(data) {
         if (data.success && data.all_classes !== undefined) {
             const btn = document.getElementById('class-filter-toggle');
             if (btn) updateClassFilterBtn(btn, data.all_classes);
+        }
+
+    } else if (data.type === "velocity_model_changed") {
+        if (data.success) {
+            console.log(`%c✅ Velocity Model loaded: ${data.model}`, "color: #a855f7; font-weight: bold;");
+        } else {
+            console.warn(`❌ Velocity Model FAILED to load: ${data.model}\n   Reason: ${data.error}`);
+        }
+        if (elements.velocityModelSelect) {
+            elements.velocityModelSelect.style.transition = 'border-color 0.3s';
+            elements.velocityModelSelect.style.borderColor = data.success ? '#a855f7' : '#f87171';
+            setTimeout(() => { elements.velocityModelSelect.style.borderColor = ''; }, 2000);
+        }
+
+    } else if (data.type === "p2p_test_status") {
+        state.p2pTestRunning = (data.status === "running");
+        updateP2pButtonUI();
+        if (data.message) {
+            console.log(`[P2P Test] ${data.message}`);
         }
 
     } else if (data.type === "demo_model_changed") {
@@ -1961,6 +2001,11 @@ function updateUI() {
     // 6. Position & Power
     updatePositionUI();
     updatePowerUI();
+
+    // 7. Velocity Estimates (EE244 Project)
+    if (state.latestData.velocityEstimates !== undefined) {
+        updateVelocityEstimatesList(state.latestData.velocityEstimates);
+    }
 }
 
 function updateDetectionsList(detections) {
@@ -1992,6 +2037,51 @@ function updateDetectionsList(detections) {
     }).join('');
 
     elements.detectionList.innerHTML = html;
+}
+
+function updateVelocityEstimatesList(estimates) {
+    if (!elements.velocityEstimatesContainer) return;
+
+    if (!estimates || estimates.length === 0) {
+        elements.velocityEstimatesContainer.innerHTML = '<div class="no-detections">Awaiting obstacles and velocity reports...</div>';
+        return;
+    }
+
+    const html = `<div class="velocity-list">` + estimates.map(est => {
+        const speed = est.speed || 0.0;
+        // Map 2.0 m/s as maximum expected human speed for visualizer scaling
+        const fillPct = Math.min(100, Math.max(0, (speed / 2.0) * 100)).toFixed(0);
+        return `
+        <div class="velocity-item">
+            <div class="velocity-item-header">
+                <span class="velocity-badge">Obstacle #${est.id}</span>
+                <span class="velocity-speed">Speed: ${speed.toFixed(2)} m/s</span>
+            </div>
+            <div class="velocity-item-stats">
+                <span><span>Pos X (Lateral):</span> <strong>${est.x.toFixed(2)} m</strong></span>
+                <span><span>Pos Y (Vertical):</span> <strong>${est.y.toFixed(2)} m</strong></span>
+                <span><span>Velocity Vx:</span> <strong>${est.vx.toFixed(2)} m/s</strong></span>
+                <span><span>Velocity Vy:</span> <strong>${est.vy.toFixed(2)} m/s</strong></span>
+            </div>
+            <div class="velocity-bar">
+                <div class="velocity-fill" style="width: ${fillPct}%"></div>
+            </div>
+        </div>
+        `;
+    }).join('') + `</div>`;
+
+    elements.velocityEstimatesContainer.innerHTML = html;
+}
+
+function updateP2pButtonUI() {
+    if (!elements.p2pTestBtn) return;
+    if (state.p2pTestRunning) {
+        elements.p2pTestBtn.textContent = 'Cancel P2P Test';
+        elements.p2pTestBtn.style.background = '#ef4444'; // Red
+    } else {
+        elements.p2pTestBtn.textContent = 'Start P2P Test';
+        elements.p2pTestBtn.style.background = '#3b82f6'; // Blue
+    }
 }
 
 function updatePositionUI() {
@@ -2430,6 +2520,26 @@ if (elements.launchGazeboBtn) elements.launchGazeboBtn.addEventListener('click',
     if (state.ws && state.connected) state.ws.send(JSON.stringify({ type: 'launch_gazebo' }));
 });
 if (elements.disconnectBtn) elements.disconnectBtn.addEventListener('click', () => { if (state.ws) { state.ws.send(JSON.stringify({ type: "disconnect" })); state.ws.close(); } });
+
+if (elements.velocityModelSelect) {
+    elements.velocityModelSelect.addEventListener('change', (e) => {
+        if (state.ws && state.connected) {
+            sendMessage({ type: 'set_velocity_model', model: e.target.value });
+        }
+    });
+}
+
+if (elements.p2pTestBtn) {
+    elements.p2pTestBtn.addEventListener('click', () => {
+        if (state.ws && state.connected) {
+            if (state.p2pTestRunning) {
+                sendMessage({ type: 'cancel_p2p_test' });
+            } else {
+                sendMessage({ type: 'start_p2p_test' });
+            }
+        }
+    });
+}
 
 if (elements.leftSlider) {
     elements.leftSlider.addEventListener('input', (e) => {

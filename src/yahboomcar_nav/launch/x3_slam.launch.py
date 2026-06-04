@@ -78,6 +78,13 @@ def generate_launch_description():
         package='yahboomcar_bringup',
         executable='Mcnamu_driver_X3',
         output='screen',
+        parameters=[{
+            'wheel_separation_factor': 0.165,
+            'gain_fl': 1.00,
+            'gain_fr': 0.95,
+            'gain_rl': 1.00,
+            'gain_rr': 0.95,
+        }]
     )
 
     # ── Velocity-based odometry ───────────────────────────────────────
@@ -88,7 +95,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'pub_odom_tf': False,       # EKF publishes odom→base_footprint TF
-            'linear_scale_x': 1.0,
+            'linear_scale_x': -1.0,    # encoder convention: forward = negative ticks
             'linear_scale_y': 1.0,
             'angular_scale': 1.0,
         }]

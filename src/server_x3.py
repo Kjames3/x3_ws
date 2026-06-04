@@ -68,6 +68,8 @@ from drivers_x3 import (
 )
 from nav2_client import Nav2Client
 from frontier_explorer import FrontierExplorer
+from velocity_estimator import VelocityEstimator
+from pathlib import Path
 
 # =============================================================================
 # CONFIGURATION
@@ -149,6 +151,9 @@ frontier_explorer = None  # FrontierExplorer instance (ROS2 mode only)
 _gazebo_proc    = None   # subprocess handle when --sim auto-launches Gazebo
 _ros2_stack_proc = None  # subprocess handle for x3_bringup (launched by default in ROS2 mode)
 _slam_proc      = None   # subprocess handle when SLAM Toolbox is running
+velocity_estimator = None  # VelocityEstimator instance (EE244 project)
+active_velocity_model_name = "velocity_mlp"  # currently loaded torchscript velocity model
+_p2p_proc = None           # point-to-point test subprocess handle
 
 detection_enabled = False
 depth_enabled = False
@@ -240,6 +245,7 @@ class ROS2Bridge:
 
         self._node.create_subscription(Image,          '/camera/image_raw', self._image_cb,  1)
         self._node.create_subscription(Image,          '/camera/depth_image', self._depth_cb, 1)
+        self._node.create_subscription(Image,          '/camera/depth/image_raw', self._depth_cb, 1)
         self._node.create_subscription(Odometry,       '/odom',             self._odom_cb,  10)
         self._node.create_subscription(Odometry,       '/odom_raw',         self._odom_cb,  10)
         self._node.create_subscription(Float32,        '/voltage',          self._voltage_cb, 10)
@@ -266,16 +272,40 @@ class ROS2Bridge:
         return f.copy() if f is not None else None
 
     def _depth_cb(self, msg):
-        """Convert 32FC1 depth image (metres) from Fortress to colourised BGR uint8.
-        White = near (0 m), dark blue = far (clipped at 4 m) — matches AstraCamera output."""
+        """Convert depth image to colourised BGR uint8.
+        Handles both 32FC1 (meters, Gazebo) and 16UC1/mono16 (millimeters, physical robot)."""
         import numpy as np, cv2
-        arr = np.frombuffer(bytes(msg.data), dtype=np.float32).reshape(msg.height, msg.width)
-        # Clip to sensor range and normalise to 0-255 (near=255 white, far=0 dark)
-        clipped = np.clip(arr, 0.0, 4.0)
-        norm = (255.0 * (1.0 - clipped / 4.0)).astype(np.uint8)
-        coloured = cv2.applyColorMap(norm, cv2.COLORMAP_BONE)
-        with self._lock:
-            self._latest_depth = coloured
+        try:
+            # Check if image is 16-bit (millimeters) or 32-bit (meters)
+            is_16bit = "16" in msg.encoding or "mono16" in msg.encoding
+            if is_16bit:
+                # 16UC1 / mono16 (millimeters)
+                arr = np.frombuffer(bytes(msg.data), dtype=np.uint16).reshape(msg.height, msg.width)
+                # Convert millimeters to meters
+                arr_meters = arr.astype(np.float32) / 1000.0
+            else:
+                # 32FC1 (meters)
+                arr_meters = np.frombuffer(bytes(msg.data), dtype=np.float32).reshape(msg.height, msg.width)
+
+            # Replace invalid/zero/nan values with a far distance (5.0m)
+            # so they do not corrupt the minimum depth (near object) search.
+            arr_meters_clean = np.where((arr_meters <= 0.1) | np.isnan(arr_meters), 5.0, arr_meters)
+            arr_meters_clean = np.clip(arr_meters_clean, 0.3, 5.0)
+
+            # Dynamic min-max scaling: closest valid point maps to 255 (bright white),
+            # furthest maps to 0 (dark).
+            min_d = np.min(arr_meters_clean)
+            max_d = np.max(arr_meters_clean)
+            if max_d > min_d:
+                norm = (255.0 * (1.0 - (arr_meters_clean - min_d) / (max_d - min_d))).astype(np.uint8)
+            else:
+                norm = np.zeros_like(arr_meters_clean, dtype=np.uint8)
+
+            coloured = cv2.applyColorMap(norm, cv2.COLORMAP_BONE)
+            with self._lock:
+                self._latest_depth = coloured
+        except Exception as exc:
+            logger.error(f"ROS2Bridge: failed to decode depth frame: {exc}")
 
     def get_depth_frame(self):
         """Return latest colourised depth frame as BGR ndarray, or None. Matches AstraCamera API."""
@@ -643,6 +673,7 @@ def _encode_mapu(grid: dict) -> bytes | None:
 def initialize_hardware():
     global ros_board, ros_bridge, drive, lidar, camera, model, oled, _gazebo_proc
     global nav2_client, _ros2_stack_proc, frontier_explorer
+    global velocity_estimator, active_velocity_model_name
 
     logger.info("="*50)
     logger.info("Initializing Yahboom X3 Hardware")
@@ -696,7 +727,10 @@ def initialize_hardware():
     #    Only --sim uses ROS2Bridge.get_frame() (Gazebo publishes /camera/image_raw).
     if not SIM_MODE:
         logger.info("Initializing Camera...")
-        camera = AstraCamera(width=640, height=480, sim_mode=False, enable_depth=False)
+        # In ROS2 mode the depth stream is owned by the orbbec_depth service,
+        # so direct USB depth stream initialization is disabled to prevent conflicts.
+        _enable_direct_depth = not ROS2_MODE
+        camera = AstraCamera(width=640, height=480, sim_mode=False, enable_depth=_enable_direct_depth)
 
     # 4. YOLO Model — prefer TRT engine (.engine), fall back to .pt on CPU
     try:
@@ -720,12 +754,38 @@ def initialize_hardware():
     oled = OLEDDisplay(i2c_port=7, i2c_address=0x3C, sim_mode=SIM_MODE)
     oled.show(["X3 Robot", "Starting...", ""])
 
+    # 8. Velocity Estimator (EE244 Project)
+    try:
+        model_name = active_velocity_model_name
+        model_path = str(Path(__file__).parent.resolve() / f"{model_name}.torchscript")
+        logger.info(f"Initializing VelocityEstimator with model: {model_path}...")
+        # In ROS2 and SIM modes, retrieve depth frames from the active ROS2 topic bridge to avoid conflicts.
+        depth_source = ros_bridge if (ROS2_MODE or SIM_MODE) else camera
+        velocity_estimator = VelocityEstimator(depth_source, lidar, robot_pose_fn=None, model_path=model_path)
+        velocity_estimator.start()
+        logger.info("VelocityEstimator started successfully")
+    except Exception as e:
+        logger.error(f"Failed to start VelocityEstimator: {e}")
+
     logger.info("="*50)
     logger.info("Initialization Complete")
     logger.info("="*50)
 
 def cleanup():
+    global _p2p_proc
     logger.info("Cleaning up...")
+    if _p2p_proc is not None and _p2p_proc.poll() is None:
+        logger.info("Stopping P2P Test subprocess...")
+        try:
+            os.killpg(os.getpgid(_p2p_proc.pid), signal.SIGTERM)
+        except Exception:
+            pass
+    if velocity_estimator is not None:
+        try:
+            logger.info("Stopping VelocityEstimator...")
+            velocity_estimator.stop()
+        except Exception as e:
+            logger.error(f"Failed to stop VelocityEstimator: {e}")
     if nav2_client is not None:
         nav2_client.stop_nav2()
     if (SIM_MODE or ROS2_MODE) and drive is not None:
@@ -867,6 +927,8 @@ async def handle_client(websocket):
     global current_left_power, current_right_power
     global model, active_model_name
     global _gazebo_proc, nav2_client
+    global velocity_estimator, active_velocity_model_name
+    global _p2p_proc
 
     logger.info("Client connected")
     connected_clients.add(websocket)
@@ -875,7 +937,11 @@ async def handle_client(websocket):
 
     # Tell the client what mode the server is running in
     _mode = "sim" if SIM_MODE else "ros2"
-    await websocket.send(json.dumps({"type": "hello", "mode": _mode}))
+    await websocket.send(json.dumps({
+        "type": "hello",
+        "mode": _mode,
+        "active_velocity_model": active_velocity_model_name
+    }))
 
     try:
         async for message in websocket:
@@ -1175,6 +1241,85 @@ async def handle_client(websocket):
                                 "path": new_model_path
                             }))
 
+                elif msg_type == "set_velocity_model":
+                    model_name = data.get("model")
+                    if model_name in ("velocity_mlp", "velocity_mlp_finetuned"):
+                        new_path = str(Path(__file__).parent.resolve() / f"{model_name}.torchscript")
+                        if os.path.exists(new_path):
+                            logger.info(f"Switching velocity estimator model to {new_path}")
+                            try:
+                                if velocity_estimator:
+                                    velocity_estimator.stop()
+                                    velocity_estimator.model_path = new_path
+                                    velocity_estimator._load_model()
+                                    velocity_estimator.start()
+                                active_velocity_model_name = model_name
+                                await websocket.send(json.dumps({
+                                    "type": "velocity_model_changed",
+                                    "model": model_name,
+                                    "success": True
+                                }))
+                            except Exception as e:
+                                logger.error(f"Failed to switch velocity model: {e}")
+                                await websocket.send(json.dumps({
+                                    "type": "velocity_model_changed",
+                                    "model": model_name,
+                                    "success": False,
+                                    "error": str(e)
+                                }))
+                        else:
+                            logger.warning(f"Velocity model file not found: {new_path}")
+                            await websocket.send(json.dumps({
+                                "type": "velocity_model_changed",
+                                "model": model_name,
+                                "success": False,
+                                "error": "File not found"
+                            }))
+
+                elif msg_type == "start_p2p_test":
+                    if _p2p_proc is None or _p2p_proc.poll() is not None:
+                        logger.info("Starting Point-to-Point Test...")
+                        script_path = str(Path(__file__).parent.resolve() / "point_to_point_test.py")
+                        
+                        child_env = os.environ.copy()
+                        child_env['PATH'] = ':'.join(
+                            p for p in child_env.get('PATH', '').split(':')
+                            if 'conda' not in p.lower()
+                        )
+                        if 'PYTHONPATH' in child_env:
+                            child_env['PYTHONPATH'] = ':'.join(
+                                p for p in child_env['PYTHONPATH'].split(':')
+                                if 'conda' not in p.lower()
+                            )
+
+                        cmd = f"source /opt/ros/humble/setup.bash && source /home/jetson/x3_ws/install/setup.bash && python3 {script_path}"
+                        
+                        _p2p_proc = subprocess.Popen(
+                            ["bash", "-c", cmd],
+                            env=child_env,
+                            preexec_fn=os.setsid
+                        )
+                    await websocket.send(json.dumps({
+                        "type": "p2p_test_status",
+                        "status": "running"
+                    }))
+
+                elif msg_type == "cancel_p2p_test":
+                    if _p2p_proc is not None and _p2p_proc.poll() is None:
+                        logger.info("Canceling Point-to-Point Test...")
+                        try:
+                            os.killpg(os.getpgid(_p2p_proc.pid), signal.SIGTERM)
+                            _p2p_proc.wait(timeout=2.0)
+                        except Exception as exc:
+                            logger.warning(f"Failed to kill P2P subprocess: {exc}")
+                        _p2p_proc = None
+                        _enqueue_motion(0.0, 0.0, 0.0)
+                        
+                    await websocket.send(json.dumps({
+                        "type": "p2p_test_status",
+                        "status": "idle"
+                    }))
+
                 # Silently ignore GUI-only messages (capture, demo, etc.)
                 elif msg_type in ("set_classes", "set_labels",
                                   "capture_image", "download_images",
@@ -1258,14 +1403,16 @@ async def broadcast_loop():
             # 4. Depth frame — throttled to 10fps; encode also in executor (P1)
             depth_str = ""
             _depth_cycle += 1
-            if depth_enabled and camera and (_depth_cycle % 2 == 0):
-                def _get_depth():
-                    df = camera.get_depth_frame()
-                    if df is None:
-                        return ""
-                    _, dbuf = cv2.imencode('.jpg', df, [cv2.IMWRITE_JPEG_QUALITY, 60])
-                    return base64.b64encode(dbuf).decode('utf-8')
-                depth_str = await loop.run_in_executor(None, _get_depth)
+            if depth_enabled and (_depth_cycle % 2 == 0):
+                depth_source = ros_bridge if (ROS2_MODE or SIM_MODE) else camera
+                if depth_source is not None:
+                    def _get_depth():
+                        df = depth_source.get_depth_frame()
+                        if df is None:
+                            return ""
+                        _, dbuf = cv2.imencode('.jpg', df, [cv2.IMWRITE_JPEG_QUALITY, 60])
+                        return base64.b64encode(dbuf).decode('utf-8')
+                    depth_str = await loop.run_in_executor(None, _get_depth)
 
             # 5. Lidar points — served via Foxglove bridge (/scan topic); not sent here
 
@@ -1296,6 +1443,14 @@ async def broadcast_loop():
             est_current = 0.5 + (avg_pwr * 6.0)
             est_watts   = batt_v * est_current
 
+            # Get velocity estimator predictions (EE244 Project)
+            velocity_estimates = []
+            if velocity_estimator is not None:
+                try:
+                    velocity_estimates = velocity_estimator.get_estimates()
+                except Exception as e:
+                    logger.error(f"Failed to get velocity estimates: {e}")
+
             # P3: send camera frame as a binary WebSocket message (raw JPEG, no base64)
             if img_bytes:
                 websockets.broadcast(connected_clients, img_bytes)
@@ -1323,6 +1478,9 @@ async def broadcast_loop():
                 "slam_active": _slam_proc is not None and _slam_proc.poll() is None,
                 "frontier": frontier_explorer.status() if frontier_explorer else None,
                 "active_model_name": active_model_name,
+                "active_velocity_model_name": active_velocity_model_name,
+                "velocity_estimates": velocity_estimates,
+                "p2p_test_running": _p2p_proc is not None and _p2p_proc.poll() is None,
                 "fps_camera": fps_camera,
                 "fps_detection": fps_detection,
                 "detections": last_detections,

@@ -75,10 +75,28 @@ def generate_launch_description():
 
     # ── Hardware driver ───────────────────────────────────────────────
     # Subscribes /cmd_vel → Rosmaster serial; publishes /vel_raw, /imu/data_raw
+    serial_port = '/dev/ttyCH341USB0'
+    if os.path.exists('/dev/ttyCH341USB1'):
+        serial_port = '/dev/ttyCH341USB1'
+    elif os.path.exists('/dev/ttyCH341USB0'):
+        serial_port = '/dev/ttyCH341USB0'
+
     driver_node = Node(
         package='yahboomcar_bringup',
         executable='Mcnamu_driver_X3',
         output='screen',
+        parameters=[{
+            'serial_port': serial_port,
+            # (half_wheelbase + half_track) from URDF: (0.08 + 0.0845) = 0.1645 m
+            'wheel_separation_factor': 0.165,
+            # Per-wheel gain: reduces faster motor side to correct drift/circle.
+            # Robot drifts right → right is stronger → gain_fr/rr < 1.0.
+            # Tune with: ros2 param set /driver_node gain_fr 0.93
+            'gain_fl': 1.00,
+            'gain_fr': 0.95,
+            'gain_rl': 1.00,
+            'gain_rr': 0.95,
+        }]
     )
 
     # ── Velocity-based odometry ───────────────────────────────────────
@@ -89,7 +107,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'pub_odom_tf': False,
-            'linear_scale_x': 1.0,
+            'linear_scale_x': -1.0,   # encoder convention: forward = negative ticks
             'linear_scale_y': 1.0,
             'angular_scale': 1.0,
         }]
