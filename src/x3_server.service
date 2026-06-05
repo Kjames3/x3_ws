@@ -1,7 +1,7 @@
 [Unit]
 Description=Yahboom X3 WebSocket Control Server
-After=network.target
-Wants=network.target
+After=network-online.target fastdds_discovery.service
+Wants=network-online.target
 
 [Service]
 Type=simple
@@ -20,18 +20,7 @@ WorkingDirectory=/home/jetson/x3_ws/src
 ExecStart=/bin/bash -c '\
   source /opt/ros/humble/setup.bash && \
   source /home/jetson/x3_ws/install/local_setup.bash 2>/dev/null || true && \
-  JETSON_IP="" && \
-  for ip in $(hostname -I); do \
-    if [[ ! "$ip" =~ ^172\. ]]; then \
-      JETSON_IP="$ip" && \
-      break; \
-    fi; \
-  done && \
-  if [ -n "$JETSON_IP" ]; then \
-    export ROS_DISCOVERY_SERVER="TCPv4:[$JETSON_IP]:11811"; \
-  else \
-    export ROS_DISCOVERY_SERVER="TCPv4:[127.0.0.1]:11811"; \
-  fi && \
+  export ROS_DISCOVERY_SERVER="127.0.0.1:11811" && \
   exec python3 /home/jetson/x3_ws/src/server_x3.py $SERVER_ARGS'
 
 # To switch modes without editing this file, override SERVER_ARGS in
@@ -47,7 +36,7 @@ Environment=ROS_DOMAIN_ID=42
 # Point all ROS2 nodes to the local FastDDS discovery server instead of multicast.
 # This is required on school/enterprise WiFi which blocks UDP multicast and
 # client-to-client UDP.  The discovery server runs as fastdds_discovery.service.
-Environment="ROS_DISCOVERY_SERVER=TCPv4:[127.0.0.1]:11811"
+Environment="ROS_DISCOVERY_SERVER=127.0.0.1:11811"
 Environment="FASTDDS_DEFAULT_PROFILES_FILE=/home/jetson/x3_ws/config/fastdds_tcp_server.xml"
 # ──────────────────────────────────────────────────────────────────────────────
 

@@ -462,7 +462,7 @@
         <div class="card" id="velocity-estimator-card" style="margin-top: 0.5rem;">
             <div class="card-header">
                 <h2><span class="icon">🏃</span> Pedestrian Velocity Estimator (EE244)</h2>
-                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
                     <select id="velocity-model-select" class="btn"
                         style="padding: 0.3rem 0.6rem; font-size: 0.75rem; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); outline: none;">
                         <option value="velocity_mlp">TorchScript MLP (Standard)</option>
@@ -472,9 +472,32 @@
                         style="padding: 0.3rem 0.6rem; font-size: 0.75rem; background: #3b82f6; color: white; border: none; font-weight: 500; cursor: pointer; border-radius: 4px; transition: all 0.2s;">
                         Start P2P Test
                     </button>
+                    <!-- A/B comparison controls -->
+                    <button id="vel-est-toggle-btn" class="btn"
+                        style="padding: 0.3rem 0.6rem; font-size: 0.75rem; background: #10b981; color: white; border: none; font-weight: 600; cursor: pointer; border-radius: 4px; transition: all 0.2s; min-width: 5.5rem;"
+                        title="Toggle velocity estimator on/off for A/B comparison">
+                        Est: ON
+                    </button>
+                    <button id="ab-reactive-btn" class="btn"
+                        style="padding: 0.3rem 0.6rem; font-size: 0.75rem; background: #ef4444; color: white; border: none; font-weight: 500; cursor: pointer; border-radius: 4px; transition: all 0.2s;"
+                        title="Run A/B test with velocity estimation OFF (reactive)">
+                        Run Reactive
+                    </button>
+                    <button id="ab-predictive-btn" class="btn"
+                        style="padding: 0.3rem 0.6rem; font-size: 0.75rem; background: #00cc66; color: #000; border: none; font-weight: 500; cursor: pointer; border-radius: 4px; transition: all 0.2s;"
+                        title="Run A/B test with velocity estimation ON (predictive)">
+                        Run Predictive
+                    </button>
                 </div>
             </div>
             <div class="card-body">
+                <!-- Mode display: prominent indicator for demo audience -->
+                <div id="mode-display"
+                    style="display: none; text-align: center; font-size: 1.4rem; font-weight: 800;
+                           letter-spacing: 0.08em; padding: 0.4rem 1rem; margin-bottom: 0.6rem;
+                           border-radius: 6px; background: rgba(0,0,0,0.25);">
+                    REACTIVE MODE
+                </div>
                 <div id="velocity-estimates-container">
                     <div class="no-detections">Awaiting obstacles and velocity reports...</div>
                 </div>
@@ -611,7 +634,7 @@
         </div>
     </div>
 
-    <script src="main.js?v=3"></script>
+    <script src="main.js?v=4"></script>
 </body>
 
 </html>

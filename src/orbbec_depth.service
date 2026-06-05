@@ -2,8 +2,8 @@
 Description=Orbbec Astra Pro Depth Camera — publishes /camera/depth/image_raw
 # Start after x3_server so the ROS2 bringup stack is already up.
 # If x3_server hasn't been installed, replace with network.target.
-After=x3_server.service network.target
-Wants=network.target
+After=x3_server.service network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
@@ -18,18 +18,7 @@ WorkingDirectory=/home/jetson/x3_ws/src
 ExecStart=/bin/bash -c '\
   source /opt/ros/humble/setup.bash && \
   source /home/jetson/x3_ws/install/local_setup.bash 2>/dev/null || true && \
-  JETSON_IP="" && \
-  for ip in $(hostname -I); do \
-    if [[ ! "$ip" =~ ^172\. ]]; then \
-      JETSON_IP="$ip" && \
-      break; \
-    fi; \
-  done && \
-  if [ -n "$JETSON_IP" ]; then \
-    export ROS_DISCOVERY_SERVER="TCPv4:[$JETSON_IP]:11811"; \
-  else \
-    export ROS_DISCOVERY_SERVER="TCPv4:[127.0.0.1]:11811"; \
-  fi && \
+  export ROS_DISCOVERY_SERVER="127.0.0.1:11811" && \
   exec python3 /home/jetson/EE_244_Final_Project/robot/orbbec_depth_node.py'
 
 # Wait for x3_server (and its 10s ExecStartPre sleep) to finish initialising
@@ -37,7 +26,7 @@ ExecStart=/bin/bash -c '\
 ExecStartPre=/bin/sleep 20
 
 Environment=ROS_DOMAIN_ID=42
-Environment="ROS_DISCOVERY_SERVER=TCPv4:[127.0.0.1]:11811"
+Environment="ROS_DISCOVERY_SERVER=127.0.0.1:11811"
 Environment="FASTDDS_DEFAULT_PROFILES_FILE=/home/jetson/x3_ws/config/fastdds_tcp_server.xml"
 Environment=PYTHONUNBUFFERED=1
 

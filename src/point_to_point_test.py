@@ -15,20 +15,21 @@ from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 
 # --- Control Config ---
-TARGET_DISTANCE = 2.0  # meters
+TARGET_DISTANCE = 4.0  # meters
 ROTATION_ANGLE  = math.pi  # 180 degrees in radians
 DIST_TOLERANCE  = 0.05  # meters
-YAW_TOLERANCE   = 0.08  # radians (~4.6°) — wide enough to settle without oscillation
+YAW_TOLERANCE   = 0.03  # radians (~1.7°) — tighter for better mark consistency
 
 # Proportional gains — tuned conservatively for smooth motion
 KP_DIST = 0.6   # Linear velocity gain (lower = smoother deceleration)
 KP_YAW  = 0.4   # Heading drift correction during forward drive (gentle)
-KP_ROT  = 0.6   # Angular velocity gain during pure rotation
+KP_ROT  = 0.5   # Angular velocity gain during pure rotation (lowered for less overshoot)
+KD_ROT  = 0.1   # Derivative velocity gain during pure rotation (active damping)
 
 MAX_LINEAR_SPEED  = 0.20  # m/s — keep low for accuracy
 MIN_LINEAR_SPEED  = 0.06  # m/s — just enough to overcome friction
-MAX_ANGULAR_SPEED = 0.40  # rad/s — keep moderate to avoid overshoot
-MIN_ANGULAR_SPEED = 0.0   # rad/s — allow proportional control to reach zero naturally
+MAX_ANGULAR_SPEED = 0.30  # rad/s — lowered to reduce momentum overshoot
+MIN_ANGULAR_SPEED = 0.12  # rad/s — ensure we have power to overcome static friction near target
 
 # Timeout for safety
 SEGMENT_TIMEOUT = 20.0  # seconds per segment (increased for slower speeds)
@@ -77,6 +78,10 @@ class PointToPointTest(Node):
 
         # Settle duration (non-blocking)
         self.settle_duration = 1.0  # seconds to wait between segments
+
+        # PD control tracking variables
+        self.prev_yaw_error = 0.0
+        self.last_time = 0.0
 
         # Create control loop timer at 20Hz
         self._timer = self.create_timer(0.05, self._control_loop)
@@ -160,6 +165,9 @@ class PointToPointTest(Node):
             if now - self.state_start_time >= self.settle_duration:
                 self.start_yaw = self.current_yaw
                 self.target_yaw = normalize_angle(self.start_yaw + ROTATION_ANGLE)
+                yaw_error = normalize_angle(self.target_yaw - self.current_yaw)
+                self.prev_yaw_error = yaw_error
+                self.last_time = now
                 self.state = 3
                 self.state_start_time = now
                 self.get_logger().info(f"Rotating 180° (from {math.degrees(self.start_yaw):.1f}° "
@@ -183,11 +191,19 @@ class PointToPointTest(Node):
                 self.state_start_time = now
                 return
 
-            # Proportional angular speed — allow it to naturally reach zero
-            rot_speed = abs(yaw_error) * KP_ROT
-            rot_speed = max(MIN_ANGULAR_SPEED, min(MAX_ANGULAR_SPEED, rot_speed))
-            if yaw_error < 0:
-                rot_speed = -rot_speed
+            dt = now - self.last_time
+            if dt > 0.0:
+                yaw_error_dot = (yaw_error - self.prev_yaw_error) / dt
+            else:
+                yaw_error_dot = 0.0
+            self.prev_yaw_error = yaw_error
+            self.last_time = now
+
+            # PD Controller
+            u = yaw_error * KP_ROT + yaw_error_dot * KD_ROT
+            speed_magnitude = abs(u)
+            speed_magnitude = max(MIN_ANGULAR_SPEED, min(MAX_ANGULAR_SPEED, speed_magnitude))
+            rot_speed = math.copysign(speed_magnitude, u)
 
             twist.angular.z = rot_speed
             self._cmd_pub.publish(twist)
@@ -235,6 +251,9 @@ class PointToPointTest(Node):
             if now - self.state_start_time >= self.settle_duration:
                 self.start_yaw = self.current_yaw
                 self.target_yaw = normalize_angle(self.start_yaw + ROTATION_ANGLE)
+                yaw_error = normalize_angle(self.target_yaw - self.current_yaw)
+                self.prev_yaw_error = yaw_error
+                self.last_time = now
                 self.state = 7
                 self.state_start_time = now
                 self.get_logger().info(f"Final rotation 180°...")
@@ -252,15 +271,24 @@ class PointToPointTest(Node):
 
             if abs(yaw_error) <= YAW_TOLERANCE:
                 self._stop_robot()
-                self.get_logger().info(f"P2P Test complete! Final yaw error: {math.degrees(yaw_error):.1f}°")
-                self.state = 8
-                rclpy.shutdown()
-                sys.exit(0)
+                self.get_logger().info(f"P2P Loop complete! Final yaw error: {math.degrees(yaw_error):.1f}°. Restarting...")
+                self.state = 0
+                self.state_start_time = now
+                return
 
-            rot_speed = abs(yaw_error) * KP_ROT
-            rot_speed = max(MIN_ANGULAR_SPEED, min(MAX_ANGULAR_SPEED, rot_speed))
-            if yaw_error < 0:
-                rot_speed = -rot_speed
+            dt = now - self.last_time
+            if dt > 0.0:
+                yaw_error_dot = (yaw_error - self.prev_yaw_error) / dt
+            else:
+                yaw_error_dot = 0.0
+            self.prev_yaw_error = yaw_error
+            self.last_time = now
+
+            # PD Controller
+            u = yaw_error * KP_ROT + yaw_error_dot * KD_ROT
+            speed_magnitude = abs(u)
+            speed_magnitude = max(MIN_ANGULAR_SPEED, min(MAX_ANGULAR_SPEED, speed_magnitude))
+            rot_speed = math.copysign(speed_magnitude, u)
 
             twist.angular.z = rot_speed
             self._cmd_pub.publish(twist)

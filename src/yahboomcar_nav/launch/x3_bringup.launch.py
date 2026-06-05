@@ -166,5 +166,5 @@ def generate_launch_description():
         imu_filter_node,
         ekf_node,
         ydlidar_node,
-        camera_node,
+        # camera_node,
     ])

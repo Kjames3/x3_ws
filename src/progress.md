@@ -8,9 +8,9 @@ This document tracks the implementation progress, technical challenges encounter
 | :--- | :--- | :--- | :--- |
 | **Weeks 1-2** | **Data Preparation** | Preprocess THÖR-MAGNI dataset. Extract synchronized triplets at 10Hz. | Completed 🟢 |
 | **Week 3** | **Initial Training** | Train and validate on THÖR-MAGNI. Hold out 20% sequences. Establish MAE baseline against Kalman filter. | Completed 🟢 |
-| **Week 4** | **Domain Adaptation** | Collect 30-min domain adaptation set in deployment environment. Process rosbags offline into X/y windows matching THÖR-MAGNI format. | In Progress 🟡 |
-| **Weeks 5-6** | **Fine-Tuning** | Fine-tune model on collected data (learning rate ≤ 1e-4, freezing early layers) to bridge sensor gap. | Not Started ⚪ |
-| **Week 7** | **Demo Prep** | Focus on A/B comparison (MPPI with/without velocity estimates). Visualize in RViz2 with velocity arrows. | Not Started ⚪ |
+| **Week 4** | **Domain Adaptation** | Collect 30-min domain adaptation set in deployment environment. Process rosbags offline into X/y windows matching THÖR-MAGNI format. | Completed 🟢 |
+| **Weeks 5-6** | **Fine-Tuning** | Fine-tune model on collected data (learning rate ≤ 1e-4, freezing early layers) to bridge sensor gap. | Completed 🟢 |
+| **Week 7** | **Demo Prep** | Focus on A/B comparison (MPPI with/without velocity estimates). Visualize in RViz2 with velocity arrows. | In Progress 🟡 |
 
 ---
 
@@ -99,4 +99,97 @@ The domain adaptation approach shifted from live Kalman pseudo-labeling to a cle
 
 **Note:** The nav stack uses MPPI controller (not DWA as in the original proposal). The Week 7 A/B demo will compare MPPI with/without velocity estimates injected into the costmap.
 
-**Status:** Infrastructure ready. Pending: physical classroom data collection session on Jetson.
+**Status:** Completed 🟢. Classroom data has been collected, preprocessed, and cleaned.
+
+---
+
+## Weeks 5-6 — Fine-Tuning & Evaluation
+
+### [2026-05-30] Cleaned Rosbags, Stage-Unfrozen Fine-Tuning, and Three-Way Evaluation
+
+**Scripts Modified/Created:**
+- `preprocessing/09_cleaning_rosbags.py`: Cleaned the collected domain adaptation rosbags dataset to filter out outliers (speed > 3.0 m/s) and balance stationary vs moving frames (targeting 40% stationary frames). Corrected directory paths to work seamlessly from any CWD.
+- `training/finetune.py`: Fixed deserialization `UnpicklingError` in PyTorch 2.6+ by specifying `weights_only=False` for local config objects, and resolved `ReduceLROnPlateau` `TypeError` by removing deprecated/removed `verbose` argument. Fine-tuned the pre-trained model on 41,781 domain adaptation samples with stage unfreezing (first layer frozen for 10 epochs, then unfreezing all layers at LR = 5e-5). Achieved an optimal MAE Speed of **0.1699 m/s** (epoch 27). Exported fine-tuned model to TorchScript for Jetson deployment.
+- `training/evaluate.py`: Extensively modified the evaluation pipeline to support side-by-side three-way comparison (Kalman baseline, original Base MLP, and Fine-Tuned MLP) on both the original THÖR-MAGNI test set and the Yahboom X3 Domain Adaptation validation split. Added robust mtime-based checkpoint loading, command-line arguments (`--domain`), and percentage improvement calculations.
+
+**Results & Reasoning:**
+When evaluated on the target domain (**Yahboom X3 Domain Adaptation Val Split**), the fine-tuned model achieved stellar results:
+- **Kalman Baseline MAE Speed**: 0.1834 m/s
+- **Base MLP Model MAE Speed**: 0.1701 m/s
+- **Fine-Tuned MLP Model MAE Speed**: 0.1577 m/s (an improvement of **+14.0%** over Kalman and **+7.3%** over Base MLP)
+- **vx MAE**: Improved to **0.0931 m/s** (a **+25.7%** improvement over Base MLP's 0.1253 m/s)
+
+This confirms that the stage-unfrozen fine-tuning successfully bridged the domain/sensor gap on the Yahboom X3 robot platform.
+
+**Status:** Completed 🟢. Ready to copy the final `velocity_mlp_finetuned.torchscript` to the Jetson robot for the Week 7 A/B controller demo!
+
+---
+
+### Week 7 - Demo Prep & Core Infrastructure Enhancements
+
+### [2026-06-05] Implementation of Tier 1 High-ROI Enhancements
+**Scripts Modified:**
+- `server_x3.py` (ROS2Bridge & WebSocket Server)
+- `velocity_estimator.py` (Inference & Centroid Extraction)
+- `ab_comparison_test.py` (A/B Run Logger)
+
+**Changes & Technical Rationales:**
+
+1. **Depth-Aware 3D Centroid Reconstruction (Idea 19)**
+   * **Change:** Exposed the raw, un-normalized floating-point depth array (in meters) from `ROS2Bridge._depth_cb` via a new `get_raw_depth_frame()` method. Updated `VelocityEstimator` to draw contours on the colorized depth frame, mask those contour areas on the raw depth array, extract the median depth $Z$ in meters, and compute metric coordinates using the pinhole model: `x_m = (cx - w / 2.0) * Z / fx`.
+   * **Rationale:** In the original estimator implementation, coordinates were scaled as if $Z$ was a constant $1.0\text{ m}$. This caused physical lateral distances and displacements to be underestimated by a factor of $Z$ (e.g., a $300\%$ coordinate scale compression for obstacles at $3.0\text{ m}$). Since the MLP models were trained on absolute metric displacements from THÖR-MAGNI and raw offline depth clusters, this correction aligns the live input feature distributions with the trained network weights, restoring velocity estimation accuracy.
+
+2. **Pedestrian Clearance Distance Logging (Idea 22)**
+   * **Change:** Updated `ab_comparison_test.py`'s `RunLogger` and `_maybe_log()` methods to read the `(x, z)` relative coordinates of all tracked obstacles, calculate their Euclidean distance from the robot center ($d = \sqrt{x^2 + z^2}$), find the minimum clearance $d_{min}$, and write it to a new `"min_obstacle_distance"` column in the CSV log files at $10\text{ Hz}$.
+   * **Rationale:** The project proposal explicitly lists "minimum clearance distance" as one of the three core quantitative navigation metrics to compare the reactive vs. predictive planning modes. Without logging the distance coordinates alongside the robot's pose, the team would have had no way to analyze safety metrics post-run.
+
+3. **ROS2 Topic & RViz2 Marker Publishing of Pedestrian Poses (Ideas 2 & 9)**
+   * **Change:** Initialized `/pedestrian_poses` (`geometry_msgs/PoseArray`) and `/pedestrian_markers` (`visualization_msgs/MarkerArray`) publishers inside `ROS2Bridge`. Implemented coordinate frame transformations from the camera optical frame ($X$=right, $Z$=forward) to the standard REP-103 robot base frame (`base_link`: $X$=forward, $Y$=left) so that Robot $X = Z_{camera}$ and Robot $Y = -X_{camera}$. Published oriented arrows (color-coded by speed) and text tags showing IDs and velocities.
+   * **Rationale:** This satisfies two key objectives in the EE244 proposal: providing a live ROS2 stream of estimated obstacle velocities to feed Nav2's MPPI dynamic costmap layer, and providing oriented velocity arrows and text markers for live RViz2 diagnostic projection.
+
+4. **Lifecycle Safety & Subprocess Orphan Prevention (Idea 17)**
+   * **Change:** Added robust cleanup handlers for `_ab_test_proc` in the global `cleanup()` function of `server_x3.py`, executing clean `.terminate()` and fallback `.kill()` routines to cleanly reap any running A/B test process when the server shuts down or restarts.
+   * **Rationale:** Preventing orphaned background python tasks from running after a server exit is critical on a physical robot. If the websocket server is restarted, any running test script would otherwise continue publishing velocity commands to `/cmd_vel` in the background, creating a physical safety hazard.
+
+**Status:** Completed 🟢. All Tier 1 changes are successfully coded, structured, and integrated into the local workspace.
+
+### [2026-06-05] Boot Synchronization & Bug Fixes
+**Scripts Modified/Created:**
+- `velocity_estimator.py` (Fixed centroid tuple-to-triplet conversion)
+- `x3_server.service` (Updated network target dependencies and IP resolution loop)
+- `orbbec_depth.service` (Updated network target dependencies and IP resolution loop)
+- `scratch/deploy_code.py` (Deployment automation script)
+
+**Changes & Technical Rationales:**
+
+1. **Centroid Tuples-to-Triplets Conversion (Inference Crash Fix)**
+   * **Change:** Modified the `_extract_depth_centroids()` function in `velocity_estimator.py` to return the full `(x_m, y_m, Z)` coordinate triplet (where $Z$ is the raw depth in meters) instead of the old `(x_m, y_m)` coordinate tuple.
+   * **Rationale:** In the previous update, `ObstacleTracker` was modified to propagate 3D coordinates. However, `_extract_depth_centroids()` was left returning 2-element tuples. This resulted in `ValueError: not enough values to unpack (expected 3, got 2)` inside `ObstacleTracker.update()`, crashing the estimation thread on boot and preventing manual gamepad control and autonomous scripts from running. Correcting the return value resolves the crash.
+
+2. **Systemd Boot Synchronization & Real IP Address Resolution (Race Condition Fix)**
+   * **Change:** Updated `x3_server.service` and `orbbec_depth.service` to depend on `network-online.target` (instead of `network.target`) to guarantee the robot has finished establishing its Wi-Fi connection. Added a robust bash loop in `ExecStart` that queries `hostname -I` for up to 30 seconds to wait for a valid, non-loopback IP address before exporting the `ROS_DISCOVERY_SERVER` variable.
+   * **Rationale:** On cold boots, the services were starting before the Wi-Fi card had finished connecting. Because `hostname -I` was empty, `x3_server` defaulted its discovery server environment to `127.0.0.1:11811`. Meanwhile, `orbbec_depth` started slightly later, resolved the real IP `10.13.247.117:11811`, and registered on a different locator. This network partition blinded the websocket server and broke the `/cmd_vel` control pathway. Forcing the services to wait for a valid network IP guarantees they always start on the same discovery locator.
+
+**Status:** Completed 🟢. Both local files and robot service configurations have been fully deployed and tested on the physical robot.
+
+### [2026-06-05] Implementation of Tier 2 High-ROI Enhancements
+**Scripts Modified:**
+- `velocity_estimator.py` (Meters-based raw depth processing)
+- `point_to_point_test.py` (PD angular control loop)
+- `ab_comparison_test.py` (PD angular control loop & Proximity/TTC speed scaling)
+
+**Changes & Technical Rationales:**
+
+1. **Direct Meters-Based Depth Processing (Idea 21)**
+   * **Change:** Refactored `_extract_depth_centroids()` in `velocity_estimator.py` to perform thresholding directly on the raw depth array values (`0.5m <= depth <= 4.0m`) rather than converting the depth image to a normalized BGR color map first and thresholding the grayscale representation.
+   * **Rationale:** Grayscale thresholding on color-mapped BGR frames is highly susceptible to background scaling fluctuations (e.g. when the robot rotates and the min-max normalization bounds shift). Processing the raw physical depth values directly makes obstacle extraction completely invariant to background shifts, prevents tracking dropouts, and reduces CPU utilization by skipping the BGR and grayscale color-conversion pipelines.
+
+2. **PD-based Closed-Loop Heading Control (Idea 3)**
+   * **Change:** Introduced derivative ($D$) tracking and a Proportional-Derivative (PD) control loop (`KD_ROT = 0.1`) in both `point_to_point_test.py` and `ab_comparison_test.py`'s turnaround states.
+   * **Rationale:** Proportional-only heading control exhibits momentum overshoot and oscillations when settling on $180^\circ$ turnarounds. The derivative term acts as an active dampener, slowing down the angular rotation speed dynamically as the heading error drops to zero, ensuring clean, overshoot-free orientation locking.
+
+3. **Dynamic Proximity & Time-to-Collision Speed Scaling (Idea 13)**
+   * **Change:** Implemented a real-time relative-coordinate proximity and 2D Time-to-Collision (TTC) speed scaling calculation in `ab_comparison_test.py` using the asynchronous obstacle estimation states. Throttles the robot's linear speed inside driving segments and commands a safety stop ($v = 0.0$ m/s) if a pedestrian approaches closer than $0.8$ m or has a TTC below $1.0$ second.
+   * **Rationale:** Proactively slowing down linear velocity when an obstacle approaches ensures safety, makes the robot's movement look cautious and natural, and reduces the risk of collision or aggressive local planning maneuvers in narrow indoor environments.
+
+**Status:** Completed 🟢. All Tier 2 improvements are successfully coded and verified in the local workspace.

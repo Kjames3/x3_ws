@@ -62,6 +62,11 @@ const state = {
     // P2P test state
     p2pTestRunning: false,
 
+    // A/B comparison state
+    abTestRunning: false,
+    abTestMode: null,          // "reactive" | "predictive" | null
+    velocityEstimationEnabled: true,
+
     // Web Worker for offscreen lidar rendering (Step 2)
     lidarWorker: null,
 
@@ -274,6 +279,12 @@ const elements = {
     velocityModelSelect: document.getElementById('velocity-model-select'),
     velocityEstimatesContainer: document.getElementById('velocity-estimates-container'),
     p2pTestBtn: document.getElementById('p2p-test-btn'),
+
+    // A/B comparison
+    velEstToggleBtn: document.getElementById('vel-est-toggle-btn'),
+    abReactiveBtn: document.getElementById('ab-reactive-btn'),
+    abPredictiveBtn: document.getElementById('ab-predictive-btn'),
+    modeDisplay: document.getElementById('mode-display'),
 };
 
 // =================================================================
@@ -1873,6 +1884,17 @@ function handleMessage(data) {
             console.log(`[P2P Test] ${data.message}`);
         }
 
+    } else if (data.type === "velocity_estimation_status") {
+        state.velocityEstimationEnabled = data.enabled;
+        updateModeDisplay(data.enabled);
+        updateAbTestButtonsUI();
+
+    } else if (data.type === "ab_test_status") {
+        state.abTestRunning = (data.status === "running");
+        state.abTestMode    = data.mode || null;
+        updateAbTestButtonsUI();
+        console.log(`[AB Test] status=${data.status} mode=${data.mode}`);
+
     } else if (data.type === "demo_model_changed") {
         updateDemoBannerFromEvent(data);
 
@@ -2081,6 +2103,53 @@ function updateP2pButtonUI() {
     } else {
         elements.p2pTestBtn.textContent = 'Start P2P Test';
         elements.p2pTestBtn.style.background = '#3b82f6'; // Blue
+    }
+}
+
+function updateModeDisplay(enabled) {
+    const el = elements.modeDisplay;
+    if (!el) return;
+    el.style.display = 'block';
+    if (enabled) {
+        el.textContent = 'PREDICTIVE MODE';
+        el.style.color = '#00ff88';
+    } else {
+        el.textContent = 'REACTIVE MODE';
+        el.style.color = '#ff4444';
+    }
+}
+
+function updateAbTestButtonsUI() {
+    const running = state.abTestRunning;
+    const mode = state.abTestMode;
+
+    if (elements.velEstToggleBtn) {
+        elements.velEstToggleBtn.textContent = state.velocityEstimationEnabled ? 'Est: ON' : 'Est: OFF';
+        elements.velEstToggleBtn.style.background = state.velocityEstimationEnabled ? '#10b981' : '#6b7280';
+    }
+    if (elements.abReactiveBtn) {
+        if (running && mode === 'reactive') {
+            elements.abReactiveBtn.textContent = 'Cancel Reactive';
+            elements.abReactiveBtn.style.background = '#7f1d1d';
+        } else {
+            elements.abReactiveBtn.textContent = 'Run Reactive';
+            elements.abReactiveBtn.style.background = '#ef4444';
+            elements.abReactiveBtn.disabled = running;
+            elements.abReactiveBtn.style.opacity = (running && mode !== 'reactive') ? '0.45' : '1';
+        }
+    }
+    if (elements.abPredictiveBtn) {
+        if (running && mode === 'predictive') {
+            elements.abPredictiveBtn.textContent = 'Cancel Predictive';
+            elements.abPredictiveBtn.style.background = '#064e3b';
+            elements.abPredictiveBtn.style.color = '#fff';
+        } else {
+            elements.abPredictiveBtn.textContent = 'Run Predictive';
+            elements.abPredictiveBtn.style.background = '#00cc66';
+            elements.abPredictiveBtn.style.color = '#000';
+            elements.abPredictiveBtn.disabled = running;
+            elements.abPredictiveBtn.style.opacity = (running && mode !== 'predictive') ? '0.45' : '1';
+        }
     }
 }
 
@@ -2537,6 +2606,37 @@ if (elements.p2pTestBtn) {
             } else {
                 sendMessage({ type: 'start_p2p_test' });
             }
+        }
+    });
+}
+
+if (elements.velEstToggleBtn) {
+    elements.velEstToggleBtn.addEventListener('click', () => {
+        if (state.ws && state.connected) {
+            const next = !state.velocityEstimationEnabled;
+            sendMessage({ type: 'set_velocity_estimation', enabled: next });
+        }
+    });
+}
+
+if (elements.abReactiveBtn) {
+    elements.abReactiveBtn.addEventListener('click', () => {
+        if (!state.ws || !state.connected) return;
+        if (state.abTestRunning && state.abTestMode === 'reactive') {
+            sendMessage({ type: 'cancel_ab_test' });
+        } else if (!state.abTestRunning) {
+            sendMessage({ type: 'start_ab_test', mode: 'reactive' });
+        }
+    });
+}
+
+if (elements.abPredictiveBtn) {
+    elements.abPredictiveBtn.addEventListener('click', () => {
+        if (!state.ws || !state.connected) return;
+        if (state.abTestRunning && state.abTestMode === 'predictive') {
+            sendMessage({ type: 'cancel_ab_test' });
+        } else if (!state.abTestRunning) {
+            sendMessage({ type: 'start_ab_test', mode: 'predictive' });
         }
     });
 }

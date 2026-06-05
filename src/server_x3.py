@@ -153,7 +153,9 @@ _ros2_stack_proc = None  # subprocess handle for x3_bringup (launched by default
 _slam_proc      = None   # subprocess handle when SLAM Toolbox is running
 velocity_estimator = None  # VelocityEstimator instance (EE244 project)
 active_velocity_model_name = "velocity_mlp"  # currently loaded torchscript velocity model
+velocity_estimation_enabled = True  # A/B toggle: False = reactive, True = predictive
 _p2p_proc = None           # point-to-point test subprocess handle
+_ab_test_proc = None       # A/B comparison test subprocess handle
 
 detection_enabled = False
 depth_enabled = False
@@ -229,6 +231,7 @@ class ROS2Bridge:
         self._lock = threading.Lock()
         self._latest_frame = None          # cv2 BGR ndarray from Gazebo RGB camera
         self._latest_depth = None          # cv2 BGR ndarray from Gazebo depth camera
+        self._latest_raw_depth = None      # np.ndarray containing raw depth values in meters
         self._pose_m = {"x": 0.0, "y": 0.0, "theta": 0.0}  # metres + radians
         self._twist = {"vx": 0.0, "vy": 0.0, "wz": 0.0}   # body velocity m/s, rad/s
         self._voltage = 12.0               # volts, updated by /voltage subscriber
@@ -251,6 +254,12 @@ class ROS2Bridge:
         self._node.create_subscription(Float32,        '/voltage',          self._voltage_cb, 10)
         self._node.create_subscription(OccupancyGrid,  '/map',              self._map_cb,    _map_qos)
         self._cmd_vel_pub = self._node.create_publisher(Twist, '/cmd_vel', 10)
+
+        # Publishers for pedestrian tracking (EE244 Project)
+        from geometry_msgs.msg import PoseArray
+        from visualization_msgs.msg import MarkerArray
+        self._pedestrian_pub = self._node.create_publisher(PoseArray, '/pedestrian_poses', 10)
+        self._pedestrian_marker_pub = self._node.create_publisher(MarkerArray, '/pedestrian_markers', 10)
 
         self._spin_thread = threading.Thread(
             target=rclpy.spin, args=(self._node,), daemon=True)
@@ -304,6 +313,7 @@ class ROS2Bridge:
             coloured = cv2.applyColorMap(norm, cv2.COLORMAP_BONE)
             with self._lock:
                 self._latest_depth = coloured
+                self._latest_raw_depth = arr_meters
         except Exception as exc:
             logger.error(f"ROS2Bridge: failed to decode depth frame: {exc}")
 
@@ -311,6 +321,12 @@ class ROS2Bridge:
         """Return latest colourised depth frame as BGR ndarray, or None. Matches AstraCamera API."""
         with self._lock:
             f = self._latest_depth
+        return f.copy() if f is not None else None
+
+    def get_raw_depth_frame(self):
+        """Return latest raw depth frame as float32 ndarray (in meters), or None."""
+        with self._lock:
+            f = self._latest_raw_depth
         return f.copy() if f is not None else None
 
     def _odom_cb(self, msg):
@@ -418,6 +434,86 @@ class ROS2Bridge:
             rclpy.shutdown()
         except Exception:
             pass
+
+    def publish_pedestrians(self, estimates):
+        from geometry_msgs.msg import PoseArray, Pose
+        from visualization_msgs.msg import MarkerArray, Marker
+        import math
+
+        pose_array = PoseArray()
+        pose_array.header.stamp = self._node.get_clock().now().to_msg()
+        pose_array.header.frame_id = 'base_link'
+
+        marker_array = MarkerArray()
+
+        for est in estimates:
+            x = est.get("x", 0.0)
+            y = est.get("y", 0.0)
+            z = est.get("z", 1.0)
+            vx = est.get("vx", 0.0)
+            vy = est.get("vy", 0.0)
+            tid = est.get("id", 0)
+
+            # Robot frame (REP-103): x=forward (camera z), y=left (camera -x)
+            pose = Pose()
+            pose.position.x = float(z)
+            pose.position.y = -float(x)
+            pose.position.z = 0.0
+            
+            yaw = math.atan2(vy, vx)
+            pose.orientation.z = math.sin(yaw / 2.0)
+            pose.orientation.w = math.cos(yaw / 2.0)
+            pose_array.poses.append(pose)
+
+            # Marker Arrow
+            marker = Marker()
+            marker.header = pose_array.header
+            marker.ns = "pedestrian_velocities"
+            marker.id = int(tid)
+            marker.type = Marker.ARROW
+            marker.action = Marker.ADD
+            marker.pose.position.x = float(z)
+            marker.pose.position.y = -float(x)
+            marker.pose.position.z = 0.2
+            marker.pose.orientation.z = math.sin(yaw / 2.0)
+            marker.pose.orientation.w = math.cos(yaw / 2.0)
+
+            speed = math.hypot(vx, vy)
+            marker.scale.x = float(max(0.3, speed))
+            marker.scale.y = 0.08
+            marker.scale.z = 0.08
+
+            marker.color.a = 0.8
+            if speed > 0.3:
+                marker.color.r = 0.0
+                marker.color.g = 1.0
+                marker.color.b = 0.0
+            else:
+                marker.color.r = 1.0
+                marker.color.g = 0.5
+                marker.color.b = 0.0
+            marker_array.markers.append(marker)
+
+            # Text Marker
+            text_marker = Marker()
+            text_marker.header = pose_array.header
+            text_marker.ns = "pedestrian_labels"
+            text_marker.id = int(tid) + 1000
+            text_marker.type = Marker.TEXT_VIEW_FACING
+            text_marker.action = Marker.ADD
+            text_marker.pose.position.x = float(z)
+            text_marker.pose.position.y = -float(x)
+            text_marker.pose.position.z = 0.7
+            text_marker.scale.z = 0.2
+            text_marker.color.a = 1.0
+            text_marker.color.r = 1.0
+            text_marker.color.g = 1.0
+            text_marker.color.b = 1.0
+            text_marker.text = f"ID:{tid} {speed:.2f}m/s"
+            marker_array.markers.append(text_marker)
+
+        self._pedestrian_pub.publish(pose_array)
+        self._pedestrian_marker_pub.publish(marker_array)
 
 
 def _launch_gazebo():
@@ -772,14 +868,31 @@ def initialize_hardware():
     logger.info("="*50)
 
 def cleanup():
-    global _p2p_proc
+    global _p2p_proc, _ab_test_proc
     logger.info("Cleaning up...")
     if _p2p_proc is not None and _p2p_proc.poll() is None:
         logger.info("Stopping P2P Test subprocess...")
         try:
-            os.killpg(os.getpgid(_p2p_proc.pid), signal.SIGTERM)
+            _p2p_proc.terminate()
+            _p2p_proc.wait(timeout=2.0)
         except Exception:
-            pass
+            try:
+                _p2p_proc.kill()
+            except Exception:
+                pass
+        _p2p_proc = None
+
+    if _ab_test_proc is not None and _ab_test_proc.poll() is None:
+        logger.info("Stopping A/B Test subprocess...")
+        try:
+            _ab_test_proc.terminate()
+            _ab_test_proc.wait(timeout=2.0)
+        except Exception:
+            try:
+                _ab_test_proc.kill()
+            except Exception:
+                pass
+        _ab_test_proc = None
     if velocity_estimator is not None:
         try:
             logger.info("Stopping VelocityEstimator...")
@@ -927,8 +1040,8 @@ async def handle_client(websocket):
     global current_left_power, current_right_power
     global model, active_model_name
     global _gazebo_proc, nav2_client
-    global velocity_estimator, active_velocity_model_name
-    global _p2p_proc
+    global velocity_estimator, active_velocity_model_name, velocity_estimation_enabled
+    global _p2p_proc, _ab_test_proc
 
     logger.info("Client connected")
     connected_clients.add(websocket)
@@ -1241,6 +1354,23 @@ async def handle_client(websocket):
                                 "path": new_model_path
                             }))
 
+                elif msg_type == "set_velocity_estimation":
+                    enabled = data.get("enabled", False)
+                    velocity_estimation_enabled = enabled
+                    if velocity_estimator is not None:
+                        try:
+                            if enabled:
+                                velocity_estimator.start()
+                            else:
+                                velocity_estimator.stop()
+                        except Exception as e:
+                            logger.warning(f"set_velocity_estimation error: {e}")
+                    logger.info(f"Velocity estimation: {'enabled' if enabled else 'disabled'}")
+                    await websocket.send(json.dumps({
+                        "type": "velocity_estimation_status",
+                        "enabled": enabled
+                    }))
+
                 elif msg_type == "set_velocity_model":
                     model_name = data.get("model")
                     if model_name in ("velocity_mlp", "velocity_mlp_finetuned"):
@@ -1292,12 +1422,9 @@ async def handle_client(websocket):
                                 if 'conda' not in p.lower()
                             )
 
-                        cmd = f"source /opt/ros/humble/setup.bash && source /home/jetson/x3_ws/install/setup.bash && python3 {script_path}"
-                        
                         _p2p_proc = subprocess.Popen(
-                            ["bash", "-c", cmd],
-                            env=child_env,
-                            preexec_fn=os.setsid
+                            [sys.executable, script_path],
+                            env=child_env
                         )
                     await websocket.send(json.dumps({
                         "type": "p2p_test_status",
@@ -1308,16 +1435,67 @@ async def handle_client(websocket):
                     if _p2p_proc is not None and _p2p_proc.poll() is None:
                         logger.info("Canceling Point-to-Point Test...")
                         try:
-                            os.killpg(os.getpgid(_p2p_proc.pid), signal.SIGTERM)
+                            _p2p_proc.terminate()
                             _p2p_proc.wait(timeout=2.0)
                         except Exception as exc:
-                            logger.warning(f"Failed to kill P2P subprocess: {exc}")
+                            logger.warning(f"Failed to terminate P2P subprocess: {exc}")
+                            try:
+                                _p2p_proc.kill()
+                            except Exception:
+                                pass
                         _p2p_proc = None
                         _enqueue_motion(0.0, 0.0, 0.0)
                         
                     await websocket.send(json.dumps({
                         "type": "p2p_test_status",
                         "status": "idle"
+                    }))
+
+                elif msg_type == "start_ab_test":
+                    mode = data.get("mode", "reactive")  # "reactive" | "predictive"
+                    if _ab_test_proc is None or _ab_test_proc.poll() is not None:
+                        logger.info(f"Starting A/B comparison test (mode={mode})...")
+                        script_path = str(Path(__file__).parent.resolve() / "ab_comparison_test.py")
+
+                        child_env = os.environ.copy()
+                        child_env['PATH'] = ':'.join(
+                            p for p in child_env.get('PATH', '').split(':')
+                            if 'conda' not in p.lower()
+                        )
+                        if 'PYTHONPATH' in child_env:
+                            child_env['PYTHONPATH'] = ':'.join(
+                                p for p in child_env['PYTHONPATH'].split(':')
+                                if 'conda' not in p.lower()
+                            )
+
+                        _ab_test_proc = subprocess.Popen(
+                            [sys.executable, script_path, "--mode", mode],
+                            env=child_env
+                        )
+                    await websocket.send(json.dumps({
+                        "type": "ab_test_status",
+                        "status": "running",
+                        "mode": mode,
+                    }))
+
+                elif msg_type == "cancel_ab_test":
+                    if _ab_test_proc is not None and _ab_test_proc.poll() is None:
+                        logger.info("Canceling A/B comparison test...")
+                        try:
+                            _ab_test_proc.terminate()
+                            _ab_test_proc.wait(timeout=2.0)
+                        except Exception as exc:
+                            logger.warning(f"Failed to terminate AB test subprocess: {exc}")
+                            try:
+                                _ab_test_proc.kill()
+                            except Exception:
+                                pass
+                        _ab_test_proc = None
+                        _enqueue_motion(0.0, 0.0, 0.0)
+                    await websocket.send(json.dumps({
+                        "type": "ab_test_status",
+                        "status": "idle",
+                        "mode": None,
                     }))
 
                 # Silently ignore GUI-only messages (capture, demo, etc.)
@@ -1448,6 +1626,8 @@ async def broadcast_loop():
             if velocity_estimator is not None:
                 try:
                     velocity_estimates = velocity_estimator.get_estimates()
+                    if ROS2_MODE and ros_bridge is not None and velocity_estimates:
+                        ros_bridge.publish_pedestrians(velocity_estimates)
                 except Exception as e:
                     logger.error(f"Failed to get velocity estimates: {e}")
 
@@ -1507,6 +1687,21 @@ def _step_toward(current: float, target: float, accel: float, decel: float) -> f
     return current + (step if diff > 0 else -step)
 
 
+def _is_standalone_test_running() -> bool:
+    import psutil
+    try:
+        for proc in psutil.process_iter(['cmdline']):
+            cmd = proc.info.get('cmdline')
+            if cmd:
+                cmd_str = ' '.join(cmd)
+                if 'ab_comparison_test.py' in cmd_str or 'point_to_point_test.py' in cmd_str:
+                    if 'server_x3.py' not in cmd_str:
+                        return True
+    except Exception:
+        pass
+    return False
+
+
 async def motion_loop():
     """Dedicated 20 Hz motion command consumer with velocity ramping.
 
@@ -1515,6 +1710,7 @@ async def motion_loop():
     - Continuously publishes cmd_vel as an active keep-alive heartbeat.
     - Safety watchdog: zero targets if input silent for too long.
     """
+    global _p2p_proc, _ab_test_proc
     # Ramp rates per tick at 20 Hz
     _ACCEL      = 0.5     # m/s  per tick
     _DECEL      = 1.0     # m/s  per tick
@@ -1560,8 +1756,11 @@ async def motion_loop():
         _ramp_vy    = _step_toward(_ramp_vy,    _target_vy,    _ACCEL,  _DECEL)
         _ramp_omega = _step_toward(_ramp_omega, _target_omega, _OACCEL, _ODECEL)
 
-        # 4. Continuous active heartbeat to hardware at 20 Hz
-        if drive:
+        # 4. Continuous active heartbeat to hardware at 20 Hz (only if no test process is running)
+        test_running = (_p2p_proc is not None and _p2p_proc.poll() is None) or \
+                       (_ab_test_proc is not None and _ab_test_proc.poll() is None) or \
+                       _is_standalone_test_running()
+        if drive and not test_running:
             drive.move(_ramp_vx, _ramp_vy, _ramp_omega)
 
         await asyncio.sleep(0.05)  # 20 Hz
@@ -1614,7 +1813,18 @@ async def map_push_loop():
 def _start_http_server():
     """Serve src/web/ over HTTP so Web Workers can load via http:// instead of file://."""
     web_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web')
-    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=web_dir)
+
+    class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
+        def end_headers(self):
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+            super().end_headers()
+
+        def log_message(self, fmt, *args):  # noqa: suppress per-request noise
+            super().log_message(fmt, *args)
+
+    handler = functools.partial(NoCacheHandler, directory=web_dir)
     httpd = http.server.HTTPServer(('0.0.0.0', HTTP_PORT), handler)
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()

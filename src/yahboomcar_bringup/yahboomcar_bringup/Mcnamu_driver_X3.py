@@ -193,7 +193,8 @@ class yahboomcar_driver(Node):
 		imu.linear_acceleration.z = az*1.0
 		imu.angular_velocity.x = gx*1.0
 		imu.angular_velocity.y = gy*1.0
-		imu.angular_velocity.z = gz*1.0
+		# We negate gz to align with the ROS CCW positive convention because the physical IMU sensor is inverted.
+		imu.angular_velocity.z = -gz*1.0
 
 		mag.header.stamp = time_stamp.to_msg()
 		mag.header.frame_id = self.imu_link
@@ -208,7 +209,8 @@ class yahboomcar_driver(Node):
 		# (which reads the physical sensor directly) as the angular velocity source.
 		twist.linear.x = vx *1.0
 		twist.linear.y = vy *1.0
-		twist.angular.z = gz   # Use IMU gyro instead of firmware's wrong vz
+		# We negate gz to align with the ROS CCW positive convention because the physical IMU sensor is inverted.
+		twist.angular.z = -gz   # Use IMU gyro instead of firmware's wrong vz
 		self.velPublisher.publish(twist)
 		# print("ax: %.5f, ay: %.5f, az: %.5f" % (ax, ay, az))
 		# print("gx: %.5f, gy: %.5f, gz: %.5f" % (gx, gy, gz))

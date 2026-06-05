@@ -50,8 +50,8 @@ class ObstacleTracker:
 
     def update(self, centroids_m):
         """
-        centroids_m: list of (x, y) in metres relative to robot.
-        Returns dict: track_id -> {'centroid': (x,y), 'history': deque}
+        centroids_m: list of (x, y, z) in metres relative to robot.
+        Returns dict: track_id -> {'centroid': (x,y,z), 'history': deque}
         """
         # Age all tracks
         for tid in list(self.tracks):
@@ -64,17 +64,16 @@ class ObstacleTracker:
         for tid, track in self.tracks.items():
             if not unmatched:
                 break
-            tx, ty = track['centroid']
+            tx, ty = track['centroid'][:2]
             dists  = [np.hypot(centroids_m[i][0]-tx, centroids_m[i][1]-ty)
                       for i in unmatched]
             best   = int(np.argmin(dists))
             if dists[best] < self.max_dist:
                 idx = unmatched.pop(best)
-                cx, cy = centroids_m[idx]
-                prev_cx, prev_cy = track['centroid']
-                track['centroid'] = (cx, cy)
+                cx, cy, cz = centroids_m[idx]
+                track['centroid'] = (cx, cy, cz)
                 track['age']      = 0
-                track['history'].append((cx, cy))
+                track['history'].append((cx, cy, cz))
 
         # Create new tracks for unmatched detections
         for idx in unmatched:
@@ -82,13 +81,13 @@ class ObstacleTracker:
                 break
             tid = self.next_id
             self.next_id += 1
-            cx, cy = centroids_m[idx]
+            cx, cy, cz = centroids_m[idx]
             self.tracks[tid] = {
-                'centroid': (cx, cy),
+                'centroid': (cx, cy, cz),
                 'age':      0,
                 'history':  deque(maxlen=WINDOW_SIZE),
             }
-            self.tracks[tid]['history'].append((cx, cy))
+            self.tracks[tid]['history'].append((cx, cy, cz))
 
         return {tid: {'centroid': t['centroid'], 'history': t['history']}
                 for tid, t in self.tracks.items()}
@@ -143,14 +142,58 @@ class VelocityEstimator:
         except Exception as e:
             logger.error(f"VelocityEstimator: failed to load model {self.model_path}: {e}")
 
-    def _extract_depth_centroids(self, depth_frame):
+    def _extract_depth_centroids(self, depth_frame, raw_depth_frame=None):
         """
-        Extract obstacle centroids from a colourised depth frame.
-        Returns list of (x_m, y_m) relative to camera centre.
+        Extract obstacle centroids. If raw_depth_frame is provided, we perform
+        thresholding directly on the raw physical depth values in meters to avoid 
+        colorization and min-max scaling artifacts. Otherwise, we fall back to
+        the colorised BGR thresholding logic.
 
-        The depth frame from AstraCamera is a colourised BGR uint8 image
-        where bright = near. We threshold for near objects and find blobs.
+        Returns list of (x_m, y_m, Z) relative to camera centre.
         """
+        if raw_depth_frame is not None:
+            # Create a binary mask where depth is between 0.5m and 4.0m
+            mask = ((raw_depth_frame >= 0.5) & (raw_depth_frame <= 4.0) & (~np.isnan(raw_depth_frame))).astype(np.uint8) * 255
+            
+            # Morphological cleanup
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+            
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            centroids = []
+            h, w = raw_depth_frame.shape[:2]
+            
+            for cnt in contours:
+                area = cv2.contourArea(cnt)
+                if area < MIN_BLOB_AREA:
+                    continue
+                M = cv2.moments(cnt)
+                if M['m00'] == 0:
+                    continue
+                cx = M['m10'] / M['m00']
+                cy = M['m01'] / M['m00']
+                
+                # Mask out this contour's region to get its raw depth values
+                cnt_mask = np.zeros_like(mask)
+                cv2.drawContours(cnt_mask, [cnt], -1, 255, -1)
+                depth_vals = raw_depth_frame[cnt_mask == 255]
+                valid_depths = depth_vals[(depth_vals >= 0.5) & (depth_vals <= 4.0) & (~np.isnan(depth_vals))]
+                
+                if len(valid_depths) > 0:
+                    Z = float(np.median(valid_depths))
+                else:
+                    Z = 1.0  # fallback if no valid depth
+                
+                # Convert pixel centroid to physical metres using camera model
+                # Astra Pro SC: 640x480, fx ≈ 554
+                fx = 554.0
+                x_m = (cx - w / 2.0) * Z / fx
+                y_m = (cy - h / 2.0) * Z / fx
+                centroids.append((x_m, y_m, Z))
+                
+            return centroids[:MAX_OBSTACLES]
+
         if depth_frame is None:
             return []
 
@@ -180,30 +223,30 @@ class VelocityEstimator:
             cx = M['m10'] / M['m00']
             cy = M['m01'] / M['m00']
 
-            # Convert pixel centroid to approximate metres
-            # Astra Pro SC: 640x480, ~60° HFOV → fx ≈ 554
+            # Calculate actual Z (depth) in meters using the raw depth frame
+            Z = 1.0
             fx = 554.0
-            x_m = (cx - w / 2.0) / fx   # lateral offset in metres (approx)
-            y_m = (cy - h / 2.0) / fx   # vertical offset (less useful)
+            x_m = (cx - w / 2.0) * Z / fx
+            y_m = (cy - h / 2.0) * Z / fx
 
-            centroids.append((x_m, y_m))
+            centroids.append((x_m, y_m, Z))
 
         return centroids[:MAX_OBSTACLES]
 
     def _build_window_features(self, history):
         """
-        Build a (1, 40) feature vector from a deque of T (x,y) positions.
+        Build a (1, 40) feature vector from a deque of T (x,y,z) positions.
         Matches the sliding window format used during training:
           [rel_x, rel_y, dx, dy] × T frames, flattened.
         """
         hist = list(history)
         # Pad with first entry if history shorter than window
         while len(hist) < WINDOW_SIZE:
-            hist.insert(0, hist[0] if hist else (0.0, 0.0))
+            hist.insert(0, hist[0] if hist else (0.0, 0.0, 1.0))
 
         hist = hist[-WINDOW_SIZE:]
         features = []
-        for i, (x, y) in enumerate(hist):
+        for i, (x, y, z) in enumerate(hist):
             if i == 0:
                 dx, dy = 0.0, 0.0
             else:
@@ -221,14 +264,12 @@ class VelocityEstimator:
             t0 = time.monotonic()
 
             try:
-                # 1. Get depth frame
-                if hasattr(self.camera, 'get_depth_frame'):
-                    depth_frame = self.camera.get_depth_frame()
-                else:
-                    depth_frame = None
+                # 1. Get depth and raw depth frames
+                depth_frame = self.camera.get_depth_frame() if hasattr(self.camera, 'get_depth_frame') else None
+                raw_depth_frame = self.camera.get_raw_depth_frame() if hasattr(self.camera, 'get_raw_depth_frame') else None
 
                 # 2. Extract centroids
-                centroids = self._extract_depth_centroids(depth_frame)
+                centroids = self._extract_depth_centroids(depth_frame, raw_depth_frame)
 
                 # 3. Update tracker
                 tracks = self._tracker.update(centroids)
@@ -252,11 +293,12 @@ class VelocityEstimator:
                     vx, vy  = float(pred_ms[0, 0]), float(pred_ms[0, 1])
                     speed   = float(np.sqrt(vx**2 + vy**2))
 
-                    cx, cy = track['centroid']
+                    cx, cy, cz = track['centroid']
                     estimates.append({
                         'id':    tid,
                         'x':     round(cx, 3),
                         'y':     round(cy, 3),
+                        'z':     round(cz, 3),
                         'vx':    round(vx, 3),
                         'vy':    round(vy, 3),
                         'speed': round(speed, 3),
