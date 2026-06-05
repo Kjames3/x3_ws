@@ -121,6 +121,7 @@ class VelocityEstimator:
         self.robot_pose_fn = robot_pose_fn
         self.model_path    = model_path or MODEL_PATH
 
+        self.estimation_enabled = True
         self._model     = None
         self._scaler_X  = None
         self._scaler_y  = None
@@ -238,6 +239,9 @@ class VelocityEstimator:
         Build a (1, 40) feature vector from a deque of T (x,y,z) positions.
         Matches the sliding window format used during training:
           [rel_x, rel_y, dx, dy] × T frames, flattened.
+        Where:
+          rel_x = z (depth / Robot X forward)
+          rel_y = -x (camera horizontal offset inverted / Robot Y left)
         """
         hist = list(history)
         # Pad with first entry if history shorter than window
@@ -246,13 +250,17 @@ class VelocityEstimator:
 
         hist = hist[-WINDOW_SIZE:]
         features = []
-        for i, (x, y, z) in enumerate(hist):
+        for i, (cx, cy, cz) in enumerate(hist):
+            rx = cz
+            ry = -cx
             if i == 0:
                 dx, dy = 0.0, 0.0
             else:
-                dx = x - hist[i-1][0]
-                dy = y - hist[i-1][1]
-            features.extend([x, y, dx, dy])
+                rx_prev = hist[i-1][2]
+                ry_prev = -hist[i-1][0]
+                dx = rx - rx_prev
+                dy = ry - ry_prev
+            features.extend([rx, ry, dx, dy])
 
         return np.array(features, dtype=np.float32).reshape(1, -1)
 
@@ -274,24 +282,28 @@ class VelocityEstimator:
                 # 3. Update tracker
                 tracks = self._tracker.update(centroids)
 
-                # 4. Run MLP inference on each track with full history
+                # 4. Run MLP inference on each track with full history (if enabled)
                 estimates = []
                 for tid, track in tracks.items():
                     if len(track['history']) < 2:
                         continue  # need at least 2 frames for displacement
 
-                    features = self._build_window_features(track['history'])
+                    # Default velocity to 0.0 when estimation is disabled
+                    vx, vy, speed = 0.0, 0.0, 0.0
 
-                    # Normalize using training scalers
-                    features_scaled = self._scaler_X.transform(features)
-                    x_tensor = torch.tensor(features_scaled, dtype=torch.float32)
+                    if self.estimation_enabled and self._model is not None:
+                        features = self._build_window_features(track['history'])
 
-                    with torch.no_grad():
-                        pred_scaled = self._model(x_tensor).numpy()
+                        # Normalize using training scalers
+                        features_scaled = self._scaler_X.transform(features)
+                        x_tensor = torch.tensor(features_scaled, dtype=torch.float32)
 
-                    pred_ms = self._scaler_y.inverse_transform(pred_scaled)
-                    vx, vy  = float(pred_ms[0, 0]), float(pred_ms[0, 1])
-                    speed   = float(np.sqrt(vx**2 + vy**2))
+                        with torch.no_grad():
+                            pred_scaled = self._model(x_tensor).numpy()
+
+                        pred_ms = self._scaler_y.inverse_transform(pred_scaled)
+                        vx, vy  = float(pred_ms[0, 0]), float(pred_ms[0, 1])
+                        speed   = float(np.sqrt(vx**2 + vy**2))
 
                     cx, cy, cz = track['centroid']
                     estimates.append({

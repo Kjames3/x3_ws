@@ -1359,10 +1359,7 @@ async def handle_client(websocket):
                     velocity_estimation_enabled = enabled
                     if velocity_estimator is not None:
                         try:
-                            if enabled:
-                                velocity_estimator.start()
-                            else:
-                                velocity_estimator.stop()
+                            velocity_estimator.estimation_enabled = enabled
                         except Exception as e:
                             logger.warning(f"set_velocity_estimation error: {e}")
                     logger.info(f"Velocity estimation: {'enabled' if enabled else 'disabled'}")

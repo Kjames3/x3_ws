@@ -10,7 +10,7 @@ This document tracks the implementation progress, technical challenges encounter
 | **Week 3** | **Initial Training** | Train and validate on THÖR-MAGNI. Hold out 20% sequences. Establish MAE baseline against Kalman filter. | Completed 🟢 |
 | **Week 4** | **Domain Adaptation** | Collect 30-min domain adaptation set in deployment environment. Process rosbags offline into X/y windows matching THÖR-MAGNI format. | Completed 🟢 |
 | **Weeks 5-6** | **Fine-Tuning** | Fine-tune model on collected data (learning rate ≤ 1e-4, freezing early layers) to bridge sensor gap. | Completed 🟢 |
-| **Week 7** | **Demo Prep** | Focus on A/B comparison (MPPI with/without velocity estimates). Visualize in RViz2 with velocity arrows. | In Progress 🟡 |
+| **Week 7** | **Demo Prep** | Focus on A/B comparison (MPPI with/without velocity estimates). Visualize in RViz2 with velocity arrows. | Completed 🟢 |
 
 ---
 
@@ -193,3 +193,64 @@ This confirms that the stage-unfrozen fine-tuning successfully bridged the domai
    * **Rationale:** Proactively slowing down linear velocity when an obstacle approaches ensures safety, makes the robot's movement look cautious and natural, and reduces the risk of collision or aggressive local planning maneuvers in narrow indoor environments.
 
 **Status:** Completed 🟢. All Tier 2 improvements are successfully coded and verified in the local workspace.
+
+### [2026-06-05] Holonomic Strafing Bypass & LiDAR Safety Fusion (User Enhancements)
+**Scripts Modified:**
+- `velocity_estimator.py` (Non-blocking toggle for estimation logic)
+- `server_x3.py` (Toggled estimation mode in estimator state directly)
+- `ab_comparison_test.py` (LiDAR scan subscription, holonomic bypass offset, lateral control, paused time accounting)
+
+**Changes & Technical Rationales:**
+
+1. **Non-blocking Estimator Lifecycle Toggling**
+   * **Change:** Added `self.estimation_enabled` state to `VelocityEstimator`. Instead of terminating and recreating the thread which adds CPU overhead and socket reset delays, the websocket server toggles this state. If disabled, the estimator skips running network forward-passes and defaults velocity estimates to `0.0`.
+   * **Rationale:** Optimizes system performance and eliminates lag/reconnect latency when turning the pedestrian estimator ON and OFF from the GUI.
+
+2. **LiDAR Safety Fusion (Blind Spot Protection)**
+   * **Change:** Subscribed to `/scan` inside `ab_comparison_test.py`. Implemented a safety threshold check for obstacle points right in front of the robot (`0.15m < distance < 0.75m` within $\pm 30^\circ$ cone).
+   * **Rationale:** Provides secondary redundancy for camera depth tracking. If a pedestrian steps into the camera's blind spot extremely close to the front bumper, the LiDAR catches them and forces a safety stop.
+
+3. **Holonomic Mecanum Bypass Strafing (Lateral Avoidance)**
+   * **Change:** Integrated a lateral bypass controller inside `ab_comparison_test.py`'s `DRIVE_TO_B` and `DRIVE_TO_A` states. When an obstacle is detected blocking the forward path corridor, the robot pauses its forward drive and commands lateral strafing speed `twist.linear.y = vy_cmd` to shift left or right by $0.7$ meters (bypassing the obstacle).
+   * **Rationale:** Fully utilizes the Yahboom X3 mecanum-wheel holonomic base. Instead of standing stuck in front of a pedestrian, the robot can slide sideways to clear the obstacle, resuming forward drive once the path is clear.
+
+4. **Non-blocking Timeout Accounting**
+   * **Change:** Paused the segment safety timer (`state_elapsed_time`) whenever the robot is in a blocked/avoidance pause state.
+   * **Rationale:** Prevents the $20\text{ s}$ safety timeout from shutting down the autonomous run when the robot is waiting for or navigating around a pedestrian.
+
+**Status:** Completed 🟢. The holonomic bypass and safety features are successfully integrated into the test pipeline.
+
+### [2026-06-05] Tight Space Navigation, Side Wall Avoidance & Symmetric Return Paths
+**Scripts Modified:**
+- `ab_comparison_test.py` (Reduced lateral thresholds, static wall detection, side-wall LiDAR check, symmetric return path, absolute target headings, adaptive corridors)
+- `velocity_estimator.py` (Mapped camera features `cx, cz` to robot coordinates `ry=-cx, rx=cz` to match trained MLP inputs)
+- `scratch/deploy_code.py` (Updated IP address to `10.13.197.182` for robotics lab)
+- `scratch/read_logs.py` (Updated IP address to `10.13.197.182` for robotics lab)
+
+**Changes & Technical Rationales:**
+
+1. **Tight Space Avoidance Tuning**
+   * **Change:** Reduced the lateral path corridor from `0.8` m to `0.5` m, and the bypass offset from `0.7` m to `0.4` m.
+   * **Rationale:** In tight indoor environments (like apartments or narrow lab corridors), the robot needs to ignore static side furniture (e.g. table legs and chairs) and reduce its lateral evasion envelope to avoid colliding with boundaries.
+
+2. **Static Wall vs. Dynamic Pedestrian Detection**
+   * **Change:** Integrated a fusion check between the camera estimates and the LiDAR scan. If the front LiDAR is blocked but the camera detects no dynamic pedestrian tracker candidate, the robot treats the obstacle as a static wall and pauses safely in place without trying to strafe/bypass.
+   * **Rationale:** Prevents the robot from continuously attempting to slide sideways (strafing) when facing a static boundary, which would otherwise result in scraping or getting stuck against side walls.
+
+3. **Side Wall Collision Avoidance (LiDAR Sector Scanning)**
+   * **Change:** Programmed the robot to scan left ($60^\circ$ to $120^\circ$) and right ($-120^\circ$ to $-60^\circ$) LiDAR sectors before and during lateral strafing. If the chosen bypass direction has an obstacle closer than `0.45` m, it attempts to bypass on the opposite side. If both sides are blocked, it cancels the bypass offset (`target_lateral_offset = 0.0`) and stops in place.
+   * **Rationale:** Prevents the robot from colliding with or scraping against side walls while shifting laterally to avoid a pedestrian in a narrow corridor.
+
+4. **Symmetric Centerline Return Path & Absolute Rotation Alignment**
+   * **Change:** Anchored the return path coordinate calculation to the absolute starting pose (`self.init_x`, `self.init_y`, `self.init_yaw`) recorded at the beginning of the run, rather than recording a new coordinate frame from a drifted turnaround pose. Replaced Euclidean distance checks with longitudinal projection along the path, and locked rotation targets to absolute orientations (`init_yaw` and `init_yaw + pi`).
+   * **Rationale:** If the robot drifted laterally during the forward run (e.g. to bypass a chair), recording its drifted position at Waypoint B as the new return path origin resulted in a shifted return path, causing it to take a different trajectory and hit obstacles. Anchoring to the original centerline and aligning rotation target headings absolutely forces the robot to correct any accumulated drift, guaranteeing it returns along the exact same track to its start mark.
+
+5. **ML Coordinate Mapping Correction (Predictive Mode Random Strafing Fix)**
+   * **Change:** Refactored the window feature construction in `velocity_estimator.py` to map `cz` (depth) to `rx` (Robot X / forward) and `-cx` (inverted horizontal coordinate) to `ry` (Robot Y / left). 
+   * **Rationale:** The trained MLP expected positions in standard relative robot-frame coordinates `[Robot X, Robot Y] = [depth, -camera_x]`. However, the live code was passing raw camera plane horizontal `cx` and vertical `cy` (height) while completely leaving out depth. This feature-space mismatch led the MLP to predict chaotic, non-zero speeds for static obstacles when the robot was in motion, triggering random strafing in predictive mode. Aligning the coordinate space makes predictions stable and highly accurate.
+
+6. **Adaptive Avoidance Corridors**
+   * **Change:** Implemented dynamic corridors in `ab_comparison_test.py` based on whether the camera detects a moving pedestrian (`speed > 0.15 m/s`). If a dynamic pedestrian is detected, it uses a wide avoidance corridor and bypass offset (`AVOIDANCE_LATERAL = 0.45 m`, `BYPASS_OFFSET = 0.4 m`, `LATERAL_CORRIDOR = 0.45 m`). Otherwise (for static objects like chairs or table legs, or when in reactive mode), it uses a tighter envelope (`AVOIDANCE_LATERAL = 0.3 m`, `BYPASS_OFFSET = 0.25 m`, `LATERAL_CORRIDOR = 0.3 m`).
+   * **Rationale:** Permits the robot to ignore static objects that are already far enough to the side to be cleared safely (preventing overcorrection), while executing extremely tight shifts (`0.25 m`) to pass objects directly in the path without colliding with side walls.
+
+**Status:** Completed 🟢. Fully deployed to the robot in the robotics lab and verified starting up successfully.
