@@ -1359,7 +1359,17 @@ def main():
         action="store_true",
         help="Repeat the action continuously until canceled",
     )
+    parser.add_argument(
+        "--domain-id",
+        type=int,
+        default=None,
+        dest="domain_id",
+        help="ROS_DOMAIN_ID to use (default: inherit from environment; Jetson uses 42)",
+    )
     args = parser.parse_args()
+
+    if args.domain_id is not None:
+        os.environ['ROS_DOMAIN_ID'] = str(args.domain_id)
 
     rclpy.init()
     node = ABComparisonTest(
