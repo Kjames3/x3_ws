@@ -1607,3 +1607,67 @@ This log tracks ideas and architectural enhancements for the EE244 Computational
   - Implement a multi-frame tracking gate hysteresis.
   - If a track was confirmed in previous frames, continue to gate it using the last known bounding box (expanded by a temporal search margin) for up to 3 frames of camera occlusion.
   - Prevents track dropouts due to visual frame drops or brief occlusions.
+
+---
+
+## [2026-06-08] Automated Analysis Batch — Ideas 187 to 198
+
+### Idea 187: Precomputed LiDAR Angle Array Cache
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** In both `_scan_cb` and `_update_bypass_offset`, the angle for each beam is recomputed as `normalize_angle(angle_min + i * angle_increment + math.pi)` inside a Python for-loop on every single callback. Caching this entire angle vector as a NumPy float32 array whenever `last_scan_angle_min` or `last_scan_angle_increment` changes would allow all sector masks (front, left, right, rear) to be computed in a single vectorized `np.abs` or boolean call, eliminating the per-beam Python loop overhead and enabling 5–10× faster scan processing.
+
+### Idea 188: LaserScan Range Conversion to NumPy Array
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** `_scan_cb` converts `msg.ranges` to a Python list via `list(msg.ranges)` on every callback. Every downstream use in `_update_bypass_offset` and the ICP matcher then iterates this list element-by-element in Python for-loops. Converting once to a `np.array(msg.ranges, dtype=np.float32)` enables `np.isnan` filtering, range thresholding, and polar-to-Cartesian conversion to run as single vectorized NumPy calls, yielding roughly a 10× speedup on the inner-loop LiDAR processing that runs at 20 Hz.
+
+### Idea 189: Adaptive ICP Convergence Criterion with Early Exit
+**Area:** Navigation Accuracy
+**Investment:** Low
+**Rationale:** `_align_scans_icp` always runs exactly 3 iterations regardless of whether the correction has already converged. When the robot is nearly stationary, ICP converges fully in one iteration (corrections < 0.1 mm), yet iterations 2 and 3 still execute and compute the full O(M×N) distance matrix. Adding a convergence check `if abs(dx_corr) + abs(dy_corr) + abs(dtheta_corr) < 1e-4: break` after each iteration saves 1–2 full distance-matrix computations per scan on calm segments, meaningfully reducing CPU load at 20 Hz.
+
+### Idea 190: ICP Scan Match Inlier Quality Gate
+**Area:** Navigation Accuracy
+**Investment:** Low
+**Rationale:** `_align_scans_icp` applies its computed pose correction unconditionally, regardless of how many point pairs survived the `valid = min_dists2 < 0.0625` inlier filter. In degenerate scenes (open doorways or sparse scans after a large motion), very few points match and the resulting alignment is essentially noise. Adding a gate — if `np.sum(valid) < 0.20 * len(Q_trans)`, fall back to raw odometry for that step — prevents a single bad scan pair from injecting a large spurious drift correction into `corrected_x/y/yaw`.
+
+### Idea 191: Speed-Adaptive Forward LiDAR Detection Range
+**Area:** Collision Avoidance
+**Investment:** Low
+**Rationale:** The front blockage check in `_update_bypass_offset` uses a fixed `x_fwd < 0.75m` threshold regardless of the robot's current commanded speed. At `MAX_LINEAR_SPEED = 0.20 m/s` with a `KP_DIST = 0.6` controller, the actual stopping distance can exceed 0.75 m. Scaling the forward detection window dynamically as `look_ahead = max(0.75, last_vx_cmd / KP_DIST + 0.30)` provides proportionally earlier obstacle detection at higher speeds, allowing the speed-scaling logic to begin braking before the robot is already inside the unsafe zone.
+
+### Idea 192: Twist Message Object Pre-Allocation in Control Loop
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** `_control_loop` creates a new `Twist()` ROS message object on every 20 Hz iteration via `twist = Twist()`, even during the three settle states that publish only zero-velocity commands. This allocates and zeros a ROS2 C++-backed Python binding 20 times per second. Pre-allocating `self._zero_twist = Twist()` and `self._cmd_twist = Twist()` at `__init__` time and resetting only the relevant fields in-place removes all hot-path message allocations, which reduces minor GIL pressure and object churn.
+
+### Idea 193: Asymmetric Lateral Acceleration and Deceleration Rate Limiting
+**Area:** Collision Avoidance
+**Investment:** Low
+**Rationale:** The lateral rate limiter in `DRIVE_TO_B` and `DRIVE_TO_A` applies a symmetric `MAX_LATERAL_ACCEL = 0.5 m/s²` for both increasing and decreasing `vy_cmd`. When the robot is strafing toward a wall and needs to stop lateral motion urgently (e.g. `vy_rep` flips sign), the same gentle ramp slows the correction. Implementing asymmetric limits — a higher deceleration cap (e.g. 1.5 m/s²) when `vy_cmd` moves against the APF repulsion direction, and the existing 0.5 m/s² for acceleration — enables rapid lateral stopping near walls while keeping smooth, slip-free bypass initiation.
+
+### Idea 194: ICP Correction Delta Bound Clamping for Long-Run Stability
+**Area:** Navigation Accuracy
+**Investment:** Low
+**Rationale:** `_scan_cb` applies ICP-computed displacements to `corrected_x/y/yaw` without any per-step sanity check. In degenerate environments (open corridors with few features), ICP can produce large spurious corrections diverging far from the raw odometry delta. Adding a per-step rejection gate — if `abs(dx_match - dx_odom_local) > 0.05m` or `abs(dtheta_match - dtheta) > 0.05 rad`, fall back to raw odometry — prevents a single bad alignment from permanently corrupting the scan-matched reference pose that the control loop uses as its ground truth.
+
+### Idea 195: MLP Prediction Variance-Based Confidence Weighting for TTC Scaling
+**Area:** Velocity Estimation
+**Investment:** Low
+**Rationale:** `_get_speed_scaling()` treats all MLP velocity estimates equally regardless of their temporal stability. For tracks with noisy inputs (partially occluded pedestrians, split contours), the `speed` output fluctuates widely frame-to-frame, causing erratic braking from transient spikes. Maintaining an exponential variance estimate per track (`var = alpha * (speed - mean)**2 + (1-alpha)*prev_var`) and weighting the TTC contribution as `effective_speed = speed * exp(-k * var)` dampens noisy tracks without disabling them, preserving responsiveness to stable, well-tracked obstacles.
+
+### Idea 196: Dynamic Track Association Radius Based on Last Estimated Speed
+**Area:** Velocity Estimation
+**Investment:** Low
+**Rationale:** `ObstacleTracker.update()` uses a fixed `max_dist = 0.8m` nearest-neighbor gate for all tracks. This is simultaneously too permissive for slow-moving or stationary objects (where 0.8 m allows a nearby moving pedestrian to steal the ID) and potentially too tight for fast tracks when a frame is dropped (0.2 s gap × 1.2 m/s = 0.24 m, fine, but at 1.5 m/s it approaches the limit). Scaling the threshold as `match_radius = max(0.3, min(0.8, last_track_speed * dt * 2.0 + 0.15))` tightens the gate for stationary tracks and relaxes it for fast ones, reducing identity-switch errors.
+
+### Idea 197: EMA-Smoothed Wall Clearance Values for APF Jitter Prevention
+**Area:** Collision Avoidance
+**Investment:** Extremely Low
+**Rationale:** `wall_left_clearance` and `wall_right_clearance` are set to the raw minimum range value observed in their sectors on each 20 Hz tick. A single noisy LiDAR beam or specular reflection can spike one clearance to a falsely low value for a single frame, causing the APF repulsion force to jerk the robot's lateral command suddenly. Adding a two-element EMA (`smoothed = 0.7 * new_val + 0.3 * prev_val`) to both clearance values before the APF force calculation in `_update_bypass_offset` eliminates one-frame spike artifacts while keeping 70% response bandwidth — no structural changes to the APF math required.
+
+### Idea 198: ICP Point Cloud Uniform Subsampling for CPU Efficiency
+**Area:** Navigation Accuracy
+**Investment:** Extremely Low
+**Rationale:** `_align_scans_icp` operates on all valid scan points (potentially 200–360 points per cloud), computing an O(M×N) pairwise distance matrix in each of its 3 iterations. For a 360-point scan, the inner distance matrix is 360×360 = 129,600 elements per iteration. Uniformly subsampling both clouds to at most 80 points (`pts = pts[::max(1, len(pts)//80)]`) reduces this to 80×80 = 6,400 elements — a 20× reduction — while preserving alignment accuracy since indoor corridor walls are planar features fully characterized by sparse samples. The fix is a single one-line stride slice requiring no other code changes.

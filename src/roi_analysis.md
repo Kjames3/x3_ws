@@ -1,11 +1,14 @@
 # Project Improvement Ideas ROI Analysis
 
-This document records the ROI rankings and evaluation metrics for the 137 enhancement ideas logged in `improvement_ideas.md` for the predictive planning and local velocity estimation project.
+This document records the ROI rankings and evaluation metrics for the enhancement ideas logged in `improvement_ideas.md` for the predictive planning and local velocity estimation project.
+
+## Last Updated
+2026-06-08: Added 61 ideas (138–198) to ROI analysis tiers. 5 ideas (141, 143, 144, 145, 146) moved to Already Implemented. 15 new High-ROI, 28 new Medium-ROI, 13 new Low-ROI entries added.
 
 ---
 
 ## 1. Already Implemented Ideas
-The following **27 ideas** have already been completed and integrated:
+The following **32 ideas** have already been completed and integrated:
 *   **Idea 1**: Ego-Motion Compensation in `VelocityEstimator`
 *   **Idea 2**: Live ROS2 Topic Publishing for Nav2/MPPI Integration
 *   **Idea 3**: PD-based Closed-Loop Heading Control in Calibration Nodes
@@ -33,10 +36,15 @@ The following **27 ideas** have already been completed and integrated:
 *   **Idea 70**: Omnidirectional Direction-of-Travel Coordinate Projection
 *   **Idea 71**: Nav2 Action Status Query Throttling
 *   **Idea 72**: Pure NumPy Feature Normalization (Eliminating Scikit-Learn)
+*   **Idea 141**: Active Lateral Centering Potential Field for Corridor Navigation
+*   **Idea 143**: Dynamic Point Cloud Downsampling with Adaptive Voxel Grid Gating
+*   **Idea 144**: LiDAR Scan Matching for Relative Corridor Slip Estimation
+*   **Idea 145**: Zero-Copy Memory-Mapped Frame Allocation via Shared Memory IPC
+*   **Idea 146**: Visual-LiDAR Geometric Depth Fusion (Sensor Fusion Gating)
 
 ---
 
-## 2. High-ROI Tier (Rank 1 - 15)
+## 2. High-ROI Tier (Rank 1 - 30)
 *These enhancements require minimal development effort (simple code adjustments, caching, or standard formulas) but deliver substantial improvements in CPU/RAM usage, execution efficiency, stability, or model accuracy.*
 
 ### 1. Idea 81: Immediate Depth Downsampling for Centroid Extraction
@@ -99,9 +107,69 @@ The following **27 ideas** have already been completed and integrated:
 *   **Investment:** Low-Medium. Disable deflate or run compression in background thread executors.
 *   **Return:** High. Prevents event loop lockups, securing real-time low-latency motor commands.
 
+### 16. Idea 188: LaserScan Range Conversion to NumPy Array
+*   **Investment:** Extremely Low. One-line change: `np.array(msg.ranges, dtype=np.float32)` in `_scan_cb`.
+*   **Return:** Extremely High. Unlocks vectorized NumPy ops throughout the entire LiDAR processing pipeline in `_update_bypass_offset` and ICP, replacing Python element-by-element loops with C-level SIMD operations.
+
+### 17. Idea 187: Precomputed LiDAR Angle Array Cache
+*   **Investment:** Extremely Low. Cache `normalize_angle(angle_min + i * angle_increment + math.pi)` as a NumPy array, recompute only when scan params change.
+*   **Return:** Extremely High. Eliminates per-beam trigonometry in the Python loop inside `_update_bypass_offset`, enabling all sector-mask computations to run as single vectorized boolean operations.
+
+### 18. Idea 198: ICP Point Cloud Uniform Subsampling for CPU Efficiency
+*   **Investment:** Extremely Low. Add `pts = pts[::max(1, len(pts)//80)]` before the ICP outer loop in `_align_scans_icp`.
+*   **Return:** Extremely High. Reduces the O(M×N) inner distance matrix from ~360×360 to ~80×80 (20× fewer elements per iteration) with no meaningful accuracy degradation on planar corridor walls.
+
+### 19. Idea 138: Vectorized Spatial Grid Binning for LiDAR Points
+*   **Investment:** Low. Precompute angular sector index masks at init; apply them with NumPy boolean indexing each tick.
+*   **Return:** High. Replaces the Python for-loop over all 360 range beams in `_update_bypass_offset` with a constant-time NumPy mask operation, cutting bypass analysis overhead.
+
+### 20. Idea 189: Adaptive ICP Convergence Criterion with Early Exit
+*   **Investment:** Low. Add `if abs(dx_corr) + abs(dy_corr) + abs(dtheta_corr) < 1e-4: break` after each ICP iteration.
+*   **Return:** High. For stationary or slow segments, ICP converges in 1 iteration; the change saves 1–2 full O(N²) distance-matrix computations per scan invocation at 20 Hz.
+
+### 21. Idea 197: EMA-Smoothed Wall Clearance Values for APF Jitter Prevention
+*   **Investment:** Extremely Low. Add two EMA state variables and apply `smoothed = 0.7*new + 0.3*prev` before computing `f_rep_left` and `f_rep_right` in `_update_bypass_offset`.
+*   **Return:** High. Eliminates single-frame LiDAR spike artifacts that cause the APF force to jerk lateral commands, preventing wheel-slip chattering at zero additional CPU cost.
+
+### 22. Idea 194: ICP Correction Delta Bound Clamping for Long-Run Stability
+*   **Investment:** Low. Add a rejection check in `_scan_cb` before applying ICP-computed corrections to `corrected_x/y/yaw`.
+*   **Return:** High. Prevents one degenerate scan pair from injecting a large spurious correction into the drift reference pose, which would corrupt all subsequent path-tracking distance calculations for the rest of the run.
+
+### 23. Idea 190: ICP Scan Match Inlier Quality Gate
+*   **Investment:** Low. After the last ICP iteration, check `if np.sum(valid) < 0.20 * len(Q_trans): use raw odometry`.
+*   **Return:** High. In open doorways or sparse scans, the 3-iteration ICP produces noise; the gate prevents bad alignments from reaching `corrected_x/y/yaw` while adding only a single comparison per scan callback.
+
+### 24. Idea 152: Physically Constrained MLP Output Gating
+*   **Investment:** Low. Clamp the predicted velocity change between consecutive frames to a maximum human acceleration of 3.0 m/s² in `_inference_loop`.
+*   **Return:** High. Prevents spike predictions caused by noisy inputs or contour discontinuities from triggering erratic TTC braking without requiring any model retraining.
+
+### 25. Idea 166: Dynamic Depth Segment Size Thresholding Based on Range
+*   **Investment:** Low. Replace constant `MIN_BLOB_AREA / 4.0` check with `area < base_area * (Z_ref / Z)**2` in `_extract_depth_centroids`.
+*   **Return:** High. Prevents far-away pedestrians (at 3.0–4.0 m) from being filtered out by the fixed area threshold, resolving a systematic detection failure that causes track loss at range.
+
+### 26. Idea 160: Fast-Path Gating for Empty Track States
+*   **Investment:** Low. Add a single `if np.all(np.isnan(depth_frame) | (depth_frame < 0.5) | (depth_frame > 4.0)): skip` at the top of `_inference_loop`.
+*   **Return:** High. Eliminates all contour finding, tracker association, and PyTorch inference overhead when the corridor ahead is clear, which applies to most of the free-driving segments.
+
+### 27. Idea 171: Vectorized LiDAR-based Yaw-Drift Corrector
+*   **Investment:** Low. Find `np.argmin(side_ranges)` in left/right sectors to compute perpendicular wall angle; derive yaw drift as angular deviation from 90°.
+*   **Return:** High. Provides an O(N) direct yaw-drift correction from corridor wall geometry, complementing ICP and usable as a lightweight check between full ICP scan updates.
+
+### 28. Idea 175: Vectorized 2D Rotation via NumPy Matrix Dot Products
+*   **Investment:** Low. Stack `history_global` coordinates into shape (T, 2) and compute `hist_local = (hist_global - robot_xy) @ R.T` in one call in `_inference_loop`.
+*   **Return:** High. Replaces the Python per-frame loop reconstructing `hist_local` for each eligible track with a single matrix multiply, eliminating T×N Python interpreter iterations per inference step.
+
+### 29. Idea 155: Vectorized LiDAR Point Clustering via Range Gradient Masking
+*   **Investment:** Low. Compute `gaps = np.abs(np.diff(ranges)) > eps` and use `np.where` to slice connected segments as clusters.
+*   **Return:** Medium-High. Provides an O(N) clustering alternative to DBSCAN for extracting obstacle centroids directly from the LiDAR scan, useful for backup tracking or fusion gating.
+
+### 30. Idea 150: Fast 1D Angular-Index Search for LiDAR Scan Matching
+*   **Investment:** Low. Convert point clouds to polar form; for each current point find the nearest previous-scan range via direct angular bin lookup instead of building the full 2D distance matrix.
+*   **Return:** Medium-High. Replaces the O(M×N) inner ICP correspondence loop with O(M) direct lookups, reducing scan-matching CPU overhead significantly especially in wider scans.
+
 ---
 
-## 3. Medium-ROI Tier (Rank 16 - 75)
+## 3. Medium-ROI Tier (Rank 31 - 102)
 *These enhancements offer good performance or navigation benefits, but require moderate coding effort, extra message handling, or minor model changes.*
 
 *   **16. Idea 38: Velocity-Projected Constant Velocity Tracker Association** (Medium-High ROI)
@@ -163,10 +231,38 @@ The following **27 ideas** have already been completed and integrated:
 *   **72. Idea 133: Dynamic Scaling of DBSCAN Search Radius (Eps) for LiDAR Points** (Medium ROI)
 *   **73. Idea 134: IMU-Based Visual Centroid Stabilization under Pitch/Roll Vibrations** (Medium ROI)
 *   **74. Idea 135: Trajectory-Aware Predictive Safety Slowdown Gating** (Medium-High ROI)
+*   **75. Idea 147: Scan-Match Corrected Ego-Motion Compensation for Tracker History** (Medium-High ROI) — Expose `corrected_x/y/yaw` from `ab_comparison_test.py` to `velocity_estimator.py` via `server_x3.py`'s pose callback; use the drift-free scan-matched pose to transform depth centroids to global coordinates, eliminating mecanum slip distortion from track history windows.
+*   **76. Idea 191: Speed-Adaptive Forward LiDAR Detection Range** (Medium-High ROI) — Scale forward blockage threshold in `_update_bypass_offset` as `look_ahead = max(0.75, last_vx_cmd / KP_DIST + 0.30)` to provide proportionally earlier obstacle detection at higher commanded speeds.
+*   **77. Idea 149: Yaw-Aware Dynamic Repulsion & Clearance-Based Rotation Center Shifting** (Medium ROI) — Project chassis corner vertices into the LiDAR frame during `ROTATE_180`/`ROTATE_HOME`; inject corrective lateral strafe velocity if any corner violates the 0.30 m wall clearance bound.
+*   **78. Idea 193: Asymmetric Lateral Acceleration/Deceleration Rate Limiting** (Medium ROI) — Apply higher deceleration cap (1.5 m/s²) when `vy_cmd` opposes the APF repulsion direction vs. the current 0.5 m/s² symmetric limit in `DRIVE_TO_B`/`DRIVE_TO_A`.
+*   **79. Idea 153: LiDAR Range-Cluster Guided Depth ROI Extraction** (Medium ROI) — Project 2D LiDAR obstacle clusters into the camera FOV and run `_extract_depth_centroids` only within those cropped bounding boxes, reducing full-frame depth scanning overhead.
+*   **80. Idea 156: Real-Time Control Jitter and Energy Efficiency Metrics Logger** (Medium ROI) — Append control loop step-interval variance, cumulative squared cross-track error, and integrated velocity magnitude to the CSV logger in `ab_comparison_test.py` at existing `LOG_HZ`.
+*   **81. Idea 154: Predictive Trajectory-Intersector Bypassing** (Medium ROI) — Compute the intersection of the robot's path and the pedestrian's predicted velocity vector; set `target_lateral_offset` to steer the robot behind the pedestrian's projected crossing path rather than cutting in front.
+*   **82. Idea 195: MLP Prediction Variance-Based Confidence Weighting** (Medium ROI) — Maintain an EMA variance estimate of `speed` per track; weight TTC contribution as `effective_speed = speed * exp(-k * var)` in `_get_speed_scaling()` to dampen noisy tracks without disabling them.
+*   **83. Idea 196: Dynamic Track Association Radius Based on Last Estimated Speed** (Medium ROI) — Replace fixed `max_dist = 0.8m` in `ObstacleTracker.update()` with `match_radius = max(0.3, min(0.8, last_speed * dt * 2.0 + 0.15))` to reduce identity-switch errors for slow objects while maintaining tracking for fast pedestrians.
+*   **84. Idea 164: Corridor Intersection Detection via Angular LiDAR Entropy** (Medium ROI) — Monitor Shannon entropy of range returns in side 90° sectors; a sudden increase indicates a corridor intersection; automatically scale down forward speed before emerging obstacles appear.
+*   **85. Idea 159: RANSAC Line-Fitting for Corridor Wall Boundary Identification** (Medium ROI) — Fit continuous wall lines in left/right LiDAR sectors using a simple RANSAC line fit; compute repulsion forces relative to the fitted wall rather than the raw single-point minimum clearance to stabilize APF centering.
+*   **86. Idea 174: Predictive Deceleration Profiling for Dynamic Obstacle Crossings** (Medium ROI) — Estimate the pedestrian's path crossing time and robot arrival time; proactively reduce commanded speed before the crossing to avoid abrupt emergency stops.
+*   **87. Idea 140: Multi-Track Kalman Filter Prediction for MLP Window Alignment** (Medium ROI) — Back each `ObstacleTracker` track with a simple 2D constant-velocity Kalman Filter; use the Kalman prediction to dead-reckon a missed frame's position and insert it into the history queue, guaranteeing uniform 10 Hz spacing for the MLP.
+*   **88. Idea 161: Bounding Box Temporal Prediction Gating for Slow YOLO Framerates** (Medium ROI) — Project the last YOLO person bounding box forward using estimated velocity when new YOLO frames are not yet available, enabling the depth-centroid gating in `_extract_depth_centroids` to run at 10 Hz even when YOLO is throttled to 2 Hz.
+*   **89. Idea 163: Bilateral Depth Filtering for Doorway Contour Preservation** (Medium ROI) — Apply a fast 1D bilateral filter on raw depth rows before the voxel downsampling step in `_extract_depth_centroids` to smooth noise while preserving sharp depth edges at doorway boundaries.
+*   **90. Idea 176: Non-Blocking Asynchronous Telemetry Logger** (Medium ROI) — Push `RunLogger.rows` entries to a `queue.Queue`; have a background daemon thread drain the queue to disk, preventing CSV flush operations from blocking the main 20 Hz control loop.
+*   **91. Idea 179: Proactive Deceleration Profiling for Lateral Wall Clearances** (Medium ROI) — Scale `MAX_LINEAR_SPEED` proportionally to current wall clearance as `max_speed = BASE * min(1.0, wall_clearance / safety_threshold)` in tight sections, giving the lateral controller more time to correct slip.
+*   **92. Idea 186: Temporal Tracking Gate Hysteresis via Multi-Frame Bounding Box Matching** (Medium ROI) — Continue gating a depth centroid track against the last known YOLO bounding box (expanded by a search margin) for up to 3 occlusion frames before dropping it, preventing track loss during brief visual frame drops.
+*   **93. Idea 184: Corridor Cornering Clearance Compensation via Sweep Envelope Expansion** (Medium ROI) — Expand safety clearance bounds proportionally to `abs(omega_z)` during turnaround states; inject counter-lateral mecanum velocities if the dynamic sweep footprint intersects wall boundaries.
+*   **94. Idea 181: Double-Buffered Shared Memory IPC** (Medium ROI) — Allocate two shared memory blocks for BGR and depth frames; maintain a control byte indicating the latest completed buffer index to provide lock-free, race-free IPC between the ROS2 camera callback and the WebSocket broadcast loop.
+*   **95. Idea 173: Self-Adapting Contrast Enhancement (CLAHE) for Shadow Exclusions** (Medium-Low ROI) — Apply local CLAHE on the depth confidence or IR channel before thresholding to preserve obstacle outlines in dark corridor corners, preventing tracking dropout in shadowed regions.
+*   **96. Idea 169: Dynamic Corridor Angle Yaw-Alignment Control** (Medium-Low ROI) — Extract corridor wall orientation from fitted LiDAR RANSAC lines and dynamically adjust `self.target_yaw` to stay parallel to the local hallway, reducing steering oscillations in slightly off-axis starts.
+*   **97. Idea 165: Multi-Threaded Frame-Fetch Gating (Producer-Consumer Queue)** (Medium-Low ROI) — Run `get_depth_frame()` and `get_raw_depth_frame()` in a separate producer thread writing to a single-element buffer; the inference loop fetches non-blockingly, preventing DDS latency from stalling control updates.
+*   **98. Idea 185: Vectorized LiDAR Scan Compaction via Adaptive Decimation** (Medium-Low ROI) — Decimate the 360-beam scan down to ~90 rays in flat sectors (range gradient < threshold) while maintaining full resolution near obstacles; reduces ICP and APF input point counts.
+*   **99. Idea 180: Vectorized LiDAR Corner/Vertex Extraction via RDP Line Simplification** (Medium-Low ROI) — Apply the Ramer-Douglas-Peucker algorithm to the LiDAR coordinate array to extract 4–6 wall/corner vertices; execute APF repulsion and blockage checks on the simplified vertices only.
+*   **100. Idea 183: K-Means Guided Active Depth Cropping ROI for Crowded Scenarios** (Medium-Low ROI) — Apply 1D K-means clustering on raw depth rows to identify distinct depth layers; create separate depth mask ROIs per cluster to keep close-proximity targets isolated during contour processing.
+*   **101. Idea 168: Reflectivity Filtering for Specular Ground and Metallic Surface Exclusions** (Medium-Low ROI) — Filter LiDAR range points whose return intensity falls below the diffuse surface threshold (specular floors/glass exhibit atypical profiles), excluding ghost obstacle readings.
+*   **102. Idea 182: Track-Frame Heading Normalization for MLP Generalization** (Medium-Low ROI) — Apply PCA to each track's history coordinates to determine its primary motion axis; rotate the window to align that axis with the local x-axis before feature extraction in `_build_window_features`.
 
 ---
 
-## 4. Low-ROI Tier (Rank 76 - 110)
+## 4. Low-ROI Tier (Rank 103 - 122)
 *These ideas involve complex mathematics, multi-sensor clustering fusion, retraining models with variable dimensions, or significant architectural rewrites, but yield minor returns for this front-corridor A/B demo.*
 
 *   **75. Idea 4: Hybrid Kalman Filter Tracking & MLP Predictor Fusion**
@@ -204,3 +300,16 @@ The following **27 ideas** have already been completed and integrated:
 *   **107. Idea 113: Edge-Preserving Bilateral Filtering for Centroid Stability**
 *   **108. Idea 114: Vertical Wall RANSAC Filtering**
 *   **109. Idea 132: PyTorch JIT Optimization via TensorRT Compilation (Torch-TensorRT)**
+*   **110. Idea 139: Dynamic Camera Gain & Auto-Exposure Control for Shadow Adaptability** — Requires OpenNI2 or V4L2 exposure commands not exposed by the current `AstraCamera` driver; benefit is mild given raw depth thresholding is already lighting-invariant.
+*   **111. Idea 142: Gated Recurrent Unit (GRU) Temporal Feature Encoding** — Replaces the entire MLP architecture; requires complete model re-collection, retraining, and TorchScript export pipeline; significant effort for uncertain gain over the fine-tuned MLP.
+*   **112. Idea 148: Depth Gradient Watershed Segmentation for Close-Proximity Obstacle Separation** — Marker-controlled watershed is computationally expensive on float32 depth frames; the close-proximity pedestrian-wall merging case is already partially handled by contour cropping and voxel gating.
+*   **113. Idea 151: Auto-Calibrating Homography & Projection Alignment via YOLO Centroid Feedback** — Recursive least squares projection calibration adds complex state tracking; camera mount tolerances are stable on a rigid robot chassis and static recalibration is sufficient.
+*   **114. Idea 157: Adaptively Adjusted Online Feature Normalization Gating** — Online mean/variance tracking adds per-frame arithmetic and requires careful initialization logic; the fine-tuned scaler already handles the deployment domain well.
+*   **115. Idea 158: LiDAR-Depth Dynamic Extrinsics Auto-Tuning via Ground-Plane Invariance** — Real-time tilt correction of camera-LiDAR extrinsics requires continuous IMU integration and is sensitive to calibration quality; the current fusion gate uses 15 px padding margins to absorb minor misalignments.
+*   **116. Idea 162: Ego-Velocity-Weighted Feature Regularization** — Expanding the MLP input from 40 to 43 features requires full retraining; the EKF ego-motion subtraction already accounts for most base kinematic distortion.
+*   **117. Idea 167: Relative Acceleration Input Features for Intercept Stability** — Requires model retraining with expanded feature vector; acceleration features derived from noisy depth centroid positions amplify rather than reduce input noise without careful smoothing.
+*   **118. Idea 170: Direct Tensor Sharing via CUDA IPC (Unified GPU Memory Pipeline)** — The MLP is tiny (40→256→128→64→2) and runs in < 0.5 ms on CPU; CUDA IPC setup complexity far outweighs any latency gain for this model size.
+*   **119. Idea 172: Multi-Modal Model Fusion (LiDAR-Feature Combined MLP)** — Requires complete redesign of the model input pipeline, new LiDAR feature extraction at inference time, and full retraining; LiDAR shape features for pedestrians are unreliable at 8 Hz with 2D scan geometry.
+*   **120. Idea 177: Multi-Scale Temporal Feature Pooling (Pyramid Temporal History Window)** — Requires model retraining with expanded input dimensions; the existing WINDOW_SIZE=10 covers sufficient history for corridor-speed pedestrians; marginal accuracy gain vs. retraining cost.
+*   **121. Idea 178: LiDAR Intensity-based Dynamic Floor Segment Filter** — YDLidar X3 returns do not include per-point reflectivity intensity in the ROS2 `LaserScan` message; feature is hardware-dependent and not available with the current driver.
+*   **122. Idea 192: Twist Message Object Pre-Allocation in Control Loop** — ROS2 C++ Twist message bindings are extremely fast to construct in Python; the per-iteration allocation overhead is negligible compared to ROS2 publish overhead; minimal return for any investment.
