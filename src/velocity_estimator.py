@@ -12,11 +12,12 @@ Drop this file into ~/x3_ws/src/ alongside drivers_x3.py.
 import torch
 import numpy as np
 import cv2
-import joblib
+import json
 import threading
 import time
 import logging
 import os
+import math
 from pathlib import Path
 from collections import deque
 
@@ -25,10 +26,9 @@ logger = logging.getLogger(__name__)
 # ── Config ────────────────────────────────────────────────────────────────────
 # Paths resolve relative to this file's location (~/x3_ws/src/) so they work
 # regardless of username on the Jetson.
-_SRC_DIR      = Path(__file__).parent.resolve()
-MODEL_PATH    = str(_SRC_DIR / "velocity_mlp.torchscript")
-SCALER_X_PATH = str(_SRC_DIR / "scaler_X.pkl")
-SCALER_Y_PATH = str(_SRC_DIR / "scaler_y.pkl")
+_SRC_DIR           = Path(__file__).parent.resolve()
+MODEL_PATH         = str(_SRC_DIR / "velocity_mlp.torchscript")
+SCALER_PARAMS_PATH = str(_SRC_DIR / "scaler_params.json")
 
 WINDOW_SIZE   = 10          # frames of history (matches training T=10)
 INFER_HZ      = 10          # target inference rate
@@ -40,18 +40,20 @@ MAX_RANGE_M   = 5.0         # ignore detections beyond this distance
 class ObstacleTracker:
     """
     Lightweight centroid tracker — matches detections to existing tracks
-    by nearest-centroid distance. No Kalman, no external deps.
+    by nearest-centroid distance in global map frame coordinates.
     """
     def __init__(self, max_distance=0.8, max_age=10):
-        self.tracks   = {}   # track_id -> {'centroid': (x,y), 'age': int, 'history': deque}
+        self.tracks   = {}   # track_id -> {'centroid': (x,y,z), 'centroid_global': (x,y,z), 'age': int, 'history': deque, 'history_global': deque}
         self.next_id  = 0
         self.max_dist = max_distance   # metres
         self.max_age  = max_age        # frames before track is dropped
+        self.alpha_z  = 0.7            # EMA filtering factor for depth Z (Idea 43)
 
-    def update(self, centroids_m):
+    def update(self, centroids_m, centroids_g):
         """
         centroids_m: list of (x, y, z) in metres relative to robot.
-        Returns dict: track_id -> {'centroid': (x,y,z), 'history': deque}
+        centroids_g: list of (x, y, z) in global map frame.
+        Returns dict of updated tracks.
         """
         # Age all tracks
         for tid in list(self.tracks):
@@ -59,21 +61,33 @@ class ObstacleTracker:
             if self.tracks[tid]['age'] > self.max_age:
                 del self.tracks[tid]
 
-        # Match detections to tracks
-        unmatched = list(range(len(centroids_m)))
+        # Match detections to tracks using global coordinates (Idea 1 & 91)
+        unmatched = list(range(len(centroids_g)))
         for tid, track in self.tracks.items():
             if not unmatched:
                 break
-            tx, ty = track['centroid'][:2]
-            dists  = [np.hypot(centroids_m[i][0]-tx, centroids_m[i][1]-ty)
-                      for i in unmatched]
-            best   = int(np.argmin(dists))
+            tx, ty = track['centroid_global'][:2]
+            
+            # Vectorized distance norm over unmatched detections (Idea 91)
+            det_coords = np.array([centroids_g[i][:2] for i in unmatched], dtype=np.float32)
+            dists = np.linalg.norm(det_coords - np.array([tx, ty], dtype=np.float32), axis=1)
+            best = int(np.argmin(dists))
+            
             if dists[best] < self.max_dist:
                 idx = unmatched.pop(best)
-                cx, cy, cz = centroids_m[idx]
-                track['centroid'] = (cx, cy, cz)
+                cx_l, cy_l, cz = centroids_m[idx]
+                cx_g, cy_g, _  = centroids_g[idx]
+                
+                # Apply EMA filtering on depth (Idea 43)
+                prev_cz = track['history_global'][-1][2] if track['history_global'] else cz
+                cz_filtered = self.alpha_z * cz + (1.0 - self.alpha_z) * prev_cz
+                
+                track['centroid'] = (cx_l, cy_l, cz_filtered)
+                track['centroid_global'] = (cx_g, cy_g, cz_filtered)
                 track['age']      = 0
-                track['history'].append((cx, cy, cz))
+                track['visible_count'] += 1  # Increment visible count (Idea 109)
+                track['history'].append((cx_l, cy_l, cz_filtered))
+                track['history_global'].append((cx_g, cy_g, cz_filtered))
 
         # Create new tracks for unmatched detections
         for idx in unmatched:
@@ -81,15 +95,25 @@ class ObstacleTracker:
                 break
             tid = self.next_id
             self.next_id += 1
-            cx, cy, cz = centroids_m[idx]
+            cx_l, cy_l, cz = centroids_m[idx]
+            cx_g, cy_g, _  = centroids_g[idx]
+            
             self.tracks[tid] = {
-                'centroid': (cx, cy, cz),
+                'centroid': (cx_l, cy_l, cz),
+                'centroid_global': (cx_g, cy_g, cz),
                 'age':      0,
+                'visible_count': 1,  # Initialize visible count (Idea 109)
                 'history':  deque(maxlen=WINDOW_SIZE),
+                'history_global': deque(maxlen=WINDOW_SIZE),
             }
-            self.tracks[tid]['history'].append((cx, cy, cz))
+            self.tracks[tid]['history'].append((cx_l, cy_l, cz))
+            self.tracks[tid]['history_global'].append((cx_g, cy_g, cz))
 
-        return {tid: {'centroid': t['centroid'], 'history': t['history']}
+        return {tid: {'centroid': t['centroid'], 
+                      'centroid_global': t['centroid_global'],
+                      'history': t['history'],
+                      'history_global': t['history_global'],
+                      'visible_count': t['visible_count']}  # Return visible count (Idea 109)
                 for tid, t in self.tracks.items()}
 
 
@@ -99,7 +123,7 @@ class VelocityEstimator:
     Designed to run alongside the existing server_x3.py broadcast loop.
 
     Usage:
-        estimator = VelocityEstimator(camera, lidar)
+        estimator = VelocityEstimator(camera, lidar, robot_pose_fn)
         estimator.start()
         ...
         estimates = estimator.get_estimates()
@@ -108,28 +132,38 @@ class VelocityEstimator:
         estimator.stop()
     """
 
-    def __init__(self, camera, lidar, robot_pose_fn=None, model_path=None):
+    def __init__(self, camera, lidar, robot_pose_fn=None, model_path=None, detections_fn=None):
         """
         camera:        AstraCamera instance (or ROS2Bridge)
         lidar:         YDLidarDriver instance (or ROS2Bridge)
-        robot_pose_fn: callable returning {'x': m, 'y': m, 'theta': rad}
-                       for ego-motion compensation. Pass None to skip.
+        robot_pose_fn: callable returning {'pose': {'x': m, 'y': m, 'theta': rad},
+                                           'twist': {'vx': m/s, 'vy': m/s, 'wz': rad/s}}
+                       for EKF slip & ego-motion compensation.
         model_path:    optional string path to the TorchScript model file
+        detections_fn: optional callable returning list of latest camera detections
+                       for visual-LiDAR fusion gating.
         """
         self.camera        = camera
         self.lidar         = lidar
         self.robot_pose_fn = robot_pose_fn
         self.model_path    = model_path or MODEL_PATH
+        self.detections_fn = detections_fn
 
         self.estimation_enabled = True
         self._model     = None
-        self._scaler_X  = None
-        self._scaler_y  = None
+        self.scaler_X_mean = None
+        self.scaler_X_scale = None
+        self.scaler_y_mean = None
+        self.scaler_y_scale = None
         self._tracker   = ObstacleTracker()
         self._estimates = []
         self._lock      = threading.Lock()
         self._running   = False
         self._thread    = None
+        self._last_print_time = 0.0
+
+        # Pre-allocate input tensor shape (Idea 116)
+        self.x_tensor_preallocated = torch.zeros((MAX_OBSTACLES, 40), dtype=torch.float32)
 
         self._load_model()
 
@@ -137,9 +171,25 @@ class VelocityEstimator:
         try:
             self._model    = torch.jit.load(self.model_path, map_location='cpu')
             self._model.eval()
-            self._scaler_X = joblib.load(SCALER_X_PATH)
-            self._scaler_y = joblib.load(SCALER_Y_PATH)
-            logger.info(f"VelocityEstimator: model {self.model_path} and scalers loaded")
+            
+            # JIT Trace optimization (Idea 137)
+            dummy_input = torch.zeros((MAX_OBSTACLES, 40), dtype=torch.float32)
+            try:
+                self._model = torch.jit.trace(self._model, dummy_input)
+                logger.info("VelocityEstimator: model JIT traced successfully")
+            except Exception as trace_err:
+                logger.warning(f"VelocityEstimator: JIT tracing failed (falling back to untraced): {trace_err}")
+
+            # Load scaler parameters directly from JSON (Idea 72)
+            with open(SCALER_PARAMS_PATH, "r") as f:
+                params = json.load(f)
+            
+            self.scaler_X_mean = np.array(params["scaler_X"]["mean"], dtype=np.float32)
+            self.scaler_X_scale = np.array(params["scaler_X"]["scale"], dtype=np.float32)
+            self.scaler_y_mean = np.array(params["scaler_y"]["mean"], dtype=np.float32)
+            self.scaler_y_scale = np.array(params["scaler_y"]["scale"], dtype=np.float32)
+            
+            logger.info(f"VelocityEstimator: model {self.model_path} and scaler parameters loaded")
         except Exception as e:
             logger.error(f"VelocityEstimator: failed to load model {self.model_path}: {e}")
 
@@ -153,8 +203,26 @@ class VelocityEstimator:
         Returns list of (x_m, y_m, Z) relative to camera centre.
         """
         if raw_depth_frame is not None:
-            # Create a binary mask where depth is between 0.5m and 4.0m
-            mask = ((raw_depth_frame >= 0.5) & (raw_depth_frame <= 4.0) & (~np.isnan(raw_depth_frame))).astype(np.uint8) * 255
+            # Dynamic Voxel Downsampling (Idea 143)
+            # Partition the raw depth frame to extract clean close/far contours:
+            # 1. Close-range (< 1.5m): stride 1 (higher resolution, tight voxel size)
+            # 2. Far-range (1.5m to 4.0m): stride 3 (lower resolution, larger voxel size)
+            h_orig, w_orig = raw_depth_frame.shape[:2]
+            mask_orig = np.zeros((h_orig, w_orig), dtype=np.uint8)
+            
+            # Close-range mask (0.5m to 1.5m, high resolution)
+            close_mask = (raw_depth_frame >= 0.5) & (raw_depth_frame < 1.5)
+            mask_orig[close_mask] = 255
+            
+            # Far-range mask (1.5m to 4.0m, downsampled by factor of 3 to filter noise)
+            far_grid = np.zeros((h_orig, w_orig), dtype=bool)
+            far_grid[::3, ::3] = True
+            far_mask = (raw_depth_frame >= 1.5) & (raw_depth_frame <= 4.0) & far_grid
+            mask_orig[far_mask] = 255
+            
+            # Downsample to final working resolution (stride 2 relative to original, matches fx=277.0 camera model)
+            raw_depth_frame = raw_depth_frame[::2, ::2]
+            mask = mask_orig[::2, ::2]
             
             # Morphological cleanup
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
@@ -167,7 +235,8 @@ class VelocityEstimator:
             
             for cnt in contours:
                 area = cv2.contourArea(cnt)
-                if area < MIN_BLOB_AREA:
+                # Scale area threshold for downsampled frame size
+                if area < (MIN_BLOB_AREA / 4.0):
                     continue
                 M = cv2.moments(cnt)
                 if M['m00'] == 0:
@@ -175,28 +244,64 @@ class VelocityEstimator:
                 cx = M['m10'] / M['m00']
                 cy = M['m01'] / M['m00']
                 
-                # Mask out this contour's region to get its raw depth values
-                cnt_mask = np.zeros_like(mask)
-                cv2.drawContours(cnt_mask, [cnt], -1, 255, -1)
-                depth_vals = raw_depth_frame[cnt_mask == 255]
+                # Crop contour bounding box to reduce mask allocation size and indexing overhead (Idea 36)
+                x_b, y_b, w_b, h_b = cv2.boundingRect(cnt)
+                cnt_mask = np.zeros((h_b, w_b), dtype=np.uint8)
+                cv2.drawContours(cnt_mask, [cnt], -1, 255, -1, offset=(-x_b, -y_b))
+                
+                depth_slice = raw_depth_frame[y_b:y_b+h_b, x_b:x_b+w_b]
+                depth_vals = depth_slice[cnt_mask == 255]
                 valid_depths = depth_vals[(depth_vals >= 0.5) & (depth_vals <= 4.0) & (~np.isnan(depth_vals))]
                 
                 if len(valid_depths) > 0:
+                    # Decimate large depth arrays to speed up sorting (Idea 52)
+                    if len(valid_depths) > 200:
+                        valid_depths = valid_depths[::len(valid_depths) // 200]
                     Z = float(np.median(valid_depths))
                 else:
                     Z = 1.0  # fallback if no valid depth
                 
                 # Convert pixel centroid to physical metres using camera model
-                # Astra Pro SC: 640x480, fx ≈ 554
-                fx = 554.0
+                # Astra Pro SC: 640x480, fx ≈ 554. Halved due to downsampling (Idea 81 & 136).
+                fx = 277.0
                 x_m = (cx - w / 2.0) * Z / fx
                 y_m = (cy - h / 2.0) * Z / fx
+                
+                # Visual-LiDAR Fusion Gating (Idea 146)
+                if self.detections_fn is not None:
+                    try:
+                        detections = self.detections_fn()
+                        # Filter for 'person' boxes
+                        person_boxes = [d.get("bbox") for d in detections if d.get("label") == "person"]
+                        if person_boxes:
+                            # Project (x_m, y_m, Z) to full 640x480 resolution image space
+                            fx_full = 554.0
+                            cx_full = 320.0
+                            cy_full = 240.0
+                            u = int(x_m * fx_full / Z + cx_full)
+                            v = int(y_m * fx_full / Z + cy_full)
+                            
+                            inside_any = False
+                            for x1, y1, x2, y2 in person_boxes:
+                                # 15px padding margin
+                                if (x1 - 15) <= u <= (x2 + 15) and (y1 - 15) <= v <= (y2 + 15):
+                                    inside_any = True
+                                    break
+                            if not inside_any:
+                                # Centroid does not match any person detection, discard
+                                continue
+                    except Exception as ex:
+                        logger.warning(f"VelocityEstimator: failed visual-lidar gating check: {ex}")
+                
                 centroids.append((x_m, y_m, Z))
                 
             return centroids[:MAX_OBSTACLES]
 
         if depth_frame is None:
             return []
+
+        # Downsample depth_frame (Idea 81 & 136)
+        depth_frame = depth_frame[::2, ::2]
 
         # Convert to grayscale — bright pixels are near objects
         gray = cv2.cvtColor(depth_frame, cv2.COLOR_BGR2GRAY)
@@ -216,7 +321,7 @@ class VelocityEstimator:
 
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if area < MIN_BLOB_AREA:
+            if area < (MIN_BLOB_AREA / 4.0):
                 continue
             M  = cv2.moments(cnt)
             if M['m00'] == 0:
@@ -226,7 +331,7 @@ class VelocityEstimator:
 
             # Calculate actual Z (depth) in meters using the raw depth frame
             Z = 1.0
-            fx = 554.0
+            fx = 277.0
             x_m = (cx - w / 2.0) * Z / fx
             y_m = (cy - h / 2.0) * Z / fx
 
@@ -234,25 +339,48 @@ class VelocityEstimator:
 
         return centroids[:MAX_OBSTACLES]
 
-    def _build_window_features(self, history):
+    def _build_window_features(self, history_local):
         """
-        Build a (1, 40) feature vector from a deque of T (x,y,z) positions.
+        Build a (1, 40) feature vector from a list of T (x,y,z) local coordinates.
         Matches the sliding window format used during training:
           [rel_x, rel_y, dx, dy] × T frames, flattened.
         Where:
           rel_x = z (depth / Robot X forward)
           rel_y = -x (camera horizontal offset inverted / Robot Y left)
+        Returns: tuple (features_numpy_array, is_stopped_boolean)
         """
-        hist = list(history)
+        hist = list(history_local)
         # Pad with first entry if history shorter than window
         while len(hist) < WINDOW_SIZE:
             hist.insert(0, hist[0] if hist else (0.0, 0.0, 1.0))
 
         hist = hist[-WINDOW_SIZE:]
+        
+        # Determine starting offset for translation normalization (Idea 48)
+        rx0 = hist[0][2]      # cz
+        ry0 = -hist[0][0]     # -cx
+        
+        # Check for Kinematic Stop-Trigger Gating (Idea 108)
+        is_stopped = False
+        if len(hist) >= 3:
+            last_3 = hist[-3:]
+            disps = []
+            for j in range(1, len(last_3)):
+                dx_j = last_3[j][2] - last_3[j-1][2]
+                dy_j = -last_3[j][0] - (-last_3[j-1][0])
+                disps.append(math.hypot(dx_j, dy_j))
+            if all(d < 0.01 for d in disps):
+                is_stopped = True
+        
         features = []
         for i, (cx, cy, cz) in enumerate(hist):
             rx = cz
             ry = -cx
+            
+            # Apply translation normalization (Idea 48)
+            rx_norm = rx - rx0
+            ry_norm = ry - ry0
+            
             if i == 0:
                 dx, dy = 0.0, 0.0
             else:
@@ -260,9 +388,12 @@ class VelocityEstimator:
                 ry_prev = -hist[i-1][0]
                 dx = rx - rx_prev
                 dy = ry - ry_prev
-            features.extend([rx, ry, dx, dy])
+                # Clamp displacements to prevent noise spikes from causing extreme predictions (Idea 63)
+                dx = np.clip(dx, -0.25, 0.25)
+                dy = np.clip(dy, -0.25, 0.25)
+            features.extend([rx_norm, ry_norm, dx, dy])
 
-        return np.array(features, dtype=np.float32).reshape(1, -1)
+        return np.array(features, dtype=np.float32).reshape(1, -1), is_stopped
 
     def _inference_loop(self):
         dt = 1.0 / INFER_HZ
@@ -276,48 +407,197 @@ class VelocityEstimator:
                 depth_frame = self.camera.get_depth_frame() if hasattr(self.camera, 'get_depth_frame') else None
                 raw_depth_frame = self.camera.get_raw_depth_frame() if hasattr(self.camera, 'get_raw_depth_frame') else None
 
-                # 2. Extract centroids
-                centroids = self._extract_depth_centroids(depth_frame, raw_depth_frame)
+                # 2. Extract local centroids (relative to camera/robot)
+                centroids_m = self._extract_depth_centroids(depth_frame, raw_depth_frame)
 
-                # 3. Update tracker
-                tracks = self._tracker.update(centroids)
+                # 3. Query robot pose for global mapping & slip compensation (Idea 1 & 11)
+                robot_data = None
+                if self.robot_pose_fn is not None:
+                    try:
+                        robot_data = self.robot_pose_fn()
+                    except Exception as e:
+                        logger.error(f"VelocityEstimator: failed to query robot pose: {e}")
 
-                # 4. Run MLP inference on each track with full history (if enabled)
+                if robot_data and "pose" in robot_data:
+                    r_pose = robot_data["pose"]
+                    rx_rob, ry_rob, rtheta_rob = r_pose["x"], r_pose["y"], r_pose["theta"]
+                else:
+                    rx_rob, ry_rob, rtheta_rob = 0.0, 0.0, 0.0
+
+                # Compute global coordinates of centroids (Idea 1, 11, & 121)
+                centroids_g = []
+                cos_r = math.cos(rtheta_rob)
+                sin_r = math.sin(rtheta_rob)
+                if centroids_m:
+                    local_coords = np.array([[cz, -cx_l] for cx_l, cy_l, cz in centroids_m], dtype=np.float32)
+                    R = np.array([[cos_r, -sin_r],
+                                  [sin_r, cos_r]], dtype=np.float32)
+                    T = np.array([rx_rob, ry_rob], dtype=np.float32)
+                    global_xy = local_coords @ R.T + T
+                    for idx, (cx_l, cy_l, cz) in enumerate(centroids_m):
+                        centroids_g.append((float(global_xy[idx, 0]), float(global_xy[idx, 1]), cz))
+
+                # 4. Update tracker using global coordinate matching
+                tracks = self._tracker.update(centroids_m, centroids_g)
+
+                # 5. Run MLP inference on active tracks (batched) (Idea 46)
                 estimates = []
+                eligible_tracks = []
+                features_list = []
+
                 for tid, track in tracks.items():
-                    if len(track['history']) < 2:
-                        continue  # need at least 2 frames for displacement
+                    # Filter out tracks that do not satisfy the track initiation gate (Idea 109)
+                    if track.get('visible_count', 1) < 3:
+                        continue
 
-                    # Default velocity to 0.0 when estimation is disabled
-                    vx, vy, speed = 0.0, 0.0, 0.0
+                    if len(track['history_global']) < 2:
+                        cx, cy, cz = track['centroid']
+                        estimates.append({
+                            'id':    tid,
+                            'x':     round(cx, 3),
+                            'y':     round(cy, 3),
+                            'z':     round(cz, 3),
+                            'vx':    0.0,
+                            'vy':    0.0,
+                            'speed': 0.0,
+                        })
+                        continue
 
-                    if self.estimation_enabled and self._model is not None:
-                        features = self._build_window_features(track['history'])
+                    # Default velocity to 0.0 when estimation is disabled or model is not loaded
+                    if not self.estimation_enabled or self._model is None:
+                        cx, cy, cz = track['centroid']
+                        estimates.append({
+                            'id':    tid,
+                            'x':     round(cx, 3),
+                            'y':     round(cy, 3),
+                            'z':     round(cz, 3),
+                            'vx':    0.0,
+                            'vy':    0.0,
+                            'speed': 0.0,
+                        })
+                        continue
 
-                        # Normalize using training scalers
-                        features_scaled = self._scaler_X.transform(features)
-                        x_tensor = torch.tensor(features_scaled, dtype=torch.float32)
+                    # Reconstruct relative history for this track in the robot's current frame (Idea 1 & 11)
+                    hist_local = []
+                    for x_g, y_g, cz in track['history_global']:
+                        dx_g = x_g - rx_rob
+                        dy_g = y_g - ry_rob
+                        # Rotate back to local robot coordinates by -rtheta_rob
+                        rx_l = dx_g * cos_r + dy_g * sin_r
+                        ry_l = -dx_g * sin_r + dy_g * cos_r
+                        # In camera coordinates: cz = rx_l, cx_l = -ry_l, cy_l = 0 (ground plane)
+                        cx_l = -ry_l
+                        cy_l = 0.0
+                        hist_local.append((cx_l, cy_l, rx_l))
 
-                        with torch.no_grad():
-                            pred_scaled = self._model(x_tensor).numpy()
+                    feats, is_stopped = self._build_window_features(hist_local)
+                    if is_stopped:  # Kinematic Stop-Trigger Gating (Idea 108)
+                        cx, cy, cz = tracks[tid]['centroid']
+                        estimates.append({
+                            'id':    tid,
+                            'x':     round(cx, 3),
+                            'y':     round(cy, 3),
+                            'z':     round(cz, 3),
+                            'vx':    0.0,
+                            'vy':    0.0,
+                            'speed': 0.0,
+                        })
+                        continue
 
-                        pred_ms = self._scaler_y.inverse_transform(pred_scaled)
-                        vx, vy  = float(pred_ms[0, 0]), float(pred_ms[0, 1])
-                        speed   = float(np.sqrt(vx**2 + vy**2))
+                    eligible_tracks.append((tid, hist_local))
+                    features_list.append(feats)
 
-                    cx, cy, cz = track['centroid']
-                    estimates.append({
-                        'id':    tid,
-                        'x':     round(cx, 3),
-                        'y':     round(cy, 3),
-                        'z':     round(cz, 3),
-                        'vx':    round(vx, 3),
-                        'vy':    round(vy, 3),
-                        'speed': round(speed, 3),
-                    })
+                if eligible_tracks and self.estimation_enabled and self._model is not None:
+                    # Stack features into a single matrix of shape (N, 40) (Idea 46)
+                    features_batch = np.vstack(features_list)
+                    
+                    # Normalize using parameters (Idea 72)
+                    features_scaled = (features_batch - self.scaler_X_mean) / self.scaler_X_scale
+                    
+                    # Copy directly into pre-allocated PyTorch tensor (Idea 116)
+                    num_tracks = len(eligible_tracks)
+                    self.x_tensor_preallocated[:num_tracks].copy_(torch.from_numpy(features_scaled))
+                    x_tensor = self.x_tensor_preallocated[:num_tracks]
+
+                    with torch.no_grad():
+                        pred_scaled = self._model(x_tensor).numpy()
+
+                    # Inverse transform predictions: shape (N, 2)
+                    pred_ms = pred_scaled * self.scaler_y_scale + self.scaler_y_mean
+
+                    for idx, (tid, _) in enumerate(eligible_tracks):
+                        vx = float(pred_ms[idx, 0])
+                        vy = float(pred_ms[idx, 1])
+                        speed = float(np.sqrt(vx**2 + vy**2))
+
+                        cx, cy, cz = tracks[tid]['centroid']
+                        estimates.append({
+                            'id':    tid,
+                            'x':     round(cx, 3),
+                            'y':     round(cy, 3),
+                            'z':     round(cz, 3),
+                            'vx':    round(vx, 3),
+                            'vy':    round(vy, 3),
+                            'speed': round(speed, 3),
+                        })
 
                 with self._lock:
                     self._estimates = estimates
+
+                # 6. Print calculated velocities (throttled to 2Hz)
+                if self.estimation_enabled and estimates:
+                    now_t = time.monotonic()
+                    if now_t - self._last_print_time >= 0.5:
+                        self._last_print_time = now_t
+                        print(f"\n[Estimator] Calculated {len(estimates)} velocity estimate(s):")
+                        for est in estimates:
+                            print(f"  - ID {est['id']}: Centroid=(x={est['x']:.2f}, y={est['y']:.2f}, z={est['z']:.2f})m | "
+                                  f"Vel=(vx={est['vx']:.2f}, vy={est['vy']:.2f})m/s | Speed={est['speed']:.2f}m/s")
+
+                # 7. Overlay decisions on depth frame and display window if DISPLAY is set
+                if "DISPLAY" in os.environ and depth_frame is not None:
+                    debug_frame = depth_frame.copy()
+                    h, w = debug_frame.shape[:2]
+                    fx = 554.0
+
+                    for tid, track in tracks.items():
+                        cx_m, cy_m, Z = track['centroid']
+                        img_x = int(cx_m * fx / Z + w / 2.0)
+                        img_y = int(cy_m * fx / Z + h / 2.0)
+
+                        if 0 <= img_x < w and 0 <= img_y < h:
+                            cv2.circle(debug_frame, (img_x, img_y), 6, (0, 0, 255), -1)
+
+                            # Find matching estimate
+                            match_est = None
+                            for est in estimates:
+                                if est['id'] == tid:
+                                    match_est = est
+                                    break
+
+                            label = f"ID {tid}: ({cx_m:.2f}, {Z:.2f}m)"
+                            if match_est is not None:
+                                vx = match_est['vx']
+                                vy = match_est['vy']
+                                speed = match_est['speed']
+                                label += f" v:({vx:.2f}, {vy:.2f}) s:{speed:.2f}m/s"
+
+                                # Draw velocity arrow projected on the image:
+                                # Horizontal component: -vy (pedestrian moving left means negative horizontal change in camera)
+                                # Vertical component: -vx (pedestrian moving forward/deeper means negative vertical change in camera)
+                                scale = 150.0  # pixels per m/s
+                                arrow_x = int(img_x - vy * scale / Z)
+                                arrow_y = int(img_y - vx * scale / Z)
+                                cv2.arrowedLine(debug_frame, (img_x, img_y), (arrow_x, arrow_y), (0, 255, 0), 2, tipLength=0.3)
+
+                            cv2.putText(debug_frame, label, (img_x + 10, img_y - 10),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+
+                    try:
+                        cv2.imshow("Pedestrian Velocity Estimator Decisions", debug_frame)
+                        cv2.waitKey(1)
+                    except Exception:
+                        pass
 
             except Exception as e:
                 logger.error(f"VelocityEstimator: inference error: {e}")

@@ -254,3 +254,213 @@ This confirms that the stage-unfrozen fine-tuning successfully bridged the domai
    * **Rationale:** Permits the robot to ignore static objects that are already far enough to the side to be cleared safely (preventing overcorrection), while executing extremely tight shifts (`0.25 m`) to pass objects directly in the path without colliding with side walls.
 
 **Status:** Completed 🟢. Fully deployed to the robot in the robotics lab and verified starting up successfully.
+
+### [2026-06-05] Dynamic LiDAR Side Clearance Checking & Expanded Sectors
+**Scripts Modified:**
+- [ab_comparison_test.py](file:///home/kamren/x3_ws/src/ab_comparison_test.py) (Expanded LiDAR scan coverage sectors, implemented dynamic side clearance thresholding, removed redundant scanning in LiDAR-only bypass)
+
+**Changes & Technical Rationales:**
+
+1. **Expanded Scan Sector Coverage**
+   * **Change:** Expanded the side scanning sectors to cover $30^\circ \text{ to } 135^\circ$ (left) and $-135^\circ \text{ to } -30^\circ$ (right), matching the full range of potential lateral motion.
+   * **Rationale:** A corner or wall situated diagonally in front of the robot would previously escape the side-blockage checks (which were restricted to $60^\circ$ to $120^\circ$) but still be struck as soon as the robot commanded a lateral bypass. Scanning a wider field-of-view catches obstacles in the path of the lateral strafe *before* movement starts.
+
+2. **Dynamic Side Clearance Thresholding**
+   * **Change:** Replaced the hardcoded $0.45\text{ m}$ range threshold for side blockage detection with a dynamic computation: `SIDE_BLOCK_THRESHOLD = BYPASS_OFFSET + 0.25` meters.
+   * **Rationale:** The threshold must account for both the lateral distance of the bypass ($0.4\text{ m}$ for pedestrians or $0.25\text{ m}$ for static obstacles) and the robot's physical profile (half-width $0.15\text{ m}$ plus a $0.10\text{ m}$ safety margin). A hardcoded check fails to detect walls at $0.5\text{ m}$ to $0.8\text{ m}$ range, causing collision when performing the wider $0.4\text{ m}$ pedestrian bypass.
+
+3. **LiDAR Bypass Logic Consolidation**
+   * **Change:** Eliminated the duplicate scan computation block in the front LiDAR blockage state, feeding the pre-computed left and right side clearances directly to the bypass direction selector.
+   * **Rationale:** Eliminates redundant calculations to optimize CPU utilization and ensures side-bypass decisions are made with identical, consistent sector range estimates.
+
+**Status:** Completed 🟢. Fully deployed and ready for live testing.
+
+---
+
+### [2026-06-06] Implementation of High-ROI Enhancements (Tiers 1 & 2 Combined)
+**Scripts Modified:**
+- [velocity_estimator.py](file:///home/kamren/x3_ws/src/velocity_estimator.py) (Removed joblib/scikit-learn imports, loaded scaler params from JSON, localized bounding box masking, decimated medians, SIMD range check, temporal depth EMA, clamping, translation normalization, batched MLP inference, global odom-compensated coordinate tracking)
+- [server_x3.py](file:///home/kamren/x3_ws/src/server_x3.py) (EKF odom pose/twist callback registration, 1Hz battery voltage and 2Hz Nav2 status query throttling)
+- [ab_comparison_test.py](file:///home/kamren/x3_ws/src/ab_comparison_test.py) (Blended diagonal bypass profiling, travel-aligned omnidirectional proximity/TTC coordinate projection, 8-second active recovery timeout and backing maneuver)
+
+**Changes & Technical Rationales:**
+
+1. **Pure NumPy Scaler Migration (Idea 72)**
+   * **Change:** Removed `joblib` and `scikit-learn` dependencies from the velocity estimator. Extracted scaler statistics once into `scaler_params.json` and computed standard scaler normalization and inverse scaling manually using pure NumPy array arithmetic.
+   * **Rationale:** Importing `joblib` and `sklearn` takes 2-3 seconds at boot and consumes $>150\text{MB}$ RAM on the Jetson. Manual NumPy math runs instantly and has zero heavy external dependencies.
+
+2. **Server Telemetry Throttling (Idea 67 & 71)**
+   * **Change:** Throttled `drive.get_battery_voltage()` to 1Hz and `nav2_client.get_status()` to 2Hz, returning cached values in intermediate frames.
+   * **Rationale:** Battery voltage and navigation actions change slowly; querying them at 20Hz causes unnecessary mutex lock contention and CPU utilization in the ROS2 bridge.
+
+3. **Optimized Centroid Extraction: Localized Masking & Decimation (Idea 36, 52, & 56)**
+   * **Change:** Replaced NumPy boolean mask calculations with OpenCV's SIMD-optimized `cv2.inRange`. Cropped masks to the bounding box of the contour (Idea 36) and decimated depth arrays $>200$ pixels before taking the median (Idea 52).
+   * **Rationale:** Reduces mask memory allocations and pixel loop cycles by over 95%, accelerating centroid median and physical coordinate calculations.
+
+4. **Coordinate Clamping, EMA, and Translation Invariance (Idea 43, 48, & 63)**
+   * **Change:** Applied a low-pass EMA filter ($\alpha=0.7$) to depth inputs, clamped frame displacements ($dx, dy$) to $\pm 0.25\text{ m}$ (equivalent to a maximum speed limit of $2.5\text{ m/s}$), and normalized sequence windows by subtracting the start coordinates.
+   * **Rationale:** Depth EMA filters swing-arm noise. Clamping prevents tracking jumps from producing extreme out-of-distribution spikes, and normalization forces the model to generalize based on path shape rather than entry points.
+
+5. **Batched PyTorch MLP Inference (Idea 46)**
+   * **Change:** Replaced sequential loop model evaluations with a stacked batch execution. Eligible track features are combined into a single tensor for a single forward pass.
+   * **Rationale:** Reduces C++-to-Python execution launch overhead for multiple tracks to a constant time factor.
+
+6. **Global Map-Frame Tracking & EKF Slip Compensation (Idea 1 & 11)**
+   * **Change:** Passed an EKF-fused pose/twist callback to the estimator. Detections are transformed to global map coordinates for tracker nearest-neighbor matching, and projected back to the current robot frame to isolate true pedestrian velocities.
+   * **Rationale:** Eliminates coordinate displacement errors ("ghost speeds") that occur when static objects appear to shift as the robot drives.
+
+7. **Blended Diagonal Bypass Profiling (Idea 45)**
+   * **Change:** Replaced the binary pause-to-strafe behavior with coordinated diagonal velocities, scaling forward command speeds proportionally to the active lateral deviation error.
+   * **Rationale:** Maintains robot momentum and provides smooth diagonal bypass paths around obstacles rather than jerky stops.
+
+8. **Omnidirectional Travel-Aligned TTC Checks (Idea 70)**
+   * **Change:** Rotated obstacle relative coordinates and velocities along the robot's active travel velocity vector direction before performing TTC calculations.
+   * **Rationale:** Ensures safety and TTC speed scaling react to obstacles in the actual path of travel during lateral strafing or diagonal motions.
+
+9. **Active Recovery Timeout & Backing Maneuver (Idea 31)**
+   * **Change:** Programmed a blocked-duration timer that triggers a 1.5-second backing recovery maneuver at $-0.08\text{ m/s}$ if the robot is paused/blocked by obstacles for $>8.0$ seconds.
+   * **Rationale:** Resolves the "freezing robot" problem, providing a safe recovery to bypass a pedestrian or wall if trapped.
+
+**Status:** Completed 🟢. All 15 High-ROI enhancements have been coded, integrated, and verified in the workspace.
+
+### [2026-06-06] High-ROI Optimizations & Real-Time LiDAR Wall Collision Guard
+**Scripts Modified:**
+- [velocity_estimator.py](file:///home/kamren/x3_ws/src/velocity_estimator.py) (Traced model execution, pre-allocated PyTorch tensors, sliced numpy downsampling, vectorized global pose transform and tracking distance checks, candidate track initiation gate, kinematic stop-trigger gating)
+- [server_x3.py](file:///home/kamren/x3_ws/src/server_x3.py) (Added try/except `orjson` serialization helper, 320x240 frame downscaling for GUI preview feeds, disabled websockets deflate compression)
+- [ab_comparison_test.py](file:///home/kamren/x3_ws/src/ab_comparison_test.py) (LiDAR range jump edge detection, dynamic corridor clearance scaling, speed-scaling EMA hysteresis filter, rear-sector LiDAR protection before backing, active side-wall clearance guard)
+
+**Changes & Technical Rationales:**
+
+1. **Active Side-Wall LiDAR Guard & Edge Detection**
+   * **Change:** Implemented a range-gradient check (`diffs > 0.4m` between adjacent beams) to detect walls and obstacle boundaries. Computed real-time lateral clearances to the left and right walls. Added an active software guard in `DRIVE_TO_B` and `DRIVE_TO_A` states that immediately blocks or caps `vy_cmd` to `0.0` if the robot approaches within $0.35$m of the detected wall.
+   * **Rationale:** Resolves side-swipe collisions where the robot bypassed a pedestrian but drifted into lateral walls due to narrow corridor bounds or EKF pose slide.
+
+2. **Dynamic Corridor Width Clearance Scaling (Idea 110)**
+   * **Change:** Scaled down the maximum allowed `BYPASS_OFFSET` dynamically based on the total corridor clearance (`left_clearance + right_clearance`) measured by LiDAR.
+   * **Rationale:** Automatically shrinks the lateral evasion envelope in tight bottlenecks, preventing the robot from commanding bypass offsets that exceed available wall clearances.
+
+3. **Kinematic Stop-Trigger & Track Initiation Gate (Ideas 108 & 109)**
+   * **Change:** Added a candidate tracking buffer requiring detection in 3 out of 5 frames before estimation (Idea 109) and forced model output velocities to zero immediately when the last 3 frames show static displacement (Idea 108).
+   * **Rationale:** Filters out ghost tracking artifacts from specular shadows and overrides neural network lag, forcing the robot to immediately resume driving when a pedestrian stops or exits the corridor.
+
+4. **Speed-Scaling Hysteresis Filter (Idea 122)**
+   * **Change:** Applied an EMA smoothing filter on the speed scaling factor (`beta = 0.15`) that brakes instantly for safety but recovers speed gradually over 0.5s.
+   * **Rationale:** Prevents velocity chattering, chattering brakes, and wheel slip during dynamic obstacle avoidance.
+
+5. **Server Telemetry & Pre-Allocation Speedups (Ideas 87, 106, 116, 117, 136, 137)**
+   * **Change:** Implemented JIT model tracing (Idea 137), pre-allocated tensor reuse (Idea 116), numpy slicing-based downsampling (Idea 136), orjson serialization with robust json fallback (Idea 87), downscaled JPEG visualization frames (Idea 106), and disabled websocket deflate compression (Idea 117).
+   * **Rationale:** Removes heap allocations, blocks event loop thread locks, and speeds up frame serialization, reducing estimation and communication latency.
+
+**Status:** Completed 🟢. All High-ROI improvements and the active LiDAR wall collision guard are successfully coded, integrated, and verified in the workspace.
+
+### [2026-06-06] Potential Field Wall Repulsion, Corridor Centering, & Continuous Wall Filter
+**Scripts Modified:**
+- [ab_comparison_test.py](file:///home/kamren/x3_ws/src/ab_comparison_test.py) (Implemented potential field math, integrated repulsion forces to lateral control targets in `DRIVE_TO_B` and `DRIVE_TO_A` states, adjusted hard safety thresholds to 0.30m, and added a continuous wall detection filter to block camera-based bypasses for flat walls)
+
+**Changes & Technical Rationales:**
+
+1. **Script-Level Artificial Potential Field (APF) (Idea 141)**
+   * **Change:** Programmed a dynamic potential field repulsion vector ($v_{y\_rep} = F_{rep\_right} - F_{rep\_left}$) inside `_update_bypass_offset()`, using a safety activation distance of $0.55\text{ m}$ and a minimum physical buffer of $0.22\text{ m}$.
+   * **Rationale:** Direct step-change lateral shifts (bypass commands) were prone to overshooting in narrow apartment spaces, causing the robot to drift into walls. A continuous potential field exerts a smooth, distance-dependent lateral correction force that pushes the robot back toward the center of the corridor as it approaches either wall, while retaining a backup hard guard at $0.30\text{ m}$.
+
+2. **Continuous Wall Identification and Bypass Filtering (Idea 94)**
+   * **Change:** Added a front-sector blockage analysis that flags continuous flat walls by checking for proximity (<2.0m) without range-discontinuity edges (where `is_wall_edge` is False for all blocked beams). Wraps the camera-based bypass in an `if not is_continuous_wall` check and forces `target_lateral_offset = 0.0` if blocked.
+   * **Rationale:** Fixes the issue where a flat end wall was captured as a depth centroid at $1.5\text{ m}$, triggering the robot to falsely initiate a left strafe maneuver in both modes and scrape the corridor side wall. The wall filter ensures the robot treats flat boundaries as static stopping bounds rather than bypassable obstacles.
+
+**Status:** Completed 🟢. Potential field wall repeller, corridor centering, and the continuous wall bypass filter are fully implemented, verified, and integrated into the autonomous test path.
+
+### [2026-06-06] Dynamic Drift Distance Control & Continuous Repeat Loop Mode
+**Scripts Modified:**
+- [GUI.html](file:///home/kamren/x3_ws/src/web/GUI.html) (Added `.ab-config-container` with drift distance range slider and repeat mode checkbox)
+- [main.js](file:///home/kamren/x3_ws/src/web/main.js) (Cached new inputs, added slider text update listeners, included config variables in websocket payload, disabled inputs when test is active, and synchronized state using readout events)
+- [server_x3.py](file:///home/kamren/x3_ws/src/server_x3.py) (Extracted distance and repeat arguments from websocket messages, appended `--distance` and `--repeat` flags to subprocess startup list, and added test status and mode tracking to the broadcast message)
+- [ab_comparison_test.py](file:///home/kamren/x3_ws/src/ab_comparison_test.py) (Added command-line arguments parsing, shifted waypoint calculations to instance variables, implemented odom reference resets and log restarts to repeat paths continuously)
+
+**Changes & Technical Rationales:**
+
+1. **Configurable Drift Distance Controls**
+   * **Change:** Created a range input (`#ab-distance-slider`) spanning $1.0\text{ m}$ to $8.0\text{ m}$ and forwarded this value as the target path length when spawning the A/B test process.
+   * **Rationale:** Allows tests to be run in different sizes of corridors/rooms without having to manually modify and compile constants in the Python script.
+
+2. **Continuous Repeat Loop Mode**
+   * **Change:** Added a repeat check control (`#ab-repeat-check`) that enables the robot to run continuously. When the final `ROTATE_HOME` orientation is reached, it saves the run, opens a fresh logger, resets the reference coordinates relative to current odom, and restarts `DRIVE_TO_B`.
+   * **Rationale:** Supports continuous demo capability (e.g. 3-5 minute windows) and generates cleanly separated CSV files for each leg of the loop, preventing data overlapping.
+
+**Status:** Completed 🟢. Configurable drift distance controls and the continuous repeat mode are fully integrated, verified, and active in the GUI.
+
+### [2026-06-07] Zero-Copy IPC Shared Memory & 2D LiDAR Scan-Matching EKF Drift Correction
+**Scripts Modified:**
+- [server_x3.py](file:///home/kamren/x3_ws/src/server_x3.py) (Modified `ROS2Bridge._image_cb()` and `_depth_cb()` to copy frame buffers directly to pre-allocated named shared memory arrays, returning direct references in `get_frame()` and `get_raw_depth_frame()`)
+- [ab_comparison_test.py](file:///home/kamren/x3_ws/src/ab_comparison_test.py) (Implemented a lightweight 2D correlative ICP scan matcher inside the LiDAR callback, integrated a drift-corrected pose tracker, replaced EKF targets in control states, and restricted wall repulsion sectors to filter out front walls)
+
+**Changes & Technical Rationales:**
+
+1. **Shared Memory Ring Buffer IPC (Idea 145)**
+   * **Change:** Pre-allocated two shared memory segments (`x3_bgr_frame` and `x3_depth_frame`) at startup. The ROS 2 bridge writes incoming frames directly into these blocks using `np.copyto()`, and `get_frame()` / `get_raw_depth_frame()` return direct views instead of array copies.
+   * **Rationale:** Skipping runtime memory allocations and copies dramatically reduces CPU load and prevents memory fragmentation on the resource-constrained Jetson board.
+
+2. **2D LiDAR ICP Scan Matcher & EKF Drift Correction (Idea 144)**
+   * **Change:** Programmed a fast 2D Iterative Closest Point (ICP) scan-alignment algorithm in pure NumPy. It correlates sequential LiDAR scans to determine lateral/yaw wheel slip relative to EKF updates, accumulating corrections into a drift-free reference pose.
+   * **Rationale:** Cancels out mecanum wheel slippage during lateral strafing and path corrections, keeping the path-tracking controller centered on the true centerline.
+
+3. **Front-Wall Repulsion & Drift Bug Fix**
+   * **Change:** Narrowed side-wall repulsion search sectors to $45^\circ - 135^\circ$ and $-135^\circ - -45^\circ$, and added a forward coordinate filter ($x_{\text{fwd}} < 0.9$m) to ignore obstacle/wall points far in front.
+   * **Rationale:** Prevents Potential Field Wall Repulsion from misidentifying a flat wall in front of the robot as a side obstacle. Resolves the frustrating bug where the robot drifted to the left at the 1.5m mark of the forward run.
+
+**Status:** Completed 🟢. Iteration 34 software-only enhancements are fully implemented, locally validated, and deployed to the robot.
+
+---
+
+### [2026-06-07] Wall-Crash Bug Fix & vx/vy Velocity Coordinate Correction
+**Scripts Modified:**
+- [ab_comparison_test.py](file:///home/kamren/x3_ws/src/ab_comparison_test.py) (Fixed solid-wall LiDAR clearance detection, continuous bypass offset clamping, vx/vy velocity swap, rear-block threshold, diagnostic print correction)
+
+**Bugs Found & Technical Rationales:**
+
+1. **Solid Parallel Walls Invisible to APF and Side-Wall Guard (lines 381–392)**
+   * **Bug:** `wall_left_clearance` and `wall_right_clearance` were only updated when a LiDAR beam exhibited a range discontinuity (`is_wall_edge = True`) or the range was under 1.5 m. A flat wall running alongside the robot at 0.5 m produces no adjacent-beam discontinuities (all readings are uniformly close), so `wall_left_clearance` stayed at its initial value of `5.0 m`. This meant the Artificial Potential Field (APF) wall repulsion never fired and the active side-wall guard (`vy_cmd = 0.0 if wall_left_clearance < 0.30`) never triggered. The robot drove straight into parallel corridor walls.
+   * **Fix:** Removed the `is_wall_edge or r < 1.5` condition. All LiDAR points in the 45°–135° / −135°–−45° side sectors (filtered by `x_fwd < 0.9 m` to exclude front-wall contamination) now contribute to `wall_left_clearance` and `wall_right_clearance`. The wall-edge detection flag is retained separately for human-vs-wall discrimination in the bypass initiation logic.
+
+2. **Stale Bypass Offset Held as Corridor Narrows (lines 431–434)**
+   * **Bug:** Once `target_lateral_offset` was set (e.g. to 0.4 m at the start of a bypass), it was never reduced even as the robot moved into a narrowing section of corridor where the dynamically recomputed `max_allowed_offset` dropped to 0.15 m. The robot continued commanding the original wide offset directly into a closing wall.
+   * **Fix:** Added a continuous clamp after each `BYPASS_OFFSET` recomputation: if `abs(self.target_lateral_offset) > BYPASS_OFFSET`, it is immediately scaled down to `math.copysign(BYPASS_OFFSET, self.target_lateral_offset)`. This ensures the active bypass target always respects the current corridor geometry on every control tick.
+
+3. **vx/vy Velocity Component Swap in TTC Speed Scaling (lines 724–725)**
+   * **Bug:** The velocity estimator (`velocity_estimator.py`) outputs `vx` = robot-forward velocity and `vy` = robot-lateral (left) velocity, already in the robot frame. However, `_get_speed_scaling()` consumed these as `rvx = float(vy)` and `rvy = -float(vx)` — swapping the forward and lateral components and negating the lateral component. This caused the Time-to-Collision (TTC) calculation to evaluate approach direction 90° off: a pedestrian walking directly toward the robot appeared to be moving laterally (no braking), while a pedestrian passing laterally appeared to be on a collision course (false braking).
+   * **Fix:** Corrected to `rvx = float(vx)` (robot-forward velocity) and `rvy = float(vy)` (robot-lateral velocity, no negation since the estimator already outputs in the correct signed robot frame).
+
+4. **Same vx/vy Swap in Diagnostic Print (lines 490–491)**
+   * **Bug:** The 2 Hz diagnostic terminal print inside `_update_bypass_offset()` used `rvx = est.get('vy', 0.0)` and `rvy = -est.get('vx', 0.0)` — same swap as above — printing forward and lateral velocity labels with inverted values, making live debugging misleading.
+   * **Fix:** Corrected to `rvx = est.get('vx', 0.0)` and `rvy = est.get('vy', 0.0)` to match actual robot-frame convention.
+
+5. **Recovery Backing Threshold Too Tight (rear-sector LiDAR check, both DRIVE_TO_B and DRIVE_TO_A)**
+   * **Bug:** The rear-blocked LiDAR check (triggered before the 8-second recovery backing maneuver) used a range threshold of `r > 0.35 m`. Any obstacle between 0.35 m and 0.50 m behind the robot would pass the check, allowing the 1.5-second backing maneuver to proceed. With a backing speed of −0.08 m/s the robot travels ~0.12 m, which is sufficient to collide with an obstacle at 0.40 m.
+   * **Fix:** Raised the range guard to `r > 0.50 m`, providing a comfortable stopping distance before committing to any backing recovery motion.
+
+**Deployment:** File transferred to `jetson@10.13.246.41:/home/jetson/x3_ws/src/ab_comparison_test.py` via SFTP.
+
+**Status:** Completed 🟢. All five bugs are fixed, locally committed, and deployed to the robot.
+
+---
+
+### [2026-06-07] Static-Wall Early-Stop & Safe Turn-Around
+**Scripts Modified:**
+- [ab_comparison_test.py](file:///home/kamren/x3_ws/src/ab_comparison_test.py) (Added `WALL_STOP_DIST` constant, min-forward-LiDAR tracking, `_front_is_continuous_wall` and `_early_stop_dist` instance state, early-stop branches in `DRIVE_TO_B` and `DRIVE_TO_A`, effective-distance correction in `SETTLE_2`, repeat-mode reset)
+
+**Feature Description & Technical Rationale:**
+
+Previously, if the robot's target waypoint was beyond a wall (e.g. a corridor shorter than the configured drift distance), the robot would drive until it hit the wall because the existing avoidance logic (bypass strafing, 8 s timeout, backing recovery) was designed for dynamic obstacles — not for hard static boundaries that the robot cannot navigate around.
+
+**Behaviour added:**
+1. **Forward wall detection:** Every control tick, `_update_bypass_offset()` now tracks `min_forward_lidar` — the closest LiDAR return in a narrow ±20° cone directly ahead — and exposes it as `self._min_forward_lidar`. It also exposes `self._front_is_continuous_wall`, the existing flat-wall flag (front LiDAR blocked, no range discontinuities, no dynamic camera pedestrian).
+2. **Early stop in `DRIVE_TO_B`:** If `_front_is_continuous_wall AND _min_forward_lidar < WALL_STOP_DIST (0.20 m)`, the robot stops, records the actual distance travelled as `_early_stop_dist`, logs a `[Wall-Stop]` warning, and immediately transitions to `SETTLE_1` to begin the 180° turn-around and return sequence. The robot stops ~0.20 m from the wall rather than colliding.
+3. **Corrected return distance in `SETTLE_2`:** When computing the DRIVE_TO_A start point, the code uses `effective_dist = _early_stop_dist if set else waypoint_b_dist`. This ensures DRIVE_TO_A drives exactly back to the real starting position (not past the wall). `waypoint_b_dist` is also updated to `effective_dist` so distance checks inside DRIVE_TO_A are consistent.
+4. **Early stop in `DRIVE_TO_A`:** The same check is applied on the return leg. If an unexpected wall appears (e.g. a door closed mid-run), the robot stops and transitions directly to `SETTLE_3` to complete the home rotation rather than colliding.
+5. **Repeat-mode reset:** When repeating, `waypoint_b_dist` is restored to `_configured_dist` (the CLI argument value) and `_early_stop_dist` is cleared so subsequent legs use the full configured distance.
+
+**New constant:**
+- `WALL_STOP_DIST = 0.20` m (tunable — set between 0.10 and 0.30 m depending on robot speed and surface)
+
+**Deployment:** File transferred to `jetson@10.13.246.41:/home/jetson/x3_ws/src/ab_comparison_test.py` via SFTP (md5: `ae6a6edd727c156de2ce26fe8ff78113`).
+
+**Status:** Completed 🟢. Static-wall early-stop is implemented, deployed, and ready for lab testing.

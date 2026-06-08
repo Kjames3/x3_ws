@@ -27,6 +27,7 @@ import asyncio
 import websockets
 import json
 import threading
+import numpy as np
 
 # ---------------------------------------------------------------------------
 # Waypoints (relative to the robot's starting pose at the tape mark).
@@ -56,6 +57,8 @@ MIN_ANGULAR_SPEED = 0.12   # rad/s
 SEGMENT_TIMEOUT  = 20.0    # seconds
 SETTLE_DURATION  = 1.0     # seconds between segments
 LOG_HZ           = 10      # rows per second written to CSV
+
+WALL_STOP_DIST   = 0.20    # metres — stop this far from a confirmed static wall and turn back
 
 
 def normalize_angle(angle: float) -> float:
@@ -122,11 +125,15 @@ class ABComparisonTest(Node):
         6: "SETTLE_3", 7: "ROTATE_HOME", 8: "DONE",
     }
 
-    def __init__(self, mode: str, log_dir: str):
+    def __init__(self, mode: str, log_dir: str, distance: float = 4.0, repeat: bool = False):
         super().__init__("x3_ab_comparison_test")
-        self.get_logger().info(f"AB Comparison Test — mode: {mode.upper()}")
+        self.get_logger().info(f"AB Comparison Test — mode: {mode.upper()} | distance: {distance}m | repeat: {repeat}")
 
         self._mode = mode
+        self._log_dir = log_dir
+        self.waypoint_b_dist = distance
+        self._configured_dist = distance  # preserved for repeat-loop resets
+        self.repeat = repeat
         self._csv_logger = RunLogger(mode, log_dir)
         self._latest_estimates = []
         self._estimates_lock = threading.Lock()
@@ -165,10 +172,25 @@ class ABComparisonTest(Node):
         self.state_elapsed_time = 0.0
         self.last_state_time = 0.0
         self.last_vy_cmd = 0.0
+        self.last_vx_cmd = 0.0
+        self.blocked_time = 0.0   # Active recovery block timer (Idea 31)
+
+        # LiDAR wall clearances and speed hysteresis (Ideas 80, 110, 122)
+        self.wall_left_clearance = 5.0
+        self.wall_right_clearance = 5.0
+        self.vy_rep = 0.0
+        self.smooth_speed_scale = 1.0
 
         # PD control tracking variables
         self.prev_yaw_error = 0.0
         self.last_time = 0.0
+        self._last_debug_print_time = 0.0
+        self.current_path_y = 0.0
+
+        # Static-wall early-stop state
+        self._min_forward_lidar = 999.0       # minimum LiDAR range in narrow forward cone
+        self._front_is_continuous_wall = False # True when front is a confirmed flat static wall
+        self._early_stop_dist = None          # actual distance travelled when early stop fires
 
         self._timer = self.create_timer(0.05, self._control_loop)  # 20 Hz
 
@@ -187,22 +209,175 @@ class ABComparisonTest(Node):
         self.last_scan_angle_min = msg.angle_min
         self.last_scan_angle_increment = msg.angle_increment
 
+        # Convert current scan to 2D Cartesian points in the robot's local frame
+        curr_pts = []
+        for i, r in enumerate(msg.ranges):
+            if math.isnan(r) or r < 0.15 or r > 4.0:
+                continue
+            angle = msg.angle_min + i * msg.angle_increment
+            curr_pts.append((r * math.cos(angle), r * math.sin(angle)))
+
+        # Initialize corrected pose to current odom if not set
+        if not hasattr(self, 'corrected_x') or self.corrected_x is None:
+            self.corrected_x = self.current_x
+            self.corrected_y = self.current_y
+            self.corrected_yaw = self.current_yaw
+            self.prev_odom_pose = (self.current_x, self.current_y, self.current_yaw)
+            self.prev_scan_points = curr_pts
+            return
+
+        # If there are not enough points, fallback to using raw odom updates
+        if len(curr_pts) < 10 or len(self.prev_scan_points) < 10:
+            p_x, p_y, p_yaw = self.prev_odom_pose
+            c_x, c_y, c_yaw = self.current_x, self.current_y, self.current_yaw
+            dx_g = c_x - p_x
+            dy_g = c_y - p_y
+            dtheta = normalize_angle(c_yaw - p_yaw)
+            
+            cos_p = math.cos(p_yaw)
+            sin_p = math.sin(p_yaw)
+            dx_odom_local = dx_g * cos_p + dy_g * sin_p
+            dy_odom_local = -dx_g * sin_p + dy_g * cos_p
+            
+            cos_corr = math.cos(self.corrected_yaw)
+            sin_corr = math.sin(self.corrected_yaw)
+            self.corrected_x += dx_odom_local * cos_corr - dy_odom_local * sin_corr
+            self.corrected_y += dx_odom_local * sin_corr + dy_odom_local * cos_corr
+            self.corrected_yaw = normalize_angle(self.corrected_yaw + dtheta)
+            
+            self.prev_scan_points = curr_pts
+            self.prev_odom_pose = (self.current_x, self.current_y, self.current_yaw)
+            return
+
+        # Calculate EKF-reported relative motion since last scan in previous robot frame
+        p_x, p_y, p_yaw = self.prev_odom_pose
+        c_x, c_y, c_yaw = self.current_x, self.current_y, self.current_yaw
+
+        dx_g = c_x - p_x
+        dy_g = c_y - p_y
+        dtheta = normalize_angle(c_yaw - p_yaw)
+
+        cos_p = math.cos(p_yaw)
+        sin_p = math.sin(p_yaw)
+        dx_odom_local = dx_g * cos_p + dy_g * sin_p
+        dy_odom_local = -dx_g * sin_p + dy_g * cos_p
+
+        # Run 2D ICP Scan Matcher
+        try:
+            dx_match, dy_match, dtheta_match = self._align_scans_icp(
+                self.prev_scan_points, curr_pts, dx_odom_local, dy_odom_local, dtheta
+            )
+        except Exception as e:
+            dx_match, dy_match, dtheta_match = dx_odom_local, dy_odom_local, dtheta
+
+        # Integrate corrected local displacement
+        cos_corr = math.cos(self.corrected_yaw)
+        sin_corr = math.sin(self.corrected_yaw)
+        self.corrected_x += dx_match * cos_corr - dy_match * sin_corr
+        self.corrected_y += dx_match * sin_corr + dy_match * cos_corr
+        self.corrected_yaw = normalize_angle(self.corrected_yaw + dtheta_match)
+
+        self.prev_scan_points = curr_pts
+        self.prev_odom_pose = (self.current_x, self.current_y, self.current_yaw)
+
+    def _align_scans_icp(self, prev_pts, curr_pts, initial_dx, initial_dy, initial_dtheta):
+        P = np.array(prev_pts, dtype=np.float32)
+        Q = np.array(curr_pts, dtype=np.float32)
+
+        c, s = np.cos(initial_dtheta), np.sin(initial_dtheta)
+        R = np.array([[c, -s],
+                      [s, c]], dtype=np.float32)
+        t = np.array([initial_dx, initial_dy], dtype=np.float32)
+        Q_trans = (Q @ R.T) + t
+
+        dx_corr, dy_corr, dtheta_corr = 0.0, 0.0, 0.0
+
+        for _ in range(3):
+            diff = Q_trans[:, np.newaxis, :] - P[np.newaxis, :, :]
+            dists = np.sum(diff ** 2, axis=2)
+            idx = np.argmin(dists, axis=1)
+            min_dists2 = dists[np.arange(len(idx)), idx]
+
+            valid = min_dists2 < 0.0625  # 0.25^2 threshold
+            if np.sum(valid) < 10:
+                break
+
+            Q_matched = Q_trans[valid]
+            P_matched = P[idx[valid]]
+
+            mu_q = np.mean(Q_matched, axis=0)
+            mu_p = np.mean(P_matched, axis=0)
+
+            Q_bar = Q_matched - mu_q
+            P_bar = P_matched - mu_p
+
+            H = Q_bar.T @ P_bar
+            theta = np.arctan2(H[0, 1] - H[1, 0], H[0, 0] + H[1, 1])
+            cos_t, sin_t = np.cos(theta), np.sin(theta)
+            R_iter = np.array([[cos_t, -sin_t],
+                               [sin_t, cos_t]], dtype=np.float32)
+            t_iter = mu_p - (mu_q @ R_iter.T)
+
+            Q_trans = (Q_trans @ R_iter.T) + t_iter
+
+            dtheta_corr += theta
+            dx_corr_new = dx_corr * cos_t - dy_corr * sin_t + t_iter[0]
+            dy_corr_new = dx_corr * sin_t + dy_corr * cos_t + t_iter[1]
+            dx_corr = dx_corr_new
+            dy_corr = dy_corr_new
+
+        total_dtheta = initial_dtheta + dtheta_corr
+        c_c, s_c = np.cos(dtheta_corr), np.sin(dtheta_corr)
+        total_dx = initial_dx * c_c - initial_dy * s_c + dx_corr
+        total_dy = initial_dx * s_c + initial_dy * c_c + dy_corr
+
+        return float(total_dx), float(total_dy), float(total_dtheta)
+
     def _update_bypass_offset(self):
         """Analyze obstacle proximity (fusing camera and LiDAR) and update target lateral offset."""
         with self._estimates_lock:
             estimates = list(self._latest_estimates)
 
-        # 1. LiDAR checks: front sector, left sector, right sector
+        # 1. LiDAR checks: front sector, left sector, right sector (Ideas 80, 110 & Bumper)
         lidar_blocked = False
-        left_blocked = False
-        right_blocked = False
+        left_clearance = 5.0
+        right_clearance = 5.0
+        
+        # Wall Edge Detection variables (lateral wall bounds)
+        wall_left_clearance = 5.0
+        wall_right_clearance = 5.0
+
+        # Front continuous blockage check variables (continuous wall detection)
+        front_blocked_by_lidar = False
+        front_has_edges = False
+        min_forward_lidar = 999.0  # minimum range in a narrow ±20° forward cone
 
         if self.last_scan_ranges:
             for i, r in enumerate(self.last_scan_ranges):
-                if math.isnan(r) or r < 0.15 or r > 2.0:
+                if math.isnan(r) or r < 0.15 or r > 4.0:
                     continue
-                angle = normalize_angle(self.last_scan_angle_min + i * self.last_scan_angle_increment)
+                angle = normalize_angle(self.last_scan_angle_min + i * self.last_scan_angle_increment + math.pi)
                 
+                # Check for range discontinuities in adjacent beams (LiDAR Edge Detection)
+                is_wall_edge = False
+                prev_idx = (i - 1) % len(self.last_scan_ranges)
+                next_idx = (i + 1) % len(self.last_scan_ranges)
+                prev_r = self.last_scan_ranges[prev_idx]
+                next_r = self.last_scan_ranges[next_idx]
+                if not math.isnan(prev_r) and abs(r - prev_r) > 0.4:
+                    is_wall_edge = True
+                if not math.isnan(next_r) and abs(r - next_r) > 0.4:
+                    is_wall_edge = True
+
+                # Check if there is any blockage in the front sector within 2.0 meters
+                if abs(angle) < 0.52 and r < 2.0:
+                    front_blocked_by_lidar = True
+                    if is_wall_edge:
+                        front_has_edges = True
+                    # Track minimum distance in a narrow ±20° cone for wall-stop detection
+                    if abs(angle) < 0.35:
+                        min_forward_lidar = min(min_forward_lidar, r)
+
                 # Front block: ~30 degrees (0.52 rad) left/right, within 0.75m forward
                 if abs(angle) < 0.52:
                     y_lat = r * math.sin(angle)
@@ -210,15 +385,26 @@ class ABComparisonTest(Node):
                     if abs(y_lat) < 0.4 and x_fwd < 0.75:
                         lidar_blocked = True
                 
-                # Left side block: 60 to 120 degrees (1.047 to 2.094 rad), within 0.45m range
-                elif 1.047 <= angle <= 2.094:
-                    if r < 0.45:
-                        left_blocked = True
-                
-                # Right side block: -120 to -60 degrees (-2.094 to -1.047 rad), within 0.45m range
-                elif -2.094 <= angle <= -1.047:
-                    if r < 0.45:
-                        right_blocked = True
+                # Left side block sector: 45 to 135 degrees (0.785 to 2.356 rad)
+                elif 0.785 <= angle <= 2.356:
+                    left_clearance = min(left_clearance, r)
+                    y_lat = r * math.sin(angle)
+                    x_fwd = r * math.cos(angle)
+                    # Use ALL points (not just edges) so solid parallel walls register
+                    if x_fwd < 0.9:
+                        wall_left_clearance = min(wall_left_clearance, y_lat)
+
+                # Right side block sector: -135 to -45 degrees (-2.356 to -0.785 rad)
+                elif -2.356 <= angle <= -0.785:
+                    right_clearance = min(right_clearance, r)
+                    y_lat = r * math.sin(angle)
+                    x_fwd = r * math.cos(angle)
+                    # Use ALL points (not just edges) so solid parallel walls register
+                    if x_fwd < 0.9:
+                        wall_right_clearance = min(wall_right_clearance, abs(y_lat))
+
+        self.wall_left_clearance = wall_left_clearance
+        self.wall_right_clearance = wall_right_clearance
 
         # 2. Asynchronous dynamic pedestrian identification
         # Check if the camera estimates show a moving human (speed > 0.15 m/s) in our forward path
@@ -248,41 +434,134 @@ class ABComparisonTest(Node):
             BYPASS_OFFSET = 0.25     # meters (smaller shift to avoid hitting side walls in narrow spaces)
             LATERAL_CORRIDOR = 0.3   # meters
 
+        # Dynamic Corridor Width Clearance Scaling (Idea 110)
+        corridor_width = left_clearance + right_clearance
+        robot_width = 0.30  # meters
+        max_allowed_offset = max(0.0, min(BYPASS_OFFSET, 0.5 * (corridor_width - robot_width)))
+        BYPASS_OFFSET = max_allowed_offset
+
+        # Continuously clamp any existing bypass offset to the current corridor limits.
+        # Prevents the robot from holding a stale wide offset as walls close in.
+        if abs(self.target_lateral_offset) > BYPASS_OFFSET:
+            self.target_lateral_offset = math.copysign(BYPASS_OFFSET, self.target_lateral_offset)
+
+        # Calculate dynamic side blockage thresholds based on the chosen BYPASS_OFFSET
+        SIDE_BLOCK_THRESHOLD = BYPASS_OFFSET + 0.25  # half-width (0.15m) + safety margin (0.10m)
+        left_blocked = (left_clearance < SIDE_BLOCK_THRESHOLD)
+        right_blocked = (right_clearance < SIDE_BLOCK_THRESHOLD)
+
+        # Check if the front blockage is a continuous wall (Idea 94 - Wall Filter)
+        is_continuous_wall = False
+        if front_blocked_by_lidar and not front_has_edges:
+            # Check if there is any dynamic pedestrian in the forward zone
+            has_dynamic_pedestrian = False
+            for est in estimates:
+                ox = est.get("x", 0.0)
+                oz = est.get("z", est.get("y", 0.0))
+                rx = float(oz)
+                ry = -float(ox)
+                speed = est.get("speed", 0.0)
+                if 0.0 < rx < 2.0 and abs(ry) < 0.5 and speed > 0.15:
+                    has_dynamic_pedestrian = True
+                    break
+            if not has_dynamic_pedestrian:
+                is_continuous_wall = True
+
+        # Expose wall state to control loop for early-stop decisions
+        self._front_is_continuous_wall = is_continuous_wall
+        self._min_forward_lidar = min_forward_lidar
+
+        # Potential Field Wall Repulsion Calculation (Idea 141)
+        d_safe = 0.55
+        d_min = 0.22
+        eta = 0.03
+        
+        f_rep_left = 0.0
+        if self.wall_left_clearance < d_safe:
+            denom = max(0.01, self.wall_left_clearance - d_min)
+            f_rep_left = eta * (1.0 / (denom * denom) - 1.0 / ((d_safe - d_min) * (d_safe - d_min)))
+            
+        f_rep_right = 0.0
+        if self.wall_right_clearance < d_safe:
+            denom = max(0.01, self.wall_right_clearance - d_min)
+            f_rep_right = eta * (1.0 / (denom * denom) - 1.0 / ((d_safe - d_min) * (d_safe - d_min)))
+            
+        vy_rep = f_rep_right - f_rep_left
+        self.vy_rep = max(-0.12, min(0.12, vy_rep))
+
+        # 4. Print diagnostic summary (throttled to 2Hz)
+        now_t = time.monotonic()
+        if now_t - self._last_debug_print_time >= 0.5:
+            self._last_debug_print_time = now_t
+            speed_scale = self._get_speed_scaling()
+            
+            print(f"\n--- [AB TEST ROBOT DIAGNOSTICS] ---")
+            print(f"  * State:            {self._STATE_NAMES.get(self.state, str(self.state))} | Paused: {self.is_paused}")
+            print(f"  * Speed scale:      {speed_scale:.2f} | Last Lateral Cmd (vy_cmd): {self.last_vy_cmd:.3f} m/s")
+            print(f"  * Path Tracking:    Cross-Track Error (path_y)={self.current_path_y:.3f}m | Target Lateral Offset={self.target_lateral_offset:.2f}m")
+            print(f"  * LiDAR Clearance:  Left Clearance={left_clearance:.2f}m | Right Clearance={right_clearance:.2f}m | vy_rep={self.vy_rep:.3f} m/s")
+            print(f"  * Side Blockage:    Left Blocked={left_blocked} | Right Blocked={right_blocked} (Threshold={SIDE_BLOCK_THRESHOLD:.2f}m)")
+            print(f"  * Front Obstacle:   LiDAR Front Blocked={lidar_blocked} | Is Wall={is_continuous_wall}")
+            
+            if estimates:
+                print(f"  * Camera Detections ({len(estimates)}):")
+                for est in estimates:
+                    rx = est.get('z', 0.0)
+                    ry = -est.get('x', 0.0)
+                    rvx = est.get('vx', 0.0)
+                    rvy = est.get('vy', 0.0)
+                    speed = est.get('speed', 0.0)
+                    print(f"    - ID {est.get('id')}: Pos=(fwd={rx:.2f}m, left={ry:.2f}m) | "
+                          f"Vel=(fwd_vel={rvx:.2f}m/s, left_vel={rvy:.2f}m/s) | Speed={speed:.2f}m/s")
+            else:
+                print(f"  * Camera Detections: None")
+            print(f"------------------------------------\n")
+
         # If LiDAR sees someone right in front, force stop and default bypass to clearer side if not set
         if lidar_blocked:
             self.is_paused = True
             if self.target_lateral_offset == 0.0:
-                # Calculate clearance for default bypass side selection
-                left_clearance = 5.0
-                right_clearance = 5.0
-                if self.last_scan_ranges:
-                    for i, r in enumerate(self.last_scan_ranges):
-                        if math.isnan(r) or r < 0.1:
-                            continue
-                        angle = normalize_angle(self.last_scan_angle_min + i * self.last_scan_angle_increment)
-                        if 0.785 <= angle <= 2.356:
-                            left_clearance = min(left_clearance, r)
-                        elif -2.356 <= angle <= -0.785:
-                            right_clearance = min(right_clearance, r)
-                
-                if right_clearance >= left_clearance:
-                    self.target_lateral_offset = -BYPASS_OFFSET  # Strafing right
+                if is_continuous_wall:
+                    # It's a continuous wall, stop safely without strafing
+                    self.target_lateral_offset = 0.0
                 else:
-                    self.target_lateral_offset = BYPASS_OFFSET   # Strafing left
+                    # Calculate clearance for default bypass side selection
+                    if right_clearance >= left_clearance:
+                        preferred_offset = -BYPASS_OFFSET
+                    else:
+                        preferred_offset = BYPASS_OFFSET
+
+                    # Choose bypass side based on side clearances and blockage checks
+                    if preferred_offset < 0.0:  # Preferred is right
+                        if not right_blocked:
+                            self.target_lateral_offset = -BYPASS_OFFSET
+                        elif not left_blocked:
+                            self.target_lateral_offset = BYPASS_OFFSET
+                        else:
+                            self.target_lateral_offset = 0.0  # Both blocked, stop
+                    else:  # Preferred is left
+                        if not left_blocked:
+                            self.target_lateral_offset = BYPASS_OFFSET
+                        elif not right_blocked:
+                            self.target_lateral_offset = -BYPASS_OFFSET
+                        else:
+                            self.target_lateral_offset = 0.0  # Both blocked, stop
             return
 
         # 4. Camera-based bypass logic
         blocking_obstacle = None
-        for est in estimates:
-            ox = est.get("x", 0.0)
-            oz = est.get("z", est.get("y", 0.0))
-            rx = float(oz)
-            ry = -float(ox)
+        # Only run camera-based bypass if we are not facing a continuous wall (Idea 94)
+        if not is_continuous_wall:
+            for est in estimates:
+                ox = est.get("x", 0.0)
+                oz = est.get("z", est.get("y", 0.0))
+                rx = float(oz)
+                ry = -float(ox)
 
-            # Check if obstacle is in front and blocking the path
-            if 0.0 < rx < AVOIDANCE_FORWARD and abs(ry) < AVOIDANCE_LATERAL:
-                blocking_obstacle = (rx, ry)
-                break
+                # Check if obstacle is in front and blocking the path
+                if 0.0 < rx < AVOIDANCE_FORWARD and abs(ry) < AVOIDANCE_LATERAL:
+                    blocking_obstacle = (rx, ry)
+                    break
 
         if blocking_obstacle is not None:
             self.is_paused = True
@@ -360,7 +639,7 @@ class ABComparisonTest(Node):
                 for i, r in enumerate(self.last_scan_ranges):
                     if math.isnan(r) or r < 0.15 or r > 1.2:
                         continue
-                    angle = normalize_angle(self.last_scan_angle_min + i * self.last_scan_angle_increment)
+                    angle = normalize_angle(self.last_scan_angle_min + i * self.last_scan_angle_increment + math.pi)
                     if abs(angle) < 0.52:
                         y_lat = r * math.sin(angle)
                         x_fwd = r * math.cos(angle)
@@ -433,7 +712,7 @@ class ABComparisonTest(Node):
             self._last_log_time = now
 
     def _get_speed_scaling(self) -> float:
-        """Compute linear velocity scaling factor based on pedestrian proximity and TTC."""
+        """Compute linear velocity scaling factor based on pedestrian proximity and TTC, projected along travel direction (Idea 70)."""
         with self._estimates_lock:
             estimates = list(self._latest_estimates)
 
@@ -447,34 +726,49 @@ class ABComparisonTest(Node):
         TTC_MIN = 1.0              # seconds
         LATERAL_THRESHOLD = 0.35   # meters (path width corridor, reduced from 0.5)
 
+        # Get last commanded speeds to determine travel angle alpha (Idea 70)
+        vx_cmd = getattr(self, 'last_vx_cmd', 0.1)
+        vy_cmd = getattr(self, 'last_vy_cmd', 0.0)
+        travel_yaw = math.atan2(vy_cmd, vx_cmd) if (abs(vx_cmd) > 0.01 or abs(vy_cmd) > 0.01) else 0.0
+        cos_t = math.cos(travel_yaw)
+        sin_t = math.sin(travel_yaw)
+
         for est in estimates:
             ox = est.get("x", 0.0)
             oz = est.get("z", est.get("y", 0.0))
             vx = est.get("vx", 0.0)
             vy = est.get("vy", 0.0)
 
-            # Robot frame relative coordinates
+            # Robot frame relative coordinates.
+            # Estimator outputs vx=forward, vy=lateral(left) already in robot frame.
             rx = float(oz)
             ry = -float(ox)
-            rvx = float(vy)
-            rvy = -float(vx)
+            rvx = float(vx)
+            rvy = float(vy)
 
-            # Ignore obstacles behind the robot
-            if rx <= 0.0:
+            # Project coordinates and relative velocities into travel-aligned frame (Idea 70)
+            rx_t = rx * cos_t + ry * sin_t
+            ry_t = -rx * sin_t + ry * cos_t
+            
+            rvx_t = rvx * cos_t + rvy * sin_t
+            rvy_t = -rvx * sin_t + rvy * cos_t
+
+            # Ignore obstacles behind the robot's direction of travel
+            if rx_t <= 0.0:
                 continue
 
-            # 1. Proximity Scaling (Reactive) - only triggers if obstacle is within the lateral path corridor
-            if abs(ry) <= LATERAL_THRESHOLD and rx < PROXIMITY_THRESHOLD:
-                s_p = (rx - SAFETY_ZONE_MIN) / (PROXIMITY_THRESHOLD - SAFETY_ZONE_MIN)
+            # 1. Proximity Scaling (Reactive) - based on travel-aligned coordinates
+            if abs(ry_t) <= LATERAL_THRESHOLD and rx_t < PROXIMITY_THRESHOLD:
+                s_p = (rx_t - SAFETY_ZONE_MIN) / (PROXIMITY_THRESHOLD - SAFETY_ZONE_MIN)
                 s_p = max(0.0, min(1.0, s_p))
             else:
                 s_p = 1.0
 
-            # 2. Time-to-Collision (TTC) Scaling (Predictive) - only active in predictive mode
+            # 2. Time-to-Collision (TTC) Scaling (Predictive) - based on travel-aligned coordinates
             s_t = 1.0
             if self._mode == "predictive":
-                d = math.hypot(rx, ry)
-                r_dot_v = rx * rvx + ry * rvy
+                d = math.hypot(rx_t, ry_t)
+                r_dot_v = rx_t * rvx_t + ry_t * rvy_t
                 if r_dot_v < 0:
                     ttc = -(d ** 2) / r_dot_v
                     if ttc < TTC_THRESHOLD:
@@ -485,7 +779,14 @@ class ABComparisonTest(Node):
             s_obs = min(s_p, s_t)
             speed_scale = min(speed_scale, s_obs)
 
-        return speed_scale
+        # Apply predictive TTC speed hysteresis (Idea 122)
+        beta = 0.15  # speed recovery smoothing factor
+        if speed_scale < self.smooth_speed_scale:
+            self.smooth_speed_scale = speed_scale  # brake instantly for safety
+        else:
+            self.smooth_speed_scale = beta * speed_scale + (1.0 - beta) * self.smooth_speed_scale  # recover speed smoothly
+            
+        return self.smooth_speed_scale
 
     def _control_loop(self):
         if not self.odom_received:
@@ -498,13 +799,19 @@ class ABComparisonTest(Node):
 
         # -- INIT: record start pose --
         if self.state == self.INIT:
-            self.start_x   = self.current_x
-            self.start_y   = self.current_y
-            self.start_yaw = self.current_yaw
-            self.target_yaw = self.current_yaw
-            self.init_x    = self.current_x
-            self.init_y    = self.current_y
-            self.init_yaw  = self.current_yaw
+            # Reset scan-matched corrected pose to current odom pose
+            self.corrected_x = self.current_x
+            self.corrected_y = self.current_y
+            self.corrected_yaw = self.current_yaw
+            self.prev_odom_pose = (self.current_x, self.current_y, self.current_yaw)
+
+            self.start_x   = self.corrected_x
+            self.start_y   = self.corrected_y
+            self.start_yaw = self.corrected_yaw
+            self.target_yaw = self.corrected_yaw
+            self.init_x    = self.corrected_x
+            self.init_y    = self.corrected_y
+            self.init_yaw  = self.corrected_yaw
             self.state = self.DRIVE_TO_B
             self.state_start_time = now
             self.state_elapsed_time = 0.0
@@ -513,7 +820,7 @@ class ABComparisonTest(Node):
             self.is_paused = False
             self.last_vy_cmd = 0.0
             self.get_logger().info(
-                f"[{self._mode.upper()}] Driving {WAYPOINT_B_DIST}m to WP-B "
+                f"[{self._mode.upper()}] Driving {self.waypoint_b_dist}m to WP-B "
                 f"(start yaw={math.degrees(self.current_yaw):.1f}°)"
             )
             return
@@ -537,10 +844,10 @@ class ABComparisonTest(Node):
         # -- DRIVE_TO_B --
         if self.state == self.DRIVE_TO_B:
             self._maybe_log("drive_to_B")
-            dx = self.current_x - self.start_x
-            dy = self.current_y - self.start_y
+            dx = self.corrected_x - self.start_x
+            dy = self.corrected_y - self.start_y
             dist_travelled = dx * math.cos(self.start_yaw) + dy * math.sin(self.start_yaw)
-            dist_error = WAYPOINT_B_DIST - dist_travelled
+            dist_error = self.waypoint_b_dist - dist_travelled
 
             if dist_error <= DIST_TOLERANCE:
                 self._stop_robot()
@@ -554,6 +861,26 @@ class ABComparisonTest(Node):
             # Update holonomic bypass state
             self._update_bypass_offset()
 
+            # Static-wall early stop: if a confirmed flat wall is within WALL_STOP_DIST
+            # and no dynamic pedestrian is responsible, treat current position as WP-B,
+            # record the actual distance travelled, and begin the return sequence.
+            if self._front_is_continuous_wall and self._min_forward_lidar < WALL_STOP_DIST:
+                self._stop_robot()
+                actual_dist = dx * math.cos(self.start_yaw) + dy * math.sin(self.start_yaw)
+                self._early_stop_dist = max(0.0, actual_dist)
+                self.get_logger().warn(
+                    f"[Wall-Stop] Static wall at {self._min_forward_lidar:.2f} m — "
+                    f"stopped at {self._early_stop_dist:.2f} m "
+                    f"(target was {self.waypoint_b_dist:.2f} m). Turning around."
+                )
+                self.state = self.SETTLE_1
+                self.state_start_time = now
+                self.state_elapsed_time = 0.0
+                self.target_lateral_offset = 0.0
+                self.is_paused = False
+                self.last_vy_cmd = 0.0
+                return
+
             # Calculate cross-track error in path frame
             path_y = -dx * math.sin(self.start_yaw) + dy * math.cos(self.start_yaw)
 
@@ -561,7 +888,7 @@ class ABComparisonTest(Node):
             KP_LATERAL = 0.8
             MAX_LATERAL_SPEED = 0.15
             MAX_LATERAL_ACCEL = 0.5  # m/s^2
-            vy_target = (self.target_lateral_offset - path_y) * KP_LATERAL
+            vy_target = (self.target_lateral_offset - path_y) * KP_LATERAL + self.vy_rep
             vy_target = max(-MAX_LATERAL_SPEED, min(MAX_LATERAL_SPEED, vy_target))
 
             # Apply rate limiting to lateral speed command
@@ -569,23 +896,62 @@ class ABComparisonTest(Node):
             vy_cmd = max(self.last_vy_cmd - max_dv, min(self.last_vy_cmd + max_dv, vy_target))
             self.last_vy_cmd = vy_cmd
 
-            # Forward speed controller
-            if self.is_paused and abs(self.target_lateral_offset - path_y) > 0.15:
-                # Actively shifting laterally to clear the obstacle
-                self.get_logger().info("Strafing laterally to bypass obstacle...", throttle_duration_sec=2.0)
+            # Active side-wall collision guard (blocking vy_cmd if too close to a wall edge)
+            if vy_cmd > 0.0 and self.wall_left_clearance < 0.30:
+                vy_cmd = 0.0
+            elif vy_cmd < 0.0 and self.wall_right_clearance < 0.30:
+                vy_cmd = 0.0
+
+            # Forward speed controller with blended diagonal profiling (Idea 45)
+            speed_scale = self._get_speed_scaling()
+            if speed_scale <= 0.1:
+                self.get_logger().info("Obstacle blocking path! Stopping forward drive...", throttle_duration_sec=2.0)
                 speed = 0.0
             else:
-                speed_scale = self._get_speed_scaling()
-                if speed_scale <= 0.1 or self.is_paused:
-                    self.get_logger().info("Obstacle blocking path! Pausing forward drive...", throttle_duration_sec=2.0)
-                    speed = 0.0
-                else:
-                    max_speed = MAX_LINEAR_SPEED * speed_scale
-                    min_speed = MIN_LINEAR_SPEED * min(1.0, speed_scale)
-                    speed = max(min_speed, min(max_speed, dist_error * KP_DIST))
+                max_speed = MAX_LINEAR_SPEED * speed_scale
+                min_speed = MIN_LINEAR_SPEED * min(1.0, speed_scale)
+                base_forward_speed = max(min_speed, min(max_speed, dist_error * KP_DIST))
+                
+                # Blend forward and lateral velocities (Idea 45)
+                lateral_error = abs(self.target_lateral_offset - path_y)
+                forward_scale = 1.0 - max(0.0, min(0.8, lateral_error / 0.5))
+                speed = base_forward_speed * forward_scale
+
+            # Active recovery timeout logic (Idea 31)
+            if self.is_paused or speed == 0.0:
+                self.blocked_time += dt_state
+            else:
+                self.blocked_time = 0.0
+
+            if self.blocked_time > 8.0:
+                # Check rear-sector LiDAR protection before recovery backing (Idea 80)
+                rear_blocked = False
+                if self.last_scan_ranges:
+                    for i, r in enumerate(self.last_scan_ranges):
+                        if math.isnan(r) or r < 0.15 or r > 0.50:
+                            continue
+                        angle = normalize_angle(self.last_scan_angle_min + i * self.last_scan_angle_increment + math.pi)
+                        if abs(angle) >= 2.35:  # 135 deg to 225 deg
+                            rear_blocked = True
+                            break
+                if rear_blocked:
+                    self.get_logger().error("[AB Test] Blocked for > 8 seconds, but rear LiDAR is blocked! Aborting recovery backing.")
+                    self.blocked_time = 0.0
+                    return
+
+                self.get_logger().warn("[AB Test] Blocked for > 8 seconds! Initiating reverse recovery...")
+                recovery_twist = Twist()
+                recovery_twist.linear.x = -0.08
+                for _ in range(15):
+                    self._cmd_pub.publish(recovery_twist)
+                    time.sleep(0.1)
+                self.blocked_time = 0.0
+                self.target_lateral_offset = 0.0
+                self.is_paused = False
+                return
 
             # Heading controller (yaw correction)
-            yaw_error = normalize_angle(self.target_yaw - self.current_yaw)
+            yaw_error = normalize_angle(self.target_yaw - self.corrected_yaw)
             rot_correction = max(-0.2, min(0.2, yaw_error * KP_YAW))
 
             # Zero out rotation if fully stopped due to obstacle to prevent chattering
@@ -595,6 +961,7 @@ class ABComparisonTest(Node):
             twist.linear.x  = speed
             twist.linear.y  = vy_cmd
             twist.angular.z = rot_correction
+            self.last_vx_cmd = speed  # Store last speed for travel projection (Idea 70)
             self._cmd_pub.publish(twist)
 
         # -- SETTLE_1 --
@@ -602,9 +969,9 @@ class ABComparisonTest(Node):
             self._maybe_log("settle_1")
             self._stop_robot()
             if now - self.state_start_time >= SETTLE_DURATION:
-                self.start_yaw  = self.current_yaw
+                self.start_yaw  = self.corrected_yaw
                 self.target_yaw = normalize_angle(self.init_yaw + ROTATION_ANGLE)
-                yaw_error = normalize_angle(self.target_yaw - self.current_yaw)
+                yaw_error = normalize_angle(self.target_yaw - self.corrected_yaw)
                 self.prev_yaw_error = yaw_error
                 self.last_time = now
                 self.state = self.ROTATE_180
@@ -618,7 +985,7 @@ class ABComparisonTest(Node):
         # -- ROTATE_180 --
         elif self.state == self.ROTATE_180:
             self._maybe_log("rotate_180")
-            yaw_error = normalize_angle(self.target_yaw - self.current_yaw)
+            yaw_error = normalize_angle(self.target_yaw - self.corrected_yaw)
             if abs(yaw_error) > math.pi - 0.1:
                 yaw_error = math.pi - 0.05  # break chattering at ±180° boundary
 
@@ -653,8 +1020,12 @@ class ABComparisonTest(Node):
             self._maybe_log("settle_2")
             self._stop_robot()
             if now - self.state_start_time >= SETTLE_DURATION:
-                self.start_x   = self.init_x + WAYPOINT_B_DIST * math.cos(self.init_yaw)
-                self.start_y   = self.init_y + WAYPOINT_B_DIST * math.sin(self.init_yaw)
+                # Use the actual distance travelled if an early wall-stop fired,
+                # so DRIVE_TO_A drives exactly back to the true starting position.
+                effective_dist = self._early_stop_dist if self._early_stop_dist is not None else self.waypoint_b_dist
+                self._early_stop_dist = None  # consume — reset for next leg
+                self.start_x   = self.init_x + effective_dist * math.cos(self.init_yaw)
+                self.start_y   = self.init_y + effective_dist * math.sin(self.init_yaw)
                 self.start_yaw = normalize_angle(self.init_yaw + ROTATION_ANGLE)
                 self.target_yaw = self.start_yaw
                 self.state = self.DRIVE_TO_A
@@ -664,15 +1035,17 @@ class ABComparisonTest(Node):
                 self.target_lateral_offset = 0.0
                 self.is_paused = False
                 self.last_vy_cmd = 0.0
-                self.get_logger().info(f"Driving {WAYPOINT_B_DIST}m back to WP-A...")
+                # DRIVE_TO_A will drive effective_dist back; reuse the same variable
+                self.waypoint_b_dist = effective_dist
+                self.get_logger().info(f"Driving {effective_dist:.2f}m back to WP-A...")
 
         # -- DRIVE_TO_A --
         elif self.state == self.DRIVE_TO_A:
             self._maybe_log("drive_to_A")
-            dx = self.current_x - self.start_x
-            dy = self.current_y - self.start_y
+            dx = self.corrected_x - self.start_x
+            dy = self.corrected_y - self.start_y
             dist_travelled = dx * math.cos(self.start_yaw) + dy * math.sin(self.start_yaw)
-            dist_error = WAYPOINT_B_DIST - dist_travelled
+            dist_error = self.waypoint_b_dist - dist_travelled
 
             if dist_error <= DIST_TOLERANCE:
                 self._stop_robot()
@@ -686,6 +1059,20 @@ class ABComparisonTest(Node):
             # Update holonomic bypass state
             self._update_bypass_offset()
 
+            # Static-wall early stop on return leg: same logic as DRIVE_TO_B.
+            # If an unexpected wall appears in the return path, stop and settle cleanly.
+            if self._front_is_continuous_wall and self._min_forward_lidar < WALL_STOP_DIST:
+                self._stop_robot()
+                self.get_logger().warn(
+                    f"[Wall-Stop] Static wall at {self._min_forward_lidar:.2f} m on return leg — settling."
+                )
+                self.state = self.SETTLE_3
+                self.state_start_time = now
+                self.target_lateral_offset = 0.0
+                self.is_paused = False
+                self.last_vy_cmd = 0.0
+                return
+
             # Calculate cross-track error in path frame
             path_y = -dx * math.sin(self.start_yaw) + dy * math.cos(self.start_yaw)
 
@@ -693,7 +1080,7 @@ class ABComparisonTest(Node):
             KP_LATERAL = 0.8
             MAX_LATERAL_SPEED = 0.15
             MAX_LATERAL_ACCEL = 0.5  # m/s^2
-            vy_target = (self.target_lateral_offset - path_y) * KP_LATERAL
+            vy_target = (self.target_lateral_offset - path_y) * KP_LATERAL + self.vy_rep
             vy_target = max(-MAX_LATERAL_SPEED, min(MAX_LATERAL_SPEED, vy_target))
 
             # Apply rate limiting to lateral speed command
@@ -701,23 +1088,62 @@ class ABComparisonTest(Node):
             vy_cmd = max(self.last_vy_cmd - max_dv, min(self.last_vy_cmd + max_dv, vy_target))
             self.last_vy_cmd = vy_cmd
 
-            # Forward speed controller
-            if self.is_paused and abs(self.target_lateral_offset - path_y) > 0.15:
-                # Actively shifting laterally to clear the obstacle
-                self.get_logger().info("Strafing laterally to bypass obstacle...", throttle_duration_sec=2.0)
+            # Active side-wall collision guard (blocking vy_cmd if too close to a wall edge)
+            if vy_cmd > 0.0 and self.wall_left_clearance < 0.30:
+                vy_cmd = 0.0
+            elif vy_cmd < 0.0 and self.wall_right_clearance < 0.30:
+                vy_cmd = 0.0
+
+            # Forward speed controller with blended diagonal profiling (Idea 45)
+            speed_scale = self._get_speed_scaling()
+            if speed_scale <= 0.1:
+                self.get_logger().info("Obstacle blocking path! Stopping return drive...", throttle_duration_sec=2.0)
                 speed = 0.0
             else:
-                speed_scale = self._get_speed_scaling()
-                if speed_scale <= 0.1 or self.is_paused:
-                    self.get_logger().info("Obstacle blocking path! Pausing return drive...", throttle_duration_sec=2.0)
-                    speed = 0.0
-                else:
-                    max_speed = MAX_LINEAR_SPEED * speed_scale
-                    min_speed = MIN_LINEAR_SPEED * min(1.0, speed_scale)
-                    speed = max(min_speed, min(max_speed, dist_error * KP_DIST))
+                max_speed = MAX_LINEAR_SPEED * speed_scale
+                min_speed = MIN_LINEAR_SPEED * min(1.0, speed_scale)
+                base_forward_speed = max(min_speed, min(max_speed, dist_error * KP_DIST))
+                
+                # Blend forward and lateral velocities (Idea 45)
+                lateral_error = abs(self.target_lateral_offset - path_y)
+                forward_scale = 1.0 - max(0.0, min(0.8, lateral_error / 0.5))
+                speed = base_forward_speed * forward_scale
+
+            # Active recovery timeout logic (Idea 31)
+            if self.is_paused or speed == 0.0:
+                self.blocked_time += dt_state
+            else:
+                self.blocked_time = 0.0
+
+            if self.blocked_time > 8.0:
+                # Check rear-sector LiDAR protection before recovery backing (Idea 80)
+                rear_blocked = False
+                if self.last_scan_ranges:
+                    for i, r in enumerate(self.last_scan_ranges):
+                        if math.isnan(r) or r < 0.15 or r > 0.50:
+                            continue
+                        angle = normalize_angle(self.last_scan_angle_min + i * self.last_scan_angle_increment + math.pi)
+                        if abs(angle) >= 2.35:  # 135 deg to 225 deg
+                            rear_blocked = True
+                            break
+                if rear_blocked:
+                    self.get_logger().error("[AB Test] Blocked for > 8 seconds, but rear LiDAR is blocked! Aborting recovery backing.")
+                    self.blocked_time = 0.0
+                    return
+
+                self.get_logger().warn("[AB Test] Blocked for > 8 seconds! Initiating reverse recovery...")
+                recovery_twist = Twist()
+                recovery_twist.linear.x = -0.08
+                for _ in range(15):
+                    self._cmd_pub.publish(recovery_twist)
+                    time.sleep(0.1)
+                self.blocked_time = 0.0
+                self.target_lateral_offset = 0.0
+                self.is_paused = False
+                return
 
             # Heading controller (yaw correction)
-            yaw_error = normalize_angle(self.target_yaw - self.current_yaw)
+            yaw_error = normalize_angle(self.target_yaw - self.corrected_yaw)
             rot_correction = max(-0.2, min(0.2, yaw_error * KP_YAW))
 
             # Zero out rotation if fully stopped due to obstacle to prevent chattering
@@ -727,6 +1153,7 @@ class ABComparisonTest(Node):
             twist.linear.x  = speed
             twist.linear.y  = vy_cmd
             twist.angular.z = rot_correction
+            self.last_vx_cmd = speed  # Store last speed for travel projection (Idea 70)
             self._cmd_pub.publish(twist)
 
         # -- SETTLE_3 --
@@ -734,9 +1161,9 @@ class ABComparisonTest(Node):
             self._maybe_log("settle_3")
             self._stop_robot()
             if now - self.state_start_time >= SETTLE_DURATION:
-                self.start_yaw  = self.current_yaw
+                self.start_yaw  = self.corrected_yaw
                 self.target_yaw = normalize_angle(self.init_yaw)
-                yaw_error = normalize_angle(self.target_yaw - self.current_yaw)
+                yaw_error = normalize_angle(self.target_yaw - self.corrected_yaw)
                 self.prev_yaw_error = yaw_error
                 self.last_time = now
                 self.state = self.ROTATE_HOME
@@ -746,20 +1173,62 @@ class ABComparisonTest(Node):
         # -- ROTATE_HOME --
         elif self.state == self.ROTATE_HOME:
             self._maybe_log("rotate_home")
-            yaw_error = normalize_angle(self.target_yaw - self.current_yaw)
+            yaw_error = normalize_angle(self.target_yaw - self.corrected_yaw)
             if abs(yaw_error) > math.pi - 0.1:
                 yaw_error = math.pi - 0.05
 
             if abs(yaw_error) <= YAW_TOLERANCE:
                 self._stop_robot()
-                self.get_logger().info(
-                    f"[{self._mode.upper()}] Run complete. "
-                    f"Final yaw error: {math.degrees(yaw_error):.1f}°"
-                )
-                self._csv_logger.save()
-                self.state = self.DONE
-                rclpy.shutdown()
-                sys.exit(0)
+                if self.repeat:
+                    self.get_logger().info(
+                        f"[{self._mode.upper()}] Run segment complete (err={math.degrees(yaw_error):.1f}°). Saving log and repeating..."
+                    )
+                    self._csv_logger.save()
+                    
+                    # Reset logger for next run
+                    self._csv_logger = RunLogger(self._mode, self._log_dir)
+                    
+                    # Re-initialize pose reference point to current odom readings and reset corrected pose
+                    self.corrected_x = self.current_x
+                    self.corrected_y = self.current_y
+                    self.corrected_yaw = self.current_yaw
+                    self.prev_odom_pose = (self.current_x, self.current_y, self.current_yaw)
+
+                    self.start_x   = self.corrected_x
+                    self.start_y   = self.corrected_y
+                    self.start_yaw = self.corrected_yaw
+                    self.target_yaw = self.corrected_yaw
+                    self.init_x    = self.corrected_x
+                    self.init_y    = self.corrected_y
+                    self.init_yaw  = self.corrected_yaw
+                    
+                    # Restore full configured distance and clear any early-stop state
+                    self.waypoint_b_dist = self._configured_dist
+                    self._early_stop_dist = None
+
+                    # Transition state back to DRIVE_TO_B
+                    self.state = self.DRIVE_TO_B
+                    self.state_start_time = now
+                    self.state_elapsed_time = 0.0
+                    self.last_state_time = now
+                    self.target_lateral_offset = 0.0
+                    self.is_paused = False
+                    self.last_vy_cmd = 0.0
+                    self.blocked_time = 0.0
+                    self.get_logger().info(
+                        f"[{self._mode.upper()}] (REPEAT) Driving {self.waypoint_b_dist}m to WP-B "
+                        f"(start yaw={math.degrees(self.current_yaw):.1f}°)"
+                    )
+                    return
+                else:
+                    self.get_logger().info(
+                        f"[{self._mode.upper()}] Run complete. "
+                        f"Final yaw error: {math.degrees(yaw_error):.1f}°"
+                    )
+                    self._csv_logger.save()
+                    self.state = self.DONE
+                    rclpy.shutdown()
+                    sys.exit(0)
 
             dt = now - self.last_time
             if dt > 0.0:
@@ -792,10 +1261,26 @@ def main():
         default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs"),
         help="Directory to write CSV logs (default: src/logs/)",
     )
+    parser.add_argument(
+        "--distance",
+        type=float,
+        default=4.0,
+        help="Distance the robot will drift forward and back",
+    )
+    parser.add_argument(
+        "--repeat",
+        action="store_true",
+        help="Repeat the action continuously until canceled",
+    )
     args = parser.parse_args()
 
     rclpy.init()
-    node = ABComparisonTest(mode=args.mode, log_dir=args.log_dir)
+    node = ABComparisonTest(
+        mode=args.mode,
+        log_dir=args.log_dir,
+        distance=args.distance,
+        repeat=args.repeat,
+    )
     try:
         rclpy.spin(node)
     except SystemExit:

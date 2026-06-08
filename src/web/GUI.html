@@ -491,6 +491,19 @@
                 </div>
             </div>
             <div class="card-body">
+                <!-- A/B Test Configuration Controls -->
+                <div class="ab-config-container" style="display: flex; gap: 1.2rem; align-items: center; justify-content: flex-start; margin-bottom: 0.8rem; padding: 0.6rem 0.8rem; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-color); border-radius: 6px; flex-wrap: wrap;">
+                    <div style="display: flex; align-items: center; gap: 0.6rem;">
+                        <span style="font-size: 0.8rem; color: var(--text-secondary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">Drift Distance:</span>
+                        <input type="range" id="ab-distance-slider" min="1.0" max="8.0" step="0.5" value="4.0" style="width: 130px; accent-color: var(--accent-cyan); cursor: pointer; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.1); outline: none;">
+                        <span id="ab-distance-val" style="font-size: 0.85rem; font-weight: 700; color: var(--accent-cyan); min-width: 2.5rem; text-align: left; font-family: monospace;">4.0m</span>
+                    </div>
+                    <div style="width: 1px; height: 1.2rem; background: var(--border-color); display: inline-block;"></div>
+                    <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: var(--text-secondary); cursor: pointer; user-select: none; font-weight: 500;">
+                        <input type="checkbox" id="ab-repeat-check" style="accent-color: #00cc66; cursor: pointer; width: 16px; height: 16px; margin: 0; border-radius: 4px; background: rgba(0,0,0,0.3); border: 1px solid var(--border-color);">
+                        <span>🔄 Continuous Loop (Repeat)</span>
+                    </label>
+                </div>
                 <!-- Mode display: prominent indicator for demo audience -->
                 <div id="mode-display"
                     style="display: none; text-align: center; font-size: 1.4rem; font-weight: 800;

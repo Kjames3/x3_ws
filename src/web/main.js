@@ -285,6 +285,9 @@ const elements = {
     abReactiveBtn: document.getElementById('ab-reactive-btn'),
     abPredictiveBtn: document.getElementById('ab-predictive-btn'),
     modeDisplay: document.getElementById('mode-display'),
+    abDistanceSlider: document.getElementById('ab-distance-slider'),
+    abDistanceVal: document.getElementById('ab-distance-val'),
+    abRepeatCheck: document.getElementById('ab-repeat-check'),
 };
 
 // =================================================================
@@ -1781,6 +1784,15 @@ function handleMessage(data) {
             updateP2pButtonUI();
         }
 
+        if (data.ab_test_running !== undefined) {
+            const wasRunning = state.abTestRunning;
+            state.abTestRunning = data.ab_test_running;
+            state.abTestMode = data.ab_test_mode || null;
+            if (wasRunning !== state.abTestRunning) {
+                updateAbTestButtonsUI();
+            }
+        }
+
         if (data.fps_camera !== undefined) state.latestData.fps.cam = data.fps_camera;
         if (data.fps_detection !== undefined) state.latestData.fps.yolo = data.fps_detection;
 
@@ -2126,6 +2138,12 @@ function updateAbTestButtonsUI() {
     if (elements.velEstToggleBtn) {
         elements.velEstToggleBtn.textContent = state.velocityEstimationEnabled ? 'Est: ON' : 'Est: OFF';
         elements.velEstToggleBtn.style.background = state.velocityEstimationEnabled ? '#10b981' : '#6b7280';
+    }
+    if (elements.abDistanceSlider) {
+        elements.abDistanceSlider.disabled = running;
+    }
+    if (elements.abRepeatCheck) {
+        elements.abRepeatCheck.disabled = running;
     }
     if (elements.abReactiveBtn) {
         if (running && mode === 'reactive') {
@@ -2619,13 +2637,23 @@ if (elements.velEstToggleBtn) {
     });
 }
 
+if (elements.abDistanceSlider) {
+    elements.abDistanceSlider.addEventListener('input', (e) => {
+        if (elements.abDistanceVal) {
+            elements.abDistanceVal.textContent = parseFloat(e.target.value).toFixed(1) + 'm';
+        }
+    });
+}
+
 if (elements.abReactiveBtn) {
     elements.abReactiveBtn.addEventListener('click', () => {
         if (!state.ws || !state.connected) return;
         if (state.abTestRunning && state.abTestMode === 'reactive') {
             sendMessage({ type: 'cancel_ab_test' });
         } else if (!state.abTestRunning) {
-            sendMessage({ type: 'start_ab_test', mode: 'reactive' });
+            const distVal = elements.abDistanceSlider ? parseFloat(elements.abDistanceSlider.value) : 4.0;
+            const repeatVal = elements.abRepeatCheck ? elements.abRepeatCheck.checked : false;
+            sendMessage({ type: 'start_ab_test', mode: 'reactive', distance: distVal, repeat: repeatVal });
         }
     });
 }
@@ -2636,7 +2664,9 @@ if (elements.abPredictiveBtn) {
         if (state.abTestRunning && state.abTestMode === 'predictive') {
             sendMessage({ type: 'cancel_ab_test' });
         } else if (!state.abTestRunning) {
-            sendMessage({ type: 'start_ab_test', mode: 'predictive' });
+            const distVal = elements.abDistanceSlider ? parseFloat(elements.abDistanceSlider.value) : 4.0;
+            const repeatVal = elements.abRepeatCheck ? elements.abRepeatCheck.checked : false;
+            sendMessage({ type: 'start_ab_test', mode: 'predictive', distance: distVal, repeat: repeatVal });
         }
     });
 }

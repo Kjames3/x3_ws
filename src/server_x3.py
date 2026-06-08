@@ -13,6 +13,13 @@ Features:
 import asyncio
 import time
 import json
+try:
+    import orjson
+    def orjson_dumps(msg):
+        return orjson.dumps(msg).decode('utf-8')
+except ImportError:
+    def orjson_dumps(msg):
+        return json.dumps(msg)
 import logging
 import argparse
 import base64
@@ -28,6 +35,13 @@ import signal
 import threading
 import socket
 import subprocess
+from multiprocessing import shared_memory
+
+# Shared Memory Buffers for zero-copy IPC (Idea 145)
+_shared_bgr_shm = None
+_shared_depth_shm = None
+_shared_bgr_array = None
+_shared_depth_array = None
 import yaml
 try:
     import torch
@@ -156,6 +170,7 @@ active_velocity_model_name = "velocity_mlp"  # currently loaded torchscript velo
 velocity_estimation_enabled = True  # A/B toggle: False = reactive, True = predictive
 _p2p_proc = None           # point-to-point test subprocess handle
 _ab_test_proc = None       # A/B comparison test subprocess handle
+_ab_test_mode = None       # A/B comparison test mode ("reactive" or "predictive")
 
 detection_enabled = False
 depth_enabled = False
@@ -178,6 +193,10 @@ fps_detection = 0.0
 # Battery voltage cache (refreshed at 1 Hz, not every frame)
 _batt_cache_v    = 12.0
 _batt_cache_time = 0.0
+
+# Nav2 status cache (refreshed at 2 Hz, not every frame) (Idea 71)
+_nav2_cache_status = {"state": "UNAVAILABLE"}
+_nav2_cache_time = 0.0
 
 connected_clients = set()
 
@@ -269,21 +288,28 @@ class ROS2Bridge:
     def _image_cb(self, msg):
         """Convert sensor_msgs/Image (RGB_INT8 from Fortress) to cv2 BGR ndarray."""
         import numpy as np, cv2
+        global _shared_bgr_array
         arr = np.frombuffer(bytes(msg.data), dtype=np.uint8).reshape(msg.height, msg.width, 3)
         bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
-        with self._lock:
-            self._latest_frame = bgr
+        if _shared_bgr_array is not None and msg.height == 480 and msg.width == 640:
+            np.copyto(_shared_bgr_array, bgr)
+            with self._lock:
+                self._latest_frame = _shared_bgr_array
+        else:
+            with self._lock:
+                self._latest_frame = bgr
 
     def get_frame(self):
         """Return latest camera frame as BGR ndarray, or None. Matches AstraCamera API."""
         with self._lock:
             f = self._latest_frame
-        return f.copy() if f is not None else None
+        return f if f is not None else None
 
     def _depth_cb(self, msg):
         """Convert depth image to colourised BGR uint8.
         Handles both 32FC1 (meters, Gazebo) and 16UC1/mono16 (millimeters, physical robot)."""
         import numpy as np, cv2
+        global _shared_depth_array
         try:
             # Check if image is 16-bit (millimeters) or 32-bit (meters)
             is_16bit = "16" in msg.encoding or "mono16" in msg.encoding
@@ -311,9 +337,15 @@ class ROS2Bridge:
                 norm = np.zeros_like(arr_meters_clean, dtype=np.uint8)
 
             coloured = cv2.applyColorMap(norm, cv2.COLORMAP_BONE)
-            with self._lock:
-                self._latest_depth = coloured
-                self._latest_raw_depth = arr_meters
+            if _shared_depth_array is not None and msg.height == 480 and msg.width == 640:
+                np.copyto(_shared_depth_array, arr_meters)
+                with self._lock:
+                    self._latest_depth = coloured
+                    self._latest_raw_depth = _shared_depth_array
+            else:
+                with self._lock:
+                    self._latest_depth = coloured
+                    self._latest_raw_depth = arr_meters
         except Exception as exc:
             logger.error(f"ROS2Bridge: failed to decode depth frame: {exc}")
 
@@ -321,13 +353,13 @@ class ROS2Bridge:
         """Return latest colourised depth frame as BGR ndarray, or None. Matches AstraCamera API."""
         with self._lock:
             f = self._latest_depth
-        return f.copy() if f is not None else None
+        return f if f is not None else None
 
     def get_raw_depth_frame(self):
         """Return latest raw depth frame as float32 ndarray (in meters), or None."""
         with self._lock:
             f = self._latest_raw_depth
-        return f.copy() if f is not None else None
+        return f if f is not None else None
 
     def _odom_cb(self, msg):
         """Extract position (metres), yaw (radians), and body twist from nav_msgs/Odometry."""
@@ -770,10 +802,36 @@ def initialize_hardware():
     global ros_board, ros_bridge, drive, lidar, camera, model, oled, _gazebo_proc
     global nav2_client, _ros2_stack_proc, frontier_explorer
     global velocity_estimator, active_velocity_model_name
+    global _shared_bgr_shm, _shared_depth_shm, _shared_bgr_array, _shared_depth_array
 
     logger.info("="*50)
     logger.info("Initializing Yahboom X3 Hardware")
     logger.info("="*50)
+
+    # Allocate Shared Memory blocks for camera and depth frames (Idea 145)
+    try:
+        # 640x480 BGR frame = 921600 bytes
+        _shared_bgr_shm = shared_memory.SharedMemory(name="x3_bgr_frame", create=True, size=921600)
+        _shared_bgr_array = np.ndarray((480, 640, 3), dtype=np.uint8, buffer=_shared_bgr_shm.buf)
+        logger.info("Shared Memory: BGR frame buffer allocated")
+    except FileExistsError:
+        _shared_bgr_shm = shared_memory.SharedMemory(name="x3_bgr_frame", create=False)
+        _shared_bgr_array = np.ndarray((480, 640, 3), dtype=np.uint8, buffer=_shared_bgr_shm.buf)
+        logger.info("Shared Memory: BGR frame buffer reattached")
+    except Exception as e:
+        logger.warning(f"Shared Memory: BGR allocation failed: {e}")
+
+    try:
+        # 480x640 float32 depth frame = 1228800 bytes
+        _shared_depth_shm = shared_memory.SharedMemory(name="x3_depth_frame", create=True, size=1228800)
+        _shared_depth_array = np.ndarray((480, 640), dtype=np.float32, buffer=_shared_depth_shm.buf)
+        logger.info("Shared Memory: Depth frame buffer allocated")
+    except FileExistsError:
+        _shared_depth_shm = shared_memory.SharedMemory(name="x3_depth_frame", create=False)
+        _shared_depth_array = np.ndarray((480, 640), dtype=np.float32, buffer=_shared_depth_shm.buf)
+        logger.info("Shared Memory: Depth frame buffer reattached")
+    except Exception as e:
+        logger.warning(f"Shared Memory: Depth allocation failed: {e}")
 
     if SIM_MODE:
         # Simulation mode: create the ROS2Bridge now so topics are ready to receive
@@ -857,7 +915,22 @@ def initialize_hardware():
         logger.info(f"Initializing VelocityEstimator with model: {model_path}...")
         # In ROS2 and SIM modes, retrieve depth frames from the active ROS2 topic bridge to avoid conflicts.
         depth_source = ros_bridge if (ROS2_MODE or SIM_MODE) else camera
-        velocity_estimator = VelocityEstimator(depth_source, lidar, robot_pose_fn=None, model_path=model_path)
+        
+        # Callback to retrieve EKF pose and twist (Idea 1 & 11)
+        def get_robot_pose_and_twist():
+            if ros_bridge is not None:
+                pose = ros_bridge.get_pose_m()
+                with ros_bridge._lock:
+                    twist = dict(ros_bridge._twist)
+                return {"pose": pose, "twist": twist}
+            return None
+
+        # Callback to retrieve latest visual YOLO detections (Idea 146)
+        def get_latest_yolo_detections():
+            global last_detections
+            return list(last_detections)
+
+        velocity_estimator = VelocityEstimator(depth_source, lidar, robot_pose_fn=get_robot_pose_and_twist, model_path=model_path, detections_fn=get_latest_yolo_detections)
         velocity_estimator.start()
         logger.info("VelocityEstimator started successfully")
     except Exception as e:
@@ -868,8 +941,26 @@ def initialize_hardware():
     logger.info("="*50)
 
 def cleanup():
-    global _p2p_proc, _ab_test_proc
+    global _p2p_proc, _ab_test_proc, _shared_bgr_shm, _shared_depth_shm
     logger.info("Cleaning up...")
+    if _shared_bgr_shm is not None:
+        try:
+            _shared_bgr_shm.close()
+            _shared_bgr_shm.unlink()
+            logger.info("Shared Memory: BGR buffer released")
+        except Exception as e:
+            logger.warning(f"Error releasing BGR shared memory: {e}")
+        _shared_bgr_shm = None
+
+    if _shared_depth_shm is not None:
+        try:
+            _shared_depth_shm.close()
+            _shared_depth_shm.unlink()
+            logger.info("Shared Memory: Depth buffer released")
+        except Exception as e:
+            logger.warning(f"Error releasing Depth shared memory: {e}")
+        _shared_depth_shm = None
+
     if _p2p_proc is not None and _p2p_proc.poll() is None:
         logger.info("Stopping P2P Test subprocess...")
         try:
@@ -1041,7 +1132,7 @@ async def handle_client(websocket):
     global model, active_model_name
     global _gazebo_proc, nav2_client
     global velocity_estimator, active_velocity_model_name, velocity_estimation_enabled
-    global _p2p_proc, _ab_test_proc
+    global _p2p_proc, _ab_test_proc, _ab_test_mode
 
     logger.info("Client connected")
     connected_clients.add(websocket)
@@ -1450,8 +1541,10 @@ async def handle_client(websocket):
 
                 elif msg_type == "start_ab_test":
                     mode = data.get("mode", "reactive")  # "reactive" | "predictive"
+                    distance = data.get("distance", 4.0)
+                    repeat = data.get("repeat", False)
                     if _ab_test_proc is None or _ab_test_proc.poll() is not None:
-                        logger.info(f"Starting A/B comparison test (mode={mode})...")
+                        logger.info(f"Starting A/B comparison test (mode={mode}, distance={distance}, repeat={repeat})...")
                         script_path = str(Path(__file__).parent.resolve() / "ab_comparison_test.py")
 
                         child_env = os.environ.copy()
@@ -1465,10 +1558,15 @@ async def handle_client(websocket):
                                 if 'conda' not in p.lower()
                             )
 
+                        cmd_args = [sys.executable, script_path, "--mode", mode, "--distance", str(distance)]
+                        if repeat:
+                            cmd_args.append("--repeat")
+
                         _ab_test_proc = subprocess.Popen(
-                            [sys.executable, script_path, "--mode", mode],
+                            cmd_args,
                             env=child_env
                         )
+                        _ab_test_mode = mode
                     await websocket.send(json.dumps({
                         "type": "ab_test_status",
                         "status": "running",
@@ -1489,6 +1587,7 @@ async def handle_client(websocket):
                                 pass
                         _ab_test_proc = None
                         _enqueue_motion(0.0, 0.0, 0.0)
+                    _ab_test_mode = None
                     await websocket.send(json.dumps({
                         "type": "ab_test_status",
                         "status": "idle",
@@ -1527,6 +1626,8 @@ async def broadcast_loop():
     global _cam_frame_count, _yolo_frame_count, _fps_last_time
     global fps_camera, fps_detection, last_detections, depth_enabled, lidar_enabled
     global _batt_cache_v, _batt_cache_time  # P9
+    global _nav2_cache_status, _nav2_cache_time  # Idea 71
+    global _ab_test_mode
 
     loop = asyncio.get_event_loop()
     _depth_cycle = 0  # throttle depth to ~10 fps (every other 20fps cycle)
@@ -1556,13 +1657,17 @@ async def broadcast_loop():
                             conf  = float(box.conf[0])
                             cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
                             dets.append({"label": label, "bbox": [x1, y1, x2, y2], "conf": conf})
-                    _, buf = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    # Downscale visualization to 320x240 before compressing (Idea 106)
+                    annotated_downscaled = cv2.resize(annotated, (320, 240), interpolation=cv2.INTER_NEAREST)
+                    _, buf = cv2.imencode('.jpg', annotated_downscaled, [cv2.IMWRITE_JPEG_QUALITY, 70])
                     return dets, bytes(buf)
                 last_detections, img_bytes = await loop.run_in_executor(None, _run_yolo)
                 _yolo_frame_count += 1
             elif frame is not None:
                 def _encode_frame():
-                    _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    # Downscale visualization to 320x240 before compressing (Idea 106)
+                    frame_downscaled = cv2.resize(frame, (320, 240), interpolation=cv2.INTER_NEAREST)
+                    _, buf = cv2.imencode('.jpg', frame_downscaled, [cv2.IMWRITE_JPEG_QUALITY, 70])
                     return bytes(buf)
                 img_bytes = await loop.run_in_executor(None, _encode_frame)
 
@@ -1585,7 +1690,9 @@ async def broadcast_loop():
                         df = depth_source.get_depth_frame()
                         if df is None:
                             return ""
-                        _, dbuf = cv2.imencode('.jpg', df, [cv2.IMWRITE_JPEG_QUALITY, 60])
+                        # Downscale depth visualization to 320x240 before compressing (Idea 106)
+                        df_downscaled = cv2.resize(df, (320, 240), interpolation=cv2.INTER_NEAREST)
+                        _, dbuf = cv2.imencode('.jpg', df_downscaled, [cv2.IMWRITE_JPEG_QUALITY, 60])
                         return base64.b64encode(dbuf).decode('utf-8')
                     depth_str = await loop.run_in_executor(None, _get_depth)
 
@@ -1602,7 +1709,10 @@ async def broadcast_loop():
                 # Voltage comes from the /voltage topic published by Mcnamu_driver_X3
                 # Per-wheel velocities (m/s) derived from /odom twist via mecanum kinematics
                 m1_enc, m2_enc, m3_enc, m4_enc = drive.get_wheel_velocities()
-                batt_v = drive.get_battery_voltage()
+                if now - _batt_cache_time >= 1.0:  # Throttle to 1Hz (Idea 67)
+                    _batt_cache_v    = drive.get_battery_voltage()
+                    _batt_cache_time = now
+                batt_v = _batt_cache_v
             elif ros_board:
                 m1_enc, m2_enc, m3_enc, m4_enc = ros_board.get_motor_encoder()
                 if now - _batt_cache_time >= 1.0:
@@ -1633,7 +1743,13 @@ async def broadcast_loop():
                 websockets.broadcast(connected_clients, img_bytes)
 
             # 8. Build readout (P10: removed always-None/False fields; P3: no "image" key)
-            nav_status = nav2_client.get_status() if nav2_client else {"state": "UNAVAILABLE"}
+            if nav2_client:
+                if now - _nav2_cache_time >= 0.5:  # Throttle to 2Hz (Idea 71)
+                    _nav2_cache_status = nav2_client.get_status()
+                    _nav2_cache_time = now
+                nav_status = _nav2_cache_status
+            else:
+                nav_status = {"state": "UNAVAILABLE"}
             msg = {
                 "type": "readout",
                 "depth_image": depth_str,
@@ -1658,6 +1774,8 @@ async def broadcast_loop():
                 "active_velocity_model_name": active_velocity_model_name,
                 "velocity_estimates": velocity_estimates,
                 "p2p_test_running": _p2p_proc is not None and _p2p_proc.poll() is None,
+                "ab_test_running": _ab_test_proc is not None and _ab_test_proc.poll() is None,
+                "ab_test_mode": _ab_test_mode if (_ab_test_proc is not None and _ab_test_proc.poll() is None) else None,
                 "fps_camera": fps_camera,
                 "fps_detection": fps_detection,
                 "detections": last_detections,
@@ -1670,7 +1788,8 @@ async def broadcast_loop():
                 },
             }
 
-            websockets.broadcast(connected_clients, json.dumps(msg))
+            # Fast orjson serialization with fallback (Idea 87)
+            websockets.broadcast(connected_clients, orjson_dumps(msg))
 
         await asyncio.sleep(0.05)  # 20 FPS cap
 
@@ -1833,7 +1952,8 @@ async def main():
     _start_http_server()
     initialize_hardware()
     motion_queue = asyncio.Queue(maxsize=2)
-    async with websockets.serve(handle_client, "0.0.0.0", WS_PORT):
+    # Disable websockets deflate compression to avoid blocking main thread zlib operations (Idea 117)
+    async with websockets.serve(handle_client, "0.0.0.0", WS_PORT, compression=None):
         logger.info(f"Server started on ws://0.0.0.0:{WS_PORT}")
         await asyncio.gather(broadcast_loop(), motion_loop(), oled_loop(), map_push_loop())
 

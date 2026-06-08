@@ -295,3 +295,1315 @@ This log tracks ideas and architectural enhancements for the EE244 Computational
 * **Proposed Enhancement:**
   - Implement a lateral Proportional-Derivative (PD) controller or gain scheduler for the lateral command velocity `vy_cmd`.
   - Calculate the lateral error rate-of-change (cross-track velocity) and apply a derivative damping term to slow down the lateral velocity smoothly as the robot approaches the target lateral offset, preventing overshoot.
+
+---
+
+## [2026-06-05 19:20:00 -07:00] Iteration 12 Analysis
+
+### 33. Dynamic Temporal Scaling of Centroid Displacements
+* **Context:** The MLP is trained on constant-frequency displacement vectors (e.g., at exactly 10Hz/0.1s delta). Under high CPU/GPU load on the Jetson Orin, the `_inference_loop` can lag, meaning the actual time delta $dt$ is greater than 0.1s.
+* **The Issue:** Directly calculating $dx = x_t - x_{t-1}$ under varying $dt$ distorts the model inputs, introducing speed estimation errors because the displacement over a larger time gap is incorrectly treated as occurring in 0.1s.
+* **Proposed Enhancement:**
+  - Measure the actual elapsed time delta $dt_{actual}$ since the last update for each tracked obstacle.
+  - Scale the computed displacements to the standard training time interval: $dx_{scaled} = dx \cdot \frac{0.1}{dt_{actual}}$ and $dy_{scaled} = dy \cdot \frac{0.1}{dt_{actual}}$. This stabilizes features against thread schedule latency and improves velocity estimation accuracy.
+
+### 34. Distance-Adaptive Area Thresholding for Near-Field Detections
+* **Context:** `velocity_estimator.py` uses a hardcoded `MIN_BLOB_AREA = 500` pixels for contour detection.
+* **The Issue:** Farther obstacles are small and may fall below 500 pixels (causing track loss), whereas closer obstacles in tight areas occupy a large pixel area but can be split or truncated near boundaries, making a static area threshold problematic.
+* **Proposed Enhancement:**
+  - Make the contour area threshold dynamic based on depth range, e.g., $\text{MIN\_BLOB\_AREA}(Z) = \text{clamp}(K / Z^2, 150, 1000)$.
+  - Lower the lower bound of depth thresholding to $0.25\text{m}$ (matching the physical Astra Pro limit) to allow the robot to maintain feature detection and navigate extremely close obstacle fields in narrow corridors.
+
+### 35. Continuous, Gap-Based Lateral Bypass Offset Calculation
+* **Context:** In `ab_comparison_test.py`, the bypass offset is a fixed, step-input value of $\pm 0.25\text{m}$ or $\pm 0.45\text{m}$ depending on obstacle centers.
+* **The Issue:** Commanding a fixed bypass offset can force the robot directly into walls or static furniture in narrow spaces if the gap between the obstacle and the wall is smaller than the commanded offset.
+* **Proposed Enhancement:**
+  - Use LiDAR scan ranges in the left/right bypass zones to continuously compute the available free gap.
+  - Calculate a dynamic bypass offset that centers the robot in the largest clear corridor, slowing down or halting if no safe gap exists, rather than committing to binary left/right step-offsets.
+
+### 36. Cropped Contour Masking for Centroid Extraction
+* **Context:** In `_extract_depth_centroids`, to query raw depth values inside a contour, the code currently instantiates a full-sized mask (`np.zeros_like(mask)` of size 640x480) and draws a contour on it, then indexes `raw_depth_frame`.
+* **The Issue:** Creating and processing full-sized image masks for multiple contours at 10Hz consumes unnecessary CPU cycles and memory bandwidth on the Jetson Orin.
+* **Proposed Enhancement:**
+  - Crop the bounding box of the contour: `x, y, w, h = cv2.boundingRect(cnt)`.
+  - Allocate a small local mask of size $w \times h$ and draw the translated contour onto it.
+  - Index the cropped slice of `raw_depth_frame[y:y+h, x:x+w]` using the local mask. This reduces memory allocations and pixel comparison cycles by over 95%.
+
+### 37. Native Raw Depth Retrieval for AstraCamera
+* **Context:** The physical `AstraCamera` class in `drivers_x3.py` does not implement `get_raw_depth_frame()`, forcing the estimator to fall back to colorised BGR thresholding logic on hardware, whereas `ROS2Bridge` supports raw depth.
+* **The Issue:** Falling back to color-mapped BGR parsing adds CPU overhead (conversion and normalization) and makes the thresholding sensitive to dynamic min-max normalization bounds.
+* **Proposed Enhancement:**
+  - Implement `get_raw_depth_frame()` inside `AstraCamera` in `src/drivers_x3.py` by retrieving the raw OpenNI2 uint16 buffer, converting to meters, and flipping.
+  - This allows the estimator to use direct physical meter thresholding universally, improving reliability and efficiency on the physical robot.
+
+---
+
+## [2026-06-05 20:00:00 -07:00] Iteration 13 Analysis
+
+### 38. Velocity-Projected Constant Velocity Tracker Association
+* **Context:** The `ObstacleTracker` matches new centroids to existing tracks using the Euclidean distance from the track's previous raw position.
+* **The Issue:** For fast-moving pedestrians or under reduced frame rates (e.g. from 10Hz to 5Hz), the distance a pedestrian moves between frames can exceed the match threshold, leading to tracking loss, or it can be closer to a different pedestrian's track, leading to identity switches.
+* **Proposed Enhancement:**
+  - Leverage the estimated velocity $(v_x, v_y)$ of the track from the previous frame to project the track's expected position: $x_{pred} = x_{prev} + v_x \cdot dt$ and $y_{pred} = y_{prev} + v_y \cdot dt$.
+  - Calculate the nearest-centroid matching distance relative to the projected target position $(x_{pred}, y_{pred})$ instead of the previous raw centroid $(x_{prev}, y_{prev})$.
+  - This stabilizes associations under high-velocity movement or low frame rates without needing a complex Kalman Filter.
+
+### 39. Map-Masked LiDAR Front Blockage Filtering
+* **Context:** In `ab_comparison_test.py`, the front path is declared blocked if any LiDAR point falls within a forward sector bounding box ($x < 0.75$m, $|y| < 0.4$m).
+* **The Issue:** In tight corridors or narrow doorways, minor yaw drift or rotation places static walls or door frames inside the forward sector, causing the robot to falsely trigger a blockage pause and eventually timeout.
+* **Proposed Enhancement:**
+  - Retrieve the static occupancy grid map from SLAM Toolbox via `ros_bridge.get_occupancy_grid()`.
+  - Transform front-sector LiDAR detections into the global map frame using the current robot pose.
+  - Check the map cell occupancy value at those coordinates. If the cell is classified as a known static obstacle (wall), ignore the point for path blockage checks. Only trigger path pause if the blocking point falls into known free space, isolating dynamic pedestrians from static walls.
+
+### 40. Swept-Volume Rotational Safety Fields
+* **Context:** During turnaround states (`ROTATE_180` and `ROTATE_HOME`), the robot executes in-place rotations, controlling only angular velocity.
+* **The Issue:** The robot's rectangular corners sweep out a larger radius (swept-volume) than its stationary width. If a turn is initiated close to a table leg or wall, its corners can collide with obstacles during the spin.
+* **Proposed Enhancement:**
+  - Before and during rotation states, scan the $360^\circ$ LiDAR profile.
+  - If any obstacle point is within the robot's circumscribed diagonal radius (plus a safety buffer, e.g. 0.38m), compute the direction of the obstacle.
+  - Command a minor lateral/linear translation (using the mecanum wheels' holonomic capability) to drift the robot away from the obstacle while it spins, or abort the rotation and back up before executing the turnaround.
+
+### 41. Vectorized Feature Construction in Track History Processing
+* **Context:** In `_build_window_features`, the history queue is converted element-by-element using Python list insertions and loops to flatten coordinate displacement sequences into a $(1, 40)$ feature vector.
+* **The Issue:** Doing this element-by-element looping for every track (up to 5 obstacles) at 10Hz introduces Python interpreter overhead and unnecessary memory allocations.
+* **Proposed Enhancement:**
+  - Convert the track history deque directly to a numpy array of shape $(T, 3)$ representing the coordinate history.
+  - Extract the $r_x$ (depth) and $r_y$ (negated camera X) arrays.
+  - Use `np.diff` with `prepend` to compute displacements $dx$ and $dy$ instantly: `dx = np.diff(rx, prepend=rx[0])` and `dy = np.diff(ry, prepend=ry[0])`.
+  - Stack and flatten the features using `np.column_stack` or `np.concatenate` to return the $(1, 40)$ shape. This vectorization reduces the computation time of feature prep to negligible levels.
+
+### 42. Shell Sourcing Elimination for ROS2 Subprocesses
+* **Context:** `server_x3.py` launches ROS2 nodes (Gazebo, SLAM, hardware bringup) using a nested bash shell `bash -c "source /opt/ros/... && source ... && ros2 launch ..."` via `subprocess.Popen`.
+* **The Issue:** Spawning a subshell and sourcing heavy setup bash scripts consumes significant CPU cycles (100% core spikes for 1-2 seconds) and delays startup sequences.
+* **Proposed Enhancement:**
+  - Since the parent `server_x3.py` is already launched in an environment with ROS2 and workspace setup sourced, the environment variables (`PATH`, `PYTHONPATH`, etc.) are already populated.
+  - Execute `ros2` directly as an executable array: `['ros2', 'launch', 'yahboomcar_nav', launch_file]` using `subprocess.Popen`.
+  - Pass the current `os.environ` or a cleaned copy of it. This removes shell startup overhead and prevents startup CPU spikes on the Jetson Orin.
+
+---
+
+## [2026-06-05 21:00:00 -07:00] Iteration 14 Analysis
+
+### 43. Temporal Depth Filtering for Centroid Smoothing
+* **Context:** In `velocity_estimator.py`, the depth coordinate $Z$ of each centroid is calculated per frame using the median depth of the contour pixels.
+* **The Issue:** Shape fluctuations of the contour (e.g. from swinging arms or shadows) cause high-frequency depth measurement jitter. This jitter directly impacts the coordinate displacement values ($dx, dy$) in the MLP feature vector, reducing velocity prediction accuracy.
+* **Proposed Enhancement:**
+  - Implement a low-pass Exponential Moving Average (EMA) filter on the tracked depth coordinate $Z$ at the tracker level: $Z_{filtered} = \alpha \cdot Z_{new} + (1 - \alpha) \cdot Z_{prev}$ (e.g. with $\alpha = 0.7$).
+  - Smoothing the depth sequence stabilizes the displacement features fed to the MLP, reducing output velocity variance and improving overall estimation accuracy.
+
+### 44. Vertical Centroid Fusion for Partially Occluded Pedestrians
+* **Context:** In `velocity_estimator.py`, depth contours are extracted using `cv2.findContours` with the `RETR_EXTERNAL` mode.
+* **The Issue:** In tight environments with furniture (chairs, desks), a pedestrian's body can be divided into separate visual regions (e.g., legs and torso). This leads to multiple separate tracks for a single person, splitting the features and corrupting centroid displacement metrics.
+* **Proposed Enhancement:**
+  - Implement a vertical fusion/grouping pass after extracting centroids.
+  - If two distinct contours lie at similar depth ranges ($|Z_1 - Z_2| < 0.15$m) and have overlapping horizontal bounds ($|\Delta x| < 0.25$m), merge them into a single tracked obstacle.
+  - This preserves tracking continuity and feature integrity for partially occluded humans in tight classroom layouts.
+
+### 45. Blended Diagonal Bypass Path Profiling
+* **Context:** In `ab_comparison_test.py`, the robot halts completely (`speed = 0.0`) while it strafes laterally to line up with the target bypass offset.
+* **The Issue:** Halting forward motion during strafing wastes momentum, increases travel time, and leads to blocky, non-fluid movements.
+* **Proposed Enhancement:**
+  - Blend forward speed (`linear.x`) and lateral speed (`linear.y`) dynamically to profile a coordinated diagonal bypass path.
+  - Scale the forward velocity command proportionally to the lateral error (e.g., $v_x = v_{max} \cdot (1 - \text{clamp}(|path\_y - offset| / 0.3, 0, 1))$) so that the robot naturally slows down slightly and glides diagonally around the obstacle rather than coming to a dead stop.
+
+### 46. Batched MLP Inference for Multi-Track Scaling
+* **Context:** In `velocity_estimator.py`, neural network inference is run inside a Python loop sample-by-sample for each active track using `self._model(x_tensor)`.
+* **The Issue:** Sequential model evaluations on individual tracks create high overhead from PyTorch-to-Python bindings and execution launches, which wastes CPU cycles on the Jetson.
+* **Proposed Enhancement:**
+  - Collect features for all active, eligible tracks into a single unified NumPy array of shape $(N, 40)$.
+  - Convert this batch array into a single PyTorch tensor `x_batch` and perform a single batched inference call: `preds_batch = self._model(x_batch).numpy()`.
+  - Distribute the resulting predictions back to their corresponding tracks. This reduces the inference launch overhead to a constant time factor, dramatically improving scalability.
+
+### 47. Event-Driven or Throttled Bypass Optimization
+* **Context:** In `ab_comparison_test.py`'s control loop running at 20Hz, `_update_bypass_offset` parses the entire LiDAR scan and camera estimates on every iteration.
+* **The Issue:** The LiDAR scan publishes at ~8Hz and camera estimations run at 10Hz. Running the bypass check at 20Hz results in redundant computations on identical data, wasting CPU bandwidth.
+* **Proposed Enhancement:**
+  - Implement a dirty flag or rate-limiter that restricts `_update_bypass_offset` executions to 10Hz or only immediately after receiving a new WebSocket readout or LiDAR scan.
+  - This halves the CPU usage of the reactive avoidance parser in the test script.
+
+---
+
+## [2026-06-05 22:00:00 -07:00] Iteration 15 Analysis
+
+### 48. Local Trajectory Translation Normalization
+* **Context:** The feature vector built in `_build_window_features` feeds absolute coordinates $rx, ry$ (relative to the robot) along with displacements $dx, dy$ into the MLP model.
+* **The Issue:** Feeding absolute relative coordinates causes the model to overfit to the spatial coordinates of training samples (e.g. predicting differently based on absolute distance). It makes predictions sensitive to the starting point of the pedestrian in the camera frame.
+* **Proposed Enhancement:**
+  - Record the starting relative coordinates $(rx_0, ry_0)$ of the track at the beginning of the active history window.
+  - For all elements in the window, subtract this start offset: $rx_{norm} = rx - rx_0$ and $ry_{norm} = ry - ry_0$.
+  - Feed $[rx_{norm}, ry_{norm}, dx, dy]$ into the model. This makes the spatial trajectory input translation-invariant, forcing the MLP to generalize based purely on trajectory shape.
+
+### 49. LiDAR-Camera Joint Frustum Association and FOV Handover
+* **Context:** The camera's horizontal FOV is limited ($\approx 60^\circ$), which prevents tracking pedestrians who move to the sides of the robot in narrow areas.
+* **The Issue:** Pedestrians moving laterally close to the robot disappear from the camera, causing the tracking sequence to break even if they are still detected by the $360^\circ$ LiDAR scan.
+* **Proposed Enhancement:**
+  - Project the 3D centroids of dynamic LiDAR clusters into the camera frame using camera intrinsic calibration parameters.
+  - If the projected coordinates lie inside the camera FOV, associate them with the camera's depth centroids (multi-modal fusion).
+  - If the cluster moves outside the camera's frustum limits, smoothly transition the track to run solely on LiDAR centroids. This ensures seamless coverage expansion and tracking continuity in tight quarters.
+
+### 50. Footprint-Swept Corridor Expansion for Holonomic Path Protection
+* **Context:** In `ab_comparison_test.py`, the linear speed scaling and TTC calculations use a static lateral corridor width (`LATERAL_THRESHOLD = 0.35`m) to look for blocking obstacles in front of the robot.
+* **The Issue:** When the robot strafes laterally (holonomic bypass), its physical trajectory is diagonal, not straight. A static lateral corridor centered on the robot's heading will fail to detect obstacles in its sideways path of travel, risking a side collision.
+* **Proposed Enhancement:**
+  - Expand the lateral safety corridor dynamically during bypass maneuvers to include the target lateral offset and current lateral speed: $\text{LATERAL\_THRESHOLD} = 0.35 + |path\_y| + |vy\_cmd| \cdot \text{lookahead\_time}$.
+  - This ensures the proximity and collision estimators cover the entire swept volume of the diagonal trajectory.
+
+### 51. Client-Side Drawing Overlay Delegation
+* **Context:** When object detection is active, the WebSocket server (`server_x3.py`) draws bounding box rectangles and labels on the image frame on the Jetson CPU and encodes it as a separate JPEG.
+* **The Issue:** Drawing on the image requires copying the entire 640x480 frame and performing a second JPEG compression, wasting significant CPU cycles and increasing network packet size.
+* **Proposed Enhancement:**
+  - Send only the raw, un-annotated JPEG camera frame over WebSockets.
+  - Rely on the Web GUI browser to draw the bounding boxes and text labels dynamically on its HTML5 canvas using the `"detections"` data array already included in the JSON readout payload. This removes rendering overhead and redundant JPEG compression from the Jetson CPU.
+
+### 52. Decimated Depth Arrays for Centroid Median Calculation
+* **Context:** In `velocity_estimator.py`'s centroid extraction, `np.median` is run on the filtered depth values inside each contour to calculate distance $Z$.
+* **The Issue:** Large obstacle contours (e.g., when close to the camera in tight areas) can contain thousands of pixels, making array filtering and sorting for the median computationally expensive.
+* **Proposed Enhancement:**
+  - Decimate the contour depth pixel array before computing the median, e.g., if `len(depth_vals) > 200`, slice it as `depth_vals[::len(depth_vals) // 200]`.
+  - Taking a uniform sample of 200 pixels yields a statistically identical median (within sub-millimeter precision) but reduces median sorting time by over 90% for large objects.
+
+---
+
+## [2026-06-05 23:00:00 -07:00] Iteration 16 Analysis
+
+### 53. Bipartite Matching for Tracker Centroid Association
+* **Context:** Detections are matched to active tracks in `ObstacleTracker` using a greedy sequential nearest-centroid loop.
+* **The Issue:** The greedy approach is highly order-dependent. If two pedestrians walk in close proximity, a track processed early can "steal" a centroid that belongs to a different track, causing tracking loss and identity switches.
+* **Proposed Enhancement:**
+  - Construct a full cost matrix representing distance offsets between all active tracks and new centroids.
+  - Solve the association problem globally using a bipartite matching solver or a sorted-greedy minimum cost matching algorithm.
+  - Global matching ensures optimal overall pairing, stabilizing track history sequences and reducing MLP input noise.
+
+### 54. Morphological Flood-Fill Hole Correction for Specular Dropouts
+* **Context:** In `_extract_depth_centroids`, binary masks are created by range-checking depth values and applying morphological opening/closing.
+* **The Issue:** Pedestrians with highly reflective clothing or badges create specular reflections, resulting in invalid (zero/NaN) depth readings. This divides a single human contour into multiple smaller fragments, dropping their area below `MIN_BLOB_AREA` and causing detection failure.
+* **Proposed Enhancement:**
+  - Apply a binary flood-fill hole correction pass to the thresholded mask before extracting contours.
+  - Flood-fill from the image borders, invert the result, and OR it with the original mask. This seals all internal dropouts within the pedestrian's body, maintaining a solid unified contour and ensuring reliable area thresholding.
+
+### 55. Predictive Vector-Field Orientation Alignment
+* **Context:** During driving states in `ab_comparison_test.py`, the robot heading is locked to a static yaw angle parallel to the waypoints segment.
+* **The Issue:** In tight hallways or angled spaces, minor lateral drift forces the robot to maintain a heading that is not parallel to the actual walls, leading to uneven clearances and potential corner collisions.
+* **Proposed Enhancement:**
+  - Retrieve the local free space vector field from the SLAM Toolbox grid.
+  - Dynamically align the robot's target heading parallel to the local centerline corridor tangent instead of a static yaw coordinate.
+  - This keeps the robot chassis aligned parallel to the surrounding walls, maximizing side clearances during forward and lateral motions.
+
+### 56. SIMD-Optimized OpenCV inRange Thresholding
+* **Context:** In `velocity_estimator.py`, depth thresholding is performed using multi-stage NumPy boolean comparisons (`(raw_depth_frame >= 0.5) & ...`).
+* **The Issue:** Evaluating multiple boolean matrices on the CPU for all 307,200 pixels in Python is slow and consumes memory bandwidth.
+* **Proposed Enhancement:**
+  - Replace NumPy comparison blocks with OpenCV's C++ native `cv2.inRange()` function after a quick `np.nan_to_num()` cleaning pass.
+
+### 57. Binary Serialization of Depth Frames via WebSockets
+* **Context:** When depth visualization is enabled, `server_x3.py` base64-encodes the compressed JPEG depth frame and sends it inside the JSON readout text payload.
+* **The Issue:** Base64 encoding adds a 33% size overhead and consumes CPU time for text serialization and deserialization, bloating WebSocket traffic.
+* **Proposed Enhancement:**
+  - Exclude the `depth_image` string from the JSON readout text frame.
+  - Compress the depth frame and broadcast the raw JPEG bytes directly as a binary WebSocket frame, tagged with a unique header (e.g. `b'DEPT'`).
+  - This eliminates base64 encoding and decoding overhead, cutting transmission latency and bandwidth by 33%.
+
+---
+
+## [2026-06-06 00:00:00 -07:00] Iteration 17 Analysis
+
+### 58. Kinematic Derivative Enrichment for MLP Input Vectors
+* **Context:** Features mapped to the MLP model consist of raw positions $rx, ry$ and spatial displacements $dx, dy$ over a 10-frame window.
+* **The Issue:** A flat position/displacement history vector provides limited temporal context of movement dynamics. The model lacks direct, explicit inputs for velocity, acceleration, and angular rates, making predictions under nonlinear walking profiles less accurate.
+* **Proposed Enhancement:**
+  - Enrich the feature vector with higher-order kinematic derivatives calculated over the history queue.
+  - Append computed velocities ($v_x = dx/dt$), accelerations ($a_x = (v_x - v_{x,prev})/dt$), heading angles ($\theta = \text{atan2}(dy, dx)$), and angular rates ($\omega = d\theta/dt$) for all points in the window.
+  - Providing these explicit physical features to the model structure dramatically reduces training regression errors and improves live velocity prediction.
+
+### 59. Focal-Length Bounding Box Projection Fallback for Blind Spots
+* **Context:** In `velocity_estimator.py`, pedestrian centroids are calculated by thresholding the depth frame.
+* **The Issue:** If a pedestrian walks extremely close to the camera (e.g., $<0.6$m), the camera enters its physical depth blind spot, producing zero-depth readings. This fragments the binary mask and breaks centroid tracking exactly when the person is nearest to the robot.
+* **Proposed Enhancement:**
+  - Implement a bounding box tracker on the RGB or IR camera stream as a fallback.
+  - When the depth centroid fails due to extreme proximity, track the person's bounding box and project their distance $Z$ using a pinhole focal-length scaling model: $Z_{est} = (W_{human} \cdot f_x) / w_{pixels}$.
+  - This allows the robot to maintain feature tracking and obstacle awareness inside the camera's physical depth blind spot.
+
+### 60. Global SLAM-Path Waypoint Interpolation Recovery
+* **Context:** In `ab_comparison_test.py`, the robot drives a straight line between Waypoints A and B, using a 1D lateral offset to bypass obstacles.
+* **The Issue:** If a permanent wall, furniture, or group of pedestrians completely blocks the straight-line corridor beyond the bypass offset limits, the robot remains stuck or hits a timeout.
+* **Proposed Enhancement:**
+  - Implement a recovery state that queries the SLAM path planner (Nav2) to compute a global detour route around the blockage.
+  - Subdivide the detoured SLAM path into short straight-line virtual sub-waypoints and execute the local state machine along this detour.
+  - This combines the direct speed-modulated evaluation with global navigation capabilities to resolve otherwise fatal hallway blockages.
+
+### 61. Map Hash Checksumming and Delta Compression
+* **Context:** The WebSocket server pushes the entire SLAM occupancy grid map to clients every 1.0 second in `map_push_loop`.
+* **The Issue:** The map array is large (often multiple megabytes), and compressing/broadcasting it repeatedly consumes high CPU time and network bandwidth, even when the robot is stationary and the map is unchanged.
+* **Proposed Enhancement:**
+  - Compute a hash checksum (e.g. MD5 or SHA-256) of the occupancy grid data on each update.
+  - Skip encoding and transmission if the checksum matches the previously sent map.
+  - Additionally, implement delta encoding to only compress and transmit cells within the bounding box of modified map sectors. This cuts map transmission bandwidth by over 95%.
+
+### 62. Pre-Allocated Static Tracks and Numpy Deque Buffers
+* **Context:** `ObstacleTracker` dynamically instantiates track dictionaries and `deque` queues, deleting them when aged out.
+* **The Issue:** Continuously allocating and deallocating memory objects at 10Hz causes heap memory fragmentation in Python and triggers frequent garbage collection cycles, increasing CPU latency jitter.
+* **Proposed Enhancement:**
+  - Pre-allocate a static list of trackers up to `MAX_OBSTACLES = 5` at initialization.
+  - Replace the Python `deque` history queue in each track with a static pre-allocated NumPy array buffer.
+  - Update tracks by writing to slices of the pre-allocated buffers and toggle an active/inactive boolean flag. This eliminates runtime allocations and garbage collection interruptions in the tracking pipeline.
+
+---
+
+## [2026-06-06 01:00:00 -07:00] Iteration 18 Analysis
+
+### 63. Robust Coordinate Clamping and Velocity Bound Constraints
+* **Context:** Sequence displacement coordinates ($dx, dy$) derived from raw centroids are directly scaled and fed into the MLP velocity predictor.
+* **The Issue:** Occasional centroid tracking glitches (e.g. contour splitting or edge anomalies) create unphysical coordinate jumps. These out-of-distribution values map to extreme values through feature scaling, leading the MLP to predict wild velocity spikes.
+* **Proposed Enhancement:**
+  - Implement a clamping/clipping logic on input displacements before scaling: clamp $|dx|$ and $|dy|$ to a maximum of $0.25$m per frame (equivalent to a maximum pedestrian speed of 2.5 m/s).
+  - This bounds the feature space, preventing isolated tracking noise from corrupting regression inference.
+
+### 64. Depth-Gradient Edge Segmentation for Overlapping Obstacles
+* **Context:** In `velocity_estimator.py`, contours are extracted from the range-thresholded binary depth mask.
+* **The Issue:** When a pedestrian stands close to static objects (desks, chair backs) or other people, their depth ranges can overlap, merging them into a single massive contour. This shifts the tracking centroid away from the true human center and dampens estimated velocity.
+* **Proposed Enhancement:**
+  - Calculate spatial depth gradients ($dZ/dx, dZ/dy$) inside large candidate contours.
+  - Locate gradient spikes, which mark physical depth boundaries between overlapping objects (e.g. person at 1.2m vs table leg at 0.8m).
+  - Apply a watershed or depth-split segmentation along these gradient boundaries to partition the merged contour into distinct objects before centroid evaluation.
+
+### 65. Forward-Projected Path Collision Corridors
+* **Context:** In `ab_comparison_test.py`, the bypass side check evaluates side clearances inside static circular LiDAR sectors ($\pm 30^\circ$ to $\pm 135^\circ$).
+* **The Issue:** If the robot is in a narrow hallway, static obstacles or walls that are behind the robot's front wheel line will intersect the wide circular sectors and trigger false "blocked" bypass flags, freezing navigation.
+* **Proposed Enhancement:**
+  - Define side safety zones as rectangular corridors projected along the active diagonal bypass paths.
+  - Filter LiDAR points to check for collisions only within these forward-directed bounding boxes.
+  - This ignores static objects behind or far lateral to the robot's projected trajectory, maximizing traversal efficiency in tight hallways.
+
+### 66. ONNX Runtime Conversion for PyTorch-Free Execution
+* **Context:** `velocity_estimator.py` imports `torch` to load the TorchScript JIT MLP and perform forward pass inference.
+* **The Issue:** PyTorch consumes over 120MB of RAM and takes 2-3 seconds to load on startup. It has high binding overhead when evaluating small $(1, 40)$ matrices.
+* **Proposed Enhancement:**
+  - Export the TorchScript MLP to ONNX format.
+  - Replace PyTorch imports and tensor operations with `onnxruntime` and standard NumPy arrays in `velocity_estimator.py`.
+  - ONNX Runtime has a negligible memory footprint, loads instantly, and runs optimized C++ execution kernels on the Jetson CPU, freeing up substantial RAM and CPU resources.
+
+### 67. Battery Voltage Query Throttling in ROS2 Bridge
+* **Context:** In the 20Hz `broadcast_loop` of `server_x3.py`, `drive.get_battery_voltage()` is called on every iteration to fetch the battery voltage from the ROS2 `/voltage` topic subscriber.
+* **The Issue:** Querying voltage at 20Hz causes unnecessary mutex lock contention and CPU overhead in the ROS2 bridge for a value that changes very slowly (over minutes).
+* **Proposed Enhancement:**
+  - Cache the battery voltage value within the bridge or the broadcast loop.
+  - Only query `drive.get_battery_voltage()` once per second (1Hz). This removes 95% of lock accesses and topic reads, reducing bridge execution cost.
+
+---
+
+## [2026-06-06 02:00:00 -07:00] Iteration 19 Analysis
+
+### 68. Kinematic Back-Propagation for Track Initialization Padding
+* **Context:** Newly created tracks are padded in `_build_window_features` by duplicating the first observed centroid coordinate, resulting in zero displacements ($dx, dy = 0.0$) for the padded historical entries.
+* **The Issue:** Forcing displacements to zero at track initialization confuses the MLP (trained on true moving sequences), leading to highly inaccurate velocity predictions during the first second (10 frames) of tracking.
+* **Proposed Enhancement:**
+  - Calculate the initial movement direction and speed over the first 2-3 frames of a new track.
+  - Back-propagate (dead reckon) the coordinates backward in time to pad the history window.
+  - If a new track begins with positions $c_0, c_1$, set historical padded entries to $c_{padded}(i) = c_0 - (0 - i) \cdot (c_1 - c_0)$. This populates the window with a realistic motion vector, eliminating the 1-second prediction lag.
+
+### 69. Multi-Sensor Boundary Contrast Cross-Checking
+* **Context:** In tight classroom layouts, a pedestrian standing close to a wall creates a single continuous depth contour, merging the human into the static wall structure.
+* **The Issue:** The merged contour shifts the centroid away from the true human center, and the static wall component dampens the estimated displacement, preventing the estimator from tracking the pedestrian's movement.
+* **Proposed Enhancement:**
+  - Map depth contour boundaries to corresponding angles in the high-resolution 2D LiDAR scan.
+  - Check the LiDAR range profile along this boundary: walls appear as continuous straight lines, while pedestrians produce a distinct, slightly curved shape.
+  - Use the LiDAR-detected boundary to crop and isolate the dynamic pedestrian pixels in the depth frame, segmenting the merged contour.
+
+### 70. Omnidirectional Direction-of-Travel Coordinate Projection
+* **Context:** Proximity and Time-to-Collision (TTC) speed scaling calculations in `ab_comparison_test.py` assume forward travel and only evaluate obstacles in the forward sector of the robot's body frame.
+* **The Issue:** During lateral strafing maneuvers (holonomic bypass), the robot moves sideways or diagonally. Obstacles situated in its path of travel (but to the side of its body) are ignored by the forward-looking scaling logic, creating a collision risk.
+* **Proposed Enhancement:**
+  - Transform all tracked pedestrian coordinates and velocities into a coordinate frame aligned with the robot's commanded velocity vector: $V_{robot} = [vx_{cmd}, vy_{cmd}, 0]^T$.
+  - Run all proximity and TTC scaling checks in this direction-of-travel frame. This ensures the speed controller naturally reacts to obstacles situated in its actual path of travel, providing omnidirectional safety.
+
+### 71. Nav2 Action Status Query Throttling
+* **Context:** In `broadcast_loop` of `server_x3.py`, `nav2_client.get_status()` is invoked at 20Hz to populate the JSON readout telemetry packet.
+* **The Issue:** Fetching status from Nav2's action client requires querying action servers and handling future objects, which creates lock overhead in ROS2. Running this at 20Hz is unnecessary since navigation states change slowly.
+* **Proposed Enhancement:**
+  - Cache the Nav2 status dictionary inside the broadcast loop.
+  - Throttle calls to `nav2_client.get_status()` to 2Hz (every 10 iterations). This reduces Nav2 status retrieval overhead by 90%.
+
+### 72. Pure NumPy Feature Normalization (Eliminating Scikit-Learn)
+* **Context:** `velocity_estimator.py` loads scikit-learn standard scalers (`scaler_X.pkl` and `scaler_y.pkl`) using `joblib` and calls `.transform()` to normalize model features.
+* **The Issue:** Importing `joblib` and scikit-learn (`sklearn`) consumes over 150MB of RAM and takes 2-3 seconds at startup, which is highly inefficient on the resource-constrained Jetson Orin.
+* **Proposed Enhancement:**
+  - Export the mean, standard deviation, scale, and min/max parameters of the training scalers as a lightweight `.npy` or `.json` file.
+  - Perform the scaling arithmetic directly in raw Python/NumPy: $x_{scaled} = (x - \mu) / \sigma$.
+  - This completely removes scikit-learn and joblib dependencies from `velocity_estimator.py`, saving 150MB of memory and accelerating startup.
+
+---
+
+## [2026-06-06 03:00:00 -07:00] Iteration 20 Analysis
+
+### 73. Multi-Scale Temporal Resolution Input Feature Vector
+* **Context:** The feature vector built in `_build_window_features` utilizes a fixed 10-frame window representing the last 1.0 second of history sampled consecutively at 10Hz.
+* **The Issue:** A single uniform resolution does not scale well: short-term windows fail to capture long-term walking trends, while long-term windows average out sudden pace changes or stops.
+* **Proposed Enhancement:**
+  - Build a multi-scale feature vector of the same fixed size $(1, 40)$, but partition it to capture multiple temporal resolutions.
+  - Dedicate 5 entries to the short-term scale (last 5 consecutive frames at 10Hz), 5 to the medium-term scale (alternate frames spanning 1.8 seconds), and 5 to the long-term scale (every third frame spanning 3.0 seconds).
+  - This informs the model of both high-frequency local acceleration and overall trajectory patterns.
+
+### 74. Boundary-Truncation Reconstruction and Shape Fitting
+* **Context:** In `_extract_depth_centroids`, centroids of close-range obstacles are calculated using binary image moments.
+* **The Issue:** When a pedestrian stands extremely close to the camera, their body contour is truncated by the edges of the image frame. Standard image moments skew the centroid coordinate toward the center of the visible frame, corrupting estimated displacements.
+* **Proposed Enhancement:**
+  - Detect if a contour intersects the image borders ($x = 0, y = 0,$ etc.).
+  - If boundary intersection is detected, fit a geometric ellipse or human head-and-shoulders model to the non-truncated contour boundaries.
+  - Extrapolate the truncated coordinates beyond the frame boundary to reconstruct the full shape before computing the centroid, eliminating truncation bias.
+
+### 75. Velocity Obstacle (VO) Vector Selection for Holonomic Navigation
+* **Context:** In `ab_comparison_test.py`, the robot halts forward movement (`speed = 0.0`) and sets `is_paused = True` when the lateral bypass path is blocked.
+* **The Issue:** Halting linear velocity whenever an obstacle enters the diagonal bypass corridor causes blocky movements and increases traversal time.
+* **Proposed Enhancement:**
+  - Implement a local Velocity Obstacle (VO) selection algorithm. Represent obstacles as collision cones in the robot's velocity space.
+  - Search for and select a combined velocity vector $(v_x, v_y)$ that is closest to the target waypoint vector but lies outside the active collision cones.
+  - This lets the robot dynamically steer around dynamic obstacles using continuous velocity angle corrections, avoiding abrupt halts.
+
+### 76. Decoupled Background YOLO Throttling with Velocity Projection
+* **Context:** In `broadcast_loop` of `server_x3.py`, YOLOv11 object detection runs on every camera frame at 20Hz.
+* **The Issue:** Running deep learning inference at 20Hz on the Jetson Orin keeps the GPU under constant heavy load, causing thermal throttling and starving critical navigation threads.
+* **Proposed Enhancement:**
+  - Run YOLO in a background executor capped at 5Hz to find obstacles.
+  - For intermediate frames, update/project the bounding box positions using the pedestrian's estimated velocity vector ($vx, vy$) provided by the 10Hz estimator.
+  - This cuts GPU utilization by 75% while maintaining a high-frequency visualization overlay.
+
+### 77. Connected Components with Stats for Centroid Extraction
+* **Context:** Centroids are extracted in `velocity_estimator.py` by finding contours and iterating over them in Python to calculate areas and moments.
+* **The Issue:** If the depth frame is noisy or contains textured surfaces (like carpets), `findContours` returns dozens of small contours. Iterating over them and computing image moments in Python loops is slow.
+* **Proposed Enhancement:**
+  - Replace `cv2.findContours` and subsequent Python loops with OpenCV's C++ optimized `cv2.connectedComponentsWithStats()`.
+  - This returns areas, bounding boxes, and centroids of all labeled regions in a single optimized pass.
+  - Filter out small regions using a fast vector mask in NumPy, eliminating Python loops and moments calculations entirely.
+
+---
+
+## [2026-06-06 04:00:00 -07:00] Iteration 21 Analysis
+
+### 78. Kinematic Acceleration-Limiting Output Filter
+* **Context:** The MLP model output provides real-time velocity estimates ($v_x, v_y$) for tracked obstacles.
+* **The Issue:** Under tracking jitter or lighting variance, the MLP output velocities can spike or change direction instantaneously, resulting in physically impossible acceleration profiles (e.g. $>5$ m/s$^2$) and jerky speed-scaling reactions.
+* **Proposed Enhancement:**
+  - Apply a kinematic acceleration-limiting filter to the predicted velocity outputs of each track.
+  - Limit the implied acceleration between consecutive steps to a maximum human capability (e.g., $a_{max} = 3.0\text{ m/s}^2$). If the acceleration magnitude exceeds this limit, cap it and compute the smoothed velocity command: $v_{smooth} = v_{prev} + a_{capped} \cdot dt$.
+  - This enforces physical plausibility on the output velocities, smoothing out navigation responses.
+
+### 79. Semantic Gating with YOLO Bounding Boxes
+* **Context:** The `VelocityEstimator` tracks all depth-contour centroids within the specified range limit.
+* **The Issue:** Dynamic lighting, dust, and specular shadows in tight classroom areas create false depth centroids. The tracker treats these as dynamic obstacles, triggering false deceleration.
+* **Proposed Enhancement:**
+  - Project the 3D depth-contour centroids onto the camera image plane and check for spatial overlap with YOLO bounding boxes of dynamic classes (e.g., `person`).
+  - Require a centroid track to maintain semantic overlap with a verified YOLO bounding box for at least 3 frames before designating it as a dynamic obstacle for speed scaling.
+  - This prevents static clutter or shadow noise from triggering false bypass/braking maneuvers.
+
+### 80. Rear-Sector LiDAR Protection for Backing Recovery
+* **Context:** In `ab_comparison_test.py`, the active recovery behavior executes a 1.5-second backing maneuver at $-0.08\text{ m/s}$ if the robot is blocked for $>8.0$ seconds.
+* **The Issue:** The depth camera and forward-sector LiDAR block checks only scan the forward path. The robot is blind to obstacles behind it during the backing recovery, risking collisions with walls or bystanders.
+* **Proposed Enhancement:**
+  - Query the rear LiDAR scan sector (angles from $135^\circ$ to $225^\circ$ in the robot frame) before and during the backing recovery.
+  - If any obstacle is detected within $0.35$m of the robot's rear chassis, immediately halt the backing maneuver. This adds spatial safety to the recovery loop.
+
+### 81. Immediate Depth Downsampling for Centroid Extraction
+* **Context:** `velocity_estimator.py` processes raw depth images at full resolution ($640 \times 480$) to find obstacle contours and compute centroids.
+* **The Issue:** Operations on 307,200 pixels consume significant memory bandwidth and CPU cycles, which is unnecessary since pedestrians are large shapes.
+* **Proposed Enhancement:**
+  - Resize the raw depth image immediately upon receipt to $320 \times 240$ or $160 \times 120$ using nearest-neighbor interpolation.
+  - Run all downstream thresholding, masking, and component extraction on the downsampled grid. This cuts CPU processing time and memory allocations by 75% to 90% without degrading spatial accuracy.
+
+### 82. Dynamic Subscription Lifecycle Management for Idle Power Savings
+* **Context:** The `ROS2Bridge` in `server_x3.py` maintains image and depth image topic subscribers active at all times to receive sensor data.
+* **The Issue:** Deserializing and processing 20Hz image streams via ROS2/FastDDS consumes substantial CPU (10-15% of a Jetson core) even when no browser GUI client is connected and the GUI is idle.
+* **Proposed Enhancement:**
+  - Monitor the number of connected WebSocket clients.
+  - Dynamically instantiate the image and depth subscribers when `connected_clients` transitions from 0 to 1, and destroy the subscribers when the count returns to 0.
+  - This stops image deserialization overhead when idle, preserving CPU/power on the Jetson Orin.
+
+---
+
+## [2026-06-06 05:00:00 -07:00] Iteration 22 Analysis
+
+### 83. Hardware-Triggered Pose-Timestamp Interpolation
+* **Context:** EKF odometry coordinates from ROS2 are used to compensate for robot ego-motion on the tracked pedestrian centroids.
+* **The Issue:** Small delays between camera frame capture and ROS2 odom message callbacks (typical latency of 10-30ms) cause coordinate transformations to use slightly lagged poses. This mismatch creates tracking jitter and "ghost speeds" on static objects.
+* **Proposed Enhancement:**
+  - Maintain a sliding queue of EKF odom updates keyed by their exact ROS header timestamp.
+  - When transforming depth centroids, extract the depth frame's capture timestamp and linearly interpolate the robot's pose between the two nearest odom frames in the queue.
+  - Sychronizing odom pose to the exact moment of camera frame capture eliminates latency-induced tracking jitter and improves velocity estimation accuracy.
+
+### 84. Edge-Proximity Confidence Weighting for FOV Transitions
+* **Context:** Pedestrians are tracked as they enter and exit the camera's horizontal field of view.
+* **The Issue:** When a pedestrian is partially cut off at the left/right frame borders, their visible shape shifts, producing large false horizontal displacement steps ($dy$) that lead to massive spikes in the estimated velocity.
+* **Proposed Enhancement:**
+  - Track the contour's pixel distance to the left and right borders of the image frame.
+  - If a contour enters a narrow border zone (e.g. within 25 pixels of the frame edge), flag it as an "unstable-edge" state.
+  - While in this state, decrease tracking matching confidence, and clamp coordinate displacements to their last stable velocity vector rather than using raw boundary coordinates.
+
+### 85. Predictive Dynamic Corridor Shifting
+* **Context:** In `ab_comparison_test.py`, the robot sets a static lateral offset target ($\pm 0.25\text{ m}$ or $\pm 0.45\text{ m}$) to bypass obstacles.
+* **The Issue:** If the pedestrian is walking diagonally towards the robot's bypass side, the static offset target will lead to a collision. The controller fails to adapt to the obstacle's lateral velocity vector.
+* **Proposed Enhancement:**
+  - Dynamically update `target_lateral_offset` in every frame by adding a projection of the pedestrian's lateral velocity: $\text{offset\_target}(t) = \text{pedestrian\_y}(t) \pm (\text{pedestrian\_width} + \text{safety\_margin}) + v_{y,pedestrian} \cdot \text{lookahead\_time}$.
+  - This guides the robot to steer towards the side that is *getting clearer* rather than committing to a blocked path.
+
+### 86. Adaptive Duty-Cycle Throttling in Estimator Idle States
+* **Context:** The `VelocityEstimator` executes range thresholding, contour finding, and MLP inference at a constant 10Hz.
+* **The Issue:** When the robot is stopped (e.g. settling between segments) or when no tracks have been active for a long period, running full-rate processing wastes CPU and battery.
+* **Proposed Enhancement:**
+  - Monitor the robot's linear velocity and track history.
+  - If the robot is stationary and no dynamic tracks are active for $>5.0$ seconds, automatically transition the estimator to an idle state, throttling the execution frequency to 2Hz.
+  - Instantly spin the frequency back to 10Hz as soon as a movement command is received or a change in the LiDAR scan is detected.
+
+### 87. High-Performance orjson Serialization
+* **Context:** In `server_x3.py`'s 20Hz `broadcast_loop`, complex dictionaries containing float arrays (`velocity_estimates`, `detections`, `robot_pose`) are converted to JSON text using Python's standard `json` module.
+* **The Issue:** Python's built-in `json.dumps` is relatively slow, especially when serializing nested float arrays at high frequencies, adding CPU overhead to the broadcast loop.
+* **Proposed Enhancement:**
+  - Replace the standard `json` module with `orjson` (a highly optimized Rust-based JSON library).
+  - Use `orjson.dumps(msg)` which serializes float arrays and NumPy variables directly without intermediate `.tolist()` conversions, reducing message serialization latency.
+
+---
+
+## [2026-06-06 06:00:00 -07:00] Iteration 23 Analysis
+
+### 88. Heading-Aligned Path Rotation for Trajectory Invariance
+* **Context:** Feature sequences built in `_build_window_features` feed relative displacements $dx, dy$ in the camera frame directly to the MLP model.
+* **The Issue:** Displacements vary depending on the absolute heading angle at which the pedestrian is crossing the camera field of view, requiring the neural network to generalize across arbitrary walk angles, which hurts regression accuracy.
+* **Proposed Enhancement:**
+  - Calculate the overall path heading vector of the pedestrian over the active window: $\mathbf{w} = [x_{last} - x_{first}, y_{last} - y_{first}]^T$ and $\theta = \text{atan2}(w_y, w_x)$.
+  - Rotate all coordinate displacements in the history window by $-\theta$. This aligns the displacements so that the pedestrian's overall direction of motion always points along the positive x-axis of the feature space.
+  - Feeding these aligned vectors (plus the path angle $\theta$ as a separate feature) isolates the shape and speed profile from the absolute walking direction, significantly improving prediction accuracy.
+
+### 89. Ground Plane RANSAC Filtering for Leg Contour Isolation
+* **Context:** In `_extract_depth_centroids`, obstacle contours are extracted from range-thresholded binary depth masks.
+* **The Issue:** In tight areas or during robot pitch oscillations, the floor plane enters the bottom sector of the depth frame, merging the ground into the pedestrian's leg contours. This shifts centroids downward and dampens estimated displacements.
+* **Proposed Enhancement:**
+  - Fit a ground plane model ($aX + bY + cZ + d = 0$) to the bottom sector points of the raw depth frame in every cycle using a fast RANSAC solver.
+  - Calculate the height of each depth point relative to this ground plane.
+  - Filter out pixels lying close to the ground (e.g. $<0.05$m) before contour extraction, isolating clean, upright human legs and furniture legs.
+
+### 90. Hysteresis-Based Speed Scaling for Deceleration Smoothing
+* **Context:** In `ab_comparison_test.py`, the linear speed command is modulated by the estimated Time-to-Collision (TTC) scaling factor $s_t = (ttc - \text{TTC\_MIN}) / (\text{TTC\_THRESHOLD} - \text{TTC\_MIN})$.
+* **The Issue:** When the robot brakes to avoid a pedestrian, the relative velocity decreases, which causes the calculated TTC to increase. This triggers the robot to accelerate again, leading to speed oscillation (braking chatter).
+* **Proposed Enhancement:**
+  - Implement a hysteresis filter or a directional low-pass filter on the speed scaling factor $s_t$.
+  - Allow the scaling factor to drop instantly (fast braking) but restrict its increase (slow recovery acceleration) using a lag filter until the minimum distance to the obstacle has started to increase. This ensures smooth, oscillation-free decelerations.
+
+### 91. Vectorized Pairwise Distance Matrix Broadcasting
+* **Context:** `ObstacleTracker.update` calculates Euclidean distances between new centroids and existing tracks using list comprehensions and loops in Python.
+* **The Issue:** Sequential distance queries in Python loops create interpreter overhead that scales with the number of dynamic tracks, adding latency in crowded rooms.
+* **Proposed Enhancement:**
+  - Convert active tracks and new centroids into NumPy arrays of shape $(M, 2)$ and $(N, 2)$.
+  - Calculate the pairwise Euclidean distance matrix $D$ of shape $(M, N)$ in a single vectorized NumPy broadcasting operation: $D = \text{np.linalg.norm}(\text{tracks}[:, \text{np.newaxis}, :2] - \text{centroids}[\text{np.newaxis}, :, :2], \text{axis}=2)$.
+  - Global matches are then selected from this matrix, completely bypassing Python loop overhead.
+
+### 92. Pre-Allocated LUT Map Pixel Mapping
+* **Context:** In `_encode_mapu` of `server_x3.py`, OccupancyGrid values (-1 to 100) are mapped to grayscale pixels (128, 255, 0) using three separate boolean indexing operations on the map array.
+* **The Issue:** Boolean indexing allocates three large boolean masks on every map push, consuming CPU cycles and memory bandwidth when processing large maps.
+* **Proposed Enhancement:**
+  - Pre-allocate a 256-element NumPy array lookup table (LUT) mapping grid data values to target grayscale values (index 0 maps to 255, 1-100 map to 0, and others map to 128).
+  - Perform the pixel mapping using direct array indexing: `pixels = LUT[data]`. This executes the translation natively in C++ in a single pass with zero boolean mask allocations, speeding up map encoding by 5x.
+
+---
+
+## [2026-06-06 07:00:00 -07:00] Iteration 24 Analysis
+
+### 93. MLP-Velocity-Driven Dead Reckoning for Occluded Tracks
+* **Context:** If a tracked pedestrian is temporarily occluded by a desk or table, the track receives no updates but is kept alive for up to `max_age = 10` frames.
+* **The Issue:** When the pedestrian is occluded, coordinate updates stop, leaving gaps in the track's sequence history window. Upon reappearance, the displacement $dx$ is calculated over the entire multi-frame gap, creating false speed spikes.
+* **Proposed Enhancement:**
+  - If a track is not matched in a frame, perform dead reckoning using its last estimated velocity: $x_t = x_{t-1} + v_{x,last} \cdot dt$ and $y_t = y_{t-1} + v_{y,last} \cdot dt$.
+  - Append these predicted coordinates to the sequence history queue on each missing frame. This maintains window continuity and preserves clean sequence shapes for the MLP.
+
+### 94. Spatio-Temporal Static Saliency Masking for Doorways
+* **Context:** `_extract_depth_centroids` extracts all centroids in the range of 0.5m to 4.0m.
+* **The Issue:** When navigating through doorways or narrow corridors, the side doorframes and partition panels enter the threshold range, producing false dynamic obstacle tracks that block the robot from driving through.
+* **Proposed Enhancement:**
+  - Build a local spatio-temporal saliency map. If a track's global velocity is consistently near zero ($<0.05$m/s) for $>3.0$ seconds, classify it as a static structural fixture.
+  - Project this structural coordinate back into the image plane and add it to an image-space exclusion mask.
+  - Exclude masked regions from thresholding in future frames, allowing the robot to ignore static doorways.
+
+### 95. Dynamic Side-Clearance Potential Fields
+* **Context:** In `ab_comparison_test.py`, the linear speed command is scaled by forward blockages, and side clearances are checked using static thresholds.
+* **The Issue:** Proportional-only side checks are binary; the robot does not naturally slow down or veer away from walls as it gets closer, resulting in blocky strafes and side-swipe risks.
+* **Proposed Enhancement:**
+  - Define a repulsive artificial potential field force $F_{rep} = \frac{\eta}{(d - d_{min})^2} \cdot \mathbf{n}$ originating from obstacles in the left and right LiDAR sectors.
+  - Add this repulsive force directly to the lateral velocity command `vy_cmd` as a correction term.
+  - This lets the robot naturally drift away from walls or desk corners as it gets near them, creating a continuous protective cushion of safety.
+
+### 96. Precomputed Pinhole Projection Grid (Projection LUT)
+* **Context:** In `_extract_depth_centroids`, pixel coordinates $(cx, cy)$ are projected to physical meters $(x_m, y_m)$ using division and multiplication operations in Python: `x_m = (cx - w / 2.0) * Z / fx`.
+* **The Issue:** Performing float divisions and coordinate centering for multiple centroids in Python loops on every frame is inefficient.
+* **Proposed Enhancement:**
+  - Precompute two static float32 lookup tables `PX_LUT` and `PY_LUT` matching the dimensions of the downsampled depth frame: `PX_LUT[v, u] = (u - cx) / fx`.
+  - Obtain physical coordinates instantly using index lookups and a single multiplication: `x_m = PX_LUT[cy, cx] * Z` and `y_m = PY_LUT[cy, cx] * Z`.
+  - This removes all float division operations per frame, replacing them with fast array accesses.
+
+### 97. Decoupled High/Low Frequency Telemetry Split
+* **Context:** The WebSocket server `server_x3.py` sends a unified JSON readout containing pose, sensor logs, models, and UI configuration settings at 20Hz.
+* **The Issue:** Telemetry files contain many static configuration values that do not change from frame to frame, wasting serialization time and network bandwidth.
+* **Proposed Enhancement:**
+  - Split the WebSocket telemetry into a High-Frequency (HF) stream and a Low-Frequency (LF) stream.
+  - Send HF streams (pose, battery, tracking estimates, encoders) at 20Hz.
+  - Send LF configuration settings (active models, options, mode states) at 1Hz or only upon change events, cutting the average JSON payload size by 60%.
+
+---
+
+## [2026-06-06 08:00:00 -07:00] Iteration 25 Analysis
+
+### 98. Barycentric Relative Coordinate Stabilization
+* **Context:** Pedestrian tracking coordinates are transformed from camera coordinates to the global map frame using EKF odometry updates to compensate for ego-motion.
+* **The Issue:** During rapid turnaround spins ($180^\circ$ turns), small localization errors and angular heading lag in the EKF odometry create significant coordinate projection jumps. This induces "ghost speeds" on static reference points.
+* **Proposed Enhancement:**
+  - Locate the nearest static cluster in the LiDAR scan (e.g. a wall corner or desk leg) and designate it as a local coordinate reference anchor.
+  - Compute the coordinates of the pedestrian relative to this anchor.
+  - Since both the anchor and the pedestrian are subject to the same ego-motion, subtracting the anchor position cancels out all robot rotation and translation errors, providing noise-free tracking sequences during high-speed turnaround spins.
+
+### 99. Depth Histogram Peak-Slicing for Dynamic Segmenting
+* **Context:** Obstacles in `_extract_depth_centroids` are segmented using a hardcoded depth range threshold of $0.5\text{ m} \le Z \le 4.0\text{ m}$.
+* **The Issue:** In tight hallways, static partitions, tables, or cabinets fall directly inside this range, producing large, cluttered masks that merge with the pedestrian's legs and corrupt centroid coordinate tracking.
+* **Proposed Enhancement:**
+  - Compute a 1D histogram of raw depth values in the forward camera frustum.
+  - Identify distinct depth peaks in the histogram, which represent the exact spatial depth locations of isolated objects (pedestrians, furniture).
+  - Dynamically set the thresholding bounds to wrap tightly around these peaks (e.g. $\text{peak\_depth} \pm 0.35$m), separating dynamic pedestrians from background clutter.
+
+### 100. Spatio-Temporal Gap Selection (Window of Opportunity)
+* **Context:** In `ab_comparison_test.py`, the speed scaling and lateral offset controllers react only when a pedestrian blocks the immediate forward corridor.
+* **The Issue:** Reactive avoidance leads to late steering corrections and sudden braking. The robot cannot plan ahead when navigating crowds or narrow doors.
+* **Proposed Enhancement:**
+  - Project the future trajectories of all tracked dynamic obstacles over a 3.0-second horizon.
+  - Identify spatial "valleys" (regions of space-time where no predicted pedestrian paths intersect).
+  - Select the optimal lane corridor (left, right, or center) that offers the longest uninterrupted window of opportunity, steering the robot proactively before collision conflicts occur.
+
+### 101. Pre-Allocated NumPy Ring Buffers for Coordinate History
+* **Context:** In `_build_window_features`, the track history list/deque is converted to a NumPy array on every iteration, which is then reshaped to generate the $(1, 40)$ feature vector.
+* **The Issue:** Allocating new NumPy arrays and copying history sequences at 10Hz for multiple tracks wastes memory and interpreter cycles on the Jetson.
+* **Proposed Enhancement:**
+  - Pre-allocate a single flat NumPy array of shape $(\text{MAX\_OBSTACLES}, \text{WINDOW\_SIZE}, 3)$ at initialization to store all track coordinates.
+  - Maintain a rolling head pointer index. Update history by writing new centroids directly into the pre-allocated slice coordinates.
+  - Generate features by slicing and reshaping, which creates a memory **view** rather than copying the array, eliminating allocation overhead.
+
+### 102. Event-Driven Camera-Synced Broadcast Loop
+* **Context:** In `server_x3.py`, the `broadcast_loop` queries camera frames and telemetries at a fixed 20Hz cap using `asyncio.sleep(0.05)`.
+* **The Issue:** The camera captures frames at 30Hz. A fixed 20Hz timer cap results in timing drift, where the server periodically processes duplicate frames or skips frames, wasting processing cycles.
+* **Proposed Enhancement:**
+  - Synchronize the broadcast loop directly to the camera frame capture thread.
+  - Use an `asyncio.Event` to trigger the broadcast loop immediately after a new camera frame is written to memory.
+  - This ensures the server only processes unique frames, eliminating redundant JPEG compressions and reducing idle CPU load.
+
+---
+
+## [2026-06-06 09:00:00 -07:00] Iteration 26 Analysis
+
+### 103. Model-Prediction Autoregressive Feedback Loop
+* **Context:** The MLP model processes historical displacement sequences to output the pedestrian's current velocity.
+* **The Issue:** A simple feedforward network has no internal memory of its own past predictions. An isolated centroid measurement noise spike immediately distorts the output velocity, even if the pedestrian has walked at a constant speed for several seconds.
+* **Proposed Enhancement:**
+  - Feed the model's past velocity predictions ($v_{t-1}, v_{t-2}, v_{t-3}$) directly back into the input feature vector as autoregressive features.
+  - This allows the model to leverage its own short-term prediction history to stabilize state transitions, smoothing out coordinate measurement noise and improving prediction robustness during sudden pace changes.
+
+### 104. Temporal Inter-Frame Depth Differencing (Motion Masking)
+* **Context:** Depth thresholding is applied directly to raw depth frames to find obstacle contours.
+* **The Issue:** In tight hallways, static partitions, doorway jambs, and cabinet edges fall inside the depth range, producing false dynamic tracks that trigger unnecessary evasive actions.
+* **Proposed Enhancement:**
+  - Compute the absolute difference between the current depth frame and the depth frame from 0.2 seconds ago.
+  - Apply range-rate thresholding to isolate dynamic pixels (depth changes $>0.05$m) and mask out static background structures.
+  - Restrict the contour extraction and centroid tracking pipeline to run only within this motion mask. This filters out static furniture and door frames.
+
+### 105. Active Center-Point Drift Correction during Rotation
+* **Context:** In `ab_comparison_test.py`, the robot performs turnaround maneuvers (`ROTATE_180` and `ROTATE_HOME`) in place by commanding angular velocity.
+* **The Issue:** Pure in-place rotations on mecanum wheels induce substantial wheel slip, causing the robot's physical center point to drift. When rotation is complete, the robot starts its next drive segment offset from the path centerline.
+* **Proposed Enhancement:**
+  - Track the robot's current coordinates relative to the starting position $(x_0, y_0)$ of the rotation state using EKF odometry.
+  - If drift occurs during the spin, inject minor corrective lateral and forward linear speed terms (`linear.x` and `linear.y` Twist commands) to actively hold the robot's center point at $(x_0, y_0)$ while it rotates.
+  - This eliminates rotational drift, keeping the robot aligned with the centerline and maximizing wall clearance.
+
+### 106. Downscaled Depth Visualization Encoding
+* **Context:** The server encodes depth frames at full resolution ($640 \times 480$) to JPEG and sends them over WebSockets when depth visualization is active.
+* **The Issue:** Running JPEG compression on a 640x480 array at 10Hz consumes substantial CPU bandwidth on the Jetson Orin to produce a feed that is only displayed in a small preview panel in the Web GUI.
+* **Proposed Enhancement:**
+  - Downscale the depth frame to $320 \times 240$ using fast nearest-neighbor scaling before running JPEG compression.
+  - This decreases JPEG compression execution time by over 75% while keeping the visual quality in the GUI preview panel identical.
+
+### 107. Double Exponential Smoothing (Holt's Linear Trend)
+* **Context:** Relative displacements ($dx, dy$) in `velocity_estimator.py` are calculated as raw differences between adjacent centroid frames.
+* **The Issue:** Astra depth resolution limits cause coordinate displacements to be highly discretized, introducing high-frequency noise into the MLP feature vectors.
+* **Proposed Enhancement:**
+  - Apply Double Exponential Smoothing (Holt's linear trend algorithm) to the coordinate sequences before feature extraction.
+  - Holt's algorithm smoothing separates coordinate level tracking from velocity trend calculations. This filters out high-frequency spatial discretization noise, feeding high-fidelity floating-point trend vectors to the MLP.
+
+---
+
+## [2026-06-06 10:00:00 -07:00] Iteration 27 Analysis
+
+### 108. Kinematic Stop-Trigger Gating
+* **Context:** Pedestrian velocities are estimated using coordinate sequences spanning a 1.0-second history window.
+* **The Issue:** When a walking pedestrian stops abruptly, the history window still contains non-zero displacements from earlier frames, causing the MLP output to predict a non-zero speed for up to 1 second. This lag makes the robot remain paused/slowed for too long after the path has cleared.
+* **Proposed Enhancement:**
+  - Check the raw displacements ($dx, dy$) of the last 3 consecutive frames in the active window.
+  - If the displacements fall below a tiny noise threshold ($<0.01$m), bypass the MLP inference and force the output estimated velocity to $(0.0, 0.0)$ immediately.
+  - This hard-gating eliminates neural network lag when a pedestrian halts, accelerating recovery times.
+
+### 109. Centroid Presence Verification Filter (Track Initiation Gate)
+* **Context:** The `ObstacleTracker` instantiates a new track immediately upon receiving a centroid that doesn't match an active track.
+* **The Issue:** Specular reflections, dust, or background shadows in tight classrooms create brief, transient depth centroids. Instantiating tracks immediately for these transient points pollutes the list and triggers false evasive braking.
+* **Proposed Enhancement:**
+  - Introduce a track candidate list for new, unmatched centroids.
+  - Require a candidate centroid to be detected in at least 3 out of 5 consecutive frames before upgrading it to an active track.
+  - This track initiation gate filters out transient noise blocks, ensuring that velocity estimation is restricted to verified dynamic obstacles.
+
+### 110. Dynamic Corridor Width Clearance Scaling
+* **Context:** In `ab_comparison_test.py`, the lateral bypass offset commands a fixed displacement value ($\pm 0.25\text{ m}$ or $\pm 0.45\text{ m}$) relative to the centerline.
+* **The Issue:** Classroom layouts can have variable-width hallways. Commanding a fixed lateral offset in a narrowing corridor can drive the robot directly into the side walls.
+* **Proposed Enhancement:**
+  - Calculate the current corridor width dynamically in every frame using the sum of the left and right LiDAR clearance ranges: $w_{corr} = d_{left} + d_{right}$.
+  - Scale the maximum allowed bypass offset targets proportionally to the corridor width: $\text{OFFSET}_{max} = \text{clamp}(0.5 \cdot (w_{corr} - w_{robot}), 0, \text{BYPASS\_OFFSET})$.
+  - This shrinks the bypass envelope in narrow choke points, preventing side-wall collisions.
+
+### 111. Serial Command Write Rate Optimization (30Hz Throttle)
+* **Context:** In `server_x3.py`, motor velocity commands are written to the serial ROSMASTER board interface at a high-frequency 100Hz rate.
+* **The Issue:** Mecanum motors have mechanical inertia and cannot react to 100Hz updates. Flooding the serial port at 100Hz causes high CPU utilization in serial write blocks and can saturate the controller buffer, adding response lag.
+* **Proposed Enhancement:**
+  - Reduce the Rosmaster serial write update rate inside `motion_loop` from 100Hz to 30Hz (`asyncio.sleep(0.033)`).
+  - This decreases serial write CPU overhead by 70% and reduces serial port lock contention, leaving more processing time for tracking nodes.
+
+### 112. Single-Precision float32 Scale Arithmetic
+* **Context:** Scalar parameters ($\mu, \sigma$) for training standardizations are loaded from a JSON configuration file, and normalization math is computed in `velocity_estimator.py`.
+* **The Issue:** Loading parameters as standard Python floats leads to double-precision `float64` NumPy arrays. Converting these arrays to `float32` tensors on every frame adds minor CPU casting overhead.
+* **Proposed Enhancement:**
+  - Pre-cast the loaded parameter arrays to single-precision float32: `mean = np.array(mean, dtype=np.float32)`.
+  - Perform all subsequent scaling math in float32. This keeps the data types uniform and avoids casting overhead before tensor instantiation.
+
+---
+
+## [2026-06-06 11:00:00 -07:00] Iteration 28 Analysis
+
+### 113. Edge-Preserving Bilateral Filtering for Centroid Stability
+* **Context:** Pedestrian centroids are calculated from binary threshold masks derived from raw depth frame matrices.
+* **The Issue:** Depth sensor pixel noise and surface shadows create high-frequency boundary fluctuations in extracted contours, causing the calculated centroids to drift. This introduces jitter noise into coordinate displacement features.
+* **Proposed Enhancement:**
+  - Apply an edge-preserving **Bilateral Filter** (or a fast Median Filter) to the raw depth image before thresholding.
+  - Unlike Gaussian blur, the bilateral filter smooths out pixel noise inside the pedestrian's body while preserving sharp depth edges at boundaries. This stabilizes contour boundaries and reduces coordinate displacement jitter.
+
+### 114. Vertical Wall RANSAC Filtering
+* **Context:** In `_extract_depth_centroids`, obstacle range thresholding is performed to find candidates.
+* **The Issue:** In narrow corridors, the side walls fall inside the threshold range, producing large static contours that merge with pedestrians.
+* **Proposed Enhancement:**
+  - Implement a vertical plane RANSAC extraction step on the left and right sectors of the raw depth cloud.
+  - Fit side-wall equations: $A_w X + B_w Y + C_w Z + D_w = 0$.
+  - Filter out points close to these vertical planes (e.g. within $0.08$m) before contour finding, suppressing static corridor boundaries.
+
+### 115. Live LiDAR-Wall Relative Alignment at Waypoint A
+* **Context:** In `ab_comparison_test.py`, the robot drives back to Waypoint A and stops when its EKF-fused odometry reaches coordinates $(0,0)$.
+* **The Issue:** Turnaround slippage and gyro drift accumulate, causing the EKF pose to drift from the physical tape mark. The robot fails to stop at the exact start spot over consecutive runs.
+* **Proposed Enhancement:**
+  - Record the robot's initial relative distance to the rear (or front) wall using the LiDAR scan at the start of the test.
+  - During the return segment (`DRIVE_TO_A`), instead of stopping strictly based on EKF odometry coordinates, use the LiDAR to measure the wall distance.
+  - Adjust the final stopping command to match the initial reference wall distance. This compensates for EKF drift at the end of every run.
+
+### 116. Pre-Allocated PyTorch Input Tensor Reuse
+* **Context:** In `velocity_estimator.py`, a new PyTorch tensor is allocated on every frame for each active track before running MLP inference.
+* **The Issue:** Instantiating new tensor objects at 10Hz creates heap allocation overhead and increases CPU memory bandwidth consumption.
+* **Proposed Enhancement:**
+  - Pre-allocate a single PyTorch tensor of shape $(\text{MAX\_OBSTACLES}, 40)$ at startup.
+  - In each step, copy features directly into the pre-allocated memory: `x_tensor_preallocated[i].copy_(torch.from_numpy(features_scaled))`.
+  - Execute inference on a sliced view of the pre-allocated tensor: `self._model(x_tensor_preallocated[:num_tracks])`, avoiding runtime heap allocations.
+
+### 117. Non-Blocking WebSockets Payload Compression
+* **Context:** In `server_x3.py`, the `websockets` library is used to push map updates and camera JPEGs to the GUI.
+* **The Issue:** If `permessage-deflate` compression is enabled, the library runs a blocking zlib compression on the main thread. Compressing large map payloads blocks the Python event loop for 10-20ms, dropping camera frames and delaying velocity commands.
+* **Proposed Enhancement:**
+  - Disable standard `permessage-deflate` on the WebSocket server for large binary payloads.
+  - Run compression in a background executor pool using `loop.run_in_executor` with a fast algorithm like `lz4` or `zstd`, or transmit uncompressed binary frames. This prevents event loop thread blockage and guarantees stable motor command latencies.
+
+---
+
+## [2026-06-06 12:00:00 -07:00] Iteration 29 Analysis
+
+### 118. Spatio-Temporal Cluster Merging for Multi-Scale Blob Extraction
+* **Context:** `_extract_depth_centroids` uses a single `MIN_BLOB_AREA = 500` threshold to filter out tiny blobs.
+* **The Issue:** When the robot turns or moves into narrow/tight areas, dynamic obstacles (like a person's legs or a torso partially blocked by desks) are split into multiple smaller blobs that are individually < 500 pixels. This causes feature detection failures and tracking dropouts.
+* **Proposed Enhancement:**
+  - Instead of discarding blobs under `MIN_BLOB_AREA` immediately, keep smaller blobs (e.g. > 150 pixels) if they are close to each other in 3D space (e.g. Euclidean distance < 0.35m) and merge their contours/masks.
+  - This spatio-temporal merging before centroid calculation restores detection accuracy in narrow spaces where legs or bodies are partially occluded or split by close furniture.
+
+### 119. Adaptive Lidar-Based Dynamic Scan Angle Filtering
+* **Context:** `_update_bypass_offset` scans the lidar sector using static angle boundaries (e.g. `abs(angle) < 0.52` for front block checks).
+* **The Issue:** When turning or driving on curved paths, a static forward sector does not align with the robot's actual instantaneous path (the trajectory curve). This causes the robot to either miss obstacles it is about to turn into, or falsely detect walls/obstacles that are no longer in its path.
+* **Proposed Enhancement:**
+  - Dynamically skew and size the lidar scan angles based on the current angular velocity `omega` (from odometry).
+  - Calculate the center of the arc of travel $R = v / \omega$ and define the forward block checking sector as a curved bounding box matching the swept path of the robot.
+  - This prevents false collision triggers on static walls during sharp turns in narrow spaces while ensuring obstacles along the path of travel are detected.
+
+### 120. Target-Centric Kalman Filter Gate for WebSocket Telemetry Bandwidth Reduction
+* **Context:** `server_x3.py` sends `velocity_estimates` for all tracked objects over the WebSocket to `ab_comparison_test.py` at 20Hz.
+* **The Issue:** Standard network payloads include stationary objects or distant targets that the robot's local planner does not need to react to. This causes unnecessary network transmission overhead and increases CPU overhead on the main thread processing the JSON readouts.
+* **Proposed Enhancement:**
+  - Implement a spatial gating filter on the server before broadcasting estimates.
+  - Only include estimates in the WebSocket readout if they lie within a $2.5\text{m}$ radius around the robot or have a positive heading vector pointing towards the robot's projected trajectory corridor.
+  - This cuts down WebSocket serialization/deserialization latency and JSON parsing CPU load in the test scripts.
+
+### 121. Vectorized Centroid Global Transformation via Matrix Dot Products
+* **Context:** In `velocity_estimator.py`, global coordinates for centroids are computed in a Python `for` loop, calculating trigonometric functions and offsets for each centroid one by one.
+* **The Issue:** Executing loop-based coordinate transforms in Python at 10Hz introduces latency, especially when there are multiple contours or LiDAR clusters.
+* **Proposed Enhancement:**
+  - Vectorize the transformation using NumPy. Stack local centroids `(cz, -cx)` into a homogeneous coordinate matrix of shape $(N, 3)$.
+  - Construct a single 2D homogeneous transformation matrix $T_{robot}^{global}$ using the robot's current pose.
+  - Compute the global coordinates in a single vectorized matrix multiplication: `centroids_g = (T_robot_global @ local_coords.T).T`. This avoids all Python loops and trigonometric calls per centroid, maximizing execution efficiency.
+
+### 122. Dynamic Path Deceleration via Predictive Time-to-Collision (TTC) Hysteresis
+* **Context:** In `ab_comparison_test.py`, `_get_speed_scaling` computes speed scaling factor and instantly applies it to the commanded speed.
+* **The Issue:** Instantaneous scaling based on noisy velocity estimates leads to jerky speed commands (velocity chattering), causing wheel slip and robot vibration.
+* **Proposed Enhancement:**
+  - Implement a hysteresis filter or soft-limit ramp on the speed scaling factor `speed_scale`.
+  - Define an EMA-smoothed speed scale: `self.smooth_speed_scale = beta * speed_scale + (1 - beta) * self.smooth_speed_scale`.
+  - If a sudden decrease in speed scale is commanded (e.g., from 1.0 to 0.2), allow it to drop rapidly for safety, but if the path clears (scale goes back to 1.0), ramp it up slowly over 0.5s to prevent sudden acceleration surges and wheel slippage.
+
+---
+
+## [2026-06-06 13:00:00 -07:00] Iteration 30 Analysis
+
+### 123. Depth-Range-Adaptive Morphological Filtering
+* **Context:** `_extract_depth_centroids` uses a fixed 5x5 ellipse kernel for morphological opening and closing to clean noise.
+* **The Issue:** Dynamic obstacles (pedestrians) far away appear very small in the depth image. A large 5x5 kernel can completely erase far-away pedestrians (below 1.5–2.0 meters, 5x5 is fine, but at 3.5m a person's foot/leg might only be a few pixels wide). Conversely, a small kernel doesn't clean reflections and noise from nearby specular surfaces.
+* **Proposed Enhancement:**
+  - Dynamically scale the morphological structuring element kernel size based on depth.
+  - For regions of interest or depth frames where closest centroids/hypotheses are far, downscale the kernel to 3x3 to preserve tiny far-off features.
+  - For close-range, scale it up to 7x7 to wipe out wide reflection noise.
+
+### 124. IMU-Aided Visual Odometry Ego-Motion Projection
+* **Context:** In `velocity_estimator.py`, coordinate projection from local to global frames utilizes EKF-fused pose messages.
+* **The Issue:** In high-slip conditions (e.g. pivoting on carpet), wheel odometry lags, causing the estimated global coordinates to slide and creating artificial "ghost velocities" for static features.
+* **Proposed Enhancement:**
+  - Read high-frequency angular velocity directly from the IMU topic (`/imu/data` `angular_velocity.z`) and integrate it locally over the frame time delta $dt$ to correct the EKF yaw estimate.
+  - Fusing raw IMU gyro changes directly into the ego-motion projection loop reduces rotational latency error, stabilizing velocity estimates during quick spins.
+
+### 125. Dynamic Potential Fields for Path Clearance Margins in Narrow Corridor Navigation
+* **Context:** In `ab_comparison_test.py`, the side clearance is computed statically, resulting in binary wall collision avoidance.
+* **The Issue:** If the corridor is narrow, a binary threshold can cause the robot to oscillate or get stuck if both side sensors declare blockages.
+* **Proposed Enhancement:**
+  - Implement a dynamic potential field where the repulsive force scales non-linearly: $U_{rep} = \frac{1}{2}\eta (\frac{1}{d} - \frac{1}{d_{max}})^2$.
+  - If the corridor narrows below a threshold (e.g., $1.2\text{m}$ total clearance), scale down $d_{max}$ so the robot is willing to squeeze through with a tighter tolerance, rather than pausing or locking up.
+
+### 126. Vectorized Depth Slicing using Bounding Box Coordinates
+* **Context:** In `_extract_depth_centroids`, finding valid depth values uses boolean indexing on `cnt_mask == 255` over the entire bounding box slice.
+* **The Issue:** Boolean indexing creates a copy of the slice mask and element values, which is slow.
+* **Proposed Enhancement:**
+  - Instead of drawing the contour mask and applying boolean indexing on all pixels in the bounding box, construct a 1D slice of the depth array by querying a sub-sampled grid of coordinates directly from the contour hull or polygon approximation (`cv2.approxPolyDP`).
+  - This retrieves a smaller, representative set of depth values, skipping the full-sized mask drawing and comparison operations.
+
+### 127. WebSocket Frame Compression Bypass for Small Payloads
+* **Context:** `server_x3.py` sends telemetry readouts at 20Hz.
+* **The Issue:** Even without image bytes, compressing small JSON objects (under 1KB) using compression algorithms like deflate adds CPU overhead without any meaningful savings in network bandwidth.
+* **Proposed Enhancement:**
+  - Set a size threshold (e.g., 2KB) below which frames are sent as uncompressed text/binary.
+  - Only apply compression/deflate if the payload includes image bytes or large map grids, saving valuable CPU cycles on the Jetson Orin.
+
+---
+
+## [2026-06-06 14:00:00 -07:00] Iteration 31 Analysis
+
+### 128. Auto-Calibrating Depth Threshold Offset via Ambient Lighting Reference
+* **Context:** `_extract_depth_centroids` uses a fixed grayscale threshold `120` in BGR depth frame fallback mode.
+* **The Issue:** Changes in ambient lighting or camera exposure parameters can shift the normalized pixel intensity levels of static background items, causing false contour triggers.
+* **Proposed Enhancement:**
+  - Compute the average brightness of the background pixels (e.g. upper $10\%$ of the depth frame representing structural ceiling/walls) at startup.
+  - Apply a dynamic threshold offset: $\text{THRESH} = \text{default\_thresh} + (\text{mean\_ambient} - \text{baseline\_ambient}) \cdot K$.
+  - This keeps contour extraction invariant to background luminance shifts.
+
+### 129. Multi-Scale Temporal Windowing for Motion Feature Engineering
+* **Context:** In `velocity_estimator.py`, coordinate features are built using a fixed queue history size of 10 frames ($1.0\text{ s}$).
+* **The Issue:** A constant 1.0s history doesn't capture fast-moving dynamic properties (acceleration/deceleration) cleanly, nor does it capture slow, subtle drifts over a longer period.
+* **Proposed Enhancement:**
+  - Build a multi-scale feature vector consisting of a short-term window ($T_{short}=5$, representing $0.5\text{s}$) to capture quick reaction changes.
+  - Pair it with a long-term downsampled window ($T_{long}=15$, downsampled to every other frame representing $3.0\text{s}$) to capture steady gait velocities.
+  - This double-temporal resolution improves MLP accuracy for varying speeds.
+
+### 130. Predictive Corridor Yaw Alignment during Bypass Strafing
+* **Context:** In `ab_comparison_test.py`, the robot maintains its start yaw `target_yaw` while strafing sideways.
+* **The Issue:** In narrow or curved corridors, strafing straight sideways with a fixed yaw can cause the rear or front corners of the robot to clip the side walls due to local layout curvatures.
+* **Proposed Enhancement:**
+  - Align the robot's yaw command to match the centerline direction of the corridor (extracted from the principal components of the LiDAR scan ranges or map borders).
+  - Rather than keeping yaw fixed to the initial global heading, adjust `target_yaw` dynamically to stay parallel to the local hallway contours, maximizing lateral margins during bypass maneuvers.
+
+### 131. Memory-Mapped Shared Ring Buffer for Web Server IPC
+* **Context:** `server_x3.py` launches test scripts as subprocesses, and telemetry/sensor reads are passed via asynchronous WebSocket JSON frames.
+* **The Issue:** Marshaling large map grids and dynamic estimations through JSON and WebSocket layers introduces serialization/deserialization CPU overhead and latency.
+* **Proposed Enhancement:**
+  - Create a shared memory segment using Python's `multiprocessing.shared_memory.SharedMemory` or `np.memmap`.
+  - Write odometry, lidar scans, and velocity estimates directly to a pre-allocated binary structure.
+  - The subprocess can read this memory instantly with zero network/JSON parsing overhead.
+
+### 132. PyTorch JIT Optimization via TensorRT Compilation (Torch-TensorRT)
+* **Context:** In `velocity_estimator.py`, PyTorch JIT loads the TorchScript model on CPU.
+* **The Issue:** Executing neural network forward passes on the CPU on a Jetson Orin takes valuable resources away from CPU-bound ROS nodes and the WebSocket server.
+* **Proposed Enhancement:**
+  - Convert the TorchScript MLP to ONNX, then compile it using NVIDIA TensorRT (or use Torch-TensorRT).
+  - Run inference directly on the Jetson's GPU or DLA (Deep Learning Accelerator) in FP16 precision.
+  - This reduces CPU inference time to sub-millisecond ranges and frees up CPU capacity.
+
+---
+
+## [2026-06-06 15:00:00 -07:00] Iteration 32 Analysis
+
+### 133. Dynamic Scaling of DBSCAN Search Radius (Eps) for LiDAR Points
+* **Context:** `server_x3.py` passes the lidar data to `VelocityEstimator` and uses DBSCAN clustering.
+* **The Issue:** In narrow doorways or hallways, static walls can cluster together with dynamic pedestrians if the DBSCAN search radius `eps` is too large. If it is too small, a single sparse pedestrian profile at long range will be split into multiple noise clusters, losing tracking continuity.
+* **Proposed Enhancement:**
+  - Scale the DBSCAN clustering radius `eps` dynamically based on the average density/depth of points in each sector (e.g. `eps(Z) = alpha * Z`).
+  - This ensures dense close-range clusters are sharply separated from nearby walls, while maintaining tracking of sparse far-range clusters.
+
+### 134. IMU-Based Visual Centroid Stabilization under Pitch/Roll Vibrations
+* **Context:** Pixel coordinates are projected to meters assuming a flat, stable horizontal plane.
+* **The Issue:** When the robot moves over uneven ground or starts/stops abruptly, the camera pitches and rolls. This angular camera jitter shifts the image center, creating false coordinate displacements ($dx, dy$) in the features and feeding noise to the MLP.
+* **Proposed Enhancement:**
+  - Retrieve raw roll and pitch orientation angles from the IMU at the frame timestamp.
+  - Apply a 3D rotation correction matrix to the coordinate projection formula: $X_{stabilized} = R_{pitch} R_{roll} X_{local}$.
+  - This keeps physical centroids stable against chassis vibrations and sudden acceleration leans.
+
+### 135. Trajectory-Aware Predictive Safety Slowdown Gating
+* **Context:** In `ab_comparison_test.py`, the speed scaling decreases maximum velocity if any pedestrian's predicted Time-to-Collision (TTC) is short.
+* **The Issue:** Dynamic pedestrians walking parallel to the robot in a narrow hallway can have a small Euclidean distance but zero risk of collision. The robot unnecessarily slows down, hurting its performance score.
+* **Proposed Enhancement:**
+  - Calculate the lateral overlap (cross-track distance) between the robot's projected corridor and the pedestrian's predicted path.
+  - Only trigger speed scaling/pauses if the lateral overlap is less than the safety margin width ($0.45\text{m}$).
+  - This allows the robot to drive past parallel-walking pedestrians at full speed.
+
+### 136. Vectorized Frame Downsampling via Slice Offsets
+* **Context:** In `_extract_depth_centroids`, downsampling raw depth images is done using bilinear or nearest-neighbor interpolation via `cv2.resize`.
+* **The Issue:** Invoking `cv2.resize` on 640x480 float32 arrays on a single CPU thread at 10Hz adds execution latency.
+* **Proposed Enhancement:**
+  - Downsample the depth array natively in NumPy using basic slicing offsets: `downsampled = raw_depth_frame[::2, ::2]`.
+  - This requires no memory copying or library overhead, downsampling the frame in sub-microsecond timescales.
+
+### 137. Pre-Compiled PyTorch Modules via JIT Tracing (Trace-Optimization)
+* **Context:** The model loaded is TorchScript, evaluated on dynamic tensors.
+* **The Issue:** Dynamic tensor instantiations and model evaluations inside loop-like iterations prevent compilation optimizations.
+* **Proposed Enhancement:**
+  - Use JIT tracing (`torch.jit.trace`) on a static dummy input tensor of shape $(\text{MAX\_OBSTACLES}, 40)$ at server startup.
+  - Run the tracked features directly through this traced module in a single execution path, allowing PyTorch's compiler to optimize kernel fusions and memory layouts.
+
+---
+
+## [2026-06-06 16:00:00 -07:00] Iteration 33 Analysis
+
+### 138. Vectorized Spatial Grid Binning for Lidar Points
+* **Context:** In `ab_comparison_test.py`, the lidar scans are processed by iterating through range values to calculate clearance margins.
+* **The Issue:** Python loops calculating trigonometry or checking bounds for thousands of lidar beams at 10-20Hz add CPU interpreter overhead.
+* **Proposed Enhancement:**
+  - Precompute index masks for front, rear, left, and right angular sectors during initialization.
+  - Bin raw ranges directly using NumPy masking (e.g., `front_ranges = ranges[front_mask]`), completely avoiding per-frame coordinate calculations and loops.
+  - Extract min/mean clearances using fast vector operations to check wall and obstacle bounds instantly.
+
+### 139. Dynamic Camera Gain & Auto-Exposure Control for Shadow Adaptability
+* **Context:** Dynamic centroid extraction in `velocity_estimator.py` relies on depth range thresholds.
+* **The Issue:** Transitioning from bright open classrooms into dark corridor shadows causes depth return density to fluctuate, leading to contour fragmentation and track dropouts.
+* **Proposed Enhancement:**
+  - Monitor the average pixel return count and variance of the depth image.
+  - Dynamically command camera auto-exposure compensation or apply local contrast enhancement (CLAHE) on the confidence channels.
+  - This preserves dynamic shape features and prevents tracking dropout under harsh indoor lighting transitions.
+
+### 140. Multi-Track Kalman Filter Prediction for MLP Window Alignment
+* **Context:** The velocity estimator MLP expects sequence inputs representing consecutive historical coordinates sampled at a uniform 10Hz.
+* **The Issue:** Sensor occlusions or processor lags can skip frames, producing non-uniform sequence intervals that skew displacement inputs and corrupt velocity predictions.
+* **Proposed Enhancement:**
+  - Back each active track with a simple 2D constant-velocity Kalman Filter.
+  - If a frame detection is missed, use the Kalman state prediction to dead-reckon and append the coordinate to the sequence buffer.
+  - This guarantees the MLP receives a clean, evenly spaced 10Hz history queue, increasing prediction stability.
+
+### 141. Active Lateral Centering Potential Field for Corridor Navigation
+* **Context:** The software clearance guard in `ab_comparison_test.py` restricts lateral commands if clearances drop below 0.35m.
+* **The Issue:** Hard-threshold boundaries can cause the robot to oscillate or scrape the wall when trying to execute heading corrections.
+* **Proposed Enhancement:**
+  - Implement a continuous potential field centering vector: $v_{y\_corr} = K_p \cdot (clearance_{left} - clearance_{right})$.
+  - Blend this corrective force into the lateral command `vy_cmd` during straight segments.
+  - This dynamically nudges the robot toward the center of narrow pathways, maintaining a safe spatial buffer on both sides.
+
+---
+
+## [2026-06-07 00:00:00 -07:00] Iteration 34 Analysis
+
+### 142. Gated Recurrent Unit (GRU) Temporal Feature Encoding
+* **Context:** The current `velocity_estimator.py` uses a simple Multi-Layer Perceptron (MLP) that receives flattened coordinate displacement sequences (40 features).
+* **The Issue:** The MLP treats temporal sequences as independent inputs, ignoring sequential dependencies. Sudden shifts in coordinate measurements or framerate drops degrade velocity predictions.
+* **Proposed Enhancement:**
+  - Replace the MLP with a Gated Recurrent Unit (GRU) sequence network.
+  - Pass the trajectory coordinate displacements sequence sequentially through a single GRU layer to extract latent temporal features before predicting velocity vectors.
+  - This naturally accommodates temporal transitions and smooths coordinate predictions.
+
+### 143. Dynamic Point Cloud Downsampling with Adaptive Voxel Grid Gating
+* **Context:** The depth processor downsamples frames uniformly or uses standard contours.
+* **The Issue:** In narrow pathways, dynamic obstacles are close to the sensor and generate high-density point clusters, while farther obstacles are sparse. Under fixed downsampling, close static objects can merge with dynamic ones, and far dynamic ones are missed.
+* **Proposed Enhancement:**
+  - Apply an adaptive Voxel Grid Filter where the voxel resolution dynamically scales based on regional depth density.
+  - Close-range sectors use a tight voxel grid (e.g. 0.02m) to isolate boundary features, while far-range sectors use larger voxels to suppress noise.
+  - This preserves dynamic contours in narrow doorways/corridors without merging them with walls.
+
+### 144. LiDAR Scan Matching for Relative Corridor Slip Estimation
+* **Context:** In `ab_comparison_test.py`, the path is tracked using EKF-fused wheel and IMU odometry.
+* **The Issue:** In narrow corridors, small slips on mecanum wheels create uncompensated cross-track EKF drift, causing the robot to steer towards side walls.
+* **Proposed Enhancement:**
+  - Run a fast Iterative Closest Point (ICP) or Correlative Scan Matching (CSM) alignment on successive 2D LiDAR scans to compute a high-precision lateral velocity delta independent of wheel encoder slip.
+  - Fuse this LiDAR scan-matching offset directly into the tracking cross-track error $path_y$ computation.
+  - This provides direct spatial slide compensation relative to physical corridor boundaries.
+
+### 145. Zero-Copy Memory-Mapped Frame Allocation via Shared Memory IPC
+* **Context:** In `server_x3.py`, camera frame images and depth arrays are captured, resized, and encoded in Python before sending.
+* **The Issue:** Frequent large array allocations, resizing, and array slicing in Python trigger heavy garbage collection overhead and high CPU use.
+* **Proposed Enhancement:**
+  - Pre-allocate a fixed size Shared Memory ring buffer segment at startup.
+  - Use `np.ndarray(buffer=...)` in the camera capture thread to write frames directly into shared memory with zero memory copy.
+  - Resizing and downscaling operations can write back to pre-allocated buffers, reducing Python heap memory allocation and garbage collection cycles to zero.
+
+### 146. Visual-LiDAR Geometric Depth Fusion (Sensor Fusion Gating)
+* **Context:** The obstacle detector handles camera estimation and LiDAR scanning separately.
+* **The Issue:** Reflections or lens dirt create ghost centroids in the camera, and flat surfaces create false wall edge boundaries in the LiDAR.
+* **Proposed Enhancement:**
+  - Implement a visual-LiDAR geometric projection gate.
+  - Project camera bounding boxes onto the 2D LiDAR plane to filter LiDAR sweeps.
+  - A track is only initiated if a dynamic camera bounding box aligns spatially and temporally with a LiDAR range cluster segment. This prevents camera-only reflection triggers and LiDAR-only flat wall detection errors.
+
+---
+
+## [2026-06-07 02:00:00 -07:00] Iteration 35 Analysis
+
+### 147. Scan-Match Corrected Ego-Motion Compensation for Tracker History
+* **Context:** In `velocity_estimator.py`, historical coordinates are rotated back using EKF-reported robot pose.
+* **The Issue:** Slippage on mecanum wheels introduces uncompensated EKF odometry drift, which distorts the tracked history sequence. This causes the MLP to receive warped trajectories and predict incorrect velocity vectors.
+* **Proposed Enhancement:**
+  - Expose the scan-match corrected pose (`corrected_x`, `corrected_y`, `corrected_yaw`) from the navigation script to `velocity_estimator.py` (via `server_x3.py`).
+  - Use the drift-free scan-matched pose instead of raw EKF pose to transform depth centroids to global coordinates and reconstruct the robot-frame local history window.
+  - This eliminates EKF-slippage distortion in the historical inputs, improving the model's accuracy.
+
+### 148. Depth Gradient Watershed Segmentation for Close-Proximity Obstacle Separation
+* **Context:** Obstacle centroids are extracted from binary depth masks inside `velocity_estimator.py` using `cv2.findContours`.
+* **The Issue:** When a pedestrian walks close to doorways, doors, or corridor walls, the depth values of the wall and the human overlap, causing standard contour detection to merge them into a single blob and bias the centroid.
+* **Proposed Enhancement:**
+  - Compute spatial depth gradients using Sobel or Scharr operators on the raw float32 depth frame to detect surface boundaries.
+  - Apply marker-controlled watershed segmentation on depth minima to isolate close-proximity obstacles from wall surfaces.
+  - This ensures dynamic objects are correctly isolated and centered even when driving through tight gaps.
+
+### 149. Yaw-Aware Dynamic Repulsion & Clearance-Based Rotation Center Shifting
+* **Context:** The potential field repulsion `vy_rep` in `ab_comparison_test.py` is calculated and applied to lateral command speeds only during straight driving segments.
+* **The Issue:** During turnaround states (`ROTATE_180` and `ROTATE_HOME`), the robot's square footprint corners sweep a wider radius than its circular clearance, risking side-swipe collisions when rotating in narrow corridors.
+* **Proposed Enhancement:**
+  - Project the robot's physical chassis corner vertices into the current LiDAR frame during rotation states.
+  - If any corner is predicted to violate the 0.30m wall clearance threshold during yaw changes, calculate a dynamic lateral correction force.
+  - Command a tiny corrective lateral mecanum strafe velocity along with the rotational yaw velocity, shifting the rotation center dynamically to keep the chassis centered in the corridor during turnaround.
+
+### 150. Fast 1D Angular-Index Search for Lidar Scan Matching
+* **Context:** The scan matcher in `ab_comparison_test.py` runs ICP iterations to align current and previous laser point clouds.
+* **The Issue:** Computing the full 2D distance matrix ($M \times N$) of size $360 \times 360$ via broadcasting consumes excessive CPU cycles and memory bandwidth at 20Hz on the Jetson.
+* **Proposed Enhancement:**
+  - Convert incoming scan points to polar coordinates (radius and angle) relative to the sensor.
+  - For each point in the current scan, perform a direct $O(1)$ angular index lookup in the previous scan array to find the closest angular range measurement.
+  - This replaces the $O(M \times N)$ spatial search with an $O(M)$ lookup, eliminating large distance matrix allocations and reducing scan alignment CPU overhead to negligible levels.
+
+### 151. Auto-Calibrating Homography & Projection Alignment via YOLO Centroid Feedback
+* **Context:** Depth centroids are projected into 2D image space in `velocity_estimator.py` to check for intersection with YOLO bounding boxes.
+* **The Issue:** Manufacturing mount tolerances, lens distortion, or physical camera pitch/roll offsets can misalign the projected depth points and YOLO visual boxes, causing valid centroids to be gated out.
+* **Proposed Enhancement:**
+  - Implement a recursive least squares (RLS) estimator that tracks the displacement between projected depth coordinates and the centers of static YOLO person detections.
+  - Adaptively tune the projection matrix parameters (focal lengths, pitch/roll camera offsets) to minimize visual-to-depth alignment error.
+  - This self-calibrating loop ensures robust gating even under physical sensor alignment changes or camera vibration.
+
+---
+
+## [2026-06-07 03:00:00 -07:00] Iteration 36 Analysis
+
+### 152. Physically Constrained MLP Output Gating (Kinematic Acceleration Bounding)
+* **Context:** The MLP model in `velocity_estimator.py` predicts raw $(vx, vy)$ pedestrian velocity values frame-by-frame.
+* **The Issue:** Measurement noise or sequence drops can lead to spike predictions (e.g. predicting a person accelerating at $10\text{ m/s}^2$), causing erratic speed scaling and vehicle jerk.
+* **Proposed Enhancement:**
+  - Implement a physical kinematics filter on the outputs of the velocity estimator.
+  - Clamp predicted velocities between consecutive frames so that the implied acceleration does not exceed maximum human running/walking limits (e.g. $\pm 3.0\text{ m/s}^2$).
+  - Enforces smooth, physically feasible trajectory predictions without requiring model retraining.
+
+### 153. LiDAR Range-Cluster Guided Depth ROI Extraction
+* **Context:** `velocity_estimator.py` downsamples and processes the entire raw depth frame to extract obstacle contours.
+* **The Issue:** Scanning the full $480 \times 640$ matrix for contours is CPU-intensive and prone to detecting background features (like door frames or tables) in narrow spaces.
+* **Proposed Enhancement:**
+  - Intersect 2D LiDAR range cluster coordinates with the camera's visual field of view (FOV).
+  - Crop small bounding boxes (Regions of Interest) around these coordinates in the depth frame.
+  - Run the dynamic downsampling and contour extraction only within these cropped ROIs rather than the full image. This isolates dynamic targets and reduces depth processing CPU overhead.
+
+### 154. Predictive Trajectory-Intersector Bypassing (TTC-Guided Path Planning)
+* **Context:** In `ab_comparison_test.py`, the robot chooses a lateral bypass direction (left/right) based on current side clearances.
+* **The Issue:** If a pedestrian is walking diagonally across the corridor, the robot might steer into the pedestrian's future path, causing a collision or forcing a hard stop.
+* **Proposed Enhancement:**
+  - Calculate a Time-to-Collision (TTC) vector by projecting the robot's path and the pedestrian's velocity vector ($vx, vy$).
+  - If a collision is predicted, calculate the intersection point.
+  - Set the lateral bypass target offset to steer the robot behind the pedestrian's travel vector (clearing their path) rather than cutting in front of them.
+
+### 155. Vectorized LiDAR Point Clustering via Range Gradient Masking
+* **Context:** Clustering LiDAR points for obstacle tracking often requires running spatial density algorithms.
+* **The Issue:** Standard spatial clustering algorithms (e.g. DBScan) add high computational overhead when run at 20Hz on the Jetson.
+* **Proposed Enhancement:**
+  - Implement a vectorized 1D clustering routine directly on sorted polar range arrays using NumPy.
+  - Check the range differences between adjacent angular beams: `mask = np.abs(ranges[1:] - ranges[:-1]) < epsilon`.
+  - Slice and group connected segments directly using index arrays. This clusters the entire scan in $O(N)$ time with minimal CPU footprint.
+
+### 156. Real-Time Control Jitter and Energy Efficiency Metrics Logger
+* **Context:** `ab_comparison_test.py` records trajectories, obstacle speeds, and clearances to a CSV log.
+* **The Issue:** Baseline logs do not capture key operational metrics such as actuator strain, trajectory deviation, or timing jitter, which are vital for quantitative A/B comparisons.
+* **Proposed Enhancement:**
+  - Append control command jitter (variance of the 20Hz loop step intervals), path centering deviation (integral of squared cross-track error: $\int path_y^2 dt$), and mechanical energy expenditure (integral of command velocities: $\int (vx^2 + vy^2 + \omega^2) dt$) to the CSV logger.
+  - This provides concrete quantitative indicators of smoothness, battery consumption, and path performance between modes.
+
+---
+
+## [2026-06-07 04:00:00 -07:00] Iteration 37 Analysis
+
+### 157. Adaptively Adjusted Online Feature Normalization Gating
+* **Context:** Features fed to the MLP model in `velocity_estimator.py` are normalized using fixed mean and scale parameters loaded from `scaler_params.json` at startup.
+* **The Issue:** When operating in rooms or corridors with layout dimensions that differ significantly from the training environment, input features can drift out of the model's training distribution, degrading prediction accuracy.
+* **Proposed Enhancement:**
+  - Track running online mean and variance of track coordinate displacements.
+  - If online statistics deviate significantly from training parameters, apply an adaptive scaling layer that maps coordinates back toward the model's expected input bounds.
+  - Improves model generalization under diverse spatial settings without retraining.
+
+### 158. LiDAR-Depth Dynamic Extrinsics Auto-Tuning via Ground-Plane Invariance
+* **Context:** Visual-LiDAR gating projects 3D depth centroids onto camera coordinate grids using static translation/rotation parameters.
+* **The Issue:** Acceleration/deceleration on mecanum wheels causes chassis pitch/roll tilts. This distorts the spatial coordinates of depth centroids, leading to camera-LiDAR projection misalignment.
+* **Proposed Enhancement:**
+  - Query real-time IMU pitch/roll values or fit a ground-plane model to raw LiDAR scans.
+  - Calculate a dynamic rotation adjustment matrix to apply real-time pitch/roll tilt corrections to the projection matrices.
+  - Maintains precise camera-to-LiDAR spatial alignment during dynamic motion.
+
+### 159. RANSAC Line-Fitting for Corridor Wall Boundary Identification
+* **Context:** In `ab_comparison_test.py`, potential field wall clearances are computed by finding the local range minimum in the side sectors.
+* **The Issue:** Isolated obstacles (like chair legs or trash cans) in the side sectors are mistaken for corridor walls, causing the robot to center itself incorrectly or wobble.
+* **Proposed Enhancement:**
+  - Run a fast RANSAC line-fitting algorithm on the left/right sector LiDAR scans to isolate the continuous wall planes.
+  - Compute repulsion forces and centering commands relative to these fitted wall lines instead of raw minimum clearances.
+  - Stabilizes path centering and prevents wobbling around isolated side obstacles.
+
+### 160. Fast-Path Gating for Empty Track States
+* **Context:** `velocity_estimator.py` runs its full depth thresholding, tracking association, and PyTorch inference pipeline at 10Hz.
+* **The Issue:** Running PyTorch model calls and contour calculations when the scene is completely clear wastes GPU/CPU resources on the Jetson.
+* **Proposed Enhancement:**
+  - Place a fast-path gate at the beginning of the `_inference_loop`.
+  - If raw depth frames show no pixel clusters above threshold, immediately skip the tracker update and PyTorch model calls.
+  - This drops estimation loop CPU overhead to near-zero when driving in clear corridors.
+
+### 161. Bounding Box Temporal Prediction Gating for Slow YOLO Framerates
+* **Context:** Image projection gates project camera person bounding boxes to filter depth centroids.
+* **The Issue:** Querying YOLO on every frame adds high processing overhead and decreases frame rates.
+* **Proposed Enhancement:**
+  - Track and project person bounding boxes forward in time using their estimated velocity.
+  - Use these predicted bounding boxes to gate depth centroids when new YOLO frames are not yet available.
+  - Enables running the projection gate at a fast 10Hz rate even when YOLO detections are throttled to a lower rate (e.g. 2Hz) to save resources.
+
+---
+
+## [2026-06-07 05:00:00 -07:00] Iteration 38 Analysis
+
+### 162. Ego-Velocity-Weighted Feature Regularization
+* **Context:** The MLP model in `velocity_estimator.py` receives a flattened sequence of 40 coordinate displacement features.
+* **The Issue:** During high-acceleration motions or sharp rotations, tracking latency and EKF noise create coordinate displacement artifacts, causing the model to predict false velocities for static surroundings.
+* **Proposed Enhancement:**
+  - Feed the robot's active linear and angular base velocities $(v_{x\_base}, v_{y\_base}, \omega_{z\_base})$ as additional inputs to the model.
+  - This expands the input layer to 43 features, allowing the model to learn base kinematic stress correlations and correct visual flow distortion.
+  - Reduces false velocity predictions during high-stress rotational or acceleration maneuvers.
+
+### 163. Bilateral Depth Filtering for Doorway Contour Preservation
+* **Context:** Voxel grid downsampling decimates pixel density to clean noise and accelerate contour calculations in `velocity_estimator.py`.
+* **The Issue:** Decimation smooths out high-frequency depth transitions, blurring doorway edges and causing door frames to merge with pedestrian centroids.
+* **Proposed Enhancement:**
+  - Apply a fast 1D bilateral filter on depth rows prior to decimation.
+  - The bilateral filter smooths out range noise while preserving sharp depth boundary edges.
+  - Prevents tracking dropouts and target merging in doorway openings and narrow corridor transitions.
+
+### 164. Corridor Intersection Detection & Speed Profiling via Angular LiDAR Entropy
+* **Context:** `ab_comparison_test.py` drives the robot at speeds scaled strictly by obstacles directly in its path.
+* **The Issue:** When approaching blind corridor intersections, the robot drives at full speed because it cannot see around corners, risking collisions with emerging pedestrians.
+* **Proposed Enhancement:**
+  - Monitor the Shannon entropy or variance of range returns in the side $90^\circ$ sectors.
+  - A sudden increase in entropy or range indicates a corridor intersection opening.
+  - When an intersection is detected, scale down the forward speed profile to safely anticipate obstacles turning the corner.
+
+### 165. Multi-Threaded Frame-Fetch Gating (Producer-Consumer Queue)
+* **Context:** `velocity_estimator.py` queries `get_depth_frame()` and `get_raw_depth_frame()` synchronously at 10Hz.
+* **The Issue:** If the topic bridge blocks waiting for DDS serialization, the estimation loop stalls, introducing jitter into control command updates.
+* **Proposed Enhancement:**
+  - Run frame-grabbing in a separate producer thread that writes to a thread-safe, single-element buffer.
+  - The inference loop fetches frames non-blockingly from the buffer. If no new frame is available, it skips the step, preventing DDS delays from stalling the control loop.
+
+### 166. Dynamic Depth Segment Size Thresholding based on Range
+* **Context:** Centroid extraction filters out contour blobs smaller than a fixed `MIN_BLOB_AREA` (500 pixels).
+* **The Issue:** As target distance increases, the projected pixel area shrinks, causing far-away pedestrians to be filtered out, while near static table legs are tracked.
+* **Proposed Enhancement:**
+  - Scale the minimum pixel area threshold dynamically based on target depth $Z$: `MinArea(Z) = BaseArea * (Z_ref / Z)^2`.
+  - Ensures far-away pedestrians (e.g. at 3.5m) are successfully tracked, while suppressing nearby static noise.
+
+---
+
+## [2026-06-07 06:00:00 -07:00] Iteration 39 Analysis
+
+### 167. Relative Acceleration Input Features for Intercept Stability
+* **Context:** Sequence trajectories in `velocity_estimator.py` represent historical $(x, y)$ positions and approximate velocities.
+* **The Issue:** Sudden velocity or heading changes of a pedestrian are not immediately represented in position-velocity histories, delaying reactive bypass planning.
+* **Proposed Enhancement:**
+  - Calculate relative acceleration (the rate of change of relative velocity between sequence frames) and append them directly to the feature vector.
+  - This provides the neural network with explicit trajectory curvature features, improving prediction speed when pedestrians turn or brake.
+
+### 168. Reflectivity Filtering for Specular Ground and Metallic Surface Exclusions
+* **Context:** Navigation and tracking algorithms segment obstacles based on distance returns from the depth camera and LiDAR.
+* **The Issue:** Highly reflective surfaces (e.g., polished hallway floors, glass partitions, or metallic doors) create mirror reflections, generating ghost depth centroids and fake LiDAR readings.
+* **Proposed Enhancement:**
+  - Check the LiDAR range return intensity (reflectivity values) provided by the sensor driver.
+  - Specular ground and glass surfaces exhibit unique intensity profiles. By filtering out points that violate diffuse surface intensity thresholds, we can exclude ghost obstacles.
+
+### 169. Dynamic Corridor Angle Yaw-Alignment Control
+* **Context:** `ab_comparison_test.py` aligns the robot's heading target to the initial yaw recorded at start (`self.target_yaw = self.start_yaw`).
+* **The Issue:** If the robot starts slightly rotated relative to the corridor walls, it drives diagonally, triggering potential field wall repulsions and steering adjustments.
+* **Proposed Enhancement:**
+  - Extract the angle of the corridor walls using the fitted RANSAC side lines.
+  - Dynamically adjust `self.target_yaw` to align exactly parallel to the centerline of the hallway.
+  - Ensures the robot drives parallel to the corridor, reducing active steering corrections.
+
+### 170. Direct Tensor Sharing via CUDA IPC (Unified GPU Memory Pipeline)
+* **Context:** Pre-allocated shared memory stores frames in host CPU RAM, which requires a host-to-device memory copy when copying features into PyTorch tensors.
+* **The Issue:** Copying data from host (CPU) to device (GPU) adds memory latency and blocks Python execution threads at high frame rates.
+* **Proposed Enhancement:**
+  - Allocate PyTorch tensors directly on the GPU utilizing Unified Memory or CUDA IPC.
+  - Let the camera capture thread write frame data directly to GPU memory, bypassing CPU host allocation.
+  - Eliminates CPU-to-GPU data copies, reducing inference latency.
+
+### 171. Vectorized LiDAR-based Yaw-Drift Corrector
+* **Context:** ICP scan matching is run on full point clouds to compute lateral and yaw drift corrections.
+* **The Issue:** Aligning entire point clouds is computationally expensive and wastes CPU cycles if only yaw drift needs correction.
+* **Proposed Enhancement:**
+  - Find the angular index $\theta_{min}$ in the side LiDAR sectors where the range measurement is absolute minimum.
+  - In a straight corridor, this minimum range points directly perpendicular to the side wall. The angular deviation of $\theta_{min}$ from $90^\circ$ gives the yaw drift directly.
+  - Corrects EKF yaw drift via an $O(N)$ index lookup, bypassing ICP execution.
+
+---
+
+## [2026-06-07 07:00:00 -07:00] Iteration 40 Analysis
+
+### 172. Multi-Modal Model Fusion (LiDAR-Feature Combined MLP)
+* **Context:** The MLP model in `velocity_estimator.py` uses sequence windows of depth-centroid coordinates.
+* **The Issue:** Centroid coordinates are susceptible to depth noise and occlusions, leading to tracking errors.
+* **Proposed Enhancement:**
+  - Extract physical shape features of the pedestrian from the LiDAR scans (e.g. cluster width, boundary curvature, number of returned beams).
+  - Append these structural features as static inputs to the model alongside depth tracking coordinate history.
+  - Fusing structural LiDAR geometry with depth history provides richer inputs, improving prediction accuracy.
+
+### 173. Self-Adapting Contrast Enhancement (Local CLAHE) for Shadow Exclusions
+* **Context:** Depth segment contours are extracted by thresholding raw depth frames.
+* **The Issue:** Doorways and corners in narrow corridors often contain dark shadow regions, where IR light returns are weak or noisy, causing contour fragmentation.
+* **Proposed Enhancement:**
+  - Apply Contrast Limited Adaptive Histogram Equalization (CLAHE) on the depth confidence or IR channel before thresholding.
+  - This adaptive local contrast enhancement preserves the outlines of obstacles in dark shadows.
+  - Prevents target tracking drops in poorly lit corners.
+
+### 174. Predictive Deceleration Profiling for Dynamic Obstacle Crossings
+* **Context:** Speed scaling in `ab_comparison_test.py` is reactive: it slows down the robot when obstacles enter the corridor envelope.
+* **The Issue:** If a pedestrian is walking diagonally across the corridor, the robot drives at full speed until they cross, leading to abrupt braking.
+* **Proposed Enhancement:**
+  - Estimate the pedestrian's path crossing time and the robot's arrival time at the intersection point.
+  - If a collision is predicted, scale down command speed beforehand (proactive speed profiling).
+  - Avoids abrupt emergency stops and provides smooth velocity transitions.
+
+### 175. Vectorized 2D Rotation using NumPy Multi-Dimensional Matrix Dot Products
+* **Context:** Historical global coordinates are rotated back to local coordinates in `velocity_estimator.py` using Python loops.
+* **The Issue:** Running per-frame coordinate rotations in Python loops for all active tracks adds CPU overhead.
+* **Proposed Enhancement:**
+  - Stack all history coordinates into a shape $(T, 2)$ matrix.
+  - Construct a batch 2D rotation matrix and perform a single matrix multiplication using a vectorized NumPy dot product.
+  - Bypasses Python loop overhead and leverages BLAS acceleration.
+
+### 176. Non-Blocking Asynchronous Telemetry Logger
+* **Context:** Log rows are recorded to the CSV file or disk in the main thread of the comparison script.
+* **The Issue:** Disk I/O operations can block the main execution loop, creating control updates jitter.
+* **Proposed Enhancement:**
+  - Implement a queue-based logger that pushes telemetry rows to a thread-safe queue.
+  - Let a background worker thread read the queue and execute disk writes asynchronously.
+  - Prevents disk write latency from introducing jitter into the control loop.
+
+---
+
+## [2026-06-07 08:00:00 -07:00] Iteration 41 Analysis
+
+### 177. Multi-Scale Temporal Feature Pooling (Pyramid Temporal History Window)
+* **Context:** Track history buffers in `velocity_estimator.py` are sampled at a fixed 10Hz rate with a window size of 10 (representing 1.0s history).
+* **The Issue:** A fixed history window is too short to accurately estimate slow-moving pedestrians (whose coordinates change slowly relative to sensor noise) and too long for fast-accelerating targets.
+* **Proposed Enhancement:**
+  - Sample the track history at two scales: a short-term window (e.g. last 5 frames at 10Hz, covering 0.5s) and a long-term window (e.g. 5 frames sampled at 5Hz using every second frame, covering 2.0s).
+  - Feed both timescale windows into the MLP input layers.
+  - This multi-scale temporal pooling allows the model to capture both slow drifts and fast changes.
+
+### 178. LiDAR Intensity-based Dynamic Floor Segment Filter
+* **Context:** Ramps, doorways, or vehicle pitch tilts can cause the ground floor to project into LiDAR sectors, creating false obstacle detections.
+* **The Issue:** Floor contacts generate range readings, which are mistaken for walls or pedestrians, triggering false collision checks.
+* **Proposed Enhancement:**
+  - Use the returned reflectivity/intensity values of LiDAR sweeps.
+  - Ground surfaces scatters light differently than vertical human clothing or vertical walls. By applying intensity thresholds on the incoming ranges, exclude ground-plane returns.
+  - Prevents false doorway and ramp navigation stops.
+
+### 179. Proactive Deceleration Profiling for Lateral Wall Clearances
+* **Context:** In `ab_comparison_test.py`, potential field wall centering is computed.
+* **The Issue:** In tight, narrow corridor sectors, executing lateral corrections at full speed can cause the robot to oscillate or drift too close to the walls before centering.
+* **Proposed Enhancement:**
+  - Scale down the maximum allowed forward velocity proportionally to the current lateral clearances.
+  - `max_linear_speed = BaseMaxSpeed * min(1.0, wall_clearance / safety_threshold)`.
+  - Automatically slows down the robot in tight sections, giving the lateral controller more time to correct slip.
+
+### 180. Vectorized LiDAR Corner/Vertex Extraction via RDP Line Simplification
+* **Context:** Collision checking and potential field repulsion use raw arrays of 360 LiDAR range measurements.
+* **The Issue:** Performing distance checks, wall projections, and blockage checks on all 360 beams on every frame is CPU-intensive.
+* **Proposed Enhancement:**
+  - Run the vectorized Ramer-Douglas-Peucker (RDP) algorithm on the LiDAR coordinate array.
+  - Simplify the 360 points into a small set of 4 to 6 vertices representing the true walls and corners.
+  - Execute collision checking and wall repulsion target calculations on the simplified vertices, reducing computational overhead.
+
+### 181. Double-Buffered Shared Memory IPC
+* **Context:** Pre-allocated shared memory blocks are written by the capture thread and read by the server/visualization threads.
+* **The Issue:** Simultaneous read/write access to shared memory buffers can create screen tearing or partial frame updates.
+* **Proposed Enhancement:**
+  - Allocate double-buffered shared memory blocks (`shm_bgr_0` and `shm_bgr_1`).
+  - Maintain a shared control byte indicating the index of the latest completed frame.
+  - The consumer reads the latest completed index and maps its array view to that buffer, ensuring lock-free, race-free IPC.
+
+---
+
+## [2026-06-07 09:00:00 -07:00] Iteration 42 Analysis
+
+### 182. Track-Frame Heading Normalization for MLP Generalization
+* **Context:** History coordinates in `velocity_estimator.py` are normalized relative to the robot's local frame orientation before being flattened.
+* **The Issue:** When a pedestrian changes direction or the robot rotates, absolute coordinates fluctuate within the history window, degrading model inference accuracy.
+* **Proposed Enhancement:**
+  - Apply Principal Component Analysis (PCA) on the track history coordinates to determine the primary axis of motion.
+  - Rotate the entire coordinate window to align the motion vector along the local $x$-axis.
+  - The MLP learns to predict speed relative to the path of motion rather than absolute coordinate directions, improving generalization.
+
+### 183. K-Means guided Active Depth Cropping ROI for Crowded Scenarios
+* **Context:** Bounding box regions are cropped around projected targets in `velocity_estimator.py` to isolate targets.
+* **The Issue:** In crowded doorways, multiple targets generate overlapping bounding boxes, causing contour detection to merge separate pedestrian blobs.
+* **Proposed Enhancement:**
+  - Apply a fast, vectorized 1D K-means clustering on raw depth rows (where $K$ is the number of active LiDAR clusters).
+  - Use these distinct depth layers to create separate ROI depth masks for each target.
+  - Keeps close-proximity targets isolated from one another during contour processing.
+
+### 184. Corridor Cornering Clearance Compensation via Sweep Envelope Expansion
+* **Context:** In `ab_comparison_test.py`, the wall clearances are computed statically based on minimum LiDAR ranges.
+* **The Issue:** During turnaround turns, the robot's corners sweep a larger area, and wheel slide can cause the robot to drift too close to the side walls.
+* **Proposed Enhancement:**
+  - Expand the robot's clearance safety bounds proportionally to the base angular velocity $\omega_z$.
+  - Construct a dynamic sweep footprint envelope that accounts for rotation radius and slippage.
+  - Command counter-lateral mecanum velocities if this sweep envelope intersects wall boundaries during turns.
+
+### 185. Vectorized LiDAR Scan Compaction via Adaptive Decimation
+* **Context:** Potential field and scan-matching algorithms process the full array of 360 LiDAR range measurements on every frame.
+* **The Issue:** Processing all 360 points at 20Hz creates redundant computational overhead when scanning flat corridor walls.
+* **Proposed Enhancement:**
+  - Decimate the 360 rays down to a lower resolution (e.g. 90 rays) in flat sectors where range gradients are small.
+  - Maintain full resolution in sectors where range changes are steep (e.g., around obstacles or corners).
+  - Reduces the number of points processed by potential field and ICP controllers, improving efficiency.
+
+### 186. Temporal Tracking Gate Hysteresis via Multi-Frame Bounding Box Matching
+* **Context:** Visual-LiDAR gating requires a depth centroid to intersect a YOLO camera person bounding box on every frame.
+* **The Issue:** If the camera frame drops or the target is briefly occluded, the gate fails and the target tracking is dropped immediately.
+* **Proposed Enhancement:**
+  - Implement a multi-frame tracking gate hysteresis.
+  - If a track was confirmed in previous frames, continue to gate it using the last known bounding box (expanded by a temporal search margin) for up to 3 frames of camera occlusion.
+  - Prevents track dropouts due to visual frame drops or brief occlusions.
