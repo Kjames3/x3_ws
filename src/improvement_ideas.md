@@ -1723,3 +1723,67 @@ This log tracks ideas and architectural enhancements for the EE244 Computational
 **Area:** Navigation Accuracy
 **Investment:** Low
 **Rationale:** `_align_scans_icp` runs a fixed `range(3)` iterations regardless of robot velocity. At low commanded speeds (< 0.05 m/s — near-waypoint deceleration or settle-state entry), the scan displacement between consecutive calls is negligible and a single iteration fully converges. At high speeds the full 3 iterations are warranted. Replace the hard-coded `range(3)` with `n_iter = 1 if abs(self.last_vx_cmd) < 0.05 else 3` to reduce ICP CPU cost by two-thirds during slow and stopped segments while preserving full alignment quality at high traverse speeds.
+
+---
+
+## [2026-06-08] Automated Analysis Batch — Ideas 209 to 220
+
+### Idea 209: Cache `start_yaw` Trigonometry Constants at Segment Transitions
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** In both `DRIVE_TO_B` (~line 849) and `DRIVE_TO_A` (~line 1046), path distance and cross-track error are computed as `dx * math.cos(self.start_yaw) + dy * math.sin(self.start_yaw)` and `path_y = -dx * math.sin(self.start_yaw) + dy * math.cos(self.start_yaw)` on every 20 Hz control tick, where `start_yaw` is a constant for the entire duration of each segment (assigned once in the SETTLE state transitions). Pre-caching `self._cos_start_yaw = math.cos(self.start_yaw)` and `self._sin_start_yaw = math.sin(self.start_yaw)` at the assignment point eliminates 4 transcendental function calls per tick — 80 FPU operations per second — replacing them with free float variable lookups.
+
+### Idea 210: Depth Colorization Lazy Gating by Client Subscription State
+**Area:** Script Optimization
+**Investment:** Low
+**Rationale:** `ROS2Bridge._depth_cb` (~line 308) executes the full colorization pipeline (range clipping, min-max normalization, `cv2.applyColorMap`) on every incoming depth frame at camera rate, even when `depth_enabled = False` and no browser client is viewing depth. On the Jetson Orin, this BGR colorization step consumes roughly 3–5 ms per frame. Splitting the callback into two paths — always store the raw float32 array (needed by `VelocityEstimator`), but only compute and store the colorized BGR frame when `depth_enabled = True` — eliminates the dominant CPU cost of depth callback processing during typical operation when visualization is inactive.
+
+### Idea 211: Single `_estimates` Snapshot Per Control Loop Tick
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** Within each 20 Hz `_control_loop` tick during drive states, `_get_speed_scaling()` and `_update_bypass_offset()` each independently acquire `self._estimates_lock` and copy `self._latest_estimates` via `with self._estimates_lock: estimates = list(...)`. Since both are called sequentially within the same tick, this results in two lock acquisitions and two `list()` copies per tick — 40 lock operations and 40 list copies per second. Pre-fetching the snapshot once at the top of the drive-state block in `_control_loop` and passing it directly to both functions eliminates one redundant lock acquisition and one list copy per drive iteration.
+
+### Idea 212: Store `prev_scan_points` Directly as Pre-Converted NumPy Array
+**Area:** Navigation Accuracy
+**Investment:** Extremely Low
+**Rationale:** In `_scan_cb`, current scan points are built as a Python list of `(float, float)` tuples via `.append()` and then stored as `self.prev_scan_points = curr_pts`. In `_align_scans_icp`, the first operation is `P = np.array(prev_pts, dtype=np.float32)` — converting this list to a NumPy array on every ICP call at 20 Hz. Changing the storage to `self.prev_scan_points = np.array(curr_pts, dtype=np.float32) if curr_pts else np.empty((0, 2), dtype=np.float32)` eliminates the per-call `np.array()` allocation and copy from within the ICP function's hot path, requiring only a one-line change in `_scan_cb`.
+
+### Idea 213: Vectorized Continuous Wall Edge Detection via `np.diff` on Front Sector
+**Area:** Collision Avoidance
+**Investment:** Extremely Low
+**Rationale:** The `_front_is_continuous_wall` flag in `_update_bypass_offset` is determined by iterating all front-sector beams in a Python loop and checking `abs(r - prev_r) > 0.4` per adjacent pair to accumulate `front_has_edges`. Once ranges are converted to a NumPy array (per Idea 188), this can be replaced by extracting the front-sector slice and computing `diffs = np.abs(np.diff(front_ranges)); front_has_edges = bool(np.any(diffs > 0.4))` — a single vectorized call that replaces the Python per-beam loop with C-level SIMD, keeping the wall detection logic identical while executing in microseconds instead of hundreds of Python interpreter steps.
+
+### Idea 214: APF Repulsion Saturation to Prevent Anti-Bypass Interference
+**Area:** Collision Avoidance
+**Investment:** Low
+**Rationale:** In `_update_bypass_offset`, `vy_rep` from the potential field is added unconditionally to `vy_target`. When the robot has set a bypass offset (e.g., `target_lateral_offset = 0.4 m` for a pedestrian), the wall on the bypass side will generate a repulsion force opposing the bypass command, potentially preventing the robot from completing the lateral shift. Adding a direction gate — zeroing `vy_rep` when its sign opposes the active `target_lateral_offset` and its magnitude is less than the bypass offset command — prevents wall repulsion from fighting active bypass maneuvers while still protecting against wall overshoots after the bypass target is reached.
+
+### Idea 215: Bypass Clearance Confirmation Countdown to Suppress Re-Engagement Oscillation
+**Area:** Collision Avoidance
+**Investment:** Low
+**Rationale:** When an obstacle clears (both LiDAR and camera confirm the forward path is free), `_update_bypass_offset` immediately resets `target_lateral_offset = 0.0` and `is_paused = False` in a single 20 Hz tick. For pedestrians near the edge of the detection zone or crossing slowly, this causes rapid toggling between bypass and straight modes at 20 Hz, generating oscillatory lateral commands and wheel slip. Adding a `_clear_confirm_count` counter that requires the path to be consistently confirmed clear for 3–5 consecutive ticks (150–250 ms) before resetting to center eliminates oscillatory bypass re-engagement cycles.
+
+### Idea 216: Dual Depth Frame Acquisition via Single `ROS2Bridge` Lock
+**Area:** Script Optimization
+**Investment:** Low
+**Rationale:** In `velocity_estimator._inference_loop` (~line 407), `get_depth_frame()` and `get_raw_depth_frame()` are called sequentially, each independently acquiring `self._lock` in `ROS2Bridge`. Since both are always consumed together in the same inference step, this results in two separate lock-acquire-release cycles per inference iteration at 10 Hz. Adding a `get_depth_frames()` method to `ROS2Bridge` that returns `(coloured_depth, raw_depth)` in a single `with self._lock:` block halves the lock overhead for depth frame retrieval in the estimation pipeline with minimal code change.
+
+### Idea 217: Scale `vy_rep` Proportionally to `max_allowed_offset` in Tight Corridors
+**Area:** Collision Avoidance
+**Investment:** Low
+**Rationale:** In `_update_bypass_offset`, `vy_rep` is independently clamped to `[-0.12, 0.12]` m/s regardless of corridor width, while `max_allowed_offset` (the dynamic bypass ceiling derived from `corridor_width - robot_width`) is applied only to the bypass offset target. In a very tight corridor where `max_allowed_offset ≈ 0`, a full 0.12 m/s `vy_rep` push would drive the robot past the computed corridor bounds. Clamping `vy_rep` to `[-max_allowed_offset * KP_LATERAL, max_allowed_offset * KP_LATERAL]` ensures APF repulsion stays proportionally bounded to available corridor width, preventing overcorrection and oscillation in tight spaces.
+
+### Idea 218: Z-Score Outlier Rejection for Centroid Depth Median Accuracy
+**Area:** Velocity Estimation
+**Investment:** Low
+**Rationale:** In `_extract_depth_centroids`, the centroid depth Z is computed as `np.median(valid_depths)` after decimation. In corridor environments, a large contour can include wall pixels that leaked through the morphological filter, biasing the median toward a depth range between the pedestrian and the wall. After the initial median estimate, removing samples where `|depth - median| > 1.5 * std(valid_depths)` before recomputing a clean median produces a tighter Z estimate less contaminated by wall pixels, directly improving the physical accuracy of the 3D centroid coordinates and the displacement features fed to the MLP history window.
+
+### Idea 219: ICP Warm-Start from Previous Residual Correction for Lateral Slip Compensation
+**Area:** Navigation Accuracy
+**Investment:** Low
+**Rationale:** The ICP in `_scan_cb` is always initialized from the raw odometry delta `(dx_odom_local, dy_odom_local, dtheta)`. For mecanum lateral slip, odometry systematically underestimates actual lateral displacement, and the previous scan's ICP residual `(dx_corr, dy_corr)` captures this persistent bias. Storing the last accepted ICP residual and blending it as a warm-start prior — `initial_dx += alpha * prev_dx_residual` with `alpha ≈ 0.3` — biases the initial alignment toward the persistent slip direction, reducing iterations needed for convergence and improving correction accuracy across consecutive scans during sustained lateral bypass drives.
+
+### Idea 220: Integral Cross-Track Error Term for Steady-State Lateral Drift Elimination
+**Area:** Navigation Accuracy
+**Investment:** Low
+**Rationale:** The lateral controller `vy_target = (self.target_lateral_offset - path_y) * KP_LATERAL + self.vy_rep` is purely proportional. Mecanum wheel slip and floor friction create a constant lateral disturbance force that the P-only controller balances with a non-zero steady-state `path_y` — meaning the robot consistently drifts off the centerline over long runs. Adding a small integral term `vy_i += KI_LATERAL * (target_lateral_offset - path_y) * dt` (e.g., `KI_LATERAL = 0.1`) with an anti-windup clamp at `±0.05 m/s` would drive steady-state cross-track error to zero, keeping the robot precisely centered on the configured offset across repeated drive segments.

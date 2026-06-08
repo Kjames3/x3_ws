@@ -3,7 +3,7 @@
 This document records the ROI rankings and evaluation metrics for the enhancement ideas logged in `improvement_ideas.md` for the predictive planning and local velocity estimation project.
 
 ## Last Updated
-2026-06-08: Added 61 ideas (138–198) to ROI analysis tiers. 5 ideas (141, 143, 144, 145, 146) moved to Already Implemented. 15 new High-ROI, 28 new Medium-ROI, 13 new Low-ROI entries added.
+2026-06-08: Added 22 ideas (199–220) across tiers. 13 new High-ROI, 9 new Medium-ROI entries added.
 
 ---
 
@@ -44,7 +44,7 @@ The following **32 ideas** have already been completed and integrated:
 
 ---
 
-## 2. High-ROI Tier (Rank 1 - 30)
+## 2. High-ROI Tier (Rank 1 - 43)
 *These enhancements require minimal development effort (simple code adjustments, caching, or standard formulas) but deliver substantial improvements in CPU/RAM usage, execution efficiency, stability, or model accuracy.*
 
 ### 1. Idea 81: Immediate Depth Downsampling for Centroid Extraction
@@ -167,9 +167,61 @@ The following **32 ideas** have already been completed and integrated:
 *   **Investment:** Low. Convert point clouds to polar form; for each current point find the nearest previous-scan range via direct angular bin lookup instead of building the full 2D distance matrix.
 *   **Return:** Medium-High. Replaces the O(M×N) inner ICP correspondence loop with O(M) direct lookups, reducing scan-matching CPU overhead significantly especially in wider scans.
 
+### 31. Idea 199: Repeat-Mode `prev_scan_points` Reset to Prevent Cross-Run ICP Corruption
+*   **Investment:** Extremely Low. Add `self.prev_scan_points = []` alongside the existing `prev_odom_pose` reset in the `ROTATE_HOME` repeat-mode block.
+*   **Return:** Extremely High. Eliminates the first-scan ICP corruption artifact on every repeated run with a single one-line change; without it, large spurious corrections are injected into `corrected_x/y/yaw` before the robot has moved.
+
+### 32. Idea 200: Non-Blocking Recovery Backing via Timer-Based State
+*   **Investment:** Low. Replace the 15×`time.sleep(0.1)` loop in the recovery block with an `_is_backing` boolean and `_backing_start` timestamp checked in the normal 20 Hz control path.
+*   **Return:** Very High. Eliminates 1.5 s of ROS2 callback starvation during backing, restoring LiDAR safety checks and ICP updates at precisely the moment when rear collision risk is highest.
+
+### 33. Idea 201: `visible_count` Decay on Unmatched Track Frames
+*   **Investment:** Extremely Low. Add one line `track['visible_count'] = max(0, track['visible_count'] - 1)` in the existing track-aging loop in `ObstacleTracker.update()`.
+*   **Return:** High. Prevents permanently eligible ghost tracks from sustaining TTC scaling contributions through arbitrarily long occlusion gaps, eliminating spurious braking from stale observations.
+
+### 34. Idea 202: Division Pre-Inversion for Faster Feature Normalization
+*   **Investment:** Extremely Low. Pre-compute `self.scaler_X_inv_scale = (1.0 / self.scaler_X_scale).astype(np.float32)` in `_load_model()` and replace the per-inference division with multiplication.
+*   **Return:** High. ARM NEON float32 division is ~2× slower than multiplication; the change applies to the (N, 40) normalization matrix executed 10 times per second with zero numerical difference.
+
+### 35. Idea 203: Multi-Frame Confirmation Counter for `_front_is_continuous_wall`
+*   **Investment:** Extremely Low. Add a `_wall_confirm_count` integer and expose the flag only when count ≥ 2, requiring 100 ms of consistency before suppressing bypass or triggering early stop.
+*   **Return:** High. Prevents single-frame scan glitches (smooth doorframes, specular returns) from incorrectly blocking camera-based bypass initiation or triggering the static-wall early stop.
+
+### 36. Idea 204: Per-Track Distance Gate Before MLP Inference to Skip Far Targets
+*   **Investment:** Extremely Low. Add an early-continue guard `if track['centroid'][2] > PROXIMITY_THRESHOLD: continue` before appending to `features_list` in `_inference_loop`.
+*   **Return:** High. Eliminates inference compute, feature assembly, and normalization for all tracks beyond 1.8 m that contribute zero to speed scaling, directly reducing batch size and forward-pass latency in crowded long-range scenes.
+
+### 37. Idea 205: Cross-Track Error and Commanded Velocity Columns in RunLogger
+*   **Investment:** Extremely Low. Add `current_path_y`, `last_vx_cmd`, `last_vy_cmd`, `vy_rep` as additional fields to `_maybe_log()` in `DRIVE_TO_B` and `DRIVE_TO_A` states.
+*   **Return:** High. These are the primary metrics for evaluating A/B path-following quality and APF centering effectiveness; their absence from the CSV requires manual reconstruction from secondary columns during post-analysis.
+
+### 38. Idea 207: Settle-State Stop Command Deduplication via Published-Flag
+*   **Investment:** Extremely Low. Add `self._motor_is_stopped` flag: `_stop_robot()` publishes only when flag is False, then sets it True; any non-zero command resets it to False.
+*   **Return:** High. Reduces `/cmd_vel` DDS publish rate from 60 Hz to a single burst per settle-state entry, cutting DDS middleware overhead and Mcnamu driver processing load during all three settle states.
+
+### 39. Idea 208: Adaptive ICP Iteration Count Based on Commanded Speed
+*   **Investment:** Low. Replace `range(3)` in `_align_scans_icp` with `range(1 if abs(self.last_vx_cmd) < 0.05 else 3)`.
+*   **Return:** High. Reduces ICP CPU cost by two-thirds during near-waypoint deceleration and settle-state entries, which constitute a significant fraction of run time, while preserving full 3-iteration accuracy at high traverse speeds.
+
+### 40. Idea 209: Cache `start_yaw` Trigonometry Constants at Segment Transitions
+*   **Investment:** Extremely Low. Pre-cache `self._cos_start_yaw = math.cos(self.start_yaw)` and `self._sin_start_yaw = math.sin(self.start_yaw)` at the SETTLE→DRIVE transition once.
+*   **Return:** High. Eliminates 4 transcendental function calls per 20 Hz tick (80 FPU operations per second) in the distance and cross-track error projection calculations in both `DRIVE_TO_B` and `DRIVE_TO_A`, replacing them with free float variable reads.
+
+### 41. Idea 211: Single `_estimates` Snapshot Per Control Loop Tick
+*   **Investment:** Extremely Low. Pre-fetch `self._latest_estimates` once at the top of the drive-state block and pass the snapshot to both `_get_speed_scaling()` and `_update_bypass_offset()`.
+*   **Return:** High. Eliminates one redundant lock acquisition and one `list()` copy per drive iteration (from 2 to 1 per tick), halving lock contention on the estimates path at 20 Hz.
+
+### 42. Idea 212: Store `prev_scan_points` Directly as Pre-Converted NumPy Array
+*   **Investment:** Extremely Low. Change `self.prev_scan_points = curr_pts` (Python list) to `self.prev_scan_points = np.array(curr_pts, dtype=np.float32)` in `_scan_cb`.
+*   **Return:** High. Removes the `P = np.array(prev_pts, dtype=np.float32)` conversion from the ICP hot path called at 20 Hz, eliminating a per-call allocation and copy that currently runs inside the performance-critical scan-matching function.
+
+### 43. Idea 213: Vectorized Continuous Wall Edge Detection via `np.diff` on Front Sector
+*   **Investment:** Extremely Low. Replace the Python per-beam loop computing `front_has_edges` with `diffs = np.abs(np.diff(front_ranges)); front_has_edges = bool(np.any(diffs > 0.4))` after the front-sector NumPy slice.
+*   **Return:** High. Replaces hundreds of Python interpreter steps per tick with a single C-level SIMD call, keeping the wall detection logic identical while running in microseconds; depends on Idea 188 (LaserScan NumPy conversion) being implemented first.
+
 ---
 
-## 3. Medium-ROI Tier (Rank 31 - 102)
+## 3. Medium-ROI Tier (Rank 44 - 111)
 *These enhancements offer good performance or navigation benefits, but require moderate coding effort, extra message handling, or minor model changes.*
 
 *   **16. Idea 38: Velocity-Projected Constant Velocity Tracker Association** (Medium-High ROI)
@@ -259,10 +311,19 @@ The following **32 ideas** have already been completed and integrated:
 *   **100. Idea 183: K-Means Guided Active Depth Cropping ROI for Crowded Scenarios** (Medium-Low ROI) — Apply 1D K-means clustering on raw depth rows to identify distinct depth layers; create separate depth mask ROIs per cluster to keep close-proximity targets isolated during contour processing.
 *   **101. Idea 168: Reflectivity Filtering for Specular Ground and Metallic Surface Exclusions** (Medium-Low ROI) — Filter LiDAR range points whose return intensity falls below the diffuse surface threshold (specular floors/glass exhibit atypical profiles), excluding ghost obstacle readings.
 *   **102. Idea 182: Track-Frame Heading Normalization for MLP Generalization** (Medium-Low ROI) — Apply PCA to each track's history coordinates to determine its primary motion axis; rotate the window to align that axis with the local x-axis before feature extraction in `_build_window_features`.
+*   **103. Idea 206: Static Fixture Tagging via EMA Motion Score** (Medium-High ROI) — Maintain a per-track `motion_score = 0.8 * prev + 0.2 * (|dx| + |dy|)` in `ObstacleTracker.update()`; tag any track with `motion_score < 0.004 m/frame` sustained for 20+ frames as `is_static_fixture` and skip it in `_get_speed_scaling` and bypass checks, eliminating inference overhead from static furniture tracks without modifying the depth extraction pipeline.
+*   **104. Idea 210: Depth Colorization Lazy Gating by Client Subscription State** (Medium-High ROI) — Split `ROS2Bridge._depth_cb` to always store the raw float32 array (required by `VelocityEstimator`) but only compute the colorized BGR frame when `depth_enabled = True`, eliminating the 3–5 ms colorization cost per frame during normal operation when depth visualization is inactive.
+*   **105. Idea 217: Scale `vy_rep` Proportionally to `max_allowed_offset` in Tight Corridors** (Medium ROI) — Clamp `vy_rep` to `[-max_allowed_offset * KP_LATERAL, max_allowed_offset * KP_LATERAL]` in `_update_bypass_offset` so APF repulsion stays proportionally bounded to available corridor width, preventing the fixed 0.12 m/s cap from driving the robot past computed corridor bounds in tight spaces.
+*   **106. Idea 214: APF Repulsion Saturation to Prevent Anti-Bypass Interference** (Medium ROI) — In `_update_bypass_offset`, zero `vy_rep` when its sign opposes the active `target_lateral_offset` and its magnitude is less than the bypass offset command, preventing wall repulsion from fighting active bypass maneuvers while still protecting against wall overshoots after the bypass target is reached.
+*   **107. Idea 215: Bypass Clearance Confirmation Countdown to Suppress Re-Engagement Oscillation** (Medium ROI) — Add a `_clear_confirm_count` counter requiring the path to be consistently confirmed clear for 3–5 consecutive ticks (150–250 ms) before resetting `target_lateral_offset = 0.0`, eliminating rapid bypass/center toggling for pedestrians near the edge of the detection zone.
+*   **108. Idea 216: Dual Depth Frame Acquisition via Single `ROS2Bridge` Lock** (Medium ROI) — Add a `get_depth_frames()` method to `ROS2Bridge` returning `(coloured_depth, raw_depth)` in a single `with self._lock:` block; replace the two sequential `get_depth_frame()` / `get_raw_depth_frame()` calls in `_inference_loop` with this combined fetch, halving lock overhead for depth retrieval at 10 Hz.
+*   **109. Idea 218: Z-Score Outlier Rejection for Centroid Depth Median Accuracy** (Medium ROI) — In `_extract_depth_centroids`, after computing an initial `np.median(valid_depths)`, remove samples where `|depth - median| > 1.5 * std(valid_depths)` before recomputing the final median, reducing wall-pixel contamination bias in the 3D centroid Z coordinate fed to the MLP history window.
+*   **110. Idea 219: ICP Warm-Start from Previous Residual Correction for Lateral Slip Compensation** (Medium ROI) — Store the last accepted ICP residual and blend it as a warm-start prior via `initial_dx += alpha * prev_dx_residual` (α ≈ 0.3) to bias alignment toward the persistent mecanum lateral slip direction, reducing convergence iterations and improving correction accuracy during sustained bypass drives.
+*   **111. Idea 220: Integral Cross-Track Error Term for Steady-State Lateral Drift Elimination** (Medium ROI) — Add an integral term `vy_i += KI_LATERAL * (target_lateral_offset - path_y) * dt` (KI ≈ 0.1) with anti-windup clamp at ±0.05 m/s to the lateral P controller in drive states, driving steady-state cross-track error to zero and keeping the robot precisely centered on the configured offset across repeated drive segments.
 
 ---
 
-## 4. Low-ROI Tier (Rank 103 - 122)
+## 4. Low-ROI Tier (Rank 112 - 131)
 *These ideas involve complex mathematics, multi-sensor clustering fusion, retraining models with variable dimensions, or significant architectural rewrites, but yield minor returns for this front-corridor A/B demo.*
 
 *   **75. Idea 4: Hybrid Kalman Filter Tracking & MLP Predictor Fusion**
