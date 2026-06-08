@@ -1841,3 +1841,57 @@ This log tracks ideas and architectural enhancements for the EE244 Computational
 **Area:** Velocity Estimation
 **Investment:** Low
 **Rationale:** `_inference_loop` calls `camera.get_raw_depth_frame()` and `camera.get_depth_frame()` every 100 ms without checking when the frame was last written. In the ROS2 mode, `ROS2Bridge._depth_cb` is the writer; if the depth topic stops publishing (camera disconnect, orbbec_depth service restart), the shared memory buffer retains the last valid frame indefinitely. Processing a stale frame creates phantom centroid detections at fixed locations, which the tracker interprets as a stopped pedestrian — generating persistent non-zero MLP output and holding `is_paused = True` in the test script. Track `self._last_depth_write_time` in `_depth_cb` and expose it via `get_depth_frame_age()`; in `_inference_loop`, skip the centroid extraction and set `centroids_m = []` if the frame age exceeds 200 ms, preventing stale data from polluting track history.
+
+---
+
+## [2026-06-08] Automated Analysis Batch — Ideas 231 to 240
+
+### Idea 231: APF `vy_rep` Deadband for Near-Zero Jitter Elimination
+**Area:** Collision Avoidance
+**Investment:** Extremely Low
+**Rationale:** The potential field repulsion in `_update_bypass_offset` adds `vy_rep` to `vy_target` continuously, including micro-forces of 0.002–0.008 m/s near the `d_safe = 0.55 m` activation boundary. These sub-threshold forces cause the lateral P-controller to oscillate at 20 Hz around the target offset, producing high-frequency noise in `path_y` CSV data that obscures true cross-track error trends. Adding `if abs(self.vy_rep) < 0.012: self.vy_rep = 0.0` before the `vy_target` computation eliminates micro-jitter with a single comparison and zero impact on macro avoidance behavior where repulsion forces exceed the deadband.
+
+### Idea 232: Segment-Specific Rotation Timeout
+**Area:** Navigation Accuracy
+**Investment:** Extremely Low
+**Rationale:** `SEGMENT_TIMEOUT = 20.0 s` governs all active-motion states including `ROTATE_180` and `ROTATE_HOME`. A 180° rotation at `MAX_ANGULAR_SPEED = 0.30 rad/s` should complete in ~10 s worst-case; if heading oscillates near the ±180° boundary (a known chattering mode), the robot spins unproductively for the remaining 10+ s before the timeout fires. Introducing a separate `ROTATION_TIMEOUT = 10.0 s` constant and applying it specifically to `ROTATE_180` and `ROTATE_HOME` in the state timeout guard at line 829 catches rotation stalls twice as fast at zero additional CPU cost.
+
+### Idea 233: Settle-State ICP Reference Scan Capture
+**Area:** Navigation Accuracy
+**Investment:** Low
+**Rationale:** In `_scan_cb`, the ICP reference `prev_scan_points` at each DRIVE segment start is the last scan captured during the prior motion phase, which may contain motion blur and dynamic obstacle points. During SETTLE_1/2/3 the robot is fully stopped and LiDAR produces its cleanest data. Adding a `self._capture_ref_scan_on_next_tick = True` flag set in each SETTLE→DRIVE transition; in `_scan_cb`, when this flag is set, copy `curr_pts` into `prev_scan_points` before running ICP and clear the flag. Each new drive segment then starts from a noise-free stationary reference, dramatically improving first-tick ICP alignment quality.
+
+### Idea 234: Far-Range Voxel Grid Creation at Working Resolution
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** In `_extract_depth_centroids` (~line 218), `far_grid = np.zeros((h_orig, w_orig), dtype=bool); far_grid[::3, ::3] = True` allocates a full `480×640` boolean array and multiplies `far_mask = ... & far_grid` at full resolution, only for both to be immediately discarded via `[::2, ::2]` downsampling. Creating the far-range stride selection directly on the already-downsampled `raw_depth_frame` (e.g., using `[::2, ::2]` with a combined stride) removes one full-resolution bool array allocation and two full-resolution mask multiply operations per 10 Hz inference cycle with identical functional output.
+
+### Idea 235: `_inference_loop` Minimum Sleep Guard for CPU Overrun Prevention
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** In `_inference_loop` (~line 607), `time.sleep(max(0.0, dt - elapsed))` passes zero when inference exceeds `dt = 0.1 s`, causing the thread to spin without any OS yield during brief thermal-throttle overruns on the Jetson. A spinning inference thread starves the ROS2 spin thread and the 20 Hz control loop of CPU time at exactly the worst moment. Changing to `time.sleep(max(0.001, dt - elapsed))` guarantees a minimum 1 ms scheduler yield per cycle — a single character change that prevents runaway CPU consumption during overruns.
+
+### Idea 236: `visible_count`-Scaled Confidence Weight on MLP Output Speed
+**Area:** Velocity Estimation
+**Investment:** Extremely Low
+**Rationale:** Tracks that just cleared the 3-frame initiation gate (Idea 109) have `WINDOW_SIZE - 3 = 7` history frames padded with zeros, meaning the MLP receives heavily distorted input that systematically overestimates pedestrian speed. Multiplying the predicted `speed` (and proportionally `vx`/`vy`) by `min(1.0, visible_count / WINDOW_SIZE)` in `_inference_loop` ramps each track's TTC contribution from 30% at gate entry to 100% at full history maturity, suppressing false TTC braking from fresh detections without any model retraining.
+
+### Idea 237: Scan Minimum-Points Gate Increase for ICP Reliability
+**Area:** Navigation Accuracy
+**Investment:** Extremely Low
+**Rationale:** `_scan_cb` invokes ICP whenever `len(curr_pts) >= 10 and len(self.prev_scan_points) >= 10`. A 10×10 correspondence matrix has ~100 elements — statistically insufficient for reliable 2D rigid-body estimation in corridor geometry. In practice, the Yahboom X3 always operates in enclosed spaces with 80–200 valid LiDAR returns. Raising the threshold to `>= 40` valid points (falling through to the existing odometry-only path otherwise) filters the rare degenerate open-space or scan-initialization scans that currently inject noisy corrections into `corrected_x/y/yaw`.
+
+### Idea 238: Per-Obstacle Speed EMA Smoothing for TTC Stability
+**Area:** Velocity Estimation
+**Investment:** Low
+**Rationale:** MLP output `speed` for each track is used directly in `_get_speed_scaling` without inter-frame smoothing. Frame-to-frame speed can jitter ±0.15 m/s due to depth contour fluctuations, causing TTC speed scaling to fluctuate even though Idea 122's aggregate EMA provides only partial suppression. Maintaining a per-track `speed_ema` dict in `_inference_loop`, updated as `speed_ema[tid] = 0.6 * new_speed + 0.4 * prev_ema`, and using it as the speed source for TTC calculations provides per-obstacle noise rejection with ~100 ms time constant — complementary to but distinct from Idea 122's aggregate output EMA.
+
+### Idea 239: Blocked-Time Counter Explicit Reset on Drive-Leg Transition
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** `self.blocked_time` is incremented in both `DRIVE_TO_B` and `DRIVE_TO_A` but is never explicitly zeroed at the SETTLE_2→DRIVE_TO_A transition. If a late-cycle blocked-time increment occurs near the end of `DRIVE_TO_B` (e.g., when paused near WP-B), the counter carries a non-zero value into `DRIVE_TO_A`, potentially reaching the 8-second recovery threshold within seconds of starting the return leg without any actual blockage. Adding `self.blocked_time = 0.0` in the `SETTLE_2` block alongside the existing `self.is_paused = False` reset (~line 1034) guarantees a clean counter for each new drive leg.
+
+### Idea 240: Lateral P-Gain Scheduling Based on Proximity to Target Offset
+**Area:** Collision Avoidance
+**Investment:** Low
+**Rationale:** `KP_LATERAL = 0.8` applies uniformly across the full lateral error range. At large errors (|error| > 0.3 m, during initial bypass engagement), this gain drives the robot toward the target rapidly but with overshoot past the offset that can trigger the opposite wall's repulsion. At small errors (|error| < 0.05 m, fine centering), a lower gain is more appropriate. Implementing a simple two-regime gain schedule — `kp_eff = 0.8 if abs(lateral_err) > 0.10 else 0.4` — in the `vy_target` computation in both `DRIVE_TO_B` and `DRIVE_TO_A` improves bypass settling quality and reduces overshoot oscillation without requiring derivative control.

@@ -4,6 +4,7 @@ This document records the ROI rankings and evaluation metrics for the enhancemen
 
 ## Last Updated
 2026-06-08: Added 22 ideas (199–220) across tiers. 13 new High-ROI, 9 new Medium-ROI entries added.
+2026-06-08: Added 20 ideas (221–240) across tiers. 16 new High-ROI, 4 new Medium-ROI entries added.
 
 ---
 
@@ -44,7 +45,7 @@ The following **32 ideas** have already been completed and integrated:
 
 ---
 
-## 2. High-ROI Tier (Rank 1 - 43)
+## 2. High-ROI Tier (Rank 1 - 59)
 *These enhancements require minimal development effort (simple code adjustments, caching, or standard formulas) but deliver substantial improvements in CPU/RAM usage, execution efficiency, stability, or model accuracy.*
 
 ### 1. Idea 81: Immediate Depth Downsampling for Centroid Extraction
@@ -219,9 +220,73 @@ The following **32 ideas** have already been completed and integrated:
 *   **Investment:** Extremely Low. Replace the Python per-beam loop computing `front_has_edges` with `diffs = np.abs(np.diff(front_ranges)); front_has_edges = bool(np.any(diffs > 0.4))` after the front-sector NumPy slice.
 *   **Return:** High. Replaces hundreds of Python interpreter steps per tick with a single C-level SIMD call, keeping the wall detection logic identical while running in microseconds; depends on Idea 188 (LaserScan NumPy conversion) being implemented first.
 
+### 44. Idea 221: ICP Accumulated Rotation Delta Bound Clamping
+*   **Investment:** Extremely Low. Add `if abs(dtheta_corr) > 0.15: dtheta_corr = 0.0` after the ICP iteration loop in `_scan_cb`, complementing Idea 194's existing translation clamp.
+*   **Return:** Extremely High. A single guard prevents outlier yaw corrections (e.g., from sparse doorway scans) from injecting 0.2–0.5 rad spurious rotations into `corrected_yaw`, which would corrupt all subsequent heading calculations for the rest of the run.
+
+### 45. Idea 222: Vectorized XY Scan-Point Array Construction from Cached Angle Array
+*   **Investment:** Low. Replace the per-beam Python `for` loop in `_scan_cb` that appends `(r * cos, r * sin)` tuples with a vectorized NumPy masked column-stack; requires Ideas 187 and 188 as prerequisites.
+*   **Return:** High. Eliminates all Python-level tuple-append overhead in scan-callback point-cloud construction, building the full ICP input array in a single C-level pass at 20 Hz.
+
+### 46. Idea 223: Hard Physical Clamp on Inverse-Scaled MLP Output Velocities
+*   **Investment:** Extremely Low. Add `pred_ms = np.clip(pred_ms, -2.5, 2.5)` immediately after the inverse-scaling step `pred_ms = pred_scaled * scaler_y_scale + scaler_y_mean` in `_inference_loop`.
+*   **Return:** Extremely High. Enforces the hard physical plausibility limit (fastest human sprint ≈ 2.5 m/s) as an unconditional output gate; prevents ±5+ m/s spike predictions from out-of-distribution depth misregistrations from locking the robot in prolonged full stops.
+
+### 47. Idea 224: Forward Speed Ramp-Up Delay After Pause Release
+*   **Investment:** Low. Record `self._pause_exit_time = time.monotonic()` when `is_paused` transitions to False; cap the forward speed command to `base_speed * min(1.0, (now - _pause_exit_time) / 0.3)` for the following 300 ms in both drive states.
+*   **Return:** High. Eliminates the instantaneous forward speed step-change at obstacle clearance that causes wheel slip and brief heading jerk, smoothly ramping the robot back to full speed after every bypass completion.
+
+### 48. Idea 225: EKF Pose Staleness Guard in `get_robot_pose_and_twist`
+*   **Investment:** Low. In `ROS2Bridge._odom_cb`, store `self._odom_stamp = time.monotonic()`; in the `get_robot_pose_and_twist` closure in `server_x3.py`, return `None` when `time.monotonic() - ros_bridge._odom_stamp > 0.5`.
+*   **Return:** High. Prevents a frozen stale pose during `/odom` dropouts (hardware restart, bringup delay) from incorrectly transforming depth centroids to global coordinates, eliminating phantom velocity estimates on static objects.
+
+### 49. Idea 227: Remove Redundant Local `history` Deque from `ObstacleTracker`
+*   **Investment:** Low. Delete the `history` (local camera-frame coordinates) deque and its `.append()` call in `ObstacleTracker.update()`; `hist_local` in `_inference_loop` is already fully reconstructed from `history_global` via inverse robot rotation (lines 481–491).
+*   **Return:** High. Saves 50 deque append operations per second (up to 5 tracks × 10 Hz), one deque allocation per new track, and halves per-track coordinate storage footprint with zero behavioral change.
+
+### 50. Idea 228: Minimum-Range Safety Halt During ROTATE States
+*   **Investment:** Extremely Low. Add a single `min_r = min((r for r in self.last_scan_ranges if 0.15 < r < 4.0), default=999.0)` guard at the top of both `ROTATE_180` and `ROTATE_HOME` branches; publish zero Twist and return early if `min_r < 0.22`.
+*   **Return:** Very High. Closes a significant safety blind spot — currently the robot spins into suddenly-appeared obstacles during turnarounds with zero detection; adds a single comparison per 20 Hz tick to both rotation states.
+
+### 51. Idea 229: ICP-Corrected Pose Columns in `RunLogger`
+*   **Investment:** Extremely Low. Add `corrected_x`, `corrected_y`, and `corrected_yaw_deg` as three additional fields to `RunLogger.log()` and the `_maybe_log()` call sites in both drive states.
+*   **Return:** High. Enables direct post-run CSV comparison of ICP-corrected pose vs. raw EKF odometry divergence per mode, providing a concrete navigation accuracy metric for the A/B analysis at zero runtime overhead change.
+
+### 52. Idea 230: Depth Frame Staleness Gate in `_inference_loop`
+*   **Investment:** Low. Track `self._last_depth_write_time = time.monotonic()` in `ROS2Bridge._depth_cb`; expose via `get_depth_frame_age()`; in `_inference_loop`, set `centroids_m = []` if the frame age exceeds 200 ms.
+*   **Return:** High. Prevents phantom centroid detections from a frozen shared-memory buffer (caused by camera dropout or orbbec_depth service restart) from holding `is_paused = True` indefinitely in the test script.
+
+### 53. Idea 231: APF `vy_rep` Deadband for Near-Zero Jitter Elimination
+*   **Investment:** Extremely Low. Add `if abs(self.vy_rep) < 0.012: self.vy_rep = 0.0` in `_update_bypass_offset` immediately before the `vy_target` computation.
+*   **Return:** High. Eliminates sub-threshold APF forces (0.002–0.008 m/s) that cause 20 Hz lateral micro-oscillation visible in `path_y` CSV data, with no effect on macro avoidance behavior where repulsion forces exceed the deadband.
+
+### 54. Idea 232: Segment-Specific Rotation Timeout
+*   **Investment:** Extremely Low. Add `ROTATION_TIMEOUT = 10.0 s` constant and apply it to `ROTATE_180` and `ROTATE_HOME` in the existing timeout guard block, keeping `SEGMENT_TIMEOUT = 20.0 s` for drive states only.
+*   **Return:** High. Catches heading oscillation stalls near the ±180° boundary twice as fast as the current blanket timeout, reducing wasted spin time without affecting the legitimate longer drive segments.
+
+### 55. Idea 234: Far-Range Voxel Grid Creation at Working Resolution
+*   **Investment:** Extremely Low. Remove the full-resolution `far_grid = np.zeros((h_orig, w_orig), dtype=bool)` allocation in `_extract_depth_centroids`; apply far-range stride selection directly on the post-downsampled `raw_depth_frame`.
+*   **Return:** High. Saves one `480×640` boolean array allocation and two full-resolution mask multiply operations per 10 Hz inference cycle at no accuracy cost.
+
+### 56. Idea 235: `_inference_loop` Minimum Sleep Guard for CPU Overrun Prevention
+*   **Investment:** Extremely Low. Change `time.sleep(max(0.0, dt - elapsed))` to `time.sleep(max(0.001, dt - elapsed))` at the end of `_inference_loop`.
+*   **Return:** High. Guarantees a 1 ms OS scheduler yield even during inference overruns, preventing the inference thread from consuming 100% of a Jetson CPU core and starving the ROS2 spin and 20 Hz control threads.
+
+### 57. Idea 236: `visible_count`-Scaled Confidence Weight on MLP Output Speed
+*   **Investment:** Extremely Low. Multiply the predicted `speed`, `vx`, and `vy` by `min(1.0, visible_count / WINDOW_SIZE)` in `_inference_loop` before appending to `estimates`.
+*   **Return:** High. Ramps each track's TTC contribution from 30% at initiation (3/10 history frames real) to 100% at full maturity, suppressing false TTC braking alarms from freshly-detected targets without any model retraining.
+
+### 58. Idea 237: Scan Minimum-Points Gate Increase for ICP Reliability
+*   **Investment:** Extremely Low. Raise the ICP entry threshold from `>= 10` to `>= 40` valid scan points in `_scan_cb`; scans below threshold fall through to the existing odometry-fallback path.
+*   **Return:** High. Filters rare degenerate open-space or scan-initialization frames (10–39 points) where low point count causes noisy correspondence, preventing spurious `corrected_x/y/yaw` corrections from contaminating the drift-reference pose.
+
+### 59. Idea 239: Blocked-Time Counter Explicit Reset on Drive-Leg Transition
+*   **Investment:** Extremely Low. Add `self.blocked_time = 0.0` in the `SETTLE_2` state block alongside the existing `self.is_paused = False` reset (~line 1034 in `ab_comparison_test.py`).
+*   **Return:** High. Prevents a stale `blocked_time` from the end of `DRIVE_TO_B` from prematurely triggering the 8-second recovery backing maneuver at the very start of `DRIVE_TO_A`, eliminating false-positive reverse recoveries between drive legs.
+
 ---
 
-## 3. Medium-ROI Tier (Rank 44 - 111)
+## 3. Medium-ROI Tier (Rank 60 - 135)
 *These enhancements offer good performance or navigation benefits, but require moderate coding effort, extra message handling, or minor model changes.*
 
 *   **16. Idea 38: Velocity-Projected Constant Velocity Tracker Association** (Medium-High ROI)
@@ -320,10 +385,14 @@ The following **32 ideas** have already been completed and integrated:
 *   **109. Idea 218: Z-Score Outlier Rejection for Centroid Depth Median Accuracy** (Medium ROI) — In `_extract_depth_centroids`, after computing an initial `np.median(valid_depths)`, remove samples where `|depth - median| > 1.5 * std(valid_depths)` before recomputing the final median, reducing wall-pixel contamination bias in the 3D centroid Z coordinate fed to the MLP history window.
 *   **110. Idea 219: ICP Warm-Start from Previous Residual Correction for Lateral Slip Compensation** (Medium ROI) — Store the last accepted ICP residual and blend it as a warm-start prior via `initial_dx += alpha * prev_dx_residual` (α ≈ 0.3) to bias alignment toward the persistent mecanum lateral slip direction, reducing convergence iterations and improving correction accuracy during sustained bypass drives.
 *   **111. Idea 220: Integral Cross-Track Error Term for Steady-State Lateral Drift Elimination** (Medium ROI) — Add an integral term `vy_i += KI_LATERAL * (target_lateral_offset - path_y) * dt` (KI ≈ 0.1) with anti-windup clamp at ±0.05 m/s to the lateral P controller in drive states, driving steady-state cross-track error to zero and keeping the robot precisely centered on the configured offset across repeated drive segments.
+*   **112. Idea 226: ICP Skip During High Lateral Command Velocity** (Medium-High ROI) — Add a guard in `_scan_cb` to bypass ICP and fall back to the raw odometry delta whenever `abs(self.last_vy_cmd) > 0.10 m/s`; lateral strafing causes rapid side-wall perspective shifts that degrade ICP correspondence quality precisely when odometry-only propagation is more reliable.
+*   **113. Idea 233: Settle-State ICP Reference Scan Capture** (Medium ROI) — Set a `self._capture_ref_scan_on_next_tick = True` flag at each SETTLE→DRIVE transition; in `_scan_cb`, copy `curr_pts` into `prev_scan_points` when the flag is set and clear it, ensuring each drive segment starts ICP from a clean stationary reference scan rather than a motion-blurred scan captured during the prior dynamic phase.
+*   **114. Idea 238: Per-Obstacle Speed EMA Smoothing for TTC Stability** (Medium ROI) — Maintain a `speed_ema` dict keyed by track ID in `_inference_loop`; update as `speed_ema[tid] = 0.6 * new_speed + 0.4 * prev_ema` and use it as the speed source for TTC calculations, providing per-track noise suppression complementary to Idea 122's aggregate output EMA.
+*   **115. Idea 240: Lateral P-Gain Scheduling Based on Proximity to Target Offset** (Medium ROI) — Replace fixed `KP_LATERAL = 0.8` with a two-regime schedule `kp_eff = 0.8 if abs(lateral_err) > 0.10 else 0.4` in the `vy_target` computation in both drive states; reduces bypass overshoot oscillation at coarse errors while retaining tight centering gain for fine corrections.
 
 ---
 
-## 4. Low-ROI Tier (Rank 112 - 131)
+## 4. Low-ROI Tier (Rank 136 - 155)
 *These ideas involve complex mathematics, multi-sensor clustering fusion, retraining models with variable dimensions, or significant architectural rewrites, but yield minor returns for this front-corridor A/B demo.*
 
 *   **75. Idea 4: Hybrid Kalman Filter Tracking & MLP Predictor Fusion**
