@@ -1671,3 +1671,55 @@ This log tracks ideas and architectural enhancements for the EE244 Computational
 **Area:** Navigation Accuracy
 **Investment:** Extremely Low
 **Rationale:** `_align_scans_icp` operates on all valid scan points (potentially 200–360 points per cloud), computing an O(M×N) pairwise distance matrix in each of its 3 iterations. For a 360-point scan, the inner distance matrix is 360×360 = 129,600 elements per iteration. Uniformly subsampling both clouds to at most 80 points (`pts = pts[::max(1, len(pts)//80)]`) reduces this to 80×80 = 6,400 elements — a 20× reduction — while preserving alignment accuracy since indoor corridor walls are planar features fully characterized by sparse samples. The fix is a single one-line stride slice requiring no other code changes.
+
+## [2026-06-08] Automated Analysis Batch — Ideas 199 to 208
+
+### Idea 199: Repeat-Mode `prev_scan_points` Reset to Prevent Cross-Run ICP Corruption
+**Area:** Navigation Accuracy
+**Investment:** Extremely Low
+**Rationale:** The `ROTATE_HOME` repeat-mode reset block (~line 1194) clears `corrected_x/y/yaw` and `prev_odom_pose` for a fresh run, but `self.prev_scan_points` retains the robot's final backward-facing scan from the previous run. The first `_scan_cb` of the new run ICP-aligns a fresh forward-facing scan against this stale backward reference, injecting large spurious `dx`/`dtheta` corrections into `corrected_x/y/yaw` before the robot has moved. Fix: add `self.prev_scan_points = []` alongside the existing `prev_odom_pose` reset — a one-line change that eliminates cross-run ICP corruption entirely.
+
+### Idea 200: Non-Blocking Recovery Backing via Timer-Based State
+**Area:** Collision Avoidance
+**Investment:** Low
+**Rationale:** The recovery backing maneuver in `DRIVE_TO_B` and `DRIVE_TO_A` (~lines 945–947 and 1136–1139) calls `time.sleep(0.1)` 15 times inside the ROS2 timer callback, blocking the executor thread for 1.5 seconds. During this block, `_odom_cb`, `_scan_cb`, and ICP drift correction are all starved — precisely when backward motion makes LiDAR safety checks most critical. Replace with an `_is_backing` boolean flag and `_backing_start` timestamp checked in the normal 20 Hz control loop path, allowing all sensor callbacks to continue processing during recovery.
+
+### Idea 201: `visible_count` Decay on Unmatched Track Frames in `ObstacleTracker`
+**Area:** Velocity Estimation
+**Investment:** Extremely Low
+**Rationale:** `ObstacleTracker.update()` (line ~59) increments `visible_count` on a match but never decrements it on a miss. Once a track passes the `visible_count >= 3` inference gate, it remains permanently eligible through arbitrarily long occlusion gaps, generating ghost-track TTC contributions from stale observations. Add `track['visible_count'] = max(0, track['visible_count'] - 1)` in the existing track-aging loop so eligibility degrades on missed frames and requires re-establishment after a sustained occlusion.
+
+### Idea 202: Division Pre-Inversion for Faster Feature Normalization
+**Area:** Script Performance
+**Investment:** Extremely Low
+**Rationale:** `_inference_loop` computes `(features_batch - self.scaler_X_mean) / self.scaler_X_scale` on an (N, 40) float32 matrix at 10 Hz. On ARM NEON (Jetson Orin Nano), a vectorized float32 division is approximately 2× slower than multiplication. Pre-compute `self.scaler_X_inv_scale = (1.0 / self.scaler_X_scale).astype(np.float32)` and analogously for `scaler_y_scale` in `_load_model()`, then replace the per-inference division with `(features_batch - self.scaler_X_mean) * self.scaler_X_inv_scale` — no change to numerical output, measurable reduction in normalization wall time.
+
+### Idea 203: Multi-Frame Confirmation Counter for `_front_is_continuous_wall`
+**Area:** Collision Avoidance
+**Investment:** Extremely Low
+**Rationale:** `_front_is_continuous_wall` is set from a single LiDAR scan in `_update_bypass_offset`. A single frame where forward beams lack edge discontinuities (e.g., a smooth doorframe or scan glitch) can incorrectly suppress camera-based bypass initiation or trigger the static-wall early stop for one control tick. Add a `_wall_confirm_count` integer that increments when the per-frame result is True and resets to zero when False; expose `_front_is_continuous_wall = True` externally only when `_wall_confirm_count >= 2`, providing 100 ms of hysteresis before any downstream action is triggered.
+
+### Idea 204: Per-Track Distance Gate Before MLP Inference to Skip Far Targets
+**Area:** Velocity Estimation
+**Investment:** Extremely Low
+**Rationale:** All tracks with `visible_count >= 3` and non-zero kinematic displacement are batched for MLP inference regardless of range. However, `_get_speed_scaling` only produces non-unity output for targets within `PROXIMITY_THRESHOLD = 1.8 m`. Tracks at 2.5–4.0 m consume full inference compute, feature assembly, and normalization with zero contribution to the safety scaling output. Add an early-continue guard (`if track['centroid'][2] > PROXIMITY_THRESHOLD: continue`) before appending to `features_list`, cutting batch size and inference latency in crowded long-range scenes.
+
+### Idea 205: Cross-Track Error and Commanded Velocity Columns in RunLogger
+**Area:** Navigation Accuracy
+**Investment:** Extremely Low
+**Rationale:** `current_path_y` (perpendicular cross-track error), `last_vx_cmd`, `last_vy_cmd`, and `vy_rep` are computed on every control tick in drive states but are absent from the CSV columns written by `RunLogger.log()`. These are the most direct metrics for evaluating A/B path-following quality and APF wall-centering effectiveness. Add them as additional fields to `_maybe_log()` in both `DRIVE_TO_B` and `DRIVE_TO_A` states — pure logging additions with zero runtime overhead change to the control path.
+
+### Idea 206: Static Fixture Tagging via EMA Motion Score to Clean Up TTC Loop
+**Area:** Velocity Estimation
+**Investment:** Low
+**Rationale:** Tracks representing static furniture (chair legs, desk bases) appear regularly in depth images and accumulate high `visible_count` values, driving them through MLP inference every cycle. Unlike Idea 94 (which masks static objects in image space via LiDAR projection), maintain a lightweight per-track `motion_score = 0.8 * prev_score + 0.2 * (abs(dx) + abs(dy))` updated each frame in `ObstacleTracker.update()`. Tag any track with `motion_score < 0.004 m/frame` sustained for 20+ consecutive frames as `is_static_fixture` and skip it in `_get_speed_scaling` and bypass-initiation checks, without altering the depth extraction pipeline.
+
+### Idea 207: Settle-State Stop Command Deduplication via Published-Flag
+**Area:** Script Performance
+**Investment:** Extremely Low
+**Rationale:** In `SETTLE_1`, `SETTLE_2`, and `SETTLE_3`, `_stop_robot()` is called on every 20 Hz timer tick, publishing 3 zero-velocity Twist messages per call — 60 DDS `/cmd_vel` publishes per second while settled. The Mcnamu_driver_X3 node processes each identically with no effect after the first. Add a `self._motor_is_stopped = False` flag: `_stop_robot()` only publishes when the flag is False and then sets it to True; any non-zero twist publish resets it to False. This reduces settle-state `/cmd_vel` DDS churn from 60 Hz to a single burst per settle entry.
+
+### Idea 208: Adaptive ICP Iteration Count Based on Commanded Speed
+**Area:** Navigation Accuracy
+**Investment:** Low
+**Rationale:** `_align_scans_icp` runs a fixed `range(3)` iterations regardless of robot velocity. At low commanded speeds (< 0.05 m/s — near-waypoint deceleration or settle-state entry), the scan displacement between consecutive calls is negligible and a single iteration fully converges. At high speeds the full 3 iterations are warranted. Replace the hard-coded `range(3)` with `n_iter = 1 if abs(self.last_vx_cmd) < 0.05 else 3` to reduce ICP CPU cost by two-thirds during slow and stopped segments while preserving full alignment quality at high traverse speeds.
