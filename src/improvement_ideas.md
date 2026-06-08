@@ -1787,3 +1787,57 @@ This log tracks ideas and architectural enhancements for the EE244 Computational
 **Area:** Navigation Accuracy
 **Investment:** Low
 **Rationale:** The lateral controller `vy_target = (self.target_lateral_offset - path_y) * KP_LATERAL + self.vy_rep` is purely proportional. Mecanum wheel slip and floor friction create a constant lateral disturbance force that the P-only controller balances with a non-zero steady-state `path_y` — meaning the robot consistently drifts off the centerline over long runs. Adding a small integral term `vy_i += KI_LATERAL * (target_lateral_offset - path_y) * dt` (e.g., `KI_LATERAL = 0.1`) with an anti-windup clamp at `±0.05 m/s` would drive steady-state cross-track error to zero, keeping the robot precisely centered on the configured offset across repeated drive segments.
+
+---
+
+## [2026-06-08] Automated Analysis Batch — Ideas 221 to 230
+
+### Idea 221: ICP Accumulated Rotation Delta Bound Clamping
+**Area:** Navigation Accuracy
+**Investment:** Extremely Low
+**Rationale:** `_align_scans_icp` accumulates `dtheta_corr` across up to 3 iterations and applies the total rotation to `corrected_yaw` without any magnitude guard. In open doorways or sparse scans where point correspondence is poor, spurious rotation corrections of 0.2–0.5 rad can be injected in a single callback — far larger than any physical yaw slip event. Idea 194 already clamps translation deltas; extending it with `if abs(dtheta_corr) > 0.15: dtheta_corr = 0.0` prevents outlier rotations from corrupting `corrected_yaw` while leaving the translation correction intact, adding a single comparison to the post-ICP path in `_scan_cb`.
+
+### Idea 222: Vectorized XY Scan-Point Array Construction from Cached Angle Array
+**Area:** Script Optimization
+**Investment:** Low
+**Rationale:** In `_scan_cb`, valid scan points are built with a Python `for` loop appending `(r * cos(angle), r * sin(angle))` tuples to `curr_pts`. Once Idea 188 (NumPy LaserScan conversion) and Idea 187 (precomputed angle cache) are in place, this loop can be replaced by: `valid = (ranges > 0.15) & (ranges < 4.0) & ~np.isnan(ranges); r_v = ranges[valid]; curr_pts_np = np.column_stack([r_v * np.cos(cached_angles[valid]), r_v * np.sin(cached_angles[valid])])`, building the ICP input array in a single vectorized pass with no Python loop or list appends. Combined with Idea 212's pre-conversion of `prev_scan_points`, this eliminates all Python-level point-cloud construction overhead in the scan callback hot path.
+
+### Idea 223: Hard Physical Clamp on Inverse-Scaled MLP Output Velocities
+**Area:** Velocity Estimation
+**Investment:** Extremely Low
+**Rationale:** After inverse-scaling predictions (`pred_ms = pred_scaled * scaler_y_scale + scaler_y_mean`) in `_inference_loop`, no upper bound is applied to the resulting `vx`/`vy` values. Severe out-of-distribution inputs — e.g., a large depth contour misregistration or a missing ego-motion compensation frame — can produce predictions of ±5+ m/s, triggering immediate TTC scaling to zero and locking the robot in a prolonged stop. Idea 152 already clamps the *change* in speed between consecutive frames; adding `pred_ms = np.clip(pred_ms, -2.5, 2.5)` immediately after the inverse transform enforces the hard physical plausibility limit (fastest human sprint ≈ 2.5 m/s) as an unconditional output gate with a single one-line change.
+
+### Idea 224: Forward Speed Ramp-Up Delay After Pause Release
+**Area:** Collision Avoidance
+**Investment:** Low
+**Rationale:** When `is_paused` transitions from True to False at the end of a bypass maneuver, the forward speed command immediately jumps to its full proportional value on the next 20 Hz tick, creating a speed discontinuity that can cause wheel slip and a brief heading jerk. Add a `_pause_exit_time = None` timestamp; when `is_paused` becomes False, record `time.monotonic()` and cap the forward speed at `base_speed * min(1.0, (now - _pause_exit_time) / 0.3)` for the following 300 ms, providing a smooth velocity ramp-up rather than an instantaneous step change at the moment of obstacle clearance.
+
+### Idea 225: EKF Pose Staleness Guard in `get_robot_pose_and_twist`
+**Area:** Velocity Estimation
+**Investment:** Low
+**Rationale:** The `get_robot_pose_and_twist` callback in `server_x3.py` returns the latest `ROS2Bridge._pose_m` and `_twist` with no timestamp check. If `/odom` updates stop arriving (e.g., during `base_node_X3` bringup delay or hardware restart), the frozen stale pose is returned indefinitely and all centroid-to-global transforms use an incorrect robot location, creating phantom velocities on static objects. In `ROS2Bridge._odom_cb`, store `self._odom_stamp = time.monotonic()` on each update; in `get_robot_pose_and_twist`, return `None` if `time.monotonic() - ros_bridge._odom_stamp > 0.5`, causing `_inference_loop` to fall back to `rx_rob = ry_rob = rtheta_rob = 0.0` rather than using a dangerously stale transform.
+
+### Idea 226: ICP Skip During High Lateral Command Velocity
+**Area:** Navigation Accuracy
+**Investment:** Low
+**Rationale:** The ICP scan-matcher in `_scan_cb` relies on high point-correspondence quality between consecutive scans. During aggressive lateral bypass strafing (`abs(last_vy_cmd) > 0.10 m/s`), side-wall and furniture points shift in perspective rapidly and the ICP convergence basin degrades — yet the 3-iteration loop still runs and integrates noisy corrections into `corrected_x/y/yaw`. Adding a guard at the top of the ICP block in `_scan_cb` (`if hasattr(self, 'last_vy_cmd') and abs(self.last_vy_cmd) > 0.10: use odom fallback`) bypasses the ICP and falls back to the raw odometry delta path (already implemented for sparse scans), preventing lateral-slip noise from corrupting the corrected pose during the maneuvers where odometry-only propagation is actually more reliable.
+
+### Idea 227: Remove Redundant Local `history` Deque from `ObstacleTracker`
+**Area:** Script Optimization
+**Investment:** Low
+**Rationale:** Each track in `ObstacleTracker` maintains two parallel `deque(maxlen=WINDOW_SIZE)` objects: `history` (local camera-frame coordinates) and `history_global` (global map-frame coordinates). In `_inference_loop`, `hist_local` is reconstructed entirely from `history_global` by applying the inverse robot rotation (lines 481–491); the `history` (local) deque is appended at tracking time but never read back during inference. Removing the `history` deque and its `.append()` call in `ObstacleTracker.update()` eliminates one deque allocation per new track, one append per 10 Hz update step per track (up to 5 tracks = 50 appends/second saved), and halves the per-track coordinate storage footprint with zero behavioral change.
+
+### Idea 228: Minimum-Range Safety Halt During ROTATE States
+**Area:** Collision Avoidance
+**Investment:** Extremely Low
+**Rationale:** `ROTATE_180` and `ROTATE_HOME` publish angular velocity commands with no proximity check — the robot will spin into a suddenly-appeared obstacle (e.g., a pedestrian stepping behind the robot during the pause) without any detection. Idea 40 proposes a full swept-volume VO solution; a simpler and immediately deployable guard is: at the top of both rotate-state branches, compute `valid_r = [r for r in self.last_scan_ranges if 0.15 < r < 4.0]` and if `min(valid_r) < 0.22`, publish a zero Twist and return early. This adds a single min-range comparison per 20 Hz tick to both rotation states, preventing in-place collision during turnarounds at negligible CPU cost.
+
+### Idea 229: ICP-Corrected Pose Columns in `RunLogger`
+**Area:** Navigation Accuracy
+**Investment:** Extremely Low
+**Rationale:** `RunLogger.log()` and `_maybe_log()` record `robot_x/y/th` from raw EKF odometry (`self.current_x/y/yaw`), but the ICP-corrected pose (`self.corrected_x`, `self.corrected_y`, `self.corrected_yaw`) — which is the actual reference used by all distance and heading controllers — is absent from the CSV. Adding `corrected_x`, `corrected_y`, and `corrected_yaw_deg` as three additional fields to `RunLogger.log()` and `_maybe_log()` enables direct post-run quantification of the ICP correction magnitude (raw odom vs. corrected divergence) per mode, providing a concrete navigation accuracy metric to compare reactive and predictive runs without any runtime overhead change.
+
+### Idea 230: Depth Frame Staleness Gate in `_inference_loop`
+**Area:** Velocity Estimation
+**Investment:** Low
+**Rationale:** `_inference_loop` calls `camera.get_raw_depth_frame()` and `camera.get_depth_frame()` every 100 ms without checking when the frame was last written. In the ROS2 mode, `ROS2Bridge._depth_cb` is the writer; if the depth topic stops publishing (camera disconnect, orbbec_depth service restart), the shared memory buffer retains the last valid frame indefinitely. Processing a stale frame creates phantom centroid detections at fixed locations, which the tracker interprets as a stopped pedestrian — generating persistent non-zero MLP output and holding `is_paused = True` in the test script. Track `self._last_depth_write_time` in `_depth_cb` and expose it via `get_depth_frame_age()`; in `_inference_loop`, skip the centroid extraction and set `centroids_m = []` if the frame age exceeds 200 ms, preventing stale data from polluting track history.
