@@ -43,7 +43,7 @@ class ObstacleTracker:
     by nearest-centroid distance in global map frame coordinates.
     """
     def __init__(self, max_distance=0.8, max_age=10):
-        self.tracks   = {}   # track_id -> {'centroid': (x,y,z), 'centroid_global': (x,y,z), 'age': int, 'history': deque, 'history_global': deque}
+        self.tracks   = {}   # track_id -> {'centroid': (x,y,z), 'centroid_global': (x,y,z), 'age': int, 'history_global': deque, 'visible_count': int}
         self.next_id  = 0
         self.max_dist = max_distance   # metres
         self.max_age  = max_age        # frames before track is dropped
@@ -58,6 +58,7 @@ class ObstacleTracker:
         # Age all tracks
         for tid in list(self.tracks):
             self.tracks[tid]['age'] += 1
+            self.tracks[tid]['visible_count'] = max(0, self.tracks[tid]['visible_count'] - 1)
             if self.tracks[tid]['age'] > self.max_age:
                 del self.tracks[tid]
 
@@ -86,7 +87,6 @@ class ObstacleTracker:
                 track['centroid_global'] = (cx_g, cy_g, cz_filtered)
                 track['age']      = 0
                 track['visible_count'] += 1  # Increment visible count (Idea 109)
-                track['history'].append((cx_l, cy_l, cz_filtered))
                 track['history_global'].append((cx_g, cy_g, cz_filtered))
 
         # Create new tracks for unmatched detections
@@ -103,15 +103,12 @@ class ObstacleTracker:
                 'centroid_global': (cx_g, cy_g, cz),
                 'age':      0,
                 'visible_count': 1,  # Initialize visible count (Idea 109)
-                'history':  deque(maxlen=WINDOW_SIZE),
                 'history_global': deque(maxlen=WINDOW_SIZE),
             }
-            self.tracks[tid]['history'].append((cx_l, cy_l, cz))
             self.tracks[tid]['history_global'].append((cx_g, cy_g, cz))
 
-        return {tid: {'centroid': t['centroid'], 
+        return {tid: {'centroid': t['centroid'],
                       'centroid_global': t['centroid_global'],
-                      'history': t['history'],
                       'history_global': t['history_global'],
                       'visible_count': t['visible_count']}  # Return visible count (Idea 109)
                 for tid, t in self.tracks.items()}
@@ -153,6 +150,7 @@ class VelocityEstimator:
         self._model     = None
         self.scaler_X_mean = None
         self.scaler_X_scale = None
+        self.scaler_X_inv_scale = None
         self.scaler_y_mean = None
         self.scaler_y_scale = None
         self._tracker   = ObstacleTracker()
@@ -161,6 +159,7 @@ class VelocityEstimator:
         self._running   = False
         self._thread    = None
         self._last_print_time = 0.0
+        self._prev_estimates = {}
 
         # Pre-allocate input tensor shape (Idea 116)
         self.x_tensor_preallocated = torch.zeros((MAX_OBSTACLES, 40), dtype=torch.float32)
@@ -186,6 +185,7 @@ class VelocityEstimator:
             
             self.scaler_X_mean = np.array(params["scaler_X"]["mean"], dtype=np.float32)
             self.scaler_X_scale = np.array(params["scaler_X"]["scale"], dtype=np.float32)
+            self.scaler_X_inv_scale = (1.0 / self.scaler_X_scale).astype(np.float32)
             self.scaler_y_mean = np.array(params["scaler_y"]["mean"], dtype=np.float32)
             self.scaler_y_scale = np.array(params["scaler_y"]["scale"], dtype=np.float32)
             
@@ -213,16 +213,17 @@ class VelocityEstimator:
             # Close-range mask (0.5m to 1.5m, high resolution)
             close_mask = (raw_depth_frame >= 0.5) & (raw_depth_frame < 1.5)
             mask_orig[close_mask] = 255
-            
-            # Far-range mask (1.5m to 4.0m, downsampled by factor of 3 to filter noise)
-            far_grid = np.zeros((h_orig, w_orig), dtype=bool)
-            far_grid[::3, ::3] = True
-            far_mask = (raw_depth_frame >= 1.5) & (raw_depth_frame <= 4.0) & far_grid
-            mask_orig[far_mask] = 255
-            
-            # Downsample to final working resolution (stride 2 relative to original, matches fx=277.0 camera model)
+
+            # Downsample first, then apply far-range stride on smaller frame
             raw_depth_frame = raw_depth_frame[::2, ::2]
             mask = mask_orig[::2, ::2]
+
+            # Far-range mask on downsampled frame (stride 2 relative to downsampled = stride 4 vs original)
+            h_ds, w_ds = raw_depth_frame.shape[:2]
+            far_mask_ds = (raw_depth_frame >= 1.5) & (raw_depth_frame <= 4.0)
+            far_mask_ds[1::2, :] = False  # keep only even rows (equivalent to stride 2 on downsampled)
+            far_mask_ds[:, 1::2] = False  # keep only even cols
+            mask[far_mask_ds] = 255
             
             # Morphological cleanup
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
@@ -235,8 +236,17 @@ class VelocityEstimator:
             
             for cnt in contours:
                 area = cv2.contourArea(cnt)
-                # Scale area threshold for downsampled frame size
-                if area < (MIN_BLOB_AREA / 4.0):
+                # Get rough Z from bounding box center for adaptive area threshold
+                x_b_tmp, y_b_tmp, w_b_tmp, h_b_tmp = cv2.boundingRect(cnt)
+                cx_tmp = x_b_tmp + w_b_tmp / 2.0
+                cy_tmp = y_b_tmp + h_b_tmp / 2.0
+                # Sample depth at bounding box center (with bounds checking)
+                cy_i = min(int(cy_tmp), raw_depth_frame.shape[0] - 1)
+                cx_i = min(int(cx_tmp), raw_depth_frame.shape[1] - 1)
+                z_ref = float(raw_depth_frame[cy_i, cx_i]) if not np.isnan(raw_depth_frame[cy_i, cx_i]) else 1.5
+                z_ref = max(0.5, min(4.0, z_ref))
+                adaptive_min_area = (MIN_BLOB_AREA / 4.0) * (1.5 / z_ref) ** 2
+                if area < adaptive_min_area:
                     continue
                 M = cv2.moments(cnt)
                 if M['m00'] == 0:
@@ -407,6 +417,15 @@ class VelocityEstimator:
                 depth_frame = self.camera.get_depth_frame() if hasattr(self.camera, 'get_depth_frame') else None
                 raw_depth_frame = self.camera.get_raw_depth_frame() if hasattr(self.camera, 'get_raw_depth_frame') else None
 
+                # Fast-path: skip all processing when no valid depth data exists
+                if raw_depth_frame is not None and raw_depth_frame.size > 0:
+                    if not np.any((raw_depth_frame >= 0.5) & (raw_depth_frame <= 4.0)):
+                        with self._lock:
+                            self._estimates = []
+                        elapsed = time.monotonic() - t0
+                        time.sleep(max(0.001, (1.0 / INFER_HZ) - elapsed))
+                        continue
+
                 # 2. Extract local centroids (relative to camera/robot)
                 centroids_m = self._extract_depth_centroids(depth_frame, raw_depth_frame)
 
@@ -450,6 +469,20 @@ class VelocityEstimator:
                     if track.get('visible_count', 1) < 3:
                         continue
 
+                    # Skip tracks that are beyond the proximity threshold — they contribute zero to speed scaling
+                    if track['centroid'][2] > 1.8:
+                        cx, cy, cz = track['centroid']
+                        estimates.append({
+                            'id':    tid,
+                            'x':     round(cx, 3),
+                            'y':     round(cy, 3),
+                            'z':     round(cz, 3),
+                            'vx':    0.0,
+                            'vy':    0.0,
+                            'speed': 0.0,
+                        })
+                        continue
+
                     if len(track['history_global']) < 2:
                         cx, cy, cz = track['centroid']
                         estimates.append({
@@ -478,17 +511,14 @@ class VelocityEstimator:
                         continue
 
                     # Reconstruct relative history for this track in the robot's current frame (Idea 1 & 11)
-                    hist_local = []
-                    for x_g, y_g, cz in track['history_global']:
-                        dx_g = x_g - rx_rob
-                        dy_g = y_g - ry_rob
-                        # Rotate back to local robot coordinates by -rtheta_rob
-                        rx_l = dx_g * cos_r + dy_g * sin_r
-                        ry_l = -dx_g * sin_r + dy_g * cos_r
-                        # In camera coordinates: cz = rx_l, cx_l = -ry_l, cy_l = 0 (ground plane)
-                        cx_l = -ry_l
-                        cy_l = 0.0
-                        hist_local.append((cx_l, cy_l, rx_l))
+                    hist_g_arr = np.array(list(track['history_global']), dtype=np.float32)  # shape (T, 3)
+                    if len(hist_g_arr) == 0:
+                        continue
+                    dxy = hist_g_arr[:, :2] - np.array([rx_rob, ry_rob], dtype=np.float32)  # (T, 2)
+                    R = np.array([[cos_r, sin_r], [-sin_r, cos_r]], dtype=np.float32)
+                    local_xy = dxy @ R.T  # (T, 2): col0=rx_l, col1=ry_l
+                    # cx_l = -ry_l, cy_l = 0.0, cz = rx_l
+                    hist_local = [(-float(local_xy[i, 1]), 0.0, float(local_xy[i, 0])) for i in range(len(local_xy))]
 
                     feats, is_stopped = self._build_window_features(hist_local)
                     if is_stopped:  # Kinematic Stop-Trigger Gating (Idea 108)
@@ -512,7 +542,7 @@ class VelocityEstimator:
                     features_batch = np.vstack(features_list)
                     
                     # Normalize using parameters (Idea 72)
-                    features_scaled = (features_batch - self.scaler_X_mean) / self.scaler_X_scale
+                    features_scaled = (features_batch - self.scaler_X_mean) * self.scaler_X_inv_scale
                     
                     # Copy directly into pre-allocated PyTorch tensor (Idea 116)
                     num_tracks = len(eligible_tracks)
@@ -524,6 +554,7 @@ class VelocityEstimator:
 
                     # Inverse transform predictions: shape (N, 2)
                     pred_ms = pred_scaled * self.scaler_y_scale + self.scaler_y_mean
+                    pred_ms = np.clip(pred_ms, -2.5, 2.5)
 
                     for idx, (tid, _) in enumerate(eligible_tracks):
                         vx = float(pred_ms[idx, 0])
@@ -531,15 +562,32 @@ class VelocityEstimator:
                         speed = float(np.sqrt(vx**2 + vy**2))
 
                         cx, cy, cz = tracks[tid]['centroid']
+                        visible_count = tracks[tid].get('visible_count', WINDOW_SIZE)
+                        conf = min(1.0, visible_count / WINDOW_SIZE)
                         estimates.append({
                             'id':    tid,
                             'x':     round(cx, 3),
                             'y':     round(cy, 3),
                             'z':     round(cz, 3),
-                            'vx':    round(vx, 3),
-                            'vy':    round(vy, 3),
-                            'speed': round(speed, 3),
+                            'vx':    round(vx * conf, 3),
+                            'vy':    round(vy * conf, 3),
+                            'speed': round(speed * conf, 3),
                         })
+
+                # Idea 152: clamp velocity change between frames to max human acceleration (3 m/s²)
+                max_delta = 3.0 / INFER_HZ  # max speed change per frame = 0.3 m/s at 10Hz
+                for est in estimates:
+                    tid = est['id']
+                    if tid in self._prev_estimates:
+                        prev = self._prev_estimates[tid]
+                        dvx = est['vx'] - prev.get('vx', 0.0)
+                        dvy = est['vy'] - prev.get('vy', 0.0)
+                        if abs(dvx) > max_delta:
+                            est['vx'] = prev.get('vx', 0.0) + math.copysign(max_delta, dvx)
+                        if abs(dvy) > max_delta:
+                            est['vy'] = prev.get('vy', 0.0) + math.copysign(max_delta, dvy)
+                        est['speed'] = float(np.sqrt(est['vx']**2 + est['vy']**2))
+                self._prev_estimates = {est['id']: est for est in estimates}
 
                 with self._lock:
                     self._estimates = estimates
@@ -604,7 +652,7 @@ class VelocityEstimator:
 
             # Sleep remainder of cycle
             elapsed = time.monotonic() - t0
-            sleep_t = max(0.0, dt - elapsed)
+            sleep_t = max(0.001, dt - elapsed)
             time.sleep(sleep_t)
 
     def start(self):
