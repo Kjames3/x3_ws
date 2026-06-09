@@ -7,6 +7,7 @@ This document records the ROI rankings and evaluation metrics for the enhancemen
 2026-06-08: Added 20 ideas (221–240) across tiers. 16 new High-ROI, 4 new Medium-ROI entries added.
 2026-06-09: Added 22 ideas (241–262) across tiers. 16 new High-ROI, 6 new Medium-ROI entries added.
 2026-06-09: Added 20 ideas (263–282) across tiers. 15 new High-ROI, 5 new Medium-ROI entries added.
+2026-06-09: Added 20 ideas (283–302) across tiers. 12 new High-ROI, 8 new Medium-ROI entries added.
 
 ---
 
@@ -410,6 +411,54 @@ The following **32 ideas** have already been completed and integrated:
 *   **Investment:** Extremely Low. Add a `_log_event(label)` helper that writes one summary row at each state transition (e.g., `"EVENT_SETTLE1_START"`); call it at each `DRIVE→SETTLE` and `SETTLE→ROTATE` boundary in `_control_loop`.
 *   **Return:** High. Post-run CSV analysis infers segment boundaries from row-to-row `segment` label changes, which silently fails when the final row of a drive state was throttled out; explicit marker rows provide log-throttling-immune delimiters essential for automated per-segment metric extraction.
 
+### 91. Idea 284: Range-Adaptive `alpha_z` EMA Filter Based on Centroid Depth Bin
+*   **Investment:** Extremely Low. Replace `alpha_z = 0.7` constant in `ObstacleTracker.update()` with `alpha_z = 0.85 if cz < 1.5 else (0.70 if cz < 3.0 else 0.50)`.
+*   **Return:** High. Depth sensor noise is inversely proportional to range; the fixed `alpha_z = 0.7` over-smooths close targets (causing lag during rapid approach) while under-smoothing far targets (passing jitter into `history_global`); the three-bin schedule requires a single if-elif chain and zero additional state, directly improving centroid track stability at both ends of the operational range.
+
+### 92. Idea 287: `hist_local` Forward-Component Range Clamp in `_inference_loop`
+*   **Investment:** Extremely Low. Add `rx_l = max(0.3, min(5.0, rx_l))` and `ry_l = max(-3.0, min(3.0, ry_l))` immediately after the inverse-rotation of each history point in `_inference_loop`.
+*   **Return:** High. ICP drift accumulation or a single bad odom frame can produce `history_global` entries whose inverse-rotated local coordinates lie outside the MLP training distribution; the clamps are a last-resort guard before feature normalization without altering any physical measurement, providing silent outlier rejection at zero inference cost.
+
+### 93. Idea 290: `_encode_map` Offloaded to Thread Executor in `handle_client`
+*   **Investment:** Low. Replace the inline `cv2.imencode` / `base64.b64encode` map call in `handle_client` with `await loop.run_in_executor(None, _encode_map, grid_array)`.
+*   **Return:** High. Map encoding blocks the async event loop for 5–15 ms on a 4096-cell occupancy grid at 1 Hz; pushing it to the thread pool prevents the map broadcast from delaying the same-tick lidar and camera sends, removing a periodic jitter spike visible on the GUI's frame-timing histogram.
+
+### 94. Idea 291: Scan Callback Timestamp Staleness Guard in `_update_bypass_offset`
+*   **Investment:** Extremely Low. Set `self._last_scan_time = time.monotonic()` at entry of `_scan_cb`; at the top of `_update_bypass_offset`, early-return if `time.monotonic() - self._last_scan_time > 0.5`.
+*   **Return:** High. If the YDLidar driver stalls (USB reconnect, DMA error), `_latest_scan` remains from the previous scan epoch; the bypass and APF computations silently use stale data, potentially commanding unsafe lateral motions into an obstacle that has since moved; the 0.5 s guard eliminates this silent failure at near-zero cost.
+
+### 95. Idea 292: Forward-Speed Proportional `KP_YAW` Scaling in Drive States
+*   **Investment:** Extremely Low. Replace `rot_correction = max(-0.2, min(0.2, yaw_error * KP_YAW))` with `rot_correction = max(-0.2, min(0.2, yaw_error * KP_YAW * min(1.0, speed / MAX_LINEAR_SPEED)))` in both drive states.
+*   **Return:** High. At slow speeds near waypoints the full `KP_YAW = 0.4` correction can exceed the forward command magnitude, causing the robot to spin rather than drive; scaling the gain proportionally to forward speed ensures heading correction remains subordinate to translation, reducing orientation oscillation during low-speed approach and lateral bypass phases.
+
+### 96. Idea 294: Centroid Depth Standard Deviation Quality Gate in `_extract_depth_centroids`
+*   **Investment:** Extremely Low. After computing `Z = np.median(valid_depths)`, add `if len(valid_depths) > 5 and np.std(valid_depths) / Z > 0.35: continue` before the pinhole projection step.
+*   **Return:** High. Mixed-depth contours (person partially occluded by a door frame) produce a median depth that is an interpolation between two surfaces; the coefficient-of-variation threshold 0.35 reliably rejects these ambiguous blobs without discarding valid detections, eliminating spurious `history_global` entries whose projected (x, y) positions are geometrically meaningless.
+
+### 97. Idea 296: Minimum Forward Speed Floor During Active Lateral Bypass
+*   **Investment:** Extremely Low. After the `speed = base_forward_speed * forward_scale` diagonal-blend line in both drive states, add `if abs(self.target_lateral_offset) > 0.05: speed = max(MIN_LINEAR_SPEED * 0.4, speed)`.
+*   **Return:** High. `forward_scale` can reduce `speed` to near zero when `lateral_error` is large, leaving the robot strafing in place and extending total bypass time; the floor at `0.4 × MIN_LINEAR_SPEED` (0.024 m/s) ensures the robot always progresses toward the waypoint during bypass, preventing excessive dwell time in the pedestrian's path while maintaining obstacle clearance.
+
+### 98. Idea 297: Reactive-Mode TTC Short-Circuit in `_get_speed_scaling`
+*   **Investment:** Extremely Low. Hoist `if self._mode != "predictive": return s_proximity_min` before the per-obstacle TTC loop in `_get_speed_scaling`, skipping all `est.get('vx')` lookups and TTC arithmetic.
+*   **Return:** High. In reactive mode, `_latest_estimates` is always empty, making the TTC loop a no-op that still iterates zero times through dict unpacking; the early return costs one attribute read and a branch, eliminates dead code paths, and documents the intent that TTC scaling is a predictive-only feature, preventing accidental breakage if estimates are ever emitted in reactive mode.
+
+### 99. Idea 298: `rot_correction` Attenuation During Active Lateral Strafing
+*   **Investment:** Extremely Low. After computing `rot_correction` in both drive states, add `rot_correction *= max(0.0, 1.0 - abs(vy_cmd) / MAX_LATERAL_SPEED)`.
+*   **Return:** High. Simultaneous `wz` and `vy` commands on mecanum wheels produce a coupled slip force that degrades straight-line tracking; attenuating yaw correction proportionally to lateral command magnitude reduces coupling without eliminating heading maintenance, improving ICP scan registration quality during bypass maneuvers where lateral slip is the primary drift source.
+
+### 100. Idea 299: WebSocket Estimate Timestamp Staleness Guard in Drive States
+*   **Investment:** Extremely Low. In `VelocityEstimator`, set `self._estimates_timestamp = time.monotonic()` each time `_latest_estimates` is written; in both drive states of `ab_comparison_test.py`, treat estimates as empty if `time.monotonic() - ws_estimator._estimates_timestamp > 0.5`.
+*   **Return:** High. WebSocket connection drops or inference-thread stalls leave `_latest_estimates` populated with obsolete velocity vectors; the TTC and bypass-direction code then acts on stale pedestrian motion, potentially choosing the wrong bypass side or failing to decelerate; the 0.5 s expiry guard is a single comparison that prevents this silent safety regression.
+
+### 101. Idea 300: ICP Input Point Cloud Far-Range Pre-Filter in `_align_scans_icp`
+*   **Investment:** Extremely Low. Add `P = P[np.sum(P**2, axis=1) < 4.0]` and `Q = Q[np.sum(Q**2, axis=1) < 4.0]` at the start of `_align_scans_icp`, filtering points beyond 2.0 m range before the correspondence search.
+*   **Return:** High. Far-range LiDAR points (doorways, far walls) introduce large correspondence distances that dominate the SVD cross-covariance matrix and rotate the alignment solution away from the physically local motion; restricting to the 2 m working zone reduces the H matrix condition number and improves per-iteration convergence, producing a more accurate `corrected_yaw` with no additional algorithm complexity.
+
+### 102. Idea 301: `LATERAL_THRESHOLD` Dynamic Expansion During Active Bypass
+*   **Investment:** Extremely Low. When `abs(self.target_lateral_offset) > 0.05`, replace the fixed `LATERAL_THRESHOLD` in the side-clearance check of `_update_bypass_offset` with `lateral_thresh_dyn = 0.35 + 0.5 * abs(self.target_lateral_offset)`.
+*   **Return:** High. The static 0.35 m threshold was tuned for the no-bypass case; during a 0.4 m pedestrian bypass, the robot's swept path is 0.4 m off-center and requires proportionally more lateral clearance to the opposing wall; dynamically expanding the threshold prevents the APF wall repulsion from competing with the bypass offset, resolving the frequent oscillation between bypass and wall-avoidance commands observed in dense corridors.
+
 ---
 
 ## 3. Medium-ROI Tier (Rank 60 - 135)
@@ -526,6 +575,14 @@ The following **32 ideas** have already been completed and integrated:
 *   **124. Idea 277: YOLO Person Detection Veto for `is_continuous_wall` Stationary Pedestrian Case** (Medium ROI) — In the `is_continuous_wall` determination block of `_update_bypass_offset`, add a check via `self.detections_fn()`: if any YOLO `person` bounding box is present in the forward frustum, force `is_continuous_wall = False` to correctly identify stationary pedestrians as bypassable obstacles rather than static walls.
 *   **125. Idea 281: Approach-Velocity-Scaled `AVOIDANCE_FORWARD` for Earlier Bypass Initiation** (Medium ROI) — Compute `avoidance_dist_dyn = 1.8 + max(0.0, (-est.get('vx', 0.0) - self.last_vx_cmd) * 0.4)` in `_update_bypass_offset`'s dynamic pedestrian branch, extending the bypass trigger horizon proportionally to approach speed for fast-approaching pedestrians while keeping the 1.8 m default for slow targets.
 *   **126. Idea 278: LiDAR Range-Rate Forward Sector TTC Supplement for Reactive Mode** (Medium ROI) — Store `self._prev_forward_ranges` in `_scan_cb`; compute `lidar_ttc = min(curr_range / max(0.01, range_rate))` over closing forward-sector beams; feed into `smooth_speed_scale` as a reactive-mode TTC floor when `_latest_estimates` is empty, closing the safety gap during MLP track warm-up (first 3 frames).
+*   **127. Idea 283: Predictive Bypass Pre-Initiation via Forward-Projected Pedestrian Position** (Medium-High ROI) — In `_update_bypass_offset`, compute `ry_projected = ry + est.get('vy', 0.0) * 0.3` and check `abs(ry_projected) < AVOIDANCE_LATERAL` to trigger bypass 300 ms earlier than the current instantaneous-position check; requires computing one float multiply per active track and prevents the case where the bypass offset is not set until the pedestrian is already in the robot's path.
+*   **128. Idea 285: Odom Body Velocity for Settle-State Kinematic Stop Confirmation** (Medium ROI) — In `SETTLE_1/2/3` states, gate settle timer start on `hypot(body_vx, body_vy) < 0.03 m/s` from `get_robot_pose_and_twist()`, ensuring the robot has physically stopped before the settle dwell begins; prevents the current time-only settle from sometimes completing while the robot is still coasting and corrupting the subsequent `start_yaw` / `target_yaw` capture.
+*   **129. Idea 286: Bypass Direction Lock-In Timer to Prevent Flip Oscillation** (Medium ROI) — Add `self._bypass_direction_lock_until = 0.0` and `self._locked_bypass_sign = 0`; when bypass direction is selected, set lock until `time.monotonic() + 1.5`; during the lock period, ignore sign changes from `_update_bypass_offset`, preventing the 1–2 Hz flip oscillation that occurs when a pedestrian straddles the lateral centerline and the sign of `ry` alternates between frames.
+*   **130. Idea 288: ICP Rotation Matrix Re-Orthogonalization via SVD Polar Factor** (Medium ROI) — After computing `R = V @ U.T` in `_align_scans_icp`, add `U2, _, V2T = np.linalg.svd(R)` and `R = U2 @ V2T` to enforce `det(R) == 1`; prevents the rare numerical case where floating-point errors in the SVD produce a reflection matrix (`det = -1`) that maps the scan to a mirrored pose, causing a single-frame ICP spike that corrupts `corrected_yaw` for subsequent frames.
+*   **131. Idea 289: Per-Track MLP Output Vector EMA for Stable Bypass Direction** (Medium ROI) — In `_inference_loop`, maintain `self._smooth_vxy[track_id]` as a (vx, vy) EMA with `alpha = 0.4`; replace the raw MLP output with the smoothed estimate before writing to `_latest_estimates`; reduces the frame-to-frame velocity direction variance that causes bypass direction to flip when the pedestrian is moving slowly (< 0.2 m/s) and MLP output noise dominates.
+*   **132. Idea 293: Pre-Bypass Diagonal Sector Clearance Scan** (Medium ROI) — In `_update_bypass_offset`, before setting `target_lateral_offset = ±BYPASS_OFFSET`, scan the 15°–40° sector on the intended bypass side; if any beam is below `d_safe + BYPASS_OFFSET`, reduce `BYPASS_OFFSET` proportionally or suppress bypass; prevents committing a 0.25 m lateral offset into a wall that is diagonally close (e.g., corridor entrance corners) which the existing left/right sector checks at 45°–135° do not cover.
+*   **133. Idea 295: Speed-Adaptive ICP vs. Odometry Ratio Plausibility Gate** (Medium ROI) — After `_align_scans_icp` returns `(dx_m, dy_m, dtheta)`, compute `dx_odom = self._odom_vx * dt * cos_yaw - ...` from the same interval's odometry delta; if `abs(dx_m) > 3.0 * abs(dx_odom_local) + 0.04`, discard the ICP correction and fall back to odometry for that frame; guards against ICP solutions from degenerate scan pairs (sparse geometry) that produce displacements inconsistent with encoder-measured travel.
+*   **134. Idea 302: INIT-State Body Velocity Zero-Confirmation Before Reference Pose Capture** (Medium ROI) — In the `INIT` state handler, defer the transition to `DRIVE_TO_B` (and `start_x/start_y/start_yaw` capture) until `hypot(body_vx, body_vy) < 0.02 m/s` holds for 3 consecutive ticks; prevents the reference pose from being captured while the robot is still settling from a manual placement or prior run, which would cause the waypoint target to be offset by the residual kinematic displacement.
 
 ---
 

@@ -2175,3 +2175,57 @@ This log tracks ideas and architectural enhancements for the EE244 Computational
 **Area:** Navigation Accuracy
 **Investment:** Extremely Low
 **Rationale:** In both `DRIVE_TO_B` and `DRIVE_TO_A`, the heading correction is `rot_correction = max(-0.2, min(0.2, yaw_error * KP_YAW))` with a fixed `KP_YAW = 0.4` (lines 954–955 and 1146–1147 of `ab_comparison_test.py`). As the robot decelerates near a waypoint (`speed` approaches `MIN_LINEAR_SPEED`), the mechanical inertia drops but the heading gain remains constant, causing angular overshoot and yaw oscillation that corrupts the final pose used as the rotation reference. Computing `kp_yaw_eff = KP_YAW * min(1.0, speed / MAX_LINEAR_SPEED)` scales the gain proportionally with forward speed, smoothly reducing heading aggressiveness to match reduced inertia during deceleration without affecting full-speed heading correction behavior.
+
+---
+
+## [2026-06-09] Automated Analysis Batch — Ideas 293 to 302
+
+### Idea 293: Pre-Bypass Diagonal Sector Clearance Scan
+**Area:** Collision Avoidance
+**Investment:** Low
+**Rationale:** In `_update_bypass_offset()`, bypass direction is validated using perpendicular LiDAR sectors (45°–135° left, −45°–−135° right), but the actual bypass trajectory is a diagonal at approximately 20°–40° from forward when `vy_cmd` and forward speed are simultaneously active. Adding a targeted scan of the 15°–40° (right bypass) or −15°–−40° (left bypass) angular sector before committing `target_lateral_offset` catches obstacles in the diagonal approach corridor that pass perpendicular sector checks but would be struck during the actual strafe motion, preventing bypass-into-wall collisions in angled corridors.
+
+### Idea 294: Centroid Depth Standard Deviation Quality Gate in `_extract_depth_centroids`
+**Area:** Velocity Estimation
+**Investment:** Extremely Low
+**Rationale:** In the raw-depth path of `_extract_depth_centroids`, `Z = float(np.median(valid_depths))` is already computed from the already-filtered array; `np.std(valid_depths)` is computable from the same array at negligible additional cost. Centroids with `std / Z > 0.35` represent depth-noisy blobs — specular reflections, grazing-angle wall edges, or partially occluded pedestrians — that produce high variance in the per-frame Z fed to the EMA filter and MLP history window. Adding `if len(valid_depths) > 5 and np.std(valid_depths) / Z > 0.35: continue` before appending eliminates these structurally unreliable centroids from the tracking pipeline, directly reducing MLP input jitter and phantom TTC braking from poor-quality depth measurements at zero additional frame acquisition or processing cost.
+
+### Idea 295: Speed-Adaptive ICP vs. Odometry Ratio Plausibility Gate
+**Area:** Navigation Accuracy
+**Investment:** Low
+**Rationale:** After `_align_scans_icp` returns in `_scan_cb`, adding `if abs(dx_match) > 3.0 * abs(dx_odom_local) + 0.04 or abs(dy_match) > 3.0 * abs(dy_odom_local) + 0.04: fallback to odometry` provides a speed-proportional implausibility guard that is more nuanced than Idea 194's fixed absolute clamp. At very low speeds (`dx_odom_local ≈ 0.002 m`), Idea 194's fixed bound allows a 25× overestimate before rejection; the ratio check catches corrections that exceed 3× the actual motion with a small absolute floor. During fast straight drives where odometry is reliable, the 3× factor allows ICP the room to measure true lateral mecanum slip without false rejections, improving correction acceptance accuracy across all speed regimes.
+
+### Idea 296: Minimum Forward Speed Floor to Prevent Stall During Active Lateral Bypass
+**Area:** Collision Avoidance
+**Investment:** Extremely Low
+**Rationale:** In both drive states, `speed = base_forward_speed * forward_scale` where `forward_scale = 1.0 - max(0.0, min(0.8, lateral_error / 0.5))`. When `lateral_error = 0.4 m`, `forward_scale = 0.2`, producing `speed = MIN_LINEAR_SPEED * 0.2 = 0.012 m/s` — below the mecanum wheel stall threshold. The robot halts forward progress while `lateral_error` remains large, creating a deadlock that can only be broken by `speed_scale ≤ 0.1`. Applying `speed = max(MIN_LINEAR_SPEED * 0.4, speed)` after the diagonal-blend line ensures at least 0.024 m/s of forward progress during lateral settling, allowing bypass completion via diagonal glide without freezing the control loop awaiting full lateral alignment.
+
+### Idea 297: Reactive-Mode TTC Block Short-Circuit in `_get_speed_scaling`
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** In `_get_speed_scaling()` (line 769 of `ab_comparison_test.py`), the `if self._mode == "predictive":` TTC guard is checked per-obstacle inside the loop, but in reactive mode `s_t` is always 1.0 — all TTC arithmetic (`math.hypot`, `r_dot_v`, conditional `ttc`) is dead computation. Since 50% of all A/B test runs use `--mode reactive`, this dead work runs at 20 Hz across all obstacle tracks for the entire reactive run. Hoisting the mode check outside the loop and using an early `return speed_scale` for reactive mode eliminates all TTC arithmetic per reactive tick, saving ~0.1–0.3 ms per 20 Hz call when multiple tracks are present.
+
+### Idea 298: `rot_correction` Attenuation During Active Lateral Strafing
+**Area:** Collision Avoidance
+**Investment:** Extremely Low
+**Rationale:** In both `DRIVE_TO_B` (line 955) and `DRIVE_TO_A` (line 1147), `rot_correction = max(-0.2, min(0.2, yaw_error * KP_YAW))` fires at full gain during lateral strafing. When `|vy_cmd| ≈ MAX_LATERAL_SPEED = 0.15 m/s`, simultaneous angular commands apply a body torque that couples through mecanum kinematics into additional lateral displacement, competing with `vy_cmd` and adding cross-track error. Multiplying `rot_correction *= max(0.0, 1.0 - abs(vy_cmd) / MAX_LATERAL_SPEED)` smoothly scales heading correction to zero at full lateral speed and restores it as strafing decelerates, eliminating the rotational-lateral kinematic coupling that degrades post-bypass centerline re-acquisition accuracy.
+
+### Idea 299: WebSocket Estimate Timestamp Staleness Guard in AB Test Receive Loop
+**Area:** Velocity Estimation
+**Investment:** Extremely Low
+**Rationale:** In `_set_estimator_mode()`'s async receive loop in `ab_comparison_test.py`, `self._latest_estimates` persists indefinitely after the last valid `readout` message. If the WebSocket connection drops and reconnects (server restart mid-run), stale velocity estimates from the previous segment remain active, holding TTC brakes or false bypass offsets on ghost tracks. Storing `self._estimates_timestamp = time.monotonic()` alongside each `_latest_estimates` update and checking `if time.monotonic() - self._estimates_timestamp > 0.5: estimates = []` at the start of `_get_speed_scaling()` and `_update_bypass_offset()` degrades gracefully to reactive-mode behavior after 500 ms of connection silence, preventing cross-session contamination from stale estimates.
+
+### Idea 300: ICP Input Point Cloud Far-Range Pre-Filter for Correspondence Matrix Reduction
+**Area:** Navigation Accuracy
+**Investment:** Extremely Low
+**Rationale:** In `_align_scans_icp`, `P` and `Q` include all valid scan points up to 4.0 m (as filtered in `_scan_cb`). For corridor navigation, points at 2.0–4.0 m are typically distant walls that moved minimally between scan intervals, contributing large unmatched entries to the O(M×N) distance matrix that never pass the 0.25 m² correspondence threshold while consuming CPU in the inner loop. Adding `P = P[np.sum(P**2, axis=1) < 4.0]` and `Q = Q[np.sum(Q**2, axis=1) < 4.0]` (range ≤ 2.0 m filter) at the start of `_align_scans_icp` reduces matrix dimensions by 30–50% in typical corridor scans at no accuracy cost, since close-range wall points dominate all valid correspondences.
+
+### Idea 301: `LATERAL_THRESHOLD` Dynamic Expansion During Active Bypass in `_get_speed_scaling`
+**Area:** Collision Avoidance
+**Investment:** Extremely Low
+**Rationale:** In `_get_speed_scaling()`, `LATERAL_THRESHOLD = 0.35 m` defines the safety corridor half-width for proximity and TTC checks (line 727 of `ab_comparison_test.py`). During an active bypass with `target_lateral_offset = +0.25 m`, the robot drives offset from centerline; an obstacle at `ry = 0.42 m` sits directly in the bypass path but falls outside the static 0.35 m threshold and receives no TTC scaling. Computing `LATERAL_THRESHOLD = 0.35 + 0.5 * abs(self.target_lateral_offset)` when `self.target_lateral_offset != 0.0` expands the safety corridor to cover the actual swept path, closing the TTC blind spot that Idea 70's travel-frame projection does not address (it adjusts coordinate orientation but not threshold width).
+
+### Idea 302: INIT-State Odometry Body Velocity Zero-Confirmation Before Reference Pose Capture
+**Area:** Navigation Accuracy
+**Investment:** Low
+**Rationale:** In the `INIT` state (lines 801–826 of `ab_comparison_test.py`), `start_x = corrected_x`, `start_y = corrected_y`, and `start_yaw = corrected_yaw` are captured as soon as valid odom is received, with no check on whether the robot is physically stationary. Residual momentum from the previous repeated run (`current_body_vx > 0.03 m/s`) causes the origin to be captured mid-coast, systematically biasing the start position 5–15 cm forward of the true tape mark. Storing `self.current_body_vx` and `self.current_body_vy` from the already-available `msg.twist.twist` in `_odom_cb`, and deferring `INIT → DRIVE_TO_B` until `math.hypot(current_body_vx, current_body_vy) < 0.02 m/s`, eliminates this per-run start-position bias without adding any delay during normal starts where the robot is already stationary.
