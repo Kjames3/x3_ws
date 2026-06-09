@@ -1952,6 +1952,60 @@ This log tracks ideas and architectural enhancements for the EE244 Computational
 
 ---
 
+## [2026-06-09] Automated Analysis Batch — Ideas 263 to 272
+
+### Idea 263: `normalize_angle` O(1) Modulo Formula Replacement
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** In `ab_comparison_test.py` lines 64–69, `normalize_angle` uses two `while` loops to wrap an angle into `[-π, π]`. At 20 Hz, this function is called at least 6–8 times per control tick (odom callback, heading error, scan angle offset in `_update_bypass_offset`, ICP accumulation), totalling 120–160 calls per second. Replacing the while-loops with the single-expression formula `return ((angle + math.pi) % (2 * math.pi)) - math.pi` handles all inputs in O(1) using a single modulo and subtraction, eliminating worst-case multi-iteration loop overhead at zero precision loss.
+
+### Idea 264: `_min_forward_lidar` Column in RunLogger for Wall-Proximity Analysis
+**Area:** Collision Avoidance
+**Investment:** Extremely Low
+**Rationale:** `self._min_forward_lidar` is updated every control tick in `_update_bypass_offset` as the closest LiDAR return in the ±20° forward cone, and is already used for the static-wall early-stop guard. It is never written to the CSV. Adding `min_forward_lidar: round(self._min_forward_lidar, 3)` to `RunLogger.log()` and the `_maybe_log()` call sites provides a per-row record of how close the robot came to walls while driving, enabling direct post-run A/B comparison of whether predictive mode maintains greater forward clearance than reactive mode.
+
+### Idea 265: Per-Segment RMS Cross-Track Error Summary Row in RunLogger
+**Area:** Navigation Accuracy
+**Investment:** Extremely Low
+**Rationale:** Path-following accuracy is the primary navigation metric for the A/B comparison, yet no single number currently characterises each leg's straightness — deriving it requires averaging all `current_path_y` values across hundreds of CSV rows in post-processing (only possible after Idea 205 adds that column). Maintaining running accumulators `_path_y_sum_sq` and `_path_y_count` throughout each drive state and writing a single `"SEGMENT_SUMMARY"` row with `path_y_rms = sqrt(_path_y_sum_sq / _path_y_count)` at the drive-state exit transition provides a ready-made per-mode, per-leg path-straightness scalar with no additional runtime overhead.
+
+### Idea 266: Adaptive APF Repulsion `eta` Scaled by Current Forward Speed
+**Area:** Collision Avoidance
+**Investment:** Low
+**Rationale:** In `_update_bypass_offset` the APF constant `eta = 0.03` is applied uniformly regardless of robot speed. At high forward speed (`last_vx_cmd ≈ MAX_LINEAR_SPEED`), a strong repulsion force produces abrupt lateral velocity step-changes that cause mecanum wheel slip and corrupt the ICP reference pose; at low approach speed near a waypoint, stronger repulsion improves centering accuracy. Replacing the constant with `eta_eff = 0.03 * max(0.5, 1.0 - abs(self.last_vx_cmd) / MAX_LINEAR_SPEED)` scales repulsion from 0.015 at full forward speed to 0.03 at rest, balancing slip prevention at high speed with tight corridor centering during slow approach.
+
+### Idea 267: Waypoint Arrival Hysteresis Band to Prevent ICP-Noise False Arrivals
+**Area:** Navigation Accuracy
+**Investment:** Extremely Low
+**Rationale:** The arrival condition `if dist_error <= DIST_TOLERANCE: stop` in `DRIVE_TO_B` and `DRIVE_TO_A` uses a single-tick check. If ICP scan corrections cause `corrected_x/y` to fluctuate across the `DIST_TOLERANCE = 0.05 m` boundary (e.g., alternating between 0.04 m and 0.06 m), the robot may prematurely enter `SETTLE` states before actually reaching the waypoint, corrupting the run. Adding a `self._arrival_confirm_count` integer that increments when `dist_error <= DIST_TOLERANCE` and resets otherwise, transitioning to settle only when `_arrival_confirm_count >= 2`, requires the condition to hold for two consecutive 20 Hz ticks (100 ms) before committing — filtering ICP micro-fluctuations while adding negligible delay on genuine arrivals.
+
+### Idea 268: `n_icp_inliers` Column in RunLogger for Scan Match Quality Monitoring
+**Area:** Navigation Accuracy
+**Investment:** Extremely Low
+**Rationale:** `_align_scans_icp` computes `np.sum(valid)` (inlier count) on the final ICP iteration but discards this value. Storing it as `self._last_icp_inliers = int(np.sum(valid))` at the end of `_scan_cb` and adding it as a column to `RunLogger.log()` would reveal scan match degradation events (low inlier counts from sparse doorway scans or featureless walls) in the per-run CSV, allowing post-run A/B correlation between ICP quality and navigation drift magnitude — a diagnostic that is currently impossible without re-running ICP offline.
+
+### Idea 269: `front_has_edges` Minimum Edge-Count Gate for Specular-Robust Wall Classification
+**Area:** Collision Avoidance
+**Investment:** Extremely Low
+**Rationale:** In `_update_bypass_offset`, `front_has_edges` is set to `True` if *any single beam* in the front sector shows a range discontinuity > 0.4 m versus its neighbour. A single specular return from a shiny floor tile or metal frame can set this flag on an otherwise flat wall, preventing `is_continuous_wall = True` and re-enabling camera-based bypass for a genuine static boundary. Replacing the single-hit boolean with a counter `front_edge_count` and requiring `front_edge_count >= 2` before setting `front_has_edges = True` makes the classification robust to isolated specular returns; a genuine pedestrian silhouette produces 4–6 edge transitions at both body edges while a lone reflective spike contributes only one.
+
+### Idea 270: Speed-Scale EMA Minimum Per-Tick Recovery Increment
+**Area:** Collision Avoidance
+**Investment:** Extremely Low
+**Rationale:** In `_get_speed_scaling` (~line 784), when `speed_scale > smooth_speed_scale` (obstacle just cleared), recovery follows `smooth_speed_scale = 0.15 * speed_scale + 0.85 * smooth_speed_scale`. Starting from `smooth_speed_scale = 0.0` with `speed_scale = 1.0`, this EMA reaches only 0.075 after tick 1, 0.139 after tick 2, … requiring ~14 ticks (700 ms at 20 Hz) to reach 0.90. After obstacle clearance the forward path is open but the robot crawls for nearly a second. Adding `self.smooth_speed_scale = max(recovered, self.smooth_speed_scale + 0.015)` guarantees at least 1.5% per-tick forward progress on recovery — reaching full speed in ≤ 5 ticks (250 ms) while leaving the instant-brake behaviour unmodified, and is orthogonal to Idea 224 which applies a separate time-gated cap at pause exit.
+
+### Idea 271: State Transition Marker Rows in RunLogger for Unambiguous Segment Boundaries
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** `_maybe_log()` is called inside active drive states but never at state transitions. Post-run CSV analysis must infer segment boundaries by finding rows where `segment` changes from one value to the next, which fails if the final row of a drive state was missed (throttled log or early exit). Adding a single call to a lightweight `_log_event(label)` method that writes one CSV row with `segment = label` (e.g., `"EVENT_SETTLE1_START"`) and all numeric fields forwarded from the most recent values at each `DRIVE_TO_B → SETTLE_1`, `SETTLE_1 → ROTATE_180`, etc. transition provides unambiguous delimiters that survive any log-throttling gap.
+
+### Idea 272: `_stop_robot` Reduced from 3-Publish Loop to Single Publish
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** `_stop_robot()` in `ab_comparison_test.py` (lines 654–657) publishes three identical zero-velocity `Twist` messages in a tight `for _ in range(3):` loop. With ROS2 reliable QoS (`depth=10`), a single publish is guaranteed to be delivered to the `/cmd_vel` subscriber via DDS, making the 3-publish pattern a carryover from ROS1 best-effort UDP practices. Called at 20 Hz from SETTLE states (before Idea 207 is applied), this generates 60 redundant DDS publish operations per second. Reducing to a single publish inside `_stop_robot` cuts unnecessary middleware overhead and is orthogonal to Idea 207, which prevents repeated *calls* to `_stop_robot` in settle states.
+
+---
+
 ## [2026-06-09] Automated Analysis Batch — Ideas 241 to 252
 
 ### Idea 241: ICP Computation Offloaded to a Dedicated Background Thread
