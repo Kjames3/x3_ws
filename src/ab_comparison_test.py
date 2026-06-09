@@ -707,8 +707,9 @@ class ABComparisonTest(Node):
                             break
 
             if not has_obstacle:
+                if self.is_paused:  # Only set ramp timestamp on pause→unpause transition
+                    self._pause_exit_time = time.monotonic()
                 self.is_paused = False
-                self._pause_exit_time = time.monotonic()
                 self.target_lateral_offset = 0.0
 
     def _stop_robot(self):
@@ -951,8 +952,8 @@ class ABComparisonTest(Node):
         # -- DRIVE_TO_B --
         if self.state == self.DRIVE_TO_B:
             self._maybe_log("drive_to_B")
-            dx = self.corrected_x - self.start_x
-            dy = self.corrected_y - self.start_y
+            dx = self.current_x - self.start_x
+            dy = self.current_y - self.start_y
             dist_travelled = dx * self._cos_start_yaw + dy * self._sin_start_yaw
             dist_error = self.waypoint_b_dist - dist_travelled
 
@@ -992,11 +993,15 @@ class ABComparisonTest(Node):
             path_y = -dx * self._sin_start_yaw + dy * self._cos_start_yaw
             self.current_path_y = path_y
 
-            # Lateral speed controller with acceleration smoothing
+            # Lateral speed controller — only active during bypass (obstacle detected).
+            # During straight-line driving vy=0 avoids mecanum-calibration-induced heading spin.
             KP_LATERAL = 0.8
-            MAX_LATERAL_SPEED = 0.15
+            MAX_LATERAL_SPEED = 0.10
             MAX_LATERAL_ACCEL = 0.5  # m/s^2
-            vy_target = (self.target_lateral_offset - path_y) * KP_LATERAL + self.vy_rep
+            if self.is_paused or abs(self.target_lateral_offset) > 0.01:
+                vy_target = (self.target_lateral_offset - path_y) * KP_LATERAL + self.vy_rep
+            else:
+                vy_target = 0.0
             vy_target = max(-MAX_LATERAL_SPEED, min(MAX_LATERAL_SPEED, vy_target))
 
             # Apply rate limiting to lateral speed command
@@ -1052,9 +1057,9 @@ class ABComparisonTest(Node):
                 self._backing_start = now
                 return
 
-            # Heading controller (yaw correction)
-            yaw_error = normalize_angle(self.target_yaw - self.corrected_yaw)
-            rot_correction = max(-0.2, min(0.2, yaw_error * KP_YAW))
+            # Heading controller: use raw odom yaw (current_yaw) — ICP corrected_yaw drifts
+            yaw_error = normalize_angle(self.target_yaw - self.current_yaw)
+            rot_correction = max(-0.6, min(0.6, yaw_error * KP_YAW * 4.0))
 
             # Zero out rotation if fully stopped due to obstacle to prevent chattering
             if speed == 0.0 and vy_cmd == 0.0:
@@ -1064,7 +1069,7 @@ class ABComparisonTest(Node):
             speed = speed * _ramp
 
             twist.linear.x  = speed
-            twist.linear.y  = vy_cmd
+            twist.linear.y  = -vy_cmd  # negative: ROS +y = robot physical right on X3
             twist.angular.z = rot_correction
             self.last_vx_cmd = speed  # Store last speed for travel projection (Idea 70)
             self._cmd_pub.publish(twist)
@@ -1136,8 +1141,9 @@ class ABComparisonTest(Node):
                 # so DRIVE_TO_A drives exactly back to the true starting position.
                 effective_dist = self._early_stop_dist if self._early_stop_dist is not None else self.waypoint_b_dist
                 self._early_stop_dist = None  # consume — reset for next leg
-                self.start_x   = self.init_x + effective_dist * math.cos(self.init_yaw)
-                self.start_y   = self.init_y + effective_dist * math.sin(self.init_yaw)
+                # Use actual odom WP-B position so DRIVE_TO_A starts from the right place.
+                self.start_x   = self.current_x
+                self.start_y   = self.current_y
                 self.start_yaw = normalize_angle(self.init_yaw + ROTATION_ANGLE)
                 self._cos_start_yaw = math.cos(self.start_yaw)
                 self._sin_start_yaw = math.sin(self.start_yaw)
@@ -1157,8 +1163,8 @@ class ABComparisonTest(Node):
         # -- DRIVE_TO_A --
         elif self.state == self.DRIVE_TO_A:
             self._maybe_log("drive_to_A")
-            dx = self.corrected_x - self.start_x
-            dy = self.corrected_y - self.start_y
+            dx = self.current_x - self.start_x
+            dy = self.current_y - self.start_y
             dist_travelled = dx * self._cos_start_yaw + dy * self._sin_start_yaw
             dist_error = self.waypoint_b_dist - dist_travelled
 
@@ -1192,11 +1198,14 @@ class ABComparisonTest(Node):
             path_y = -dx * self._sin_start_yaw + dy * self._cos_start_yaw
             self.current_path_y = path_y
 
-            # Lateral speed controller with acceleration smoothing
+            # Lateral speed controller — only active during bypass (obstacle detected).
             KP_LATERAL = 0.8
-            MAX_LATERAL_SPEED = 0.15
+            MAX_LATERAL_SPEED = 0.10
             MAX_LATERAL_ACCEL = 0.5  # m/s^2
-            vy_target = (self.target_lateral_offset - path_y) * KP_LATERAL + self.vy_rep
+            if self.is_paused or abs(self.target_lateral_offset) > 0.01:
+                vy_target = (self.target_lateral_offset - path_y) * KP_LATERAL + self.vy_rep
+            else:
+                vy_target = 0.0
             vy_target = max(-MAX_LATERAL_SPEED, min(MAX_LATERAL_SPEED, vy_target))
 
             # Apply rate limiting to lateral speed command
@@ -1252,9 +1261,9 @@ class ABComparisonTest(Node):
                 self._backing_start = now
                 return
 
-            # Heading controller (yaw correction)
-            yaw_error = normalize_angle(self.target_yaw - self.corrected_yaw)
-            rot_correction = max(-0.2, min(0.2, yaw_error * KP_YAW))
+            # Heading controller: use raw odom yaw (current_yaw) — ICP corrected_yaw drifts
+            yaw_error = normalize_angle(self.target_yaw - self.current_yaw)
+            rot_correction = max(-0.6, min(0.6, yaw_error * KP_YAW * 4.0))
 
             # Zero out rotation if fully stopped due to obstacle to prevent chattering
             if speed == 0.0 and vy_cmd == 0.0:
@@ -1264,7 +1273,7 @@ class ABComparisonTest(Node):
             speed = speed * _ramp
 
             twist.linear.x  = speed
-            twist.linear.y  = vy_cmd
+            twist.linear.y  = -vy_cmd  # negative: ROS +y = robot physical right on X3
             twist.angular.z = rot_correction
             self.last_vx_cmd = speed  # Store last speed for travel projection (Idea 70)
             self._cmd_pub.publish(twist)
