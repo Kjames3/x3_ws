@@ -435,7 +435,8 @@ class ABComparisonTest(Node):
                         lidar_blocked = True
                 
                 # Left side block sector: 45 to 135 degrees (0.785 to 2.356 rad)
-                elif 0.785 <= angle <= 2.356:
+                # Use r >= 0.40 to exclude robot-body self-interference (visible at 0.15-0.37m)
+                elif 0.785 <= angle <= 2.356 and r >= 0.40:
                     left_clearance = min(left_clearance, r)
                     y_lat = r * math.sin(angle)
                     x_fwd = r * math.cos(angle)
@@ -444,7 +445,8 @@ class ABComparisonTest(Node):
                         wall_left_clearance = min(wall_left_clearance, y_lat)
 
                 # Right side block sector: -135 to -45 degrees (-2.356 to -0.785 rad)
-                elif -2.356 <= angle <= -0.785:
+                # Use r >= 0.40 to exclude robot-body self-interference (visible at 0.15-0.37m)
+                elif -2.356 <= angle <= -0.785 and r >= 0.40:
                     right_clearance = min(right_clearance, r)
                     y_lat = r * math.sin(angle)
                     x_fwd = r * math.cos(angle)
