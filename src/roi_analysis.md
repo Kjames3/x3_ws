@@ -8,6 +8,7 @@ This document records the ROI rankings and evaluation metrics for the enhancemen
 2026-06-09: Added 22 ideas (241–262) across tiers. 16 new High-ROI, 6 new Medium-ROI entries added.
 2026-06-09: Added 20 ideas (263–282) across tiers. 15 new High-ROI, 5 new Medium-ROI entries added.
 2026-06-09: Added 20 ideas (283–302) across tiers. 12 new High-ROI, 8 new Medium-ROI entries added.
+2026-06-09: Added 18 ideas (303–320) across tiers. 14 new High-ROI, 4 new Medium-ROI entries added.
 
 ---
 
@@ -459,6 +460,62 @@ The following **32 ideas** have already been completed and integrated:
 *   **Investment:** Extremely Low. When `abs(self.target_lateral_offset) > 0.05`, replace the fixed `LATERAL_THRESHOLD` in the side-clearance check of `_update_bypass_offset` with `lateral_thresh_dyn = 0.35 + 0.5 * abs(self.target_lateral_offset)`.
 *   **Return:** High. The static 0.35 m threshold was tuned for the no-bypass case; during a 0.4 m pedestrian bypass, the robot's swept path is 0.4 m off-center and requires proportionally more lateral clearance to the opposing wall; dynamically expanding the threshold prevents the APF wall repulsion from competing with the bypass offset, resolving the frequent oscillation between bypass and wall-avoidance commands observed in dense corridors.
 
+### 103. Idea 308: `self.current_path_y` Sync from Local `path_y` Bug Fix
+*   **Investment:** Extremely Low. Add `self.current_path_y = path_y` immediately after each `path_y` computation in `DRIVE_TO_B` (line 885) and `DRIVE_TO_A` (line 1077) in `ab_comparison_test.py`.
+*   **Return:** Extremely High. Fixes a silent bug where `self.current_path_y` is always 0.0 even though `path_y` is computed correctly each tick; the 2 Hz diagnostic print always displays 0.0 cross-track error, and any CSV column added by Idea 205 would log zeros for the entire run. A one-line fix per state restores the primary path-following quality metric to real values at zero cost.
+
+### 104. Idea 303: Pre-Computed Morphological Kernel in `VelocityEstimator.__init__`
+*   **Investment:** Extremely Low. Move `cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))` from inside `_extract_depth_centroids` to `self._morph_kernel` in `__init__`.
+*   **Return:** High. The kernel is a fixed 5×5 binary array that never changes; recomputing it at 10 Hz invokes one Python-to-C binding and allocates a new NumPy array each cycle. Pre-computing in `__init__` eliminates one C-extension dispatch and one object allocation per inference cycle at zero behavioral cost.
+
+### 105. Idea 304: `/scan` Subscription QoS `depth=1` `BEST_EFFORT` in `ab_comparison_test.py`
+*   **Investment:** Extremely Low. Replace `qos_profile=10` with `QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE)` in the `/scan` subscriber constructor (line 143 of `ab_comparison_test.py`).
+*   **Return:** High. Under CPU saturation, up to 10 queued scans drain consecutively, firing 8–10 back-to-back ICP computations that inject burst corrections into `corrected_x/y/yaw` before the 20 Hz control loop can resume; `depth=1` ensures only the latest scan is processed, preventing stale-scan burst ICP and aligning with the lidar driver's own BEST_EFFORT publisher QoS.
+
+### 106. Idea 305: `last_vy_cmd` Zero-Reset on `target_lateral_offset` Sign Flip for Faster Direction Reversal
+*   **Investment:** Extremely Low. Add `if math.copysign(1, new_offset) != math.copysign(1, self.target_lateral_offset): self.last_vy_cmd = 0.0` immediately before updating `target_lateral_offset` on each sign-change in `_update_bypass_offset()`.
+*   **Return:** High. When `target_lateral_offset` flips sign, `last_vy_cmd` retains its current value (up to ±0.12 m/s); the `MAX_LATERAL_ACCEL = 0.5 m/s²` rate limiter then requires ~12 ticks (600 ms) to reverse direction, causing the robot to continue strafing toward the newly-blocked side for over half a second. The instant reset halves worst-case reversal time to ~300 ms without removing the rate limiter's protection against step commands.
+
+### 107. Idea 306: APF `d_safe` Activation Hysteresis Band to Eliminate Near-Threshold Lateral Chatter
+*   **Investment:** Extremely Low. Add `self._apf_left_active`/`self._apf_right_active` boolean state variables; set `True` when clearance drops below `d_safe = 0.55 m`, clear only when clearance exceeds `0.60 m`.
+*   **Return:** High. The current APF formula activates and deactivates on a hard threshold, so during bypass oscillation near 0.55 m the repulsion force toggles on/off each 50 ms tick, generating 20 Hz lateral micro-corrections visible as jitter in the CSV `vy_rep` channel; the 5 cm hysteresis band eliminates threshold chattering with no change to steady-state force magnitude.
+
+### 108. Idea 311: `time.monotonic()` Parameter Injection from `_control_loop` into `_update_bypass_offset`
+*   **Investment:** Extremely Low. Change signature to `_update_bypass_offset(self, now)` and remove the internal `now_t = time.monotonic()` call (line 493), passing the `now` already computed at line 796 of `_control_loop`.
+*   **Return:** High. `_update_bypass_offset` is called twice per 20 Hz cycle during drive states, each time making a redundant `time.monotonic()` syscall solely for the 2 Hz debug throttle. Eliminating these 40 syscalls per second costs nothing behaviorally since both calls occur within the same 50 ms control tick.
+
+### 109. Idea 312: O(N²) History Padding in `_build_window_features` Replaced with List Concatenation
+*   **Investment:** Extremely Low. Replace `while len(hist) < WINDOW_SIZE: hist.insert(0, ...)` (lines 354–355 of `velocity_estimator.py`) with `hist = [hist[0]] * (WINDOW_SIZE - len(hist)) + hist`.
+*   **Return:** High. Python `list.insert(0, x)` shifts all N existing elements right per call; for a fresh track with 1 frame, 9 sequential inserts perform 45 element-copy operations total. List multiplication `[x] * N` is C-level O(N) in a single pass, making new-track window padding approximately 9× faster at 10 Hz with up to 5 simultaneous tracks.
+
+### 110. Idea 313: `/odom` Subscription QoS `depth=1` `BEST_EFFORT` for Stale-Burst ICP Prevention
+*   **Investment:** Extremely Low. Replace `qos_profile=10` with `QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE)` in the `/odom` subscriber (line 142 of `ab_comparison_test.py`).
+*   **Return:** High. With `depth=10`, CPU saturation causes up to 10 stale odom messages to drain consecutively; each `_odom_cb` fires an indirect ICP update via `prev_odom_pose`, injecting near-zero per-interval deltas as degenerate ICP initializations. Using `depth=1` matches the EKF node's own BEST_EFFORT publisher QoS, ensures only the freshest pose is consumed, and prevents burst odom-callback ICP corruption.
+
+### 111. Idea 314: ICP Final-Iteration `Q_trans` Update Skip for Hot-Path Reduction
+*   **Investment:** Extremely Low. Guard `Q_trans = (Q_trans @ R_iter.T) + t_iter` (line 321 of `_align_scans_icp`) with `if _ < 2:` inside the `for _ in range(3)` loop.
+*   **Return:** High. On the 3rd iteration `Q_trans` is updated but immediately falls out of scope and is never read again; the (N×2)×(2×2) matrix multiply and (N×2) broadcast add cost approximately `4N` floating-point operations per scan callback. Skipping this last update eliminates ~1440 FP ops/second (at N=360, 20 Hz) at zero accuracy cost.
+
+### 112. Idea 315: `is_dynamic_pedestrian` Result Reuse in Continuous-Wall Filter to Eliminate Double Loop
+*   **Investment:** Extremely Low. Replace the `has_dynamic_pedestrian` inner loop at lines 459–466 of `_update_bypass_offset()` with `has_dynamic_pedestrian = is_dynamic_pedestrian` (already computed at lines 413–422).
+*   **Return:** High. The two checks use nearly identical logic (1.8 m vs 2.0 m forward threshold); the 0.2 m difference only matters for a pedestrian at exactly 1.8–2.0 m, an edge case blurred by depth noise. Eliminating the second loop removes up to 5 dict-access iterations × 20 Hz = 100 Python dict lookups per second from the bypass hot path at negligible behavioral change.
+
+### 113. Idea 317: Dynamic `KP_LATERAL` Gain Reduction in Tight Corridor Mode
+*   **Investment:** Extremely Low. Replace `KP_LATERAL = 0.8` (local constant in both drive states) with `KP_LATERAL = max(0.35, 0.8 * (max_allowed_offset / 0.4))` after Idea 110's `max_allowed_offset` computation.
+*   **Return:** High. When Idea 110 shrinks `max_allowed_offset` to 0.05–0.10 m, the unchanged 0.8 gain on a 0.05 m residual error produces `vy_target = 0.04 m/s` commands that can drive the robot into a < 5 cm-clearance wall. Scaling gain proportionally to available clearance suppresses micro-oscillation in tight bottlenecks while retaining full 0.8 gain in open corridors.
+
+### 114. Idea 318: APF Local Constants Elevated to `ABComparisonTest.__init__` for Bytecode Reduction
+*   **Investment:** Extremely Low. Move `d_safe = 0.55`, `d_min = 0.22`, and `eta = 0.03` (lines 474–477 of `ab_comparison_test.py`) from local variable assignments inside `_update_bypass_offset()` (20 Hz) to `self._apf_d_safe`, `self._apf_d_min`, `self._apf_eta` in `__init__`.
+*   **Return:** High. Each local assignment generates `LOAD_CONST` + `STORE_FAST` CPython bytecode pairs that the interpreter executes unconditionally every 50 ms tick; as instance attributes they become a single `LOAD_ATTR` per use with no allocation, while simultaneously becoming self-documenting, externally-tunable parameters accessible for future calibration scripts or tests.
+
+### 115. Idea 319: `_maybe_log` Obstacle Distance Vectorized via `np.hypot`
+*   **Investment:** Extremely Low. Replace the Python list comprehension `[math.hypot(...) for est in estimates]` (lines 699–703 of `ab_comparison_test.py`) with `coords = np.array([...], dtype=np.float32); min_dist = float(np.min(np.hypot(coords[:, 0], coords[:, 1])))`.
+*   **Return:** High. Each Python `math.hypot` call carries function-dispatch and list-append overhead; at 10 Hz with up to 5 estimates, this is 50 Python function calls per second in the logging path. The NumPy path eliminates all Python dispatch overhead for n > 1 and runs SIMD-parallel distance computation in a single C-level call, with a lightweight early-exit `if not estimates` guard for the empty case.
+
+### 116. Idea 320: MLP Inference Warm-Up Dummy Pass in `_load_model` to Eliminate First-Tick JIT Latency
+*   **Investment:** Extremely Low. Add `with torch.no_grad(): _ = self._model(self.x_tensor_preallocated[:1])` immediately after the `torch.jit.trace` call in `VelocityEstimator._load_model()`.
+*   **Return:** High. TorchScript kernels undergo CPU-side JIT compilation on their first real forward-pass invocation, adding 50–200 ms of latency to the first live estimate after startup; this stall occurs precisely when the first pedestrian is detected, momentarily freezing TTC scaling at the worst possible moment. The warm-up dummy pass forces all kernel compilation at load time, ensuring the inference thread runs at full pre-compiled speed from the first real pedestrian detection.
+
 ---
 
 ## 3. Medium-ROI Tier (Rank 60 - 135)
@@ -583,6 +640,10 @@ The following **32 ideas** have already been completed and integrated:
 *   **132. Idea 293: Pre-Bypass Diagonal Sector Clearance Scan** (Medium ROI) — In `_update_bypass_offset`, before setting `target_lateral_offset = ±BYPASS_OFFSET`, scan the 15°–40° sector on the intended bypass side; if any beam is below `d_safe + BYPASS_OFFSET`, reduce `BYPASS_OFFSET` proportionally or suppress bypass; prevents committing a 0.25 m lateral offset into a wall that is diagonally close (e.g., corridor entrance corners) which the existing left/right sector checks at 45°–135° do not cover.
 *   **133. Idea 295: Speed-Adaptive ICP vs. Odometry Ratio Plausibility Gate** (Medium ROI) — After `_align_scans_icp` returns `(dx_m, dy_m, dtheta)`, compute `dx_odom = self._odom_vx * dt * cos_yaw - ...` from the same interval's odometry delta; if `abs(dx_m) > 3.0 * abs(dx_odom_local) + 0.04`, discard the ICP correction and fall back to odometry for that frame; guards against ICP solutions from degenerate scan pairs (sparse geometry) that produce displacements inconsistent with encoder-measured travel.
 *   **134. Idea 302: INIT-State Body Velocity Zero-Confirmation Before Reference Pose Capture** (Medium ROI) — In the `INIT` state handler, defer the transition to `DRIVE_TO_B` (and `start_x/start_y/start_yaw` capture) until `hypot(body_vx, body_vy) < 0.02 m/s` holds for 3 consecutive ticks; prevents the reference pose from being captured while the robot is still settling from a manual placement or prior run, which would cause the waypoint target to be offset by the residual kinematic displacement.
+*   **135. Idea 307: ICP Inlier-Fraction Weighted Blend with Raw Odometry for Graceful Quality Transition** (Medium ROI) — In `_align_scans_icp`, compute `w = min(1.0, n_valid_inliers / 40.0)` and blend as `dx_final = w * dx_icp + (1 - w) * dx_odom_local` for dx, dy, and dtheta; replaces the current hard accept/reject gates (Ideas 190, 194) with a continuous quality-proportional transition, eliminating the 3–8 cm pose jump when scan quality crosses the gate threshold in partially-featureless wall sections.
+*   **136. Idea 309: Consecutive ICP Failure Counter with Corrected-Pose EKF Re-Sync Trigger** (Medium ROI) — Add `self._icp_fail_count` in `_scan_cb`; increment on each exception path (line 271) or insufficient-points fallback (line 230), reset to 0 on successful ICP; after 6 consecutive failures, re-sync `corrected_x/y/yaw` from the current EKF `current_x/y/yaw` to bound uncorrected slip accumulation in featureless corridors where individual failure gates (Ideas 194, 237) cannot prevent compounding 10–15 cm drift across 5–10 frames.
+*   **137. Idea 310: Temporal LiDAR Range-Difference Gate for Dynamic Obstacle Confirmation in Forward Sector** (Medium ROI) — Store `self._prev_forward_ranges` (the ±20° sector array from the previous scan tick) in `_scan_cb`; compute `mean_abs_delta = np.mean(np.abs(curr_forward - prev_forward))`; override `is_continuous_wall = False` in `_update_bypass_offset` when this delta exceeds 0.04 m, identifying a slow head-on approaching pedestrian (few lateral discontinuities) vs a genuine static wall, preventing false bypass suppression for the approaching-pedestrian case not caught by the spatial edge-count gate (Idea 269).
+*   **138. Idea 316: Clear-Path LiDAR Second-Scan Elimination via Pre-Cached Sector Vectors** (Medium ROI) — After implementing Ideas 187 and 188 (NumPy angle array and scan conversion), replace the second Python for-loop in `_update_bypass_offset` (lines 638–648) with a single `has_obstacle |= np.any(forward_mask & (np.abs(y_lat_arr) < LATERAL_CORRIDOR) & (x_fwd_arr < 1.2))` vectorized check on pre-computed sector arrays; eliminates a second full Python iteration over all 360 scan beams per clear-path evaluation at 20 Hz; marked Medium because it requires Ideas 187/188 as prerequisites.
 
 ---
 

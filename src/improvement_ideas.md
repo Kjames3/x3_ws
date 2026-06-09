@@ -2271,3 +2271,57 @@ This log tracks ideas and architectural enhancements for the EE244 Computational
 **Area:** Collision Avoidance
 **Investment:** Low
 **Rationale:** A pedestrian approaching head-on in a narrow corridor fills the forward scan width with few lateral range discontinuities, potentially satisfying `is_continuous_wall = True` (the `front_has_edges = False` path in `_update_bypass_offset`) and blocking camera-guided bypass. Storing `self._prev_forward_ranges` (the ±20° sector array from the previous scan tick) and computing mean absolute range change between consecutive scans: when this exceeds 0.04 m the forward blocker is dynamic, not a static wall. Overriding `is_continuous_wall = False` when temporal motion is detected in `_scan_cb` complements the existing spatial edge detector and prevents false wall classification for slow-approaching pedestrians.
+
+---
+
+## [2026-06-09] Automated Analysis Batch — Ideas 311 to 320
+
+### Idea 311: `time.monotonic()` Parameter Injection from `_control_loop` into `_update_bypass_offset`
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** `_control_loop` already computes `now = time.monotonic()` at the very top of each 20 Hz tick (line 796 of `ab_comparison_test.py`). Inside `_update_bypass_offset()`, line 493 makes a second `time.monotonic()` call (`now_t = time.monotonic()`) solely to throttle the 2 Hz debug print. Passing `now` as a parameter — `self._update_bypass_offset(now)` — and replacing the internal call with the argument eliminates one OS syscall per bypass-update invocation; with two drive states each calling `_update_bypass_offset` at 20 Hz, this removes 40 `time.monotonic()` calls per second at zero behavioral cost.
+
+### Idea 312: O(N²) History Padding in `_build_window_features` Replaced with List Concatenation
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** The padding loop `while len(hist) < WINDOW_SIZE: hist.insert(0, hist[0] ...)` (lines 354–355 of `velocity_estimator.py`) calls Python `list.insert(0, x)` which is O(N) per call because it shifts all existing elements right. For a fresh track with 1 frame, 9 sequential `insert(0, ...)` calls perform 1+2+…+9 = 45 element-copy operations. Replacing with `hist = [hist[0]] * (WINDOW_SIZE - len(hist)) + hist` uses C-level list multiplication (O(WINDOW_SIZE) total) followed by one O(1) concatenation, making new-track feature assembly approximately 9× faster at 10 Hz with up to 5 simultaneous tracks.
+
+### Idea 313: `/odom` Subscription QoS `depth=1` `BEST_EFFORT` for Stale-Burst ICP Prevention
+**Area:** Navigation Accuracy
+**Investment:** Extremely Low
+**Rationale:** The `/odom` subscriber in `ab_comparison_test.py` (line 142) uses `qos_profile=10`, allowing up to 10 queued messages. Under CPU saturation (e.g., during burst ICP), the spin-once loop drains all 10 stale odom messages consecutively, firing `_odom_cb` 10 times in rapid succession; each updates `prev_odom_pose`, causing `_scan_cb`'s `dx_odom_local / dy_odom_local` delta computation to operate on nearly-zero per-interval motion, feeding degenerate ICP initializations. Switching to `QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE)` — matching the EKF publisher's QoS — ensures only the latest pose update is consumed per spin cycle, preventing stale-odom burst processing entirely.
+
+### Idea 314: ICP Final-Iteration `Q_trans` Update Skip for Hot-Path Reduction
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** In `_align_scans_icp` (line 321 of `ab_comparison_test.py`), `Q_trans = (Q_trans @ R_iter.T) + t_iter` is executed unconditionally on all 3 iterations, but on the final (3rd) iteration `Q_trans` immediately falls out of scope and is never read again — only the accumulated `dtheta_corr`, `dx_corr`, `dy_corr` scalars are returned. Guarding the update with `if _ < 2:` inside the `for _ in range(3)` loop skips one (N×2) × (2×2) matrix multiply and one (N×2) broadcast add per scan callback at 20 Hz, eliminating roughly `4N` floating-point operations per call (≈1440 ops/second at N=360) at zero accuracy cost.
+
+### Idea 315: `is_dynamic_pedestrian` Result Reuse in Continuous-Wall Filter to Eliminate Double Loop
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** In `_update_bypass_offset()`, the `is_dynamic_pedestrian` check (lines 413–422) already iterates all estimates with an `rx < 1.8 m` proximity threshold. Lines 459–466 then repeat an almost-identical loop with a slightly wider `rx < 2.0 m` threshold to set `has_dynamic_pedestrian` for the wall-filter guard. Replacing the second loop with `has_dynamic_pedestrian = is_dynamic_pedestrian` eliminates one full estimates iteration at 20 Hz; the 0.2 m threshold difference only matters for a pedestrian at exactly 1.8–2.0 m forward distance — an edge case already blurred by depth-estimation noise at that range — making this substitution behaviorally neutral in practice.
+
+### Idea 316: Clear-Path LiDAR Second-Scan Elimination via Pre-Cached Sector Vectors
+**Area:** Collision Avoidance
+**Investment:** Low
+**Rationale:** At the bottom of `_update_bypass_offset()` (lines 638–648), the obstacle-cleared path-resume check iterates `self.last_scan_ranges` a second time (after the main sector loop at lines 356–404) to test `if abs(y_lat) < LATERAL_CORRIDOR and x_fwd < 1.2`. After implementing Ideas 187 and 188 (NumPy angle-array cache and scan-range NumPy conversion), the main loop already produces vectorized `x_fwd_arr` and `y_lat_arr` arrays for the forward sector. The second Python for-loop can then be replaced by a single `has_obstacle |= np.any(forward_mask & (np.abs(y_lat_arr) < LATERAL_CORRIDOR) & (x_fwd_arr < 1.2))` boolean check — eliminating the second full Python iteration over all 360 scan beams per clear-check call at 20 Hz.
+
+### Idea 317: Dynamic `KP_LATERAL` Gain Reduction in Tight Corridor Mode
+**Area:** Collision Avoidance
+**Investment:** Extremely Low
+**Rationale:** In both drive states, `KP_LATERAL = 0.8` is a hardcoded local constant (lines 888 and 1081 of `ab_comparison_test.py`). When Idea 110's dynamic corridor scaling shrinks `max_allowed_offset` to 0.05–0.10 m in tight bottlenecks, the unchanged 0.8 gain applied to a residual 0.05 m lateral error produces `vy_target = 0.04 m/s` — sufficient to command lateral motion that drives the robot into a wall with < 5 cm clearance. Replacing the constant with `KP_LATERAL = max(0.35, 0.8 * (max_allowed_offset / 0.4))` scales the gain proportionally to available clearance, suppressing micro-oscillation in tight corridors while retaining full 0.8 gain authority in open-corridor bypass scenarios where large offsets are safe.
+
+### Idea 318: APF Local Constants Elevated to `ABComparisonTest.__init__` for Hot-Path Bytecode Reduction
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** Inside `_update_bypass_offset()`, the APF parameters `d_safe = 0.55`, `d_min = 0.22`, and `eta = 0.03` (lines 474–477 of `ab_comparison_test.py`) are assigned as local Python name bindings on every 20 Hz call. Each local assignment generates `LOAD_CONST` + `STORE_FAST` bytecode pairs that the CPython interpreter must execute even though these values never change. Moving them to `self._apf_d_safe`, `self._apf_d_min`, `self._apf_eta` in `__init__` eliminates 3 redundant constant-store operations per tick while converting the APF parameters into self-documenting, externally-tunable instance attributes accessible for future calibration or test parameterization.
+
+### Idea 319: `_maybe_log` Obstacle Distance Vectorized via `np.hypot`
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** In `_maybe_log()` (lines 698–703 of `ab_comparison_test.py`), per-obstacle Euclidean distances are computed via `dists = [math.hypot(ox, oz) for est in estimates]`. Each iteration dispatches a Python function call to `math.hypot`, appends to a Python list, and extracts dict keys. For n simultaneous estimates at 10 Hz, this is 10n Python function calls per second. Replacing with `coords = np.array([[est.get('x', 0.0), est.get('z', est.get('y', 0.0))] for est in estimates], dtype=np.float32)` + `min_dist = float(np.min(np.hypot(coords[:, 0], coords[:, 1])))` eliminates all Python-dispatch overhead for n > 1 and runs at C-level SIMD throughput, with a lightweight early-exit for the n=0 case.
+
+### Idea 320: MLP Inference Warm-Up Dummy Pass in `_load_model` to Eliminate First-Tick JIT Latency
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** In `VelocityEstimator._load_model()`, JIT tracing (`torch.jit.trace`) produces a compiled TorchScript graph, but CPU-side kernel fusion and code generation for the specific tensor shapes are deferred until the first real forward pass. This causes the very first `self._model(x_tensor)` call in `_inference_loop` to stall for 50–200 ms while PyTorch's JIT backend compiles the fused kernel — freezing the inference thread at the moment the first pedestrian appears. Adding `with torch.no_grad(): _ = self._model(self.x_tensor_preallocated[:1])` immediately after the `torch.jit.trace` call in `_load_model()` forces all kernel compilation at startup, ensuring the inference thread executes at full pre-compiled speed from the very first real detection without a cold-start latency spike.
