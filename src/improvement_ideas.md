@@ -1895,3 +1895,67 @@ This log tracks ideas and architectural enhancements for the EE244 Computational
 **Area:** Collision Avoidance
 **Investment:** Low
 **Rationale:** `KP_LATERAL = 0.8` applies uniformly across the full lateral error range. At large errors (|error| > 0.3 m, during initial bypass engagement), this gain drives the robot toward the target rapidly but with overshoot past the offset that can trigger the opposite wall's repulsion. At small errors (|error| < 0.05 m, fine centering), a lower gain is more appropriate. Implementing a simple two-regime gain schedule — `kp_eff = 0.8 if abs(lateral_err) > 0.10 else 0.4` — in the `vy_target` computation in both `DRIVE_TO_B` and `DRIVE_TO_A` improves bypass settling quality and reduces overshoot oscillation without requiring derivative control.
+
+---
+
+## [2026-06-09] Automated Analysis Batch — Ideas 241 to 252
+
+### Idea 241: ICP Computation Offloaded to a Dedicated Background Thread
+**Area:** Navigation Accuracy
+**Investment:** Medium
+**Rationale:** `_scan_cb` in `ab_comparison_test.py` runs the full 3-iteration ICP (including `O(N²)` distance matrix construction) synchronously inside the ROS2 callback thread at ~8 Hz. This blocks the single-threaded ROS2 executor for the duration of each ICP run, potentially delaying `/odom` and `/scan` message processing and causing control loop jitter. Moving the ICP computation to a dedicated background thread — writing the accepted result into `self.corrected_x/y/yaw` under a lock — frees the scan callback to return immediately, eliminating executor starvation and scan queue buildup at the cost of one extra Python lock and thread.
+
+### Idea 242: Forward-Sector LiDAR Beam Count Gate for Wall-vs-Obstacle Classification
+**Area:** Collision Avoidance
+**Investment:** Extremely Low
+**Rationale:** `_front_is_continuous_wall` is set to True whenever `front_blocked_by_lidar AND not front_has_edges AND no_dynamic_pedestrian`. However, a large but finite obstacle (a wide trolley or storage cabinet presenting a uniform-range front face) also satisfies this condition and is misclassified as an infinite wall, suppressing the camera-based bypass. A genuine corridor end-wall produces 30+ adjacent beams at near-identical range; a discrete wide object produces far fewer. Adding a minimum-beam count check — e.g., requiring at least 15 beams in the ±20° forward cone to register within `min_forward_lidar + 0.05 m` before setting `is_continuous_wall = True` — makes wall classification more selective without additional sensors.
+
+### Idea 243: ObstacleTracker History Deque Reset at Repeat-Mode Run Boundaries
+**Area:** Velocity Estimation
+**Investment:** Low
+**Rationale:** In `repeat=True` mode, at the `ROTATE_HOME → DRIVE_TO_B` restart in `ab_comparison_test.py`, the `ObstacleTracker` inside `VelocityEstimator` retains `history_global` deques populated during the previous leg. A pedestrian who stood at WP-B during the forward run has a history that described the robot approaching head-on; on the return leg the same global positions now represent the robot receding, yet the MLP feature reconstruction from `history_global` inverts the displacement directions. Adding a `clear_histories()` method to `ObstacleTracker` that empties each track's `history_global` deque (without dropping the track itself) and calling it via the `set_velocity_estimation` toggle at each run restart prevents cross-leg history contamination in the MLP input window.
+
+### Idea 244: Round-Trip Pose Drift Magnitude Logged at Run Completion
+**Area:** Navigation Accuracy
+**Investment:** Extremely Low
+**Rationale:** At the end of each round-trip (when `ROTATE_HOME` reaches `YAW_TOLERANCE`), `corrected_x` and `corrected_y` represent the ICP-corrected final position, while `init_x` and `init_y` represent the true physical start. Their Euclidean distance `drift_m = sqrt((corrected_x - init_x)^2 + (corrected_y - init_y)^2)` is the accumulated loop-closure position error for the entire run. Appending this single scalar as a final row in the CSV (or as a header comment in `RunLogger.save()`) provides a direct, per-run quantitative comparison of mecanum slip + ICP correction quality between reactive and predictive modes — currently impossible to derive without manual coordinate reconstruction.
+
+### Idea 245: EMA Smoothing on `_min_forward_lidar` to Prevent Specular False Early-Stops
+**Area:** Collision Avoidance
+**Investment:** Extremely Low
+**Rationale:** `self._min_forward_lidar` is updated in `_update_bypass_offset` as the raw minimum LiDAR range in the ±20° forward cone. A single specular spike from a shiny floor tile or metallic surface can momentarily read 0.15–0.18 m, satisfying `_min_forward_lidar < WALL_STOP_DIST (0.20 m)` and triggering an early stop even though the robot is 1.5+ m from any real wall. Applying a two-sample EMA `self._min_forward_lidar = 0.65 * raw_min + 0.35 * self._min_forward_lidar` before the early-stop check filters isolated sub-frame spikes while still responding to a genuine approaching wall within 2–3 scan cycles (~375 ms at 8 Hz).
+
+### Idea 246: ICP Pose Corruption Detection via Negative `dist_error` Monitor
+**Area:** Navigation Accuracy
+**Investment:** Extremely Low
+**Rationale:** If `_align_scans_icp` produces a spurious large correction that teleports `corrected_x/y` forward past the waypoint, `dist_error = waypoint_b_dist - dist_travelled` can flip negative at the very start of a drive segment before the robot has moved. Adding a guard `if dist_error < -(DIST_TOLERANCE * 3): [warn + reset corrected_x/y to current_x/y]` in both `DRIVE_TO_B` and `DRIVE_TO_A` catches ICP-induced pose teleportation and falls back to the raw EKF odometry position. Without this guard, the control loop would immediately satisfy the arrival condition and skip an entire drive leg, corrupting the run.
+
+### Idea 247: `is_paused` Column in RunLogger for Drive-vs-Wait Segment Analysis
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** `RunLogger.log()` records `segment` (coarse state name), `n_obstacles`, and `min_obstacle_dist`, but not whether the robot was actively driving or blocked by an obstacle at that tick. Post-run CSV analysis cannot distinguish between "robot moving toward WP-B" and "robot sitting stationary behind a pedestrian" without checking `min_obstacle_dist < threshold` as a proxy — which confuses stationary waits in narrow corridors with genuine obstacle pauses. Adding `self.is_paused` as a boolean column to `_maybe_log()` directly labels each row, enabling accurate per-run computation of total blocked time, pause count, and clearance metrics segmented by mode.
+
+### Idea 248: Dynamic `ObstacleTracker.max_age` Scaling Based on Estimation Mode
+**Area:** Velocity Estimation
+**Investment:** Extremely Low
+**Rationale:** `ObstacleTracker.max_age = 10` frames means tracks are dropped after 1 second of non-detection (at 10 Hz), regardless of whether velocity estimation is active. In reactive mode (`estimation_enabled=False`), tracks are never used for TTC scaling so persistence is irrelevant. In predictive mode, a pedestrian walking through a depth camera dead zone (e.g., passing directly beside the robot) may disappear for 0.8–1.2 s; losing the track resets TTC to 1.0 (no slowdown) precisely when proximity risk is highest. Setting `max_age = 20` when `estimation_enabled=True` and `max_age = 10` otherwise (exposed as a method `set_max_age(n)` called from `_set_estimator_mode`) doubles track persistence only when it affects safety, at zero additional CPU cost.
+
+### Idea 249: Settle-State Physical Stop Confirmation via Corrected-Pose Delta Gate
+**Area:** Navigation Accuracy
+**Investment:** Low
+**Rationale:** After `_stop_robot()` publishes three zero-Twist commands, the robot coasts due to motor and wheel inertia; `SETTLE_DURATION = 1.0 s` is a fixed blind wait. If the robot arrived at WP-B at close to `MAX_LINEAR_SPEED = 0.20 m/s`, it can coast 10–15 cm during the settle window, causing the start of ROTATE_180 to use a reference heading captured from a still-moving robot. Gating SETTLE_1/2/3 exit on `abs(corrected_x - settle_entry_x) + abs(corrected_y - settle_entry_y) < 0.005 m over the last two ticks` (sampled in the settle branch) plus a 0.5 s minimum ensures mechanical stop before capturing `start_yaw` and `target_yaw` for the next segment.
+
+### Idea 250: Depth Centroid Vertical Position Gate to Reject Floor-Level Ghost Detections
+**Area:** Velocity Estimation
+**Investment:** Low
+**Rationale:** In `_extract_depth_centroids` (raw depth path), `y_m = (cy - h / 2.0) * Z / fx` computes the vertical position of the centroid in metres relative to the camera center. Floor reflections, textured floor tiles, and low obstacles (door stoppers, cable runs) produce centroids at large positive `y_m` values (floor is below the camera, so cy > h/2). A simple gate `if y_m > 0.4 * Z: continue` (rejecting centroids that are more than 40% of their depth below camera centre height, approximately below ankle level) eliminates floor-level ghost detections without ground-plane RANSAC, reducing false TTC triggers and unnecessary tracking state from non-pedestrian floor artifacts.
+
+### Idea 251: Cached `cos_r`/`sin_r` with Change-Threshold Refresh in `_inference_loop`
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** At the start of `_inference_loop` every 100 ms, `cos_r = math.cos(rtheta_rob)` and `sin_r = math.sin(rtheta_rob)` are recomputed unconditionally. When the robot is stationary (settle states, blocked pauses), `rtheta_rob` is constant for seconds at a time, repeating identical trig evaluations. Caching `self._cached_cos_r`, `self._cached_sin_r`, and `self._cached_theta` and recomputing only when `abs(rtheta_rob - _cached_theta) > 0.001 rad` converts these from per-cycle trig calls to a single floating-point comparison per cycle during stationary phases, which constitute a significant fraction of the total inference thread runtime during paused/blocked events.
+
+### Idea 252: Binary WebSocket Message Pre-Filter in AB Test Estimator Receive Loop
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** In `_set_estimator_mode`'s async receive loop in `ab_comparison_test.py`, every WebSocket message is passed directly to `json.loads(message)`. The server (`server_x3.py`) broadcasts binary camera frames at up to 20 Hz on the same connection, which are not JSON and trigger `json.JSONDecodeError` or `UnicodeDecodeError` exceptions caught silently by `except Exception: pass`. Python exception handling (stack frame construction, traceback materialization) adds ~10–30 µs overhead per exception — at 20 Hz binary frames this accumulates to 0.2–0.6 ms/s of unnecessary exception-path CPU in the estimator receive thread. Adding `if isinstance(message, bytes): continue` as the first line inside `async for message in ws` eliminates all exception overhead with a single type check.
