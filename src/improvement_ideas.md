@@ -2229,3 +2229,45 @@ This log tracks ideas and architectural enhancements for the EE244 Computational
 **Area:** Navigation Accuracy
 **Investment:** Low
 **Rationale:** In the `INIT` state (lines 801–826 of `ab_comparison_test.py`), `start_x = corrected_x`, `start_y = corrected_y`, and `start_yaw = corrected_yaw` are captured as soon as valid odom is received, with no check on whether the robot is physically stationary. Residual momentum from the previous repeated run (`current_body_vx > 0.03 m/s`) causes the origin to be captured mid-coast, systematically biasing the start position 5–15 cm forward of the true tape mark. Storing `self.current_body_vx` and `self.current_body_vy` from the already-available `msg.twist.twist` in `_odom_cb`, and deferring `INIT → DRIVE_TO_B` until `math.hypot(current_body_vx, current_body_vy) < 0.02 m/s`, eliminates this per-run start-position bias without adding any delay during normal starts where the robot is already stationary.
+
+## [2026-06-09] Automated Analysis Batch — Ideas 303 to 310
+
+### Idea 303: Pre-Computed Morphological Kernel in `VelocityEstimator.__init__`
+**Area:** Script Performance Optimization
+**Investment:** Extremely Low
+**Rationale:** `cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))` is called every inference cycle at 10 Hz inside `_extract_depth_centroids` (lines 228–229 of `velocity_estimator.py`). The returned kernel is a fixed 5×5 binary array that never changes; recomputing it invokes a Python-to-C binding and allocates a new NumPy array each call. Moving `self._morph_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))` to `__init__` and replacing the call-site with `self._morph_kernel` eliminates one object allocation and C-extension dispatch per 10 Hz cycle at zero behavioral cost.
+
+### Idea 304: `/scan` Subscription QoS `depth=1` `BEST_EFFORT` in `ab_comparison_test.py`
+**Area:** Navigation Accuracy
+**Investment:** Extremely Low
+**Rationale:** `/scan` is subscribed with `qos_profile=10` (line 143 of `ab_comparison_test.py`), so under CPU saturation up to 10 queued scans drain consecutively, firing 8–10 back-to-back ICP computations that inject burst corrections into `corrected_x/y/yaw` before the 20 Hz control loop can resume. Using `QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE)` ensures only the latest scan is processed, preventing stale-scan burst ICP and aligning with the lidar driver's own BEST_EFFORT publisher QoS.
+
+### Idea 305: `last_vy_cmd` Zero-Reset on `target_lateral_offset` Sign Flip for Faster Direction Reversal
+**Area:** Collision Avoidance
+**Investment:** Extremely Low
+**Rationale:** When `target_lateral_offset` flips sign in `_update_bypass_offset()`, `last_vy_cmd` retains its current value (up to ±0.12 m/s). The rate limiter (`MAX_LATERAL_ACCEL = 0.5 m/s²`) then requires ~12 ticks (600 ms at 20 Hz) to reverse lateral direction, causing the robot to continue strafing toward the newly-blocked side for over half a second. Adding `if math.copysign(1, new_offset) != math.copysign(1, self.target_lateral_offset): self.last_vy_cmd = 0.0` immediately before updating `self.target_lateral_offset` halves worst-case reversal time to ~300 ms without removing the rate limiter's protection against step commands.
+
+### Idea 306: APF `d_safe` Activation Hysteresis Band to Eliminate Near-Threshold Lateral Chatter
+**Area:** Collision Avoidance
+**Investment:** Extremely Low
+**Rationale:** The APF repulsion formula in `_update_bypass_offset()` (lines 474–490 of `ab_comparison_test.py`) activates whenever `wall_left_clearance < d_safe = 0.55 m` and deactivates immediately upon exceeding 0.55 m. During bypass oscillation near this boundary, the force toggles on/off each 50 ms tick, generating 20 Hz lateral micro-corrections visible as a jitter band in the CSV `vy` channel. Adding `self._apf_left_active` (a boolean state variable) that sets `True` at 0.55 m and clears only at 0.60 m introduces a 5 cm hysteresis band, eliminating threshold chatter with no change to steady-state force magnitude.
+
+### Idea 307: ICP Inlier-Fraction Weighted Blend with Raw Odometry for Graceful Quality Transition
+**Area:** Navigation Accuracy
+**Investment:** Low
+**Rationale:** Current ICP vs. odometry handling uses hard gates (e.g., Ideas 190, 194, 237, 295): if inlier count is below threshold the update is rejected entirely, producing step-change pose jumps at the boundary. Blending via `w = min(1.0, n_valid_inliers / 40.0)` and `dx_final = w * dx_icp + (1 - w) * dx_odom_local` in `_align_scans_icp` provides smooth transition from full-odometry trust (zero inliers) to full-ICP trust (≥40 inliers), removing the discontinuity that manifests as a 3–8 cm corrected-pose jump when scan quality transitions at featureless wall sections.
+
+### Idea 308: `self.current_path_y` Sync from Local `path_y` in Drive States
+**Area:** Script Performance Optimization
+**Investment:** Extremely Low
+**Rationale:** **Bug fix.** In `DRIVE_TO_B` (line 885) and `DRIVE_TO_A` (line 1077) of `ab_comparison_test.py`, the local variable `path_y` is computed correctly from start/end waypoints but is never assigned to `self.current_path_y`. The 2 Hz diagnostic print (line 501) always displays `current_path_y = 0.0`, and any future CSV column for cross-track error (e.g., from Idea 205) will log zeros for the entire run. Adding `self.current_path_y = path_y` immediately after each `path_y` computation in both drive states is a one-line fix per state that restores diagnostic accuracy.
+
+### Idea 309: Consecutive ICP Failure Counter with Corrected-Pose EKF Re-Sync Trigger
+**Area:** Navigation Accuracy
+**Investment:** Low
+**Rationale:** When `_scan_cb`'s ICP falls through to the odometry-only fallback (exception path at line 271 or insufficient-points guard at line 230 of `ab_comparison_test.py`), `corrected_x/y/yaw` accumulates uncorrected odometry error. Individual failures are gated by Ideas 194 and 237, but 5–10 consecutive failures in featureless corridors can propagate 10–15 cm of uncorrected slip before recovery. Adding `self._icp_fail_count` (increment on failure, reset to 0 on success) and re-syncing `corrected_x/y/yaw` from the current EKF `/odom` pose after 6 consecutive failures provides a bounded-error fallback without touching the normal ICP path.
+
+### Idea 310: Temporal LiDAR Range-Difference Gate for Dynamic Obstacle Confirmation in Forward Sector
+**Area:** Collision Avoidance
+**Investment:** Low
+**Rationale:** A pedestrian approaching head-on in a narrow corridor fills the forward scan width with few lateral range discontinuities, potentially satisfying `is_continuous_wall = True` (the `front_has_edges = False` path in `_update_bypass_offset`) and blocking camera-guided bypass. Storing `self._prev_forward_ranges` (the ±20° sector array from the previous scan tick) and computing mean absolute range change between consecutive scans: when this exceeds 0.04 m the forward blocker is dynamic, not a static wall. Overriding `is_continuous_wall = False` when temporal motion is detected in `_scan_cb` complements the existing spatial edge detector and prevents false wall classification for slow-approaching pedestrians.
