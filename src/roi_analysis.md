@@ -5,6 +5,7 @@ This document records the ROI rankings and evaluation metrics for the enhancemen
 ## Last Updated
 2026-06-08: Added 22 ideas (199–220) across tiers. 13 new High-ROI, 9 new Medium-ROI entries added.
 2026-06-08: Added 20 ideas (221–240) across tiers. 16 new High-ROI, 4 new Medium-ROI entries added.
+2026-06-09: Added 22 ideas (241–262) across tiers. 16 new High-ROI, 6 new Medium-ROI entries added.
 
 ---
 
@@ -284,6 +285,70 @@ The following **32 ideas** have already been completed and integrated:
 *   **Investment:** Extremely Low. Add `self.blocked_time = 0.0` in the `SETTLE_2` state block alongside the existing `self.is_paused = False` reset (~line 1034 in `ab_comparison_test.py`).
 *   **Return:** High. Prevents a stale `blocked_time` from the end of `DRIVE_TO_B` from prematurely triggering the 8-second recovery backing maneuver at the very start of `DRIVE_TO_A`, eliminating false-positive reverse recoveries between drive legs.
 
+### 60. Idea 242: Forward-Sector LiDAR Beam Count Gate for Wall vs. Obstacle Classification
+*   **Investment:** Extremely Low. Count adjacent beams in the ±20° forward cone whose range falls within `min_forward_lidar + 0.05 m`; require ≥15 beams before setting `is_continuous_wall = True` in `_update_bypass_offset`.
+*   **Return:** High. Prevents a wide discrete object (trolley, tall cabinet) that presents a uniform-range face from being misclassified as an infinite wall and suppressing camera-based bypass; one count comparison per scan tick.
+
+### 61. Idea 243: ObstacleTracker History Deque Reset at Repeat-Mode Run Boundaries
+*   **Investment:** Low. Add `clear_histories()` to `ObstacleTracker` that empties each track's `history_global` deque without dropping the track itself; call it via the `set_velocity_estimation` toggle at each `ROTATE_HOME → DRIVE_TO_B` repeat restart.
+*   **Return:** High. Prevents cross-leg MLP input contamination where a track's forward-run approach history (robot closing head-on) populates the return-leg window with inverted displacements, causing systematic velocity misestimation in repeated runs.
+
+### 62. Idea 244: Round-Trip Pose Drift Magnitude Logged at Run Completion
+*   **Investment:** Extremely Low. At `ROTATE_HOME` tolerance exit, compute `drift_m = hypot(corrected_x - init_x, corrected_y - init_y)` and append as a final summary row in `RunLogger.save()`.
+*   **Return:** High. Provides a direct per-run position-error scalar comparing ICP-corrected mecanum slip in reactive vs. predictive modes — currently impossible to derive without manual coordinate reconstruction from the CSV.
+
+### 63. Idea 245: EMA Smoothing on `_min_forward_lidar` to Prevent Specular False Early-Stops
+*   **Investment:** Extremely Low. Apply `self._min_forward_lidar = 0.65 * raw_min + 0.35 * self._min_forward_lidar` before the `WALL_STOP_DIST` guard in `_update_bypass_offset`.
+*   **Return:** High. Filters single-frame specular spikes from shiny floors or metallic surfaces (momentarily 0.15–0.18 m) that falsely trigger the static-wall early stop while still catching genuine approaching walls within 2–3 scan cycles (~375 ms at 8 Hz).
+
+### 64. Idea 246: ICP Pose Corruption Detection via Negative `dist_error` Monitor
+*   **Investment:** Extremely Low. Add `if dist_error < -(DIST_TOLERANCE * 3): log warning + reset corrected_x/y to current_x/y` at the top of both `DRIVE_TO_B` and `DRIVE_TO_A` distance-check blocks.
+*   **Return:** High. Catches ICP-induced pose teleportation (a large spurious correction jumping `corrected_x/y` past the waypoint) before the control loop falsely satisfies the arrival condition and skips an entire drive leg, corrupting the run at negligible CPU cost.
+
+### 65. Idea 247: `is_paused` Column in RunLogger for Drive-vs-Wait Segment Analysis
+*   **Investment:** Extremely Low. Add `self.is_paused` as a boolean field to `_maybe_log()` and `RunLogger.log()` in both drive states.
+*   **Return:** High. Enables accurate post-run computation of total blocked time, pause event count, and mode-segmented clearance metrics; currently `min_obstacle_dist` is used as a noisy proxy that confuses tight-corridor drives with genuine obstacle pauses.
+
+### 66. Idea 248: Dynamic `ObstacleTracker.max_age` Scaling Based on Estimation Mode
+*   **Investment:** Extremely Low. Add `set_max_age(n)` to `ObstacleTracker`; call with `max_age=20` when `estimation_enabled=True` and `10` otherwise from `_set_estimator_mode()`.
+*   **Return:** High. Doubles track persistence in predictive mode precisely when TTC contributions from lost tracks suppress safety braking during camera dead-zone transits (~0.8–1.2 s); zero CPU cost and no effect in reactive mode.
+
+### 67. Idea 250: Depth Centroid Vertical Position Gate to Reject Floor-Level Ghost Detections
+*   **Investment:** Low. Add `if y_m > 0.4 * Z: continue` after computing `y_m` in the raw-depth path of `_extract_depth_centroids`.
+*   **Return:** High. Eliminates floor reflections, textured tile centroids, and low-obstacle ghost tracks (door stoppers, cable runs) from the tracking pipeline without ground-plane RANSAC, directly reducing false TTC braking triggers from non-pedestrian floor artifacts.
+
+### 68. Idea 252: Binary WebSocket Message Pre-Filter in AB Test Estimator Receive Loop
+*   **Investment:** Extremely Low. Add `if isinstance(message, bytes): continue` as the first line inside `async for message in ws` in `_set_estimator_mode()` of `ab_comparison_test.py`.
+*   **Return:** High. Eliminates Python exception overhead (`json.JSONDecodeError` + stack-frame construction) on up to 20 Hz binary camera frame messages received in the estimator loop, saving 0.2–0.6 ms/s of exception-path CPU in the receive thread.
+
+### 69. Idea 253: Forward-Scale Bypass Denominator Tied to Active `BYPASS_OFFSET`
+*   **Investment:** Extremely Low. Replace hardcoded `0.5` with `max(0.05, BYPASS_OFFSET)` in `forward_scale = 1.0 - max(0.0, min(0.8, lateral_error / 0.5))` in both `DRIVE_TO_B` and `DRIVE_TO_A`.
+*   **Return:** High. Ensures diagonal blending activates proportionally when Idea 110's dynamic corridor scaling has reduced `BYPASS_OFFSET` to 0.10 m; with the hardcoded `0.5`, the blending barely fires in tight corridors where smooth diagonal motion is most critical.
+
+### 70. Idea 254: Redundant `_get_speed_scaling()` Call Elimination in Diagnostic Block
+*   **Investment:** Extremely Low. Cache the `speed_scale` result from the drive control path and reference it in the 2 Hz diagnostic print inside `_update_bypass_offset` instead of calling `self._get_speed_scaling()` a second time.
+*   **Return:** High. Eliminates one `self._estimates_lock` acquisition, one `list(self._latest_estimates)` copy, and one full pedestrian-loop iteration per debug-print tick at 2 Hz — halving lock-contention on the estimates path and eliminating a duplicate scaling computation.
+
+### 71. Idea 255: Scan-Dirty Flag to Skip Bypass Sector Computation Between LiDAR Updates
+*   **Investment:** Low. Set `self._scan_dirty = True` in `_scan_cb`; at the entry of `_update_bypass_offset`, skip the beam-loop and return cached sector results if `not self._scan_dirty`, then clear the flag after computing.
+*   **Return:** High. Eliminates the Python beam-loop (sector clearances, edge detection, `min_forward_lidar`, APF forces) on ~12 of 20 control ticks per second where scan data is unchanged, cutting scan-sector CPU by ~60% with identical avoidance behavior.
+
+### 72. Idea 256: `blocked_time` Column in RunLogger for Recovery Event Traceability
+*   **Investment:** Extremely Low. Add `blocked_time` (float, seconds) as a column to `_maybe_log()` and `RunLogger.log()` in both drive states.
+*   **Return:** High. Captures the full recovery pressure timeline per row, enabling per-mode measurement of recovery event frequency and duration; `is_paused` (Idea 247) labels blocked ticks but cannot reconstruct cumulative duration or identify 8-second threshold crossings without `blocked_time`.
+
+### 73. Idea 257: ICP Skip Gate Based on Odom Delta Magnitude for Stationary Phases
+*   **Investment:** Low. Add `if abs(dx_odom_local) + abs(dy_odom_local) + abs(dtheta) < 0.003: [apply odom delta directly to corrected pose; return]` before the `_align_scans_icp` call in `_scan_cb`.
+*   **Return:** High. Saves 3× O(N²) ICP distance-matrix computations during settle states and blocked pauses (~30–50% of total run time) where the robot is stationary and ICP output is scan-noise dominated; orthogonal to Idea 208 (commanded speed) and Idea 189 (convergence criterion).
+
+### 74. Idea 258: Pre-Computed APF Normalization Constant to Eliminate Per-Tick Divisions
+*   **Investment:** Extremely Low. Pre-compute `self._apf_baseline = 1.0 / (d_safe - d_min) ** 2` in `__init__` and substitute it for the inline `1.0 / ((d_safe - d_min) * (d_safe - d_min))` in both `f_rep_left` and `f_rep_right` formulas in `_update_bypass_offset`.
+*   **Return:** High. Replaces 2 floating-point divisions per 20 Hz tick with a float variable read; single-line change with zero behavioral difference, guaranteed correct since `d_safe` and `d_min` are compile-time constants.
+
+### 75. Idea 259: `detections_fn()` Hoisted Outside Per-Contour Loop for Gating Efficiency
+*   **Investment:** Extremely Low. Move `detections = self.detections_fn()` and the `person_boxes` list comprehension to before the `for cnt in contours:` loop in the raw-depth path of `_extract_depth_centroids`.
+*   **Return:** High. Eliminates up to 4 redundant `detections_fn()` closure invocations and `person_boxes` list constructions per 10 Hz inference cycle (one per contour beyond the first), cutting Visual-LiDAR gating overhead by up to 80% when multiple depth blobs are detected.
+
 ---
 
 ## 3. Medium-ROI Tier (Rank 60 - 135)
@@ -389,6 +454,12 @@ The following **32 ideas** have already been completed and integrated:
 *   **113. Idea 233: Settle-State ICP Reference Scan Capture** (Medium ROI) — Set a `self._capture_ref_scan_on_next_tick = True` flag at each SETTLE→DRIVE transition; in `_scan_cb`, copy `curr_pts` into `prev_scan_points` when the flag is set and clear it, ensuring each drive segment starts ICP from a clean stationary reference scan rather than a motion-blurred scan captured during the prior dynamic phase.
 *   **114. Idea 238: Per-Obstacle Speed EMA Smoothing for TTC Stability** (Medium ROI) — Maintain a `speed_ema` dict keyed by track ID in `_inference_loop`; update as `speed_ema[tid] = 0.6 * new_speed + 0.4 * prev_ema` and use it as the speed source for TTC calculations, providing per-track noise suppression complementary to Idea 122's aggregate output EMA.
 *   **115. Idea 240: Lateral P-Gain Scheduling Based on Proximity to Target Offset** (Medium ROI) — Replace fixed `KP_LATERAL = 0.8` with a two-regime schedule `kp_eff = 0.8 if abs(lateral_err) > 0.10 else 0.4` in the `vy_target` computation in both drive states; reduces bypass overshoot oscillation at coarse errors while retaining tight centering gain for fine corrections.
+*   **116. Idea 241: ICP Computation Offloaded to a Dedicated Background Thread** (Medium-High ROI) — Move the 3-iteration ICP in `_scan_cb` to a background thread that writes accepted `corrected_x/y/yaw` under a lock; frees the ROS2 scan callback from O(N²) stall at 8 Hz, preventing `/odom` and `/scan` message queue buildup and control-loop jitter at the cost of one extra Python thread and lock.
+*   **117. Idea 249: Settle-State Physical Stop Confirmation via Corrected-Pose Delta Gate** (Medium-High ROI) — Gate `SETTLE_1/2/3` exit on `abs(corrected_x - settle_entry_x) + abs(corrected_y - settle_entry_y) < 0.005 m` over two consecutive ticks plus a 0.5 s minimum; ensures the robot has mechanically stopped before capturing `start_yaw` and `target_yaw` for the next segment, preventing orientation errors from a still-coasting robot.
+*   **118. Idea 251: Cached `cos_r`/`sin_r` with Change-Threshold Refresh in `_inference_loop`** (Medium-High ROI) — Cache `self._cached_cos_r`, `self._cached_sin_r`, and `self._cached_theta`; recompute only when `abs(rtheta_rob - _cached_theta) > 0.001 rad`, converting unconditional per-cycle trig calls to a single float comparison during stationary phases that constitute a significant fraction of inference-thread runtime during blocked events.
+*   **119. Idea 260: Quadratic Deceleration Profile in Final 0.30 m Approach Zone** (Medium-High ROI) — Replace `dist_error * KP_DIST` with `dist_error * KP_DIST * min(1.0, dist_error / 0.30)` in both drive states to introduce smooth quadratic deceleration in the final 0.30 m (0.67× factor at 0.20 m error, 0.33× at 0.10 m), reducing waypoint overshoot and improving final position accuracy in both modes.
+*   **120. Idea 261: Time-Based Track Age Expiry for Throttle-Robust Track Persistence** (Medium ROI) — Replace frame-count `age` increment in `ObstacleTracker.update()` with `time.monotonic()` timestamps; expire tracks when `now - last_seen > max_age_seconds` regardless of inference scheduling rate, preventing track persistence anomalies during Jetson thermal throttle and ensuring consistent 1.0 s nominal lifetime.
+*   **121. Idea 262: RunLogger Incremental File Write for Repeat-Mode Memory Reduction** (Medium ROI) — Open the CSV file and write the header in `RunLogger.__init__`; call `writer.writerow(row)` in `log()` on each append instead of accumulating `self.rows` in memory; eliminates peak memory from ~1200 dict objects per leg in repeat mode, distributes I/O evenly, and prevents complete data loss if the process is e-stopped mid-run.
 
 ---
 

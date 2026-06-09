@@ -1898,6 +1898,60 @@ This log tracks ideas and architectural enhancements for the EE244 Computational
 
 ---
 
+## [2026-06-09] Automated Analysis Batch — Ideas 253 to 262
+
+### Idea 253: Forward-Scale Bypass Denominator Tied to Active `BYPASS_OFFSET`
+**Area:** Collision Avoidance
+**Investment:** Extremely Low
+**Rationale:** In `DRIVE_TO_B` and `DRIVE_TO_A` (~lines 916–917 and 1108–1109 of `ab_comparison_test.py`), the diagonal bypass forward-speed blending uses `forward_scale = 1.0 - max(0.0, min(0.8, lateral_error / 0.5))` with `0.5` hardcoded. When Idea 110 dynamically reduces `BYPASS_OFFSET` to 0.10 m in tight corridors, `lateral_error` never exceeds 0.10 m, so `lateral_error / 0.5 = 0.20` maximum and `forward_scale` never falls below 0.84 — the diagonal speed reduction barely activates. Replacing the hardcoded `0.5` with `max(0.05, BYPASS_OFFSET)` makes the forward-speed blending proportional to the actual bypass target distance, ensuring smooth diagonal profiling whether the active offset is 0.10 m or 0.40 m.
+
+### Idea 254: Redundant `_get_speed_scaling()` Call Elimination in Diagnostic Block
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** Inside `_update_bypass_offset` in `ab_comparison_test.py`, the 2 Hz debug print block at ~line 494 calls `self._get_speed_scaling()` to display the live speed scale. The same method is also called in the main drive control code at lines 906 and 1098, meaning on every debug-print tick the scaling computation runs twice — two `self._estimates_lock` acquisitions, two `list(self._latest_estimates)` copies, and two full pedestrian-loop iterations. Caching the speed_scale result from the control code path and passing it as a parameter to the diagnostic print eliminates one full redundant execution of the most frequently-used estimator path per debug tick.
+
+### Idea 255: Scan-Dirty Flag to Skip Bypass Sector Computation Between LiDAR Updates
+**Area:** Script Optimization
+**Investment:** Low
+**Rationale:** `_update_bypass_offset()` is called at 20 Hz by `_control_loop`, but `self.last_scan_ranges` only updates at ~8 Hz via `_scan_cb`. The expensive Python beam-loop (sector clearances, edge detection, `min_forward_lidar`, APF forces) re-processes identical scan data on ~12 of every 20 control ticks. Setting a `self._scan_dirty = True` flag in `_scan_cb` and clearing it at the start of `_update_bypass_offset` allows the function to return cached clearance, blockage, and `vy_rep` values on ticks where no new scan arrived, cutting scan-loop CPU by ~60% while still re-evaluating camera estimates every tick.
+
+### Idea 256: `blocked_time` Column in RunLogger for Recovery Event Traceability
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** `RunLogger._maybe_log()` records `segment`, `n_obstacles`, and `min_obstacle_dist`, but not `self.blocked_time` — the cumulative blocked-duration counter. Post-run CSV analysis cannot distinguish a brief pedestrian pause from a full 8-second recovery event without reconstructing `blocked_time > 8.0` transitions manually across rows. Adding `blocked_time` as a column to `_maybe_log()` captures the full recovery pressure timeline, enabling direct per-mode measurement of how many backing maneuvers occurred and how long the robot spent approaching the 8-second recovery threshold.
+
+### Idea 257: ICP Skip Gate Based on Odom Delta Magnitude for Stationary Phases
+**Area:** Navigation Accuracy
+**Investment:** Low
+**Rationale:** In `_scan_cb` of `ab_comparison_test.py`, the odom delta `(dx_odom_local, dy_odom_local, dtheta)` is computed before calling `_align_scans_icp`. When the total magnitude `abs(dx_odom_local) + abs(dy_odom_local) + abs(dtheta) < 0.003`, the robot hasn't moved meaningfully and any ICP correction is noise-dominated. Adding an early-return that propagates the odom delta directly to `corrected_x/y/yaw` for near-zero motion frames saves 3× O(N²) distance matrix computations during settle states and blocked pauses — which can constitute 30–50% of total run time — and is distinct from Idea 208 (commanded-speed-based iteration count) and Idea 189 (convergence-criterion early exit).
+
+### Idea 258: Pre-Computed APF Normalization Constant to Eliminate Per-Tick Divisions
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** In `_update_bypass_offset` (~lines 482 and 487), the APF repulsion formula evaluates `1.0 / ((d_safe - d_min) * (d_safe - d_min))` — numerically `1.0 / (0.33 * 0.33) = 9.183` — on every 20 Hz tick for both left and right walls. Since `d_safe = 0.55` and `d_min = 0.22` are compile-time constants, this term never changes at runtime. Pre-computing `self._apf_baseline = 1.0 / (d_safe - d_min) ** 2` in `__init__` and substituting it into both `f_rep_left` and `f_rep_right` formulas replaces 2 floating-point divisions per tick with a float variable read, with zero behavioral change.
+
+### Idea 259: `detections_fn()` Hoisted Outside Per-Contour Loop for Gating Efficiency
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** In `_extract_depth_centroids`'s raw-depth path (~line 271 of `velocity_estimator.py`), `self.detections_fn()` is called inside the `for cnt in contours:` loop — once per detected contour per inference cycle. With up to 5 contours, this causes 5 closure invocations and 5 `person_boxes` list comprehensions per 10 Hz cycle even though detections do not change between contours in the same frame. Hoisting `detections = self.detections_fn()` and `person_boxes = [...]` extraction to just before the loop eliminates up to 4 redundant fetches per inference cycle, cutting Visual-LiDAR gating overhead by up to 80%.
+
+### Idea 260: Quadratic Deceleration Profile in Final 0.30 m Approach Zone
+**Area:** Navigation Accuracy
+**Investment:** Low
+**Rationale:** In both drive states, forward speed is `max(MIN_LINEAR_SPEED, min(max_speed, dist_error * KP_DIST))`. This proportional law maintains nearly constant speed down to `dist_error ≈ 0.10 m` where the output reaches `MIN_LINEAR_SPEED = 0.06 m/s` with a sharp knee — the robot arrives at the waypoint traveling near minimum speed with no anticipatory smoothing. Replacing the proportional term with `dist_error * KP_DIST * min(1.0, dist_error / 0.30)` introduces a smooth quadratic decay in the final 0.30 m (e.g., 0.67× at 0.20 m error, 0.33× at 0.10 m), reducing waypoint overshoot and final position error in both reactive and predictive modes.
+
+### Idea 261: Time-Based Track Age Expiry for Throttle-Robust Track Persistence
+**Area:** Velocity Estimation
+**Investment:** Low
+**Rationale:** `ObstacleTracker` expires tracks when `age > max_age = 10 frames` (1.0 s at 10 Hz). Under Jetson thermal throttling, `_inference_loop` may run at 5–6 Hz, making 10 frames equal 1.7–2.0 s — extending lifetimes unpredictably and allowing stale tracks to contribute to TTC calculations. Replacing the frame-count `age` increment with `time.monotonic()` timestamps (storing `last_seen` per track and expiring when `now - last_seen > max_age_seconds`) makes track persistence invariant to inference scheduling jitter, distinct from Idea 248 which varies `max_age` between modes.
+
+### Idea 262: RunLogger Incremental File Write for Repeat-Mode Memory Reduction
+**Area:** Script Optimization
+**Investment:** Low
+**Rationale:** In `repeat=True` mode, `RunLogger.log()` appends row dicts to `self.rows` in memory for the full leg duration, with `save()` called only at `ROTATE_HOME` completion. A 2-minute forward+return leg at 10 Hz accumulates ~1200 dict objects in memory, all written in a single burst. Opening the CSV file in `RunLogger.__init__`, writing the header immediately, and calling `writer.writerow(row)` in `log()` on each append eliminates peak memory, distributes I/O evenly across the leg, and prevents complete data loss if the process is killed or the robot is e-stopped mid-run.
+
+---
+
 ## [2026-06-09] Automated Analysis Batch — Ideas 241 to 252
 
 ### Idea 241: ICP Computation Offloaded to a Dedicated Background Thread
