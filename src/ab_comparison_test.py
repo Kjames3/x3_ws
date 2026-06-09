@@ -20,6 +20,7 @@ import csv
 from datetime import datetime
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
@@ -49,23 +50,24 @@ KP_YAW  = 0.4
 KP_ROT  = 0.5
 KD_ROT  = 0.1   # Derivative gain for rotation (active damping)
 
-MAX_LINEAR_SPEED  = 0.20   # m/s
+MAX_LINEAR_SPEED  = 0.15   # m/s
 MIN_LINEAR_SPEED  = 0.06   # m/s
 MAX_ANGULAR_SPEED = 0.30   # rad/s
 MIN_ANGULAR_SPEED = 0.12   # rad/s
 
-SEGMENT_TIMEOUT  = 20.0    # seconds
+SEGMENT_TIMEOUT  = 35.0    # seconds (4m / 0.20 m/s = 20 s + buffer for driver init)
 ROTATION_TIMEOUT = 10.0    # seconds — tighter timeout for rotation states
 SETTLE_DURATION  = 1.0     # seconds between segments
 LOG_HZ           = 10      # rows per second written to CSV
 
-WALL_STOP_DIST   = 0.20    # metres — stop this far from a confirmed static wall and turn back
+WALL_STOP_DIST   = 0.30    # metres — stop this far from a confirmed static wall and turn back
 
 
 def normalize_angle(angle: float) -> float:
     while angle > math.pi:
         angle -= 2.0 * math.pi
     while angle < -math.pi:
+        
         angle += 2.0 * math.pi
     return angle
 
@@ -149,8 +151,10 @@ class ABComparisonTest(Node):
         self._estimates_lock = threading.Lock()
         self._set_estimator_mode(enabled=(mode == "predictive"))
 
+        _scan_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT,
+                               durability=DurabilityPolicy.VOLATILE)
         self._odom_sub = self.create_subscription(Odometry, "/odom", self._odom_cb, 10)
-        self._scan_sub = self.create_subscription(LaserScan, "/scan", self._scan_cb, 10)
+        self._scan_sub = self.create_subscription(LaserScan, "/scan", self._scan_cb, _scan_qos)
         self._cmd_pub  = self.create_publisher(Twist, "/cmd_vel", 10)
 
         self.current_x   = 0.0
@@ -216,6 +220,7 @@ class ABComparisonTest(Node):
 
         # ICP scan matching state
         self.prev_scan_points = np.empty((0, 2), dtype=np.float32)
+        self._last_scan_time = 0.0  # monotonic time of most recent LiDAR scan
 
         self._timer = self.create_timer(0.05, self._control_loop)  # 20 Hz
 
@@ -230,6 +235,7 @@ class ABComparisonTest(Node):
         self.odom_received = True
 
     def _scan_cb(self, msg: LaserScan):
+        self._last_scan_time = time.monotonic()
         self.last_scan_ranges = list(msg.ranges)
         self.last_scan_angle_min = msg.angle_min
         self.last_scan_angle_increment = msg.angle_increment
@@ -399,8 +405,8 @@ class ABComparisonTest(Node):
             for i, r in enumerate(self.last_scan_ranges):
                 if math.isnan(r) or r < 0.15 or r > 4.0:
                     continue
-                angle = normalize_angle(self.last_scan_angle_min + i * self.last_scan_angle_increment + math.pi)
-                
+                angle = normalize_angle(self.last_scan_angle_min + i * self.last_scan_angle_increment)
+
                 # Check for range discontinuities in adjacent beams (LiDAR Edge Detection)
                 is_wall_edge = False
                 prev_idx = (i - 1) % len(self.last_scan_ranges)
@@ -468,15 +474,15 @@ class ABComparisonTest(Node):
 
         # 3. Choose adaptive corridors based on target type
         if is_dynamic_pedestrian:
-            AVOIDANCE_FORWARD = 1.8  # meters
+            AVOIDANCE_FORWARD = 0.9  # meters
             AVOIDANCE_LATERAL = 0.45 # meters (wider lateral corridor for humans)
             BYPASS_OFFSET = 0.4      # meters (wider shift to clear humans safely)
             LATERAL_CORRIDOR = 0.45  # meters
         else:
             # Static obstacles (chair/table legs) or reactive mode (where speed is always 0.0)
-            AVOIDANCE_FORWARD = 1.5  # meters
+            AVOIDANCE_FORWARD = 0.8  # meters
             AVOIDANCE_LATERAL = 0.3  # meters (tighter corridor to ignore static objects further to the side)
-            BYPASS_OFFSET = 0.25     # meters (smaller shift to avoid hitting side walls in narrow spaces)
+            BYPASS_OFFSET = 0.15     # meters (smaller shift to avoid hitting side walls in narrow spaces)
             LATERAL_CORRIDOR = 0.3   # meters
 
         # Dynamic Corridor Width Clearance Scaling (Idea 110)
@@ -523,7 +529,7 @@ class ABComparisonTest(Node):
         # Potential Field Wall Repulsion Calculation (Idea 141)
         d_safe = 0.55
         d_min = 0.22
-        eta = 0.03
+        eta = 0.15
         
         f_rep_left = 0.0
         if self.wall_left_clearance < d_safe:
@@ -548,7 +554,7 @@ class ABComparisonTest(Node):
             
             print(f"\n--- [AB TEST ROBOT DIAGNOSTICS] ---")
             print(f"  * State:            {self._STATE_NAMES.get(self.state, str(self.state))} | Paused: {self.is_paused}")
-            print(f"  * Speed scale:      {speed_scale:.2f} | Last Lateral Cmd (vy_cmd): {self.last_vy_cmd:.3f} m/s")
+            print(f"  * Speed scale:      {speed_scale:.2f} | vx_cmd: {self.last_vx_cmd:.3f} m/s | vy_cmd: {self.last_vy_cmd:.3f} m/s")
             print(f"  * Path Tracking:    Cross-Track Error (path_y)={self.current_path_y:.3f}m | Target Lateral Offset={self.target_lateral_offset:.2f}m")
             print(f"  * LiDAR Clearance:  Left Clearance={left_clearance:.2f}m | Right Clearance={right_clearance:.2f}m | vy_rep={self.vy_rep:.3f} m/s")
             print(f"  * Side Blockage:    Left Blocked={left_blocked} | Right Blocked={right_blocked} (Threshold={SIDE_BLOCK_THRESHOLD:.2f}m)")
@@ -690,7 +696,7 @@ class ABComparisonTest(Node):
                 for i, r in enumerate(self.last_scan_ranges):
                     if math.isnan(r) or r < 0.15 or r > 1.2:
                         continue
-                    angle = normalize_angle(self.last_scan_angle_min + i * self.last_scan_angle_increment + math.pi)
+                    angle = normalize_angle(self.last_scan_angle_min + i * self.last_scan_angle_increment)
                     if abs(angle) < 0.52:
                         y_lat = r * math.sin(angle)
                         x_fwd = r * math.cos(angle)
@@ -869,6 +875,30 @@ class ABComparisonTest(Node):
         dt_state = now - self.last_state_time if self.last_state_time > 0.0 else 0.05
         self.last_state_time = now
 
+        # Odom-only fallback when LiDAR scan is stale (> 0.5 s). Keeps corrected_x/y/yaw
+        # tracking the robot's position even before the YDLidar node warms up after a restart.
+        # When scans resume, prev_scan_points is cleared so _scan_cb uses its odom-delta
+        # path for the first new scan (no stale ICP initial guess).
+        if (hasattr(self, 'corrected_x') and hasattr(self, 'prev_odom_pose')
+                and now - self._last_scan_time > 0.5):
+            p_x, p_y, p_yaw = self.prev_odom_pose
+            c_x, c_y, c_yaw = self.current_x, self.current_y, self.current_yaw
+            dx_g = c_x - p_x
+            dy_g = c_y - p_y
+            dtheta = normalize_angle(c_yaw - p_yaw)
+            if abs(dx_g) > 1e-6 or abs(dy_g) > 1e-6 or abs(dtheta) > 1e-4:
+                cos_p = math.cos(p_yaw)
+                sin_p = math.sin(p_yaw)
+                dx_local = dx_g * cos_p + dy_g * sin_p
+                dy_local = -dx_g * sin_p + dy_g * cos_p
+                cos_corr = math.cos(self.corrected_yaw)
+                sin_corr = math.sin(self.corrected_yaw)
+                self.corrected_x += dx_local * cos_corr - dy_local * sin_corr
+                self.corrected_y += dx_local * sin_corr + dy_local * cos_corr
+                self.corrected_yaw = normalize_angle(self.corrected_yaw + dtheta)
+                self.prev_odom_pose = (c_x, c_y, c_yaw)
+                self.prev_scan_points = np.empty((0, 2), dtype=np.float32)
+
         # -- INIT: record start pose --
         if self.state == self.INIT:
             # Reset scan-matched corrected pose to current odom pose
@@ -1006,7 +1036,7 @@ class ABComparisonTest(Node):
                     for i, r in enumerate(self.last_scan_ranges):
                         if math.isnan(r) or r < 0.15 or r > 0.50:
                             continue
-                        angle = normalize_angle(self.last_scan_angle_min + i * self.last_scan_angle_increment + math.pi)
+                        angle = normalize_angle(self.last_scan_angle_min + i * self.last_scan_angle_increment)
                         if abs(angle) >= 2.35:  # 135 deg to 225 deg
                             rear_blocked = True
                             break
@@ -1206,7 +1236,7 @@ class ABComparisonTest(Node):
                     for i, r in enumerate(self.last_scan_ranges):
                         if math.isnan(r) or r < 0.15 or r > 0.50:
                             continue
-                        angle = normalize_angle(self.last_scan_angle_min + i * self.last_scan_angle_increment + math.pi)
+                        angle = normalize_angle(self.last_scan_angle_min + i * self.last_scan_angle_increment)
                         if abs(angle) >= 2.35:  # 135 deg to 225 deg
                             rear_blocked = True
                             break
