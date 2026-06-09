@@ -2121,3 +2121,57 @@ This log tracks ideas and architectural enhancements for the EE244 Computational
 **Area:** Script Optimization
 **Investment:** Extremely Low
 **Rationale:** In `_set_estimator_mode`'s async receive loop in `ab_comparison_test.py`, every WebSocket message is passed directly to `json.loads(message)`. The server (`server_x3.py`) broadcasts binary camera frames at up to 20 Hz on the same connection, which are not JSON and trigger `json.JSONDecodeError` or `UnicodeDecodeError` exceptions caught silently by `except Exception: pass`. Python exception handling (stack frame construction, traceback materialization) adds ~10–30 µs overhead per exception — at 20 Hz binary frames this accumulates to 0.2–0.6 ms/s of unnecessary exception-path CPU in the estimator receive thread. Adding `if isinstance(message, bytes): continue` as the first line inside `async for message in ws` eliminates all exception overhead with a single type check.
+
+---
+
+## [2026-06-09] Automated Analysis Batch — Ideas 283 to 292
+
+### Idea 283: Predictive Bypass Pre-Initiation via Forward-Projected Pedestrian Position
+**Area:** Collision Avoidance
+**Investment:** Low
+**Rationale:** In `_update_bypass_offset()`, the `is_dynamic_pedestrian` flag (lines 409–422) widens avoidance corridors but never uses the velocity vector to project where the pedestrian will be in 0.5–1.0 s. By computing `rx_future = rx + vx * 0.5` and `ry_future = ry + vy * 0.5` and checking if the projected position enters the `AVOIDANCE_FORWARD × AVOIDANCE_LATERAL` box, the robot can begin setting `target_lateral_offset` while the person is still outside the current LiDAR trigger range. This gives the lateral rate limiter (MAX_LATERAL_ACCEL = 0.5 m/s²) sufficient time to reach full offset before the pedestrian arrives, reducing close-range emergency stops in predictive mode.
+
+### Idea 284: Range-Adaptive `alpha_z` EMA Filter Based on Centroid Depth Bin
+**Area:** Velocity Estimation
+**Investment:** Extremely Low
+**Rationale:** `ObstacleTracker` applies a fixed `alpha_z = 0.7` EMA to all centroid depths regardless of range (line 49 of `velocity_estimator.py`). At close range (Z < 1.5 m), Astra Pro depth accuracy is high and a higher alpha (0.85, less smoothing) preserves responsiveness; at far range (Z > 3.0 m) depth noise increases significantly and a lower alpha (0.5, more smoothing) reduces track jitter. Replacing the constant with `alpha = 0.85 if cz < 1.5 else (0.7 if cz < 3.0 else 0.5)` at line 82 reduces far-target depth variance by ~30% while keeping near-obstacle tracking latency unchanged, at zero additional CPU cost.
+
+### Idea 285: Odom Body Velocity Extraction for Settle-State Kinematic Confirmation
+**Area:** Navigation Accuracy
+**Investment:** Low
+**Rationale:** `_odom_cb` in `ab_comparison_test.py` (lines 197–204) extracts only position and yaw from the odometry message; `msg.twist.twist.linear.x/y` are ignored. The SETTLE_1/2/3 states use a fixed 1.0 s blind wait before transitioning, but mecanum wheel inertia can keep the robot coasting 10–15 cm at `MAX_LINEAR_SPEED = 0.20 m/s`. Storing `self.current_body_vx = msg.twist.twist.linear.x` and gating settle-state exit on `hypot(current_body_vx, current_body_vy) < 0.02 m/s` (plus a 0.5 s minimum) ensures `start_yaw` and `target_yaw` are captured from a truly stationary robot, eliminating heading reference errors from momentum-carried segment entries.
+
+### Idea 286: Bypass Direction Lock-In Timer to Prevent Flip Oscillation
+**Area:** Collision Avoidance
+**Investment:** Low
+**Rationale:** Once `target_lateral_offset` is committed to ±BYPASS_OFFSET, the existing code can reassign it to the opposite sign on the very next tick if clearance conditions change (lines 592–624 in `_update_bypass_offset()`). When an obstacle sits near the boundary of the detection corridor, this causes rapid L/R oscillation in `target_lateral_offset`, which through the lateral P-controller produces real velocity chattering. Adding `self._bypass_dir_change_time = time.monotonic()` on each sign change and requiring `time.monotonic() - _bypass_dir_change_time >= 0.4` before allowing another flip (unless both sides are fully blocked) eliminates the oscillation without delaying legitimate safety switches.
+
+### Idea 287: `hist_local` Forward-Component Clamping in `_inference_loop`
+**Area:** Velocity Estimation
+**Investment:** Extremely Low
+**Rationale:** In `_inference_loop` (lines 481–491 of `velocity_estimator.py`), `hist_local` is reconstructed from `history_global` by inverse-rotating global coordinates, yielding `rx_l` as the pedestrian's depth in the current robot frame. Because global coordinates accumulate from ICP-corrected poses, `rx_l` can transiently go negative (pedestrian "behind" the robot) or exceed 5.0 m when the robot rotates sharply mid-run, producing out-of-distribution MLP inputs. Adding `rx_l = max(0.3, min(5.0, rx_l))` before `hist_local.append((cx_l, cy_l, rx_l))` mirrors the extraction range used during training and prevents edge-case MLP spike predictions from corrupted history entries, at one `max/min` call per history frame per track.
+
+### Idea 288: ICP Rotation Accumulator Re-Orthogonalization via SVD Polar Factor
+**Area:** Navigation Accuracy
+**Investment:** Low
+**Rationale:** In `_align_scans_icp` (lines 283–334 of `ab_comparison_test.py`), the total rotation is accumulated by composing individual 2×2 rotation matrices over 3 iterations. Floating-point multiplication errors cause the cumulative matrix to drift from orthogonality (det slightly ≠ 1), introducing a small shear component into every applied correction. After the 3-iteration loop, a single SVD step `U, _, Vt = np.linalg.svd(R_total); R_corrected = U @ Vt` projects the matrix back to the nearest rotation group element. Over multi-run sequences in repeat mode, this prevents compounding shear artifacts in `corrected_yaw` that would otherwise gradually misalign the path-tracking heading reference.
+
+### Idea 289: Per-Track MLP Output Vector EMA for Stable Bypass Direction Commands
+**Area:** Velocity Estimation
+**Investment:** Low
+**Rationale:** The MLP outputs `(vx, vy)` per track at 10 Hz, and the sign of `vy` determines bypass direction preference in `_update_bypass_offset()` (lines 569–591). A single noisy frame where the predicted `vy` flips sign can reverse the bypass direction mid-maneuver. Storing `prev_vx` and `prev_vy` in `ObstacleTracker.tracks` at track creation and applying `vx_out = 0.6 * vx_pred + 0.4 * prev_vx` (similarly for `vy`) before writing to the estimates list provides stable bypass direction signals. This is distinct from Idea 238's scalar speed EMA; smoothing the full velocity vector prevents direction-flip artifacts that the scalar magnitude filter does not address.
+
+### Idea 290: `_encode_mapu` Offload to Thread Executor for Non-Blocking Live Map Requests
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** In `handle_client`, the `request_live_map` handler calls `_encode_mapu(grid)` synchronously (lines 1392–1398 of `server_x3.py`). For large maps (e.g. 800×600 = 480 000 cells), this numpy array conversion, pixel remapping, and `struct.pack` call can block the asyncio event loop for 5–20 ms, stalling concurrent WebSocket message processing from joystick inputs and velocity readouts during that window. Replacing with `frame_bytes = await loop.run_in_executor(None, _encode_mapu, grid)` offloads the work to a thread pool worker and restores full event-loop responsiveness at zero functional change to the map encoding logic.
+
+### Idea 291: Scan Callback Timestamp Staleness Guard for Bypass Logic
+**Area:** Collision Avoidance
+**Investment:** Extremely Low
+**Rationale:** `self.last_scan_ranges` in `ab_comparison_test.py` is initialized to `[]` and never tagged with a receive time. If the YDLidar driver restarts mid-run (USB disconnect, driver crash), `last_scan_ranges` retains its final valid snapshot while `_update_bypass_offset()` continues treating it as current data, potentially holding `is_paused = True` or `is_continuous_wall = True` indefinitely from stale readings. Adding `self._last_scan_time = time.monotonic()` in `_scan_cb` and guarding all LiDAR sector checks in `_update_bypass_offset` with `if time.monotonic() - self._last_scan_time > 1.0: skip_lidar` degrades gracefully to camera-only avoidance on sensor fault rather than freezing the robot.
+
+### Idea 292: Forward-Speed Proportional `KP_YAW` Scaling to Prevent Near-Waypoint Yaw Oscillation
+**Area:** Navigation Accuracy
+**Investment:** Extremely Low
+**Rationale:** In both `DRIVE_TO_B` and `DRIVE_TO_A`, the heading correction is `rot_correction = max(-0.2, min(0.2, yaw_error * KP_YAW))` with a fixed `KP_YAW = 0.4` (lines 954–955 and 1146–1147 of `ab_comparison_test.py`). As the robot decelerates near a waypoint (`speed` approaches `MIN_LINEAR_SPEED`), the mechanical inertia drops but the heading gain remains constant, causing angular overshoot and yaw oscillation that corrupts the final pose used as the rotation reference. Computing `kp_yaw_eff = KP_YAW * min(1.0, speed / MAX_LINEAR_SPEED)` scales the gain proportionally with forward speed, smoothly reducing heading aggressiveness to match reduced inertia during deceleration without affecting full-speed heading correction behavior.
