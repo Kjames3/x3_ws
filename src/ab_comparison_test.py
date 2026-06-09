@@ -403,9 +403,9 @@ class ABComparisonTest(Node):
 
         if self.last_scan_ranges:
             for i, r in enumerate(self.last_scan_ranges):
-                if math.isnan(r) or r < 0.15 or r > 4.0:
+                if math.isnan(r) or r < 0.25 or r > 4.0:
                     continue
-                angle = normalize_angle(self.last_scan_angle_min + i * self.last_scan_angle_increment)
+                angle = normalize_angle(self.last_scan_angle_min + i * self.last_scan_angle_increment + math.pi)
 
                 # Check for range discontinuities in adjacent beams (LiDAR Edge Detection)
                 is_wall_edge = False
@@ -694,9 +694,9 @@ class ABComparisonTest(Node):
 
             if not has_obstacle and self.last_scan_ranges:
                 for i, r in enumerate(self.last_scan_ranges):
-                    if math.isnan(r) or r < 0.15 or r > 1.2:
+                    if math.isnan(r) or r < 0.25 or r > 1.2:
                         continue
-                    angle = normalize_angle(self.last_scan_angle_min + i * self.last_scan_angle_increment)
+                    angle = normalize_angle(self.last_scan_angle_min + i * self.last_scan_angle_increment + math.pi)
                     if abs(angle) < 0.52:
                         y_lat = r * math.sin(angle)
                         x_fwd = r * math.cos(angle)
@@ -1034,9 +1034,9 @@ class ABComparisonTest(Node):
                 rear_blocked = False
                 if self.last_scan_ranges:
                     for i, r in enumerate(self.last_scan_ranges):
-                        if math.isnan(r) or r < 0.15 or r > 0.50:
+                        if math.isnan(r) or r < 0.25 or r > 0.50:
                             continue
-                        angle = normalize_angle(self.last_scan_angle_min + i * self.last_scan_angle_increment)
+                        angle = normalize_angle(self.last_scan_angle_min + i * self.last_scan_angle_increment + math.pi)
                         if abs(angle) >= 2.35:  # 135 deg to 225 deg
                             rear_blocked = True
                             break
@@ -1234,9 +1234,9 @@ class ABComparisonTest(Node):
                 rear_blocked = False
                 if self.last_scan_ranges:
                     for i, r in enumerate(self.last_scan_ranges):
-                        if math.isnan(r) or r < 0.15 or r > 0.50:
+                        if math.isnan(r) or r < 0.25 or r > 0.50:
                             continue
-                        angle = normalize_angle(self.last_scan_angle_min + i * self.last_scan_angle_increment)
+                        angle = normalize_angle(self.last_scan_angle_min + i * self.last_scan_angle_increment + math.pi)
                         if abs(angle) >= 2.35:  # 135 deg to 225 deg
                             rear_blocked = True
                             break
