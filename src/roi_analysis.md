@@ -6,6 +6,7 @@ This document records the ROI rankings and evaluation metrics for the enhancemen
 2026-06-08: Added 22 ideas (199–220) across tiers. 13 new High-ROI, 9 new Medium-ROI entries added.
 2026-06-08: Added 20 ideas (221–240) across tiers. 16 new High-ROI, 4 new Medium-ROI entries added.
 2026-06-09: Added 22 ideas (241–262) across tiers. 16 new High-ROI, 6 new Medium-ROI entries added.
+2026-06-09: Added 20 ideas (263–282) across tiers. 15 new High-ROI, 5 new Medium-ROI entries added.
 
 ---
 
@@ -349,6 +350,66 @@ The following **32 ideas** have already been completed and integrated:
 *   **Investment:** Extremely Low. Move `detections = self.detections_fn()` and the `person_boxes` list comprehension to before the `for cnt in contours:` loop in the raw-depth path of `_extract_depth_centroids`.
 *   **Return:** High. Eliminates up to 4 redundant `detections_fn()` closure invocations and `person_boxes` list constructions per 10 Hz inference cycle (one per contour beyond the first), cutting Visual-LiDAR gating overhead by up to 80% when multiple depth blobs are detected.
 
+### 76. Idea 273: ICP Disabled During Rotation and Settle States
+*   **Investment:** Extremely Low. Add `if self.state not in (self.DRIVE_TO_B, self.DRIVE_TO_A): [apply raw odom delta; return]` at the start of the ICP code block in `_scan_cb`.
+*   **Return:** Extremely High. ICP during rotation states produces the largest spurious corrections (poor angular alignment with 0.1–0.3 rad initial_dtheta), contaminating `corrected_x/y` before every drive segment; a single state-membership guard eliminates the primary source of ICP-induced navigation drift at zero ongoing cost.
+
+### 77. Idea 274: `corrected_yaw` Soft Re-Sync to EKF Heading at Drive-Segment Entry
+*   **Investment:** Extremely Low. Add `if abs(normalize_angle(self.corrected_yaw - self.current_yaw)) > 0.05: self.corrected_yaw = self.current_yaw` at each SETTLE→DRIVE transition in `_control_loop`.
+*   **Return:** High. A biased `corrected_yaw` injects a persistent heading correction torque throughout the drive segment causing visible arcing; the one-line re-sync prevents this without discarding the lateral slip corrections ICP accumulates during drive phases.
+
+### 78. Idea 263: `normalize_angle` O(1) Modulo Formula Replacement
+*   **Investment:** Extremely Low. Replace the two-`while`-loop body of `normalize_angle` with `return ((angle + math.pi) % (2 * math.pi)) - math.pi`.
+*   **Return:** High. Called 120–160 times per second across odom callback, heading error, scan offset, and ICP accumulation sites; eliminating worst-case multi-iteration loop overhead converts a variable-cost function to a fixed-cost one, reducing control-loop jitter on the Jetson.
+
+### 79. Idea 279: `last_vy_cmd` Reset After Recovery Backing Maneuver
+*   **Investment:** Extremely Low. Add `self.last_vy_cmd = 0.0` immediately after the recovery backing loop exits in both `DRIVE_TO_B` and `DRIVE_TO_A` recovery blocks (~lines 949 and 1140).
+*   **Return:** High. Without this reset, the rate limiter ramps `vy_cmd` from the prior bypass value toward 0 over ~300 ms post-recovery, causing unintended lateral drift during the re-engagement drive phase; one line eliminates the issue entirely.
+
+### 80. Idea 267: Waypoint Arrival Hysteresis Band to Prevent ICP-Noise False Arrivals
+*   **Investment:** Extremely Low. Add a `self._arrival_confirm_count` integer; increment when `dist_error <= DIST_TOLERANCE`, reset otherwise; transition to SETTLE only when count ≥ 2.
+*   **Return:** High. ICP fluctuations can transiently satisfy the `<= 0.05 m` arrival condition for a single tick, skipping entire drive legs; requiring two consecutive ticks (100 ms) filters this without adding perceptible delay on genuine arrivals.
+
+### 81. Idea 269: `front_has_edges` Minimum Edge-Count Gate for Specular-Robust Wall Classification
+*   **Investment:** Extremely Low. Replace the single-hit `front_has_edges = True` boolean with a `front_edge_count` counter; set `front_has_edges = True` only when `front_edge_count >= 2` in `_update_bypass_offset`.
+*   **Return:** High. A single specular return can currently prevent `is_continuous_wall = True` and re-enable bypass against a genuine flat wall; requiring 2 independent edge transitions matches a pedestrian's characteristic silhouette (4–6 edges) while rejecting isolated glint artifacts.
+
+### 82. Idea 270: Speed-Scale EMA Minimum Per-Tick Recovery Increment
+*   **Investment:** Extremely Low. Add `self.smooth_speed_scale = max(recovered, self.smooth_speed_scale + 0.015)` in the recovery branch of `_get_speed_scaling` (~line 787).
+*   **Return:** High. With `beta = 0.15`, recovery from `smooth_speed_scale = 0.0` takes ~14 ticks (700 ms) before reaching 90% speed; the +0.015 floor reduces this to ≤5 ticks (250 ms) on a clear path while leaving the instant-brake behaviour fully intact.
+
+### 83. Idea 272: `_stop_robot` Reduced to Single Publish
+*   **Investment:** Extremely Low. Change `for _ in range(3): self._cmd_pub.publish(twist)` to a single `self._cmd_pub.publish(twist)` in `_stop_robot`.
+*   **Return:** High. ROS2 reliable QoS guarantees delivery of a single publish; the 3-publish pattern is a ROS1 best-effort legacy that generates up to 60 redundant DDS operations per second from SETTLE states, adding unnecessary middleware load.
+
+### 84. Idea 264: `_min_forward_lidar` Column in RunLogger for Wall-Proximity Analysis
+*   **Investment:** Extremely Low. Add `min_forward_lidar: round(self._min_forward_lidar, 3)` to `_maybe_log()` and `RunLogger.log()` in both drive states.
+*   **Return:** High. `_min_forward_lidar` is updated every tick and already drives the wall-stop guard, but is never logged; its absence prevents post-run comparison of whether predictive mode maintains greater forward clearance from walls than reactive mode — a direct safety metric of the A/B test.
+
+### 85. Idea 265: Per-Segment RMS Cross-Track Error Summary Row in RunLogger
+*   **Investment:** Extremely Low. Maintain `self._path_y_sum_sq` and `self._path_y_count` accumulators in drive states; write `path_y_rms = sqrt(sum_sq / count)` as a `"SEGMENT_SUMMARY"` row at each drive-state exit.
+*   **Return:** High. Path-following quality is the primary navigation metric yet no single per-leg scalar captures it; deriving RMS from per-row `current_path_y` values requires post-processing hundreds of rows (only available once Idea 205 adds the column); the accumulators add negligible runtime overhead.
+
+### 86. Idea 268: `n_icp_inliers` Column in RunLogger for Scan Match Quality Monitoring
+*   **Investment:** Extremely Low. Store `self._last_icp_inliers = int(np.sum(valid))` at the end of `_align_scans_icp`; add `n_icp_inliers` to `RunLogger.log()` in drive states.
+*   **Return:** High. ICP inlier count directly indicates scan match quality; low-inlier events (sparse doorway scans, featureless walls) preceding navigation drift are currently invisible in the CSV; the diagnostic enables post-run correlation between ICP degradation and position error per mode.
+
+### 87. Idea 282: Wall-Stop and Bypass-Suppression Event Counters in RunLogger
+*   **Investment:** Extremely Low. Add `self._wall_stop_count` (incremented at each early-stop branch) and `self._bypass_suppressed_count` (incremented when `is_continuous_wall` blocks a camera bypass); append both to `RunLogger.save()` as summary fields.
+*   **Return:** High. Wall-filter misclassification frequency (stationary pedestrian vs genuine wall) is currently unobservable without video review; the two counters require no per-tick overhead and provide a direct mode-by-mode classification audit metric for the A/B comparison report.
+
+### 88. Idea 266: Adaptive APF Repulsion `eta` Scaled by Current Forward Speed
+*   **Investment:** Low. Replace `eta = 0.03` constant with `eta_eff = 0.03 * max(0.5, 1.0 - abs(self.last_vx_cmd) / MAX_LINEAR_SPEED)` in `_update_bypass_offset`.
+*   **Return:** High. At full forward speed, fixed `eta = 0.03` produces abrupt lateral force steps that cause mecanum slip and ICP reference corruption; scaling to `eta_eff = 0.015` at max speed reduces lateral jerk while increasing repulsion to `0.03` near waypoints where tight centering matters most.
+
+### 89. Idea 275: Speed-Proportional `WALL_STOP_DIST` Lookahead Buffer
+*   **Investment:** Extremely Low. Replace `WALL_STOP_DIST` in both early-stop guards with `effective_stop_dist = max(0.20, self.last_vx_cmd * 0.25)`.
+*   **Return:** Medium-High. At current `MAX_LINEAR_SPEED = 0.20 m/s` the formula returns 0.05 m (floor of 0.20 m applies), identical to the current constant; the improvement activates if speed is increased in future tuning, providing automatic safety margin scaling with zero disruption to the current configuration.
+
+### 90. Idea 271: State Transition Marker Rows in RunLogger for Unambiguous Segment Boundaries
+*   **Investment:** Extremely Low. Add a `_log_event(label)` helper that writes one summary row at each state transition (e.g., `"EVENT_SETTLE1_START"`); call it at each `DRIVE→SETTLE` and `SETTLE→ROTATE` boundary in `_control_loop`.
+*   **Return:** High. Post-run CSV analysis infers segment boundaries from row-to-row `segment` label changes, which silently fails when the final row of a drive state was throttled out; explicit marker rows provide log-throttling-immune delimiters essential for automated per-segment metric extraction.
+
 ---
 
 ## 3. Medium-ROI Tier (Rank 60 - 135)
@@ -460,6 +521,11 @@ The following **32 ideas** have already been completed and integrated:
 *   **119. Idea 260: Quadratic Deceleration Profile in Final 0.30 m Approach Zone** (Medium-High ROI) — Replace `dist_error * KP_DIST` with `dist_error * KP_DIST * min(1.0, dist_error / 0.30)` in both drive states to introduce smooth quadratic deceleration in the final 0.30 m (0.67× factor at 0.20 m error, 0.33× at 0.10 m), reducing waypoint overshoot and improving final position accuracy in both modes.
 *   **120. Idea 261: Time-Based Track Age Expiry for Throttle-Robust Track Persistence** (Medium ROI) — Replace frame-count `age` increment in `ObstacleTracker.update()` with `time.monotonic()` timestamps; expire tracks when `now - last_seen > max_age_seconds` regardless of inference scheduling rate, preventing track persistence anomalies during Jetson thermal throttle and ensuring consistent 1.0 s nominal lifetime.
 *   **121. Idea 262: RunLogger Incremental File Write for Repeat-Mode Memory Reduction** (Medium ROI) — Open the CSV file and write the header in `RunLogger.__init__`; call `writer.writerow(row)` in `log()` on each append instead of accumulating `self.rows` in memory; eliminates peak memory from ~1200 dict objects per leg in repeat mode, distributes I/O evenly, and prevents complete data loss if the process is e-stopped mid-run.
+*   **122. Idea 280: `is_dynamic_pedestrian` Hysteresis Latch to Prevent Mid-Bypass Corridor Narrowing** (Medium-High ROI) — Add a `self._dynamic_ped_latch_frames` counter in `_update_bypass_offset` that holds `is_dynamic_pedestrian = True` for 10 additional frames (1 second) after the last `speed > 0.15` observation, preventing the bypass corridor from collapsing from 0.4 m to 0.25 m mid-maneuver when a pedestrian briefly decelerates.
+*   **123. Idea 276: Bypass Direction Selection via Pedestrian Lateral Velocity Projection** (Medium-High ROI) — Replace current-position side selector `if ry >= 0.0: prefer right` with `ry_projected = ry + est.get('vy', 0.0) * 0.5` before the bypass direction check in `_update_bypass_offset`; directs the robot to the side the pedestrian is vacating rather than the side they currently occupy.
+*   **124. Idea 277: YOLO Person Detection Veto for `is_continuous_wall` Stationary Pedestrian Case** (Medium ROI) — In the `is_continuous_wall` determination block of `_update_bypass_offset`, add a check via `self.detections_fn()`: if any YOLO `person` bounding box is present in the forward frustum, force `is_continuous_wall = False` to correctly identify stationary pedestrians as bypassable obstacles rather than static walls.
+*   **125. Idea 281: Approach-Velocity-Scaled `AVOIDANCE_FORWARD` for Earlier Bypass Initiation** (Medium ROI) — Compute `avoidance_dist_dyn = 1.8 + max(0.0, (-est.get('vx', 0.0) - self.last_vx_cmd) * 0.4)` in `_update_bypass_offset`'s dynamic pedestrian branch, extending the bypass trigger horizon proportionally to approach speed for fast-approaching pedestrians while keeping the 1.8 m default for slow targets.
+*   **126. Idea 278: LiDAR Range-Rate Forward Sector TTC Supplement for Reactive Mode** (Medium ROI) — Store `self._prev_forward_ranges` in `_scan_cb`; compute `lidar_ttc = min(curr_range / max(0.01, range_rate))` over closing forward-sector beams; feed into `smooth_speed_scale` as a reactive-mode TTC floor when `_latest_estimates` is empty, closing the safety gap during MLP track warm-up (first 3 frames).
 
 ---
 

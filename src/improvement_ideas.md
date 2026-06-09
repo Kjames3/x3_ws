@@ -2006,6 +2006,60 @@ This log tracks ideas and architectural enhancements for the EE244 Computational
 
 ---
 
+## [2026-06-09] Automated Analysis Batch — Ideas 273 to 282
+
+### Idea 273: ICP Disabled During Rotation and Settle States
+**Area:** Navigation Accuracy
+**Investment:** Extremely Low
+**Rationale:** `_scan_cb` runs the full 3-iteration ICP unconditionally at ~8 Hz, including during `ROTATE_180`, `ROTATE_HOME`, and all three `SETTLE` states. During rotation each successive scan is offset by ≥15° from the previous; the ICP initial guess (`initial_dtheta` from raw odom) is 0.1–0.3 rad, making nearest-point correspondence poorly aligned and producing large spurious dx/dy corrections that are integrated into `corrected_x/y`. Adding `if self.state not in (self.DRIVE_TO_B, self.DRIVE_TO_A): apply raw odom delta only` in `_scan_cb` limits ICP to active drive phases where lateral mecanum slip is meaningful, eliminating cross-contamination of the drift reference pose used throughout each subsequent drive segment.
+
+### Idea 274: `corrected_yaw` Soft Re-Sync to EKF Heading at Drive-Segment Entry
+**Area:** Navigation Accuracy
+**Investment:** Extremely Low
+**Rationale:** ICP noise accumulated during rotation and settle states can bias `corrected_yaw` away from the true robot heading before a drive segment starts. Because heading error `normalize_angle(target_yaw - corrected_yaw)` is the direct input to the yaw PID correction, a 0.05 rad ICP-induced bias injects a persistent yaw correction torque throughout the entire drive segment, causing the robot to arc slightly rather than drive straight. Adding `if abs(normalize_angle(self.corrected_yaw - self.current_yaw)) > 0.05: self.corrected_yaw = self.current_yaw` at each SETTLE→DRIVE transition (lines ~815 and ~1031 in `ab_comparison_test.py`) resets rotation-phase ICP yaw noise to the EKF ground truth without discarding the lateral (dx/dy) correction that ICP is designed to provide.
+
+### Idea 275: Speed-Proportional `WALL_STOP_DIST` Lookahead Buffer
+**Area:** Collision Avoidance
+**Investment:** Extremely Low
+**Rationale:** `WALL_STOP_DIST = 0.20 m` is applied identically at all forward speeds. The practical stopping margin must cover the 125 ms LiDAR scan period plus ~50 ms control tick latency; at the current `MAX_LINEAR_SPEED = 0.20 m/s` this equates to ~0.035 m of uncontrolled travel, leaving comfortable margin. If `MAX_LINEAR_SPEED` or `KP_DIST` is increased in future tuning, the fixed threshold becomes insufficient. Replacing with `effective_stop_dist = max(0.20, self.last_vx_cmd * 0.25)` (250 ms speed lookahead) guarantees a proportional stopping buffer that is automatically correct across all speed configurations without changing any existing logic at current speeds.
+
+### Idea 276: Bypass Direction Selection via Pedestrian Lateral Velocity Projection
+**Area:** Collision Avoidance
+**Investment:** Low
+**Rationale:** In `_update_bypass_offset`, the bypass side is chosen using the obstacle's current lateral position (`if ry >= 0.0: prefer right`). For a moving pedestrian, the robot may select the exact side the pedestrian is heading toward, resulting in a converging approach. Replacing the current-position check with `ry_projected = ry + est.get('vy', 0.0) * 0.5` (projecting lateral position 500 ms forward using the MLP-estimated `vy`) before the side selector directs the robot toward the side the pedestrian is vacating, directly leveraging the velocity estimate that distinguishes predictive mode from reactive mode and producing a measurably safer bypass trajectory in the A/B comparison.
+
+### Idea 277: YOLO Person Detection Veto for `is_continuous_wall` Stationary Pedestrian Case
+**Area:** Collision Avoidance
+**Investment:** Low
+**Rationale:** `is_continuous_wall` is set True when LiDAR shows blockage without range discontinuities and no `has_dynamic_pedestrian` (speed > 0.15 m/s). A stationary pedestrian standing directly in front presents a near-uniform LiDAR range profile (no edges) and has speed = 0.0, causing them to be misclassified as a static wall, suppressing camera-based bypass and halting the robot indefinitely. Adding a check against `self.detections_fn()` in the `is_continuous_wall` computation — if any YOLO `person` bounding box is present in the forward frustum, force `is_continuous_wall = False` regardless of edge count — correctly identifies stationary people as bypassable obstacles using the existing visual pipeline already available via `detections_fn`.
+
+### Idea 278: LiDAR Range-Rate Forward Sector TTC Supplement for Reactive Mode
+**Area:** Collision Avoidance
+**Investment:** Low
+**Rationale:** `_get_speed_scaling` relies entirely on MLP velocity estimates from `_latest_estimates`, which are unavailable in reactive mode and require 3 track frames to initialise. The LiDAR provides an independent radial closure rate: for beams in the ±20° forward cone, `range_rate_i = (prev_range_i - curr_range_i) / dt_scan` gives the approach speed of each point without depth camera or MLP involvement. Storing `self._prev_forward_ranges` in `_scan_cb` and computing `lidar_ttc = min(curr_range_i / max(0.01, range_rate_i))` over closing beams provides a reactive-mode TTC supplement that triggers `smooth_speed_scale` reduction before the camera tracker initialises, closing a safety gap during track warm-up and providing an independent redundancy check in predictive mode.
+
+### Idea 279: `last_vy_cmd` Reset After Recovery Backing Maneuver
+**Area:** Collision Avoidance
+**Investment:** Extremely Low
+**Rationale:** After the 8-second recovery backing maneuver in `DRIVE_TO_B` and `DRIVE_TO_A` (lines ~944–951 and ~1134–1141), `self.target_lateral_offset` and `self.is_paused` are reset to 0/False, but `self.last_vy_cmd` retains its value from the last bypass attempt (potentially ±0.10–0.15 m/s). On the next control tick the rate limiter (`MAX_LATERAL_ACCEL = 0.5 m/s²`) ramps `vy_cmd` from `last_vy_cmd` toward 0 over ~6 ticks (300 ms), causing the robot to briefly strafe sideways while simultaneously trying to resume forward drive post-recovery. Adding `self.last_vy_cmd = 0.0` immediately after the backing loop completes eliminates this unintended post-recovery lateral command with a single one-line fix.
+
+### Idea 280: `is_dynamic_pedestrian` Hysteresis Latch to Prevent Mid-Bypass Corridor Narrowing
+**Area:** Collision Avoidance
+**Investment:** Low
+**Rationale:** `is_dynamic_pedestrian` is recomputed from scratch on each call to `_update_bypass_offset` by checking `speed > 0.15 m/s`. If a pedestrian briefly decelerates below 0.15 m/s mid-bypass (changing direction, pausing), the corridor immediately collapses from dynamic (`BYPASS_OFFSET = 0.4 m`) to static (`BYPASS_OFFSET = 0.25 m`), clamping an active bypass offset from 0.4 m to 0.25 m and potentially driving the robot back toward the obstacle before clearing it. Adding a `self._dynamic_ped_latch_frames` counter that holds `is_dynamic_pedestrian = True` for 10 additional frames (1 second at 10 Hz estimates) after the last `speed > 0.15` detection prevents mid-bypass corridor collapse for pedestrians changing pace, ensuring the wider evasion envelope is maintained until the bypass is complete.
+
+### Idea 281: Approach-Velocity-Scaled `AVOIDANCE_FORWARD` for Earlier Bypass Initiation
+**Area:** Collision Avoidance
+**Investment:** Low
+**Rationale:** `AVOIDANCE_FORWARD = 1.8 m` is a fixed camera-based bypass trigger horizon. For a pedestrian approaching at 1.0 m/s with the robot at 0.20 m/s (closure rate 1.2 m/s), at 1.8 m separation only 1.5 s remain to complete a bypass — which may be insufficient for the lateral rate limiter to reach full offset and return to center. Computing `avoidance_dist_dyn = 1.8 + max(0.0, (-est.get('vx', 0.0) - self.last_vx_cmd) * 0.4)` (where negative `est_vx` means the pedestrian is approaching, and 0.4 s is a lookahead factor) extends the trigger distance proportionally to approach speed, allowing the robot to begin strafing earlier for fast pedestrians while leaving the 1.8 m default unchanged for slow or receding targets.
+
+### Idea 282: Wall-Stop and Bypass-Suppression Event Counters in RunLogger
+**Area:** Navigation Accuracy
+**Investment:** Extremely Low
+**Rationale:** `_front_is_continuous_wall` activations (which suppress camera bypass and trigger early-stop transitions) are never counted or logged. Post-run CSV analysis cannot determine how many times each mode correctly classified a genuine wall versus misclassified a stationary pedestrian or wide obstacle, making it impossible to audit the wall filter's impact on A/B run outcome. Adding `self._wall_stop_count` (incremented at each early-stop branch in `DRIVE_TO_B`/`DRIVE_TO_A`) and `self._bypass_suppressed_count` (incremented when `is_continuous_wall = True` blocks a camera-based bypass that would otherwise fire) and appending them to `RunLogger.save()` as summary fields provides direct mode-by-mode classification frequency data at zero per-tick overhead.
+
+---
+
 ## [2026-06-09] Automated Analysis Batch — Ideas 241 to 252
 
 ### Idea 241: ICP Computation Offloaded to a Dedicated Background Thread
