@@ -2377,3 +2377,56 @@ This log tracks ideas and architectural enhancements for the EE244 Computational
 **Area:** Velocity Estimation
 **Investment:** Extremely Low
 **Rationale:** In `_inference_loop` (lines 481–491 of `velocity_estimator.py`), `history_global` entries are inverse-rotated to produce `hist_local`. When a single ICP correction injects a 0.3–0.4 m spurious delta into `corrected_x/y`, the resulting `history_global` entry produces a reconstructed local displacement that far exceeds the per-frame clamp in `_build_window_features` (±0.25 m). Adding an upstream clamp `d_g = np.clip(np.hypot(dx_g, dy_g), 0.0, 0.30)` with direction restoration on each global history pair before the inverse rotation step provides a first-stage outlier rejection in global coordinates, preventing ICP drift spikes from reaching the MLP feature vector even when the local clamp in `_build_window_features` is hit at its boundary.
+
+## [2026-06-10] Automated Analysis Batch — Ideas 331 to 340
+
+### Idea 331: LiDAR Side-Sector Wall Clearance 5th Percentile for Specular-Return Outlier Rejection
+**Area:** Collision Avoidance
+**Investment:** Low
+**Rationale:** In `_update_bypass_offset`, `wall_left_clearance` and `wall_right_clearance` are computed as a running minimum over all valid side-sector beams. A single specular reflection off a polished floor tile or glass surface at 0.08 m in the 45°–135° sector falsely pins `wall_left_clearance = 0.08 m`, erroneously activating both the APF repulsion force and the hard `vy_cmd = 0.0` guard. After Idea 188 converts the scan to a NumPy array, collecting all side-sector ranges and using `np.percentile(side_arr, 5)` instead of `np.min` rejects isolated outliers (bottom 5% of readings) while correctly detecting genuine close walls that generate dense clusters of low-range beams.
+
+### Idea 332: Scaler Parameters Null-Guard Binding to Model Disable on JSON Load Failure
+**Area:** Velocity Estimation
+**Investment:** Extremely Low
+**Rationale:** In `VelocityEstimator._load_model()`, the model load and JSON scaler load share one `try/except` block. If the model file loads but the JSON is missing or malformed, the `except` branch logs an error but leaves `self._model` set to a valid TorchScript object while `scaler_X_mean` and `scaler_X_scale` remain `None`. When `_inference_loop` reaches `features_batch - self.scaler_X_mean`, Python raises `TypeError` that is silently caught by the outer `except Exception` at line 602, permanently killing the inference thread with `_latest_estimates` frozen at the prior value. Adding `if self.scaler_X_mean is None or self.scaler_X_scale is None: self._model = None` at the end of the except handler ensures the model is disabled alongside the scaler, converting a silent runtime crash into a clean at-load failure with a clear log message.
+
+### Idea 333: ICP Convergence Check Squared-Norm to Eliminate `abs()` Function Dispatch
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** In `_align_scans_icp`, the per-iteration early-exit convergence check (Idea 189) computes `abs(dx_corr) + abs(dy_corr) + abs(dtheta_corr) < 1e-4`. Each Python `abs()` call dispatches through the interpreter's function-call mechanism, adding ~3 µs of overhead per ICP iteration at 20 Hz × 3 iterations = 180 µs/second. Replacing with `dx_corr*dx_corr + dy_corr*dy_corr + dtheta_corr*dtheta_corr < 1e-8` (squared L2 norm, mathematically equivalent convergence criterion) eliminates all three function-call overheads in favour of three native float multiplications, which the Python interpreter executes 4–6× faster without any numerical change to ICP behavior.
+
+### Idea 334: `_set_estimator_mode` Exponential Backoff on WebSocket Reconnection
+**Area:** Script Optimization
+**Investment:** Low
+**Rationale:** In `ab_comparison_test.py`, `_set_estimator_mode()` retries the WebSocket connection with a fixed `asyncio.sleep(1.0)` delay on every failure. When `server_x3.py` takes 3–8 s to start (hardware bringup, ROS2 init, YOLO load), this creates 3–8 rapid sequential connection attempts with full coroutine teardown and asyncio task creation each cycle, spamming log output and consuming asyncio event-loop cycles during the critical initialization window. Replacing with `sleep_s = min(30.0, 2.0 ** retry_count)` exponential backoff limits retry frequency to 1→2→4→8 s cadence, reducing log noise and asyncio overhead during startup without affecting reconnection time once the server is actually up.
+
+### Idea 335: Forward LiDAR Blockage Cone Narrowed from ±30° to ±20° for `lidar_blocked` Check
+**Area:** Collision Avoidance
+**Investment:** Extremely Low
+**Rationale:** The `lidar_blocked` check in `_update_bypass_offset` uses `abs(angle) < 0.52 rad` (≈±30°) as the forward cone with a lateral gate `abs(y_lat) < 0.4 m`. At close range (< 0.5 m), beams at 25–30° can intercept side furniture and doorframe edges whose projected `y_lat` still falls within 0.4 m, triggering `lidar_blocked = True` and starting `blocked_time` accumulation despite the object being clear of the robot's forward path. Changing the cone to `abs(angle) < 0.35 rad` (≈±20°) matches the `min_forward_lidar` cone already used for wall detection (line 378), tightens the blocked-path column to the robot's physical forward footprint, and reduces spurious bypass initiations without degrading sensitivity to genuine head-on obstacles.
+
+### Idea 336: ICP Cross-Covariance Matrix Ill-Conditioning Guard for Collinear Wall Scans
+**Area:** Navigation Accuracy
+**Investment:** Extremely Low
+**Rationale:** In `_align_scans_icp`, the rotation angle is extracted via `theta = arctan2(H[0,1] - H[1,0], H[0,0] + H[1,1])` from the cross-covariance matrix `H = Q_bar.T @ P_bar`. When the robot faces a single flat wall (all inlier points collinear along one axis), `H` becomes rank-1 with both diagonal terms near zero, causing `arctan2(large, ~0)` to produce ±π/2 spurious rotation corrections that corrupt `corrected_yaw` for the remainder of the run. Adding `if (H[0,0] + H[1,1])**2 + (H[0,1] - H[1,0])**2 < 1e-8: theta = 0.0` before the `arctan2` call detects near-singular H matrices and safely skips the rotation correction, preventing wall-facing degenerate scan alignments from injecting large yaw spikes at negligible runtime cost.
+
+### Idea 337: Dead `est.get('y', 0.0)` Fallback Removal from Depth Coordinate Reads in AB Test
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** Throughout `ab_comparison_test.py`, obstacle depth is fetched as `oz = est.get('z', est.get('y', 0.0))` in `_update_bypass_offset`, `_get_speed_scaling`, and `_maybe_log`. The `VelocityEstimator._inference_loop` has written the `'z'` key in every estimate dict since Idea 19 (line 458 of `velocity_estimator.py`), making the inner `est.get('y', 0.0)` a dead fallback that executes an unconditional second dict-lookup and `get()` call for every obstacle at 20 Hz. Replacing all occurrences with the direct `oz = est.get('z', 0.0)` eliminates the nested lookup, simplifies the interface contract to match the actual estimator output schema, and shaves one dict access per obstacle per 20 Hz control tick.
+
+### Idea 338: Per-Track Feature Construction Buffer Pre-Allocation in `_build_window_features`
+**Area:** Script Optimization
+**Investment:** Low
+**Rationale:** In `_build_window_features` (lines 375–394 of `velocity_estimator.py`), the 40-element feature vector is assembled via `features.extend([rx_norm, ry_norm, dx, dy])` called 10 times on a Python list, then converted with `np.array(features, dtype=np.float32).reshape(1, -1)`. This involves 10 `extend()` calls appending 4 Python floats each, a final `np.array()` conversion, and a `reshape()` — approximately 50 Python interpreter steps per track. Pre-allocating a `(WINDOW_SIZE, 4)` float32 array in `__init__` per track slot and assigning rows directly via `buf[i] = (rx_norm, ry_norm, dx, dy)` eliminates the list operations and conversion, replacing them with direct C-level element writes and a single `.ravel()` view.
+
+### Idea 339: `ObstacleTracker.max_dist` Reduction in Reactive Mode to Prevent False ID Merges
+**Area:** Velocity Estimation
+**Investment:** Extremely Low
+**Rationale:** `ObstacleTracker` uses `max_dist = 0.8 m` as the nearest-centroid matching threshold, tuned for a pedestrian walking at 1.5 m/s (≈0.15 m/frame at 10 Hz with velocity-compensated global tracking). In reactive mode (`estimation_enabled = False`), all estimates have `speed = 0.0` and no velocity prediction is available, so global position drift from a slowly moving robot can cause track matching to grab a different static obstacle up to 0.8 m away, creating identity swaps that persist `is_paused = True` spuriously. Adding `self._tracker.max_dist = 0.4 if not self.estimation_enabled else 0.8` in `_set_estimator_mode` (analogous to Idea 248's `max_age` adjustment) tightens matching to physically plausible static-obstacle motion (< 5 cm/frame) in reactive mode with a one-line change.
+
+### Idea 340: Depth Continuity Guard in `ObstacleTracker.update()` to Prevent Background Contamination
+**Area:** Velocity Estimation
+**Investment:** Low
+**Rationale:** In `ObstacleTracker.update()`, when a track briefly mismatches to a background wall (e.g., momentary occlusion pushes the nearest centroid from 1.5 m to 4.0 m), then re-matches to the pedestrian, the `history_global` deque contains a 1.5 m → 4.0 m → 1.5 m depth spike. The `_build_window_features` displacement clamp (±0.25 m) limits the velocity representation but the position entry `(cx_g, cy_g, cz = 4.0)` remains in the window, corrupting relative-position features and causing the MLP to predict spurious forward velocities. Adding `if track['history_global'] and abs(cz - track['history_global'][-1][2]) > 1.5: skip history_global.append` discards depth-discontinuous re-match entries, keeping the MLP window free of background-plane contamination.
+

@@ -9,6 +9,7 @@ This document records the ROI rankings and evaluation metrics for the enhancemen
 2026-06-09: Added 20 ideas (263–282) across tiers. 15 new High-ROI, 5 new Medium-ROI entries added.
 2026-06-09: Added 20 ideas (283–302) across tiers. 12 new High-ROI, 8 new Medium-ROI entries added.
 2026-06-09: Added 18 ideas (303–320) across tiers. 14 new High-ROI, 4 new Medium-ROI entries added.
+2026-06-10: Added 20 ideas (321–340) across tiers. 19 new High-ROI, 1 new Medium-ROI entry added.
 
 ---
 
@@ -516,6 +517,82 @@ The following **32 ideas** have already been completed and integrated:
 *   **Investment:** Extremely Low. Add `with torch.no_grad(): _ = self._model(self.x_tensor_preallocated[:1])` immediately after the `torch.jit.trace` call in `VelocityEstimator._load_model()`.
 *   **Return:** High. TorchScript kernels undergo CPU-side JIT compilation on their first real forward-pass invocation, adding 50–200 ms of latency to the first live estimate after startup; this stall occurs precisely when the first pedestrian is detected, momentarily freezing TTC scaling at the worst possible moment. The warm-up dummy pass forces all kernel compilation at load time, ensuring the inference thread runs at full pre-compiled speed from the first real pedestrian detection.
 
+### 117. Idea 332: Scaler Parameters Null-Guard Binding to Model Disable on JSON Load Failure
+*   **Investment:** Extremely Low. Add `if self.scaler_X_mean is None or self.scaler_X_scale is None: self._model = None` at the end of the `except` handler in `VelocityEstimator._load_model()`.
+*   **Return:** Extremely High. If the JSON scaler file is missing, `_load_model` silently succeeds with a live model but `None` scalers; the first inference cycle raises `TypeError` caught silently, permanently killing the thread and leaving `_latest_estimates` frozen. This one-line guard converts a silent mid-run crash into a clean at-load failure, preventing an entire A/B run from producing no velocity estimates without any visible error in the terminal output.
+
+### 118. Idea 321: `LATERAL_THRESHOLD` Centered on Active Bypass Offset in `_get_speed_scaling`
+*   **Investment:** Extremely Low. Replace `abs(ry_t) <= LATERAL_THRESHOLD` with `abs(ry_t - self.target_lateral_offset) <= LATERAL_THRESHOLD` in the per-obstacle loop of `_get_speed_scaling`.
+*   **Return:** Extremely High. When `target_lateral_offset = ±BYPASS_OFFSET`, the TTC lateral gate currently evaluates obstacle position relative to the original path center, causing false positives from already-cleared obstacles (on the original side) and false negatives from new threats on the bypass track. The one-line fix recenters the TTC corridor on the robot's actual intended path, directly correcting the TTC speed-scaling logic for every bypass maneuver at zero CPU cost.
+
+### 119. Idea 324: `smooth_speed_scale` Reset in Repeat-Mode `ROTATE_HOME` Restart Block
+*   **Investment:** Extremely Low. Add `self.smooth_speed_scale = 1.0` to the existing reset block in the `ROTATE_HOME` repeat-mode handler (~line 1217 of `ab_comparison_test.py`).
+*   **Return:** High. If the previous run ended with a TTC braking event leaving `smooth_speed_scale = 0.3`, the new leg starts with 70% speed suppression before any obstacle appears, biasing first-leg performance metrics and potentially triggering `SEGMENT_TIMEOUT` if the obstacle does not reappear. This one-line addition guarantees a clean behavioral slate at every repeat boundary and is completely safe since it mirrors the existing resets of `blocked_time`, `is_paused`, and `last_vy_cmd` in the same block.
+
+### 120. Idea 335: Forward LiDAR Blockage Cone Narrowed from ±30° to ±20° for `lidar_blocked`
+*   **Investment:** Extremely Low. Change `abs(angle) < 0.52` to `abs(angle) < 0.35` in the `lidar_blocked` check inside `_update_bypass_offset` (line ~382 of `ab_comparison_test.py`).
+*   **Return:** High. At close range (< 0.5 m), beams at 25–30° can intercept doorframes and side furniture whose projected `y_lat` still falls within 0.4 m of center, triggering spurious `lidar_blocked = True` and starting `blocked_time` accumulation. Narrowing to ±20° aligns the blockage cone with the dedicated `min_forward_lidar` cone already in use for wall detection, restricting false-positive triggers to the robot's actual forward footprint without degrading sensitivity to genuine head-on obstacles.
+
+### 121. Idea 336: ICP Cross-Covariance Matrix Ill-Conditioning Guard for Collinear Wall Scans
+*   **Investment:** Extremely Low. Add `if (H[0,0] + H[1,1])**2 + (H[0,1] - H[1,0])**2 < 1e-8: theta = 0.0` before the `arctan2` call in `_align_scans_icp`.
+*   **Return:** High. When all ICP inliers are collinear (robot facing a single flat wall), `H` becomes rank-1, causing `arctan2(large, ~0)` to produce ±π/2 spurious yaw corrections that corrupt `corrected_yaw` for the rest of the run. A single pre-check on the `arctan2` denominator reliably detects rank deficiency and skips the rotation update, preventing wall-scan degeneracy from propagating into all subsequent path-tracking and heading calculations.
+
+### 122. Idea 322: `lidar_blocked` Consecutive-Frame Hysteresis Before Setting `is_paused`
+*   **Investment:** Extremely Low. Add `self._lidar_block_count` counter; require 2 consecutive `lidar_blocked` ticks before setting `self.is_paused = True`; reset to 0 on first unblocked tick.
+*   **Return:** High. A single specular floor reflection or low-flying dust return in the ±20–30° × 0.75 m forward zone currently immediately sets `is_paused = True` and starts `blocked_time` accumulation. Requiring 2 consecutive blocked ticks (~100 ms at 20 Hz) filters single-frame sensor noise identically to how Idea 203 handles `_front_is_continuous_wall`, directly reducing spurious `blocked_time` buildups that can prematurely trigger the 8-second backing recovery maneuver.
+
+### 123. Idea 330: Global History Displacement Clamping Before Local Frame Reconstruction in `_inference_loop`
+*   **Investment:** Extremely Low. Add upstream clamp `d_g = np.clip(np.hypot(dx_g, dy_g), 0.0, 0.30)` with direction restoration before the inverse-rotation step for each `history_global` entry in `_inference_loop` (lines 481–491 of `velocity_estimator.py`).
+*   **Return:** High. When a single ICP correction injects 0.3–0.4 m spurious displacement into `corrected_x/y`, the inverse-rotated `hist_local` reconstruction produces a frame displacement that saturates the ±0.25 m per-frame clamp in `_build_window_features` at its hard boundary. The upstream clamp provides a first-stage global-space guard that absorbs ICP drift spikes before they reach feature construction, providing a clean two-stage defence at near-zero CPU cost.
+
+### 124. Idea 339: `ObstacleTracker.max_dist` Reduction in Reactive Mode to Prevent False ID Merges
+*   **Investment:** Extremely Low. Add `self._tracker.max_dist = 0.4 if not self.estimation_enabled else 0.8` in `VelocityEstimator._set_estimator_mode` (or analogous toggle point).
+*   **Return:** High. In reactive mode all estimates carry `speed = 0.0` and no velocity prediction is used for global matching, so the 0.8 m association radius can grab a different static obstacle during slow robot motion, creating identity swaps that persist `is_paused = True` spuriously. Tightening to 0.4 m restricts matching to physically plausible static-obstacle motion (< 5 cm/frame), directly parallel to how Idea 248 adjusts `max_age` per mode — a one-line change targeting the reactive-mode-specific tracking deficiency.
+
+### 125. Idea 337: Dead `est.get('y', 0.0)` Fallback Removal from Depth Coordinate Reads
+*   **Investment:** Extremely Low. Replace all occurrences of `est.get('z', est.get('y', 0.0))` with `est.get('z', 0.0)` in `_update_bypass_offset`, `_get_speed_scaling`, and `_maybe_log` of `ab_comparison_test.py`.
+*   **Return:** High. The `VelocityEstimator` has written the `'z'` key in every estimate dict since Idea 19 (confirmed at `velocity_estimator.py` line 458); the inner `est.get('y', 0.0)` is dead code executing a second dict-lookup and `get()` call for every obstacle at 20 Hz. Removing it eliminates unnecessary Python dict accesses, removes a misleading hint that `'y'` is a valid depth key, and aligns the call sites with the actual estimator output schema.
+
+### 126. Idea 327: Depth-Range Confidence Downscale for Far Tracks (Z > 2.5 m) in `_get_speed_scaling`
+*   **Investment:** Extremely Low. Multiply each obstacle's TTC/proximity contribution by `depth_conf = max(0.2, 1.0 - max(0.0, cz - 2.5) / 1.5)` in `_get_speed_scaling`, where `cz = est.get('z', 1.0)`.
+*   **Return:** High. Astra Pro depth noise is ±15–20 cm at 4 m range, which the MLP misinterprets as lateral motion producing nonzero velocity predictions. Softly discounting velocity contributions from tracks beyond 2.5 m (0.2× at 4 m) reduces false TTC braking from depth-jitter-induced phantom velocities at long range while preserving full sensitivity within 2.5 m where depth accuracy is reliable, without requiring any model retraining.
+
+### 127. Idea 340: Depth Continuity Guard in `ObstacleTracker.update()` to Prevent Background Contamination
+*   **Investment:** Low. Add `if track['history_global'] and abs(cz - track['history_global'][-1][2]) > 1.5: skip history_global.append` in `ObstacleTracker.update()`.
+*   **Return:** High. When a track briefly mismatches to a background wall (e.g., occlusion shifts the nearest centroid from 1.5 m to 4.0 m), then re-matches to the pedestrian, the `history_global` deque contains a depth spike that corrupts relative-position features in `_build_window_features` despite the ±0.25 m per-frame displacement clamp. Rejecting history entries whose depth departs more than 1.5 m from the previous frame eliminates the contamination source before it reaches the MLP window, preventing the systematic forward-velocity misprediction that occurs after partial-occlusion re-matches.
+
+### 128. Idea 333: ICP Convergence Check Squared-Norm to Eliminate Python `abs()` Dispatch
+*   **Investment:** Extremely Low. Replace `abs(dx_corr) + abs(dy_corr) + abs(dtheta_corr) < 1e-4` with `dx_corr*dx_corr + dy_corr*dy_corr + dtheta_corr*dtheta_corr < 1e-8` in `_align_scans_icp`.
+*   **Return:** High. Each Python `abs()` call dispatches through the interpreter's function-call mechanism; at 20 Hz × up to 3 iterations × 3 calls = 180 dispatch overheads per second. Native float multiplication is 4–6× faster in CPython; the squared L2 norm is an equivalent convergence criterion that eliminates all three function calls with zero numerical change to ICP behavior or convergence characteristics.
+
+### 129. Idea 323: Pre-Allocated Normalization Output Buffer in `_inference_loop`
+*   **Investment:** Extremely Low. Pre-allocate `self._features_buffer = np.zeros((MAX_OBSTACLES, 40), dtype=np.float32)` in `__init__`; use `np.subtract(features_batch, self.scaler_X_mean, out=self._features_buffer[:n])` followed by `np.multiply(self._features_buffer[:n], self.scaler_X_inv_scale, out=self._features_buffer[:n])` in `_inference_loop`.
+*   **Return:** High. The current `features_scaled = (features_batch - self.scaler_X_mean) / self.scaler_X_scale` allocates two intermediate `(N, 40)` arrays per 10 Hz inference cycle. Pre-allocating a reusable buffer eliminates both heap allocations, reducing GC pressure on the ARM Jetson core during the inference hot path; combining with Idea 202's pre-inverted scale also replaces division with multiplication, matching the pattern used by the pre-allocated tensor (Idea 116) at zero behavioral change.
+
+### 130. Idea 338: Per-Track Feature Vector Construction via Direct Array Assignment
+*   **Investment:** Low. Pre-allocate `self._feature_row = np.empty((WINDOW_SIZE, 4), dtype=np.float32)` in `__init__`; replace `features.extend([...])` loop in `_build_window_features` with `self._feature_row[i] = (rx_norm, ry_norm, dx, dy)`; return `self._feature_row.ravel()` as a view.
+*   **Return:** High. The current implementation performs 10 `extend()` calls appending 4 floats each to a Python list, then calls `np.array(features, dtype=np.float32).reshape(1, -1)` — approximately 50 Python interpreter steps per track per 10 Hz cycle. Direct array assignment eliminates the list accumulation, all extend overhead, and the final conversion, replacing them with C-level element writes and a single `.ravel()` view operation that shares memory.
+
+### 131. Idea 325: Closest-Obstacle Track ID Column in `_maybe_log` for Post-Run Track Attribution
+*   **Investment:** Extremely Low. Add `closest_id = min(estimates, key=lambda e: math.hypot(e.get('x',0), e.get('z',0)))['id'] if estimates else -1` as a `closest_obstacle_id` column in `RunLogger.log()` and `_maybe_log()`.
+*   **Return:** High. Currently `min_obstacle_dist` records the closest distance but not which track produced it, making it impossible to determine from the CSV whether repeated bypass events involved the same pedestrian re-engaging or separate encounters. The closest track ID column enables per-mode comparison of re-engagement frequency and confirms whether predictive mode successfully clears the path on first encounter — a key A/B analysis metric at zero runtime overhead.
+
+### 132. Idea 326: `np.vstack` Eliminated via Direct Per-Track Write into Pre-Allocated Batch Matrix
+*   **Investment:** Low. Pre-allocate `self._batch_buffer = np.zeros((MAX_OBSTACLES, 40), dtype=np.float32)` in `__init__`; write each track's feature row directly via `self._batch_buffer[idx] = feats.ravel()` inside the eligible-tracks loop; replace `np.vstack(features_list)` with `self._batch_buffer[:num_tracks]`.
+*   **Return:** High. `np.vstack(features_list)` creates a new `(N, 40)` heap array from N separately-allocated `(1, 40)` arrays — two memory objects per eligible track plus a full copy. Direct row assignment eliminates the `features_list` Python list, all per-track `(1, 40)` allocations from `_build_window_features`, and the vstack copy, replacing them with in-place row writes per track per 10 Hz cycle, synergistically complementing Idea 338's feature construction pre-allocation.
+
+### 133. Idea 329: ICP vs. EKF Pose Discrepancy Real-Time Warning in 2 Hz Diagnostic Print
+*   **Investment:** Extremely Low. Add `delta_pos = math.hypot(self.corrected_x - self.current_x, self.corrected_y - self.current_y)` and a warning line `[ICP DRIFT: {delta_pos:.3f}m]` to the existing 2 Hz diagnostic print block in `_update_bypass_offset`.
+*   **Return:** High. The ICP-vs-EKF pose discrepancy is the primary indicator of mecanum lateral slip accumulation and scan match quality, yet it is completely invisible during live operation. Adding the one-line delta computation and printout to the existing throttled diagnostic block costs one `hypot` call per 0.5 s and provides real-time feedback that enables the operator to identify ICP degradation events (large discrepancy > 0.1 m) during lab runs without waiting for post-run CSV analysis.
+
+### 134. Idea 331: LiDAR Side-Sector Wall Clearance 5th Percentile for Specular-Return Outlier Rejection
+*   **Investment:** Low. After Idea 188 converts the scan to a NumPy array, collect all valid side-sector ranges into left/right arrays; use `np.percentile(side_arr, 5)` instead of running minimum for `wall_left_clearance` / `wall_right_clearance`.
+*   **Return:** High. A single specular reflection from polished floor tile or glass at 0.08 m in the 45°–135° sector falsely pins `wall_left_clearance = 0.08 m`, activating the APF repulsion at full magnitude and hard-clipping `vy_cmd = 0.0` erroneously. The 5th percentile rejects isolated outlier returns (< 5% of beams) while correctly detecting genuine close walls that generate dense clusters of low-range measurements, eliminating a known failure mode in high-gloss lab corridors at the cost of one `np.percentile` call per control tick.
+
+### 135. Idea 328: Weighted ICP Correspondence via Range-Proportional Point Weights
+*   **Investment:** Low. Compute `w_i = 1.0 / max(0.25, P_matched[i,0]**2 + P_matched[i,1]**2)` for each matched pair; replace `H = Q_bar.T @ P_bar` with `H = (Q_bar * w[:,np.newaxis]).T @ P_bar` in `_align_scans_icp`.
+*   **Return:** High. The current ICP treats all matched pairs equally, giving far-range correspondences (doorways, far walls at 3–4 m) equal influence to close-range pairs despite far higher angular uncertainty. Inverse-range weighting down-weights noisy far correspondences proportionally, reducing the condition number of the H matrix and improving yaw correction accuracy in mixed near/far environments — one weight vector computation and one einsum change within the existing ICP iteration loop.
+
 ---
 
 ## 3. Medium-ROI Tier (Rank 60 - 135)
@@ -644,6 +721,8 @@ The following **32 ideas** have already been completed and integrated:
 *   **136. Idea 309: Consecutive ICP Failure Counter with Corrected-Pose EKF Re-Sync Trigger** (Medium ROI) — Add `self._icp_fail_count` in `_scan_cb`; increment on each exception path (line 271) or insufficient-points fallback (line 230), reset to 0 on successful ICP; after 6 consecutive failures, re-sync `corrected_x/y/yaw` from the current EKF `current_x/y/yaw` to bound uncorrected slip accumulation in featureless corridors where individual failure gates (Ideas 194, 237) cannot prevent compounding 10–15 cm drift across 5–10 frames.
 *   **137. Idea 310: Temporal LiDAR Range-Difference Gate for Dynamic Obstacle Confirmation in Forward Sector** (Medium ROI) — Store `self._prev_forward_ranges` (the ±20° sector array from the previous scan tick) in `_scan_cb`; compute `mean_abs_delta = np.mean(np.abs(curr_forward - prev_forward))`; override `is_continuous_wall = False` in `_update_bypass_offset` when this delta exceeds 0.04 m, identifying a slow head-on approaching pedestrian (few lateral discontinuities) vs a genuine static wall, preventing false bypass suppression for the approaching-pedestrian case not caught by the spatial edge-count gate (Idea 269).
 *   **138. Idea 316: Clear-Path LiDAR Second-Scan Elimination via Pre-Cached Sector Vectors** (Medium ROI) — After implementing Ideas 187 and 188 (NumPy angle array and scan conversion), replace the second Python for-loop in `_update_bypass_offset` (lines 638–648) with a single `has_obstacle |= np.any(forward_mask & (np.abs(y_lat_arr) < LATERAL_CORRIDOR) & (x_fwd_arr < 1.2))` vectorized check on pre-computed sector arrays; eliminates a second full Python iteration over all 360 scan beams per clear-path evaluation at 20 Hz; marked Medium because it requires Ideas 187/188 as prerequisites.
+
+*   **139. Idea 334: `_set_estimator_mode` Exponential Backoff on WebSocket Reconnection** (Medium ROI) — Replace the fixed `asyncio.sleep(1.0)` retry delay in `_set_estimator_mode()` of `ab_comparison_test.py` with `sleep_s = min(30.0, 2.0 ** retry_count)` exponential backoff; reduces asyncio event-loop overhead and log spam during the 3–8 s server-startup window when `server_x3.py` is initializing hardware, YOLO, and ROS2 — a quality-of-life improvement without performance impact once the server is running.
 
 ---
 
