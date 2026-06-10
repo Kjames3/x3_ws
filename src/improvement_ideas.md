@@ -2325,3 +2325,55 @@ This log tracks ideas and architectural enhancements for the EE244 Computational
 **Area:** Script Optimization
 **Investment:** Extremely Low
 **Rationale:** In `VelocityEstimator._load_model()`, JIT tracing (`torch.jit.trace`) produces a compiled TorchScript graph, but CPU-side kernel fusion and code generation for the specific tensor shapes are deferred until the first real forward pass. This causes the very first `self._model(x_tensor)` call in `_inference_loop` to stall for 50–200 ms while PyTorch's JIT backend compiles the fused kernel — freezing the inference thread at the moment the first pedestrian appears. Adding `with torch.no_grad(): _ = self._model(self.x_tensor_preallocated[:1])` immediately after the `torch.jit.trace` call in `_load_model()` forces all kernel compilation at startup, ensuring the inference thread executes at full pre-compiled speed from the very first real detection without a cold-start latency spike.
+
+## [2026-06-10] Automated Analysis Batch — Ideas 321 to 330
+
+### Idea 321: `LATERAL_THRESHOLD` Centered on Active Bypass Offset in `_get_speed_scaling`
+**Area:** Collision Avoidance
+**Investment:** Extremely Low
+**Rationale:** In `_get_speed_scaling` (line ~761 of `ab_comparison_test.py`), the check `abs(ry_t) <= LATERAL_THRESHOLD` gates TTC scaling on obstacle lateral position relative to the original path centerline (ry=0). When `self.target_lateral_offset = ±BYPASS_OFFSET`, the robot's actual intended path has shifted; an obstacle already cleared to the original side (at `ry_t = -0.3 m`) still contributes to braking, while an obstacle now centered on the new bypass path (at `ry_t = BYPASS_OFFSET`) may not. Replacing with `abs(ry_t - self.target_lateral_offset) <= LATERAL_THRESHOLD` correctly gates TTC on the current intended path, eliminating false positives from cleared obstacles and false negatives for obstacles on the bypass track — a one-line change requiring only knowledge of `self.target_lateral_offset`, already available in scope.
+
+### Idea 322: `lidar_blocked` Consecutive-Frame Hysteresis Before Setting `is_paused`
+**Area:** Collision Avoidance
+**Investment:** Extremely Low
+**Rationale:** In `_update_bypass_offset`, a single LiDAR frame with a specular floor reflection or low-flying dust return in the ±30°×0.75 m forward zone sets `lidar_blocked = True`, immediately setting `self.is_paused = True` and starting `blocked_time` accumulation. Add `self._lidar_block_count` (analogous to Idea 203's wall confirmation counter for `_front_is_continuous_wall`) requiring 2 consecutive `lidar_blocked` ticks (~100 ms at 20 Hz) before activating the pause, while clearing to 0 on the first unblocked tick. This single-counter addition filters transient sensor noise without meaningfully delaying genuine obstacle response, directly reducing spurious `blocked_time` accumulations that can prematurely trigger the 8-second backing recovery.
+
+### Idea 323: Pre-Allocated Normalization Output Buffer to Eliminate Per-Cycle Heap Allocations in `_inference_loop`
+**Area:** Script Optimization
+**Investment:** Extremely Low
+**Rationale:** In `_inference_loop` (line ~515 of `velocity_estimator.py`), `features_scaled = (features_batch - self.scaler_X_mean) / self.scaler_X_scale` allocates two intermediate `(N, 40)` numpy arrays per 10 Hz inference cycle — one for the subtract result, one for the divide result. Pre-allocating `self._features_buffer = np.zeros((MAX_OBSTACLES, 40), dtype=np.float32)` in `__init__` and using `np.subtract(features_batch, self.scaler_X_mean, out=self._features_buffer[:num_tracks])` followed by `np.multiply(self._features_buffer[:num_tracks], self.scaler_X_inv_scale, out=self._features_buffer[:num_tracks])` (combining with Idea 202's pre-inverted scale) eliminates both heap allocations at 10 Hz, reducing GC pressure on the ARM Jetson core during the inference hot path with zero numerical change.
+
+### Idea 324: `smooth_speed_scale` Reset in Repeat-Mode `ROTATE_HOME` Restart Block
+**Area:** Collision Avoidance
+**Investment:** Extremely Low
+**Rationale:** In the `ROTATE_HOME` repeat-mode restart block (~line 1217 of `ab_comparison_test.py`), `self.blocked_time`, `self.is_paused`, and `self.last_vy_cmd` are reset to 0/False/0.0, but `self.smooth_speed_scale` is not. If the previous run ended with a TTC braking event leaving `smooth_speed_scale = 0.3`, the new run starts with 70% speed suppression applied before any obstacle is present, biasing first-leg performance metrics and potentially triggering the `SEGMENT_TIMEOUT` if the obstacle does not re-appear. Adding `self.smooth_speed_scale = 1.0` alongside the existing reset lines is a one-line fix that guarantees a clean behavioral slate at every repeat boundary with no impact on non-repeat runs.
+
+### Idea 325: Closest-Obstacle Track ID Column in `_maybe_log` for Post-Run Track Attribution
+**Area:** Navigation Accuracy
+**Investment:** Extremely Low
+**Rationale:** `_maybe_log` (lines 689–711 of `ab_comparison_test.py`) logs `n_obstacles` and `min_obstacle_dist`, but not which track ID corresponds to the minimum-distance obstacle. Adding `closest_id = min(estimates, key=lambda e: math.hypot(e.get('x',0), e.get('z',0)))['id'] if estimates else -1` as a `closest_obstacle_id` column enables post-run identification of whether each bypass event involved the same re-engaging pedestrian or a new track, and allows cross-run obstacle-engagement frequency analysis per mode that is currently impossible from distance-only logs.
+
+### Idea 326: `np.vstack` Eliminated via Direct Per-Track Write into Pre-Allocated Batch Feature Matrix
+**Area:** Script Optimization
+**Investment:** Low
+**Rationale:** In `_inference_loop` (line ~512 of `velocity_estimator.py`), `features_batch = np.vstack(features_list)` creates a new `(N, 40)` heap array from N separately-allocated `(1, 40)` arrays accumulated in `features_list` — two memory objects per eligible track plus a full vstack copy. Pre-allocating `self._batch_buffer = np.zeros((MAX_OBSTACLES, 40), dtype=np.float32)` in `__init__` and writing each track's feature directly via `self._batch_buffer[idx] = feats[0]` inside the eligible-tracks loop eliminates the `features_list` Python list, all per-track `(1, 40)` allocations from `_build_window_features`, and the vstack copy — replacing them with a single in-place row assignment per track per cycle.
+
+### Idea 327: Depth-Range Confidence Downscale for Far Tracks (Z > 2.5 m) in `_get_speed_scaling`
+**Area:** Velocity Estimation
+**Investment:** Extremely Low
+**Rationale:** Astra Pro depth accuracy degrades beyond 2.5 m; at 4 m, centroid depth jitter is ±15–20 cm per frame, which the MLP interprets as lateral motion and produces nonzero velocity predictions. In `_get_speed_scaling`, multiply each obstacle's TTC/proximity contribution by `depth_conf = max(0.2, 1.0 - max(0.0, cz - 2.5) / 1.5)` where `cz = est.get('z', 1.0)`. This softly discounts velocity predictions from far-range tracks (0.2× at 4 m) without disabling them, reducing false TTC braking from depth-noise-induced phantom motion at long range while preserving full sensitivity within 2.5 m where depth accuracy is reliable.
+
+### Idea 328: Weighted ICP Correspondence via Range-Proportional Point Weights in `_align_scans_icp`
+**Area:** Navigation Accuracy
+**Investment:** Low
+**Rationale:** The current `_align_scans_icp` implementation treats all matched point pairs equally in the cross-covariance matrix `H = Q_bar.T @ P_bar`. Close-range LiDAR returns (< 1.5 m) have far lower angular uncertainty than far-range returns (> 3 m), so weighting each correspondence by `w_i = 1.0 / max(0.25, P_matched[i,0]**2 + P_matched[i,1]**2)` and computing `H = (Q_bar * w[:,np.newaxis]).T @ P_bar` reduces the influence of noisy far-wall correspondences (doorways, far-end walls) on the rotation solution, improving yaw correction accuracy in mixed near/far environments — a single `w` vector computation and one einsum replacement in the existing SVD-free 2D ICP, with no architecture change.
+
+### Idea 329: ICP vs. EKF Pose Discrepancy Real-Time Warning in 2 Hz Diagnostic Print
+**Area:** Navigation Accuracy
+**Investment:** Extremely Low
+**Rationale:** The 2 Hz diagnostic print in `_update_bypass_offset` (~line 493 of `ab_comparison_test.py`) displays state, speed scale, LiDAR clearances, and camera detections, but never shows the current ICP-vs-EKF pose discrepancy `(corrected_x - current_x, corrected_y - current_y, corrected_yaw - current_yaw)`. Adding a one-line warning `if math.hypot(self.corrected_x - self.current_x, self.corrected_y - self.current_y) > 0.1` with a printed alert provides real-time ICP quality feedback during lab runs, enabling the operator to observe ICP degradation (large discrepancy = accumulated slip correction or divergent scan match) without waiting for post-run CSV analysis.
+
+### Idea 330: Global History Upstream Displacement Clamping Before Local Frame Reconstruction in `_build_window_features`
+**Area:** Velocity Estimation
+**Investment:** Extremely Low
+**Rationale:** In `_inference_loop` (lines 481–491 of `velocity_estimator.py`), `history_global` entries are inverse-rotated to produce `hist_local`. When a single ICP correction injects a 0.3–0.4 m spurious delta into `corrected_x/y`, the resulting `history_global` entry produces a reconstructed local displacement that far exceeds the per-frame clamp in `_build_window_features` (±0.25 m). Adding an upstream clamp `d_g = np.clip(np.hypot(dx_g, dy_g), 0.0, 0.30)` with direction restoration on each global history pair before the inverse rotation step provides a first-stage outlier rejection in global coordinates, preventing ICP drift spikes from reaching the MLP feature vector even when the local clamp in `_build_window_features` is hit at its boundary.
