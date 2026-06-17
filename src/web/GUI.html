@@ -129,6 +129,7 @@
                     <!-- RGB Panel -->
                     <div id="rgb-panel" style="flex: 1; position: relative; min-width: 0;">
                         <img id="camera-feed" class="camera-feed" alt="Camera feed" style="display: none; width: 100%;">
+                        <canvas id="camera-canvas" class="camera-feed" style="display: none; width: 100%;"></canvas>
                         <div id="camera-placeholder" class="camera-placeholder">
                             <span class="camera-placeholder-icon">📷</span>
                             <span>Awaiting camera feed...</span>
@@ -403,10 +404,13 @@
                                         --%</div>
                                 </div>
                             </div>
-                            <div style="margin-top: 0.5rem; text-align: center; font-size: 0.75rem;">
-                                <span style="color: var(--text-muted);">Est. Time:</span>
-                                <span id="power-time-remaining"
-                                    style="font-weight: 700; color: var(--accent-green);">--</span>
+                            <div style="margin-top: 0.5rem; display: flex; justify-content: space-around; font-size: 0.75rem;">
+                                <span><span style="color: var(--text-muted);">Est. Time:</span>
+                                    <span id="power-time-remaining"
+                                        style="font-weight: 700; color: var(--accent-green);">--</span></span>
+                                <span><span style="color: var(--text-muted);">Session:</span>
+                                    <span id="stat-uptime"
+                                        style="font-weight: 700; color: var(--text-secondary);">0:00</span></span>
                             </div>
                         </div>
                     </div>

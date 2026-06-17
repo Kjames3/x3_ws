@@ -135,6 +135,7 @@ const elements = {
 
     // Camera & Detection
     cameraFeed: document.getElementById('camera-feed'),
+    cameraCanvas: document.getElementById('camera-canvas'),
     cameraPlaceholder: document.getElementById('camera-placeholder'),
     depthFeed: document.getElementById('depth-feed'),
     cameraPanels: document.getElementById('camera-panels'),
@@ -1384,14 +1385,24 @@ function handleBinaryFrame(buf) {
         return;
     }
 
-    // Fallback: untagged binary = raw camera JPEG
-    const blob = new Blob([buf], { type: 'image/jpeg' });
-    if (elements.cameraFeed) {
-        const oldSrc = elements.cameraFeed.src;
-        elements.cameraFeed.src = URL.createObjectURL(blob);
-        elements.cameraFeed.style.display = 'block';
-        if (elements.cameraPlaceholder) elements.cameraPlaceholder.style.display = 'none';
-        if (oldSrc.startsWith('blob:')) URL.revokeObjectURL(oldSrc);
+    // Fallback: untagged binary = raw camera JPEG.
+    // Decode off the main thread via createImageBitmap and blit to a reused canvas —
+    // avoids the per-frame createObjectURL/revokeObjectURL churn of the old <img> path.
+    const cvs = elements.cameraCanvas;
+    if (cvs) {
+        createImageBitmap(new Blob([buf], { type: 'image/jpeg' })).then(bitmap => {
+            if (cvs.width !== bitmap.width || cvs.height !== bitmap.height) {
+                cvs.width = bitmap.width;
+                cvs.height = bitmap.height;
+            }
+            const ctx = cvs._ctx || (cvs._ctx = cvs.getContext('2d'));
+            ctx.drawImage(bitmap, 0, 0);
+            bitmap.close();
+            if (cvs.style.display === 'none') cvs.style.display = 'block';
+            if (elements.cameraPlaceholder && elements.cameraPlaceholder.style.display !== 'none') {
+                elements.cameraPlaceholder.style.display = 'none';
+            }
+        }).catch(() => { /* drop the frame on decode error */ });
     }
 }
 
