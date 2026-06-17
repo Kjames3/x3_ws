@@ -25,6 +25,7 @@ const state = {
     // Data Buffer for Render Loop
     latestData: {
         readout: null,        // Motor positions, power, image
+        slowFields: {},       // last-seen 2Hz fields (active_model_name, nav_phase) merged onto fast readout
         robotPose: null,
         targetPose: null,
         trajectory: null,
@@ -1784,7 +1785,10 @@ function handleMessage(data) {
     }
 
     if (data.type === "readout") {
-        // Update State Buffer
+        // Fast lane (20 Hz). Merge in the most-recent slow-lane fields (active_model_name,
+        // nav_phase) so updateUI — which reads them off `data` — keeps working between the
+        // 2 Hz "readout_slow" messages.
+        Object.assign(data, state.latestData.slowFields);
         state.latestData.readout = data;
         state.needsUIUpdate = true;
         state.latestData.robotPose = data.robot_pose;
@@ -1799,23 +1803,6 @@ function handleMessage(data) {
             state.latestData.velocityEstimates = data.velocity_estimates;
         }
 
-        if (data.p2p_test_running !== undefined) {
-            state.p2pTestRunning = data.p2p_test_running;
-            updateP2pButtonUI();
-        }
-
-        if (data.ab_test_running !== undefined) {
-            const wasRunning = state.abTestRunning;
-            state.abTestRunning = data.ab_test_running;
-            state.abTestMode = data.ab_test_mode || null;
-            if (wasRunning !== state.abTestRunning) {
-                updateAbTestButtonsUI();
-            }
-        }
-
-        if (data.fps_camera !== undefined) state.latestData.fps.cam = data.fps_camera;
-        if (data.fps_detection !== undefined) state.latestData.fps.yolo = data.fps_detection;
-
         if (data.battery) state.latestData.battery = data.battery;
 
         // Sync flags
@@ -1825,14 +1812,8 @@ function handleMessage(data) {
             state.isDemoMode = data.is_demo_mode;
             updateDemoBannerFromReadout(data);
         }
-        state.latestData.navPhase = data.nav_phase;
         state.latestData.autoDriveStart = data.auto_drive_start;
         state.latestData.power = data.power; // Power stats from INA219
-
-        // Update navigation panel status
-        if (data.nav) updateNavStatus(data.nav);
-        if (data.slam_active !== undefined) updateSlamStatus(data.slam_active);
-        if (data.frontier) updateFrontierStatus(data.frontier);
 
         state.needs3DUpdate = true;
 
@@ -1870,6 +1851,39 @@ function handleMessage(data) {
 
             state.lastLogTime = data.latest_log.time;
         }
+
+    } else if (data.type === "readout_slow") {
+        // Low-rate lane (~2 Hz): nav / SLAM / frontier / model / fps / test status.
+        // Persist the fields updateUI reads off the fast readout object so they survive
+        // between slow messages (the fast handler replaces state.latestData.readout each frame).
+        state.latestData.slowFields = {
+            active_model_name: data.active_model_name,
+            nav_phase: data.nav_phase,
+        };
+        state.latestData.navPhase = data.nav_phase;
+
+        if (data.fps_camera !== undefined) state.latestData.fps.cam = data.fps_camera;
+        if (data.fps_detection !== undefined) state.latestData.fps.yolo = data.fps_detection;
+
+        if (data.p2p_test_running !== undefined) {
+            state.p2pTestRunning = data.p2p_test_running;
+            updateP2pButtonUI();
+        }
+
+        if (data.ab_test_running !== undefined) {
+            const wasRunning = state.abTestRunning;
+            state.abTestRunning = data.ab_test_running;
+            state.abTestMode = data.ab_test_mode || null;
+            if (wasRunning !== state.abTestRunning) {
+                updateAbTestButtonsUI();
+            }
+        }
+
+        if (data.nav) updateNavStatus(data.nav);
+        if (data.slam_active !== undefined) updateSlamStatus(data.slam_active);
+        if (data.frontier) updateFrontierStatus(data.frontier);
+
+        state.needsUIUpdate = true;  // refresh nav-metrics / fps text
 
     } else if (data.type === "capture_response") {
         const category = data.category || "saved";

@@ -1649,6 +1649,7 @@ async def broadcast_loop():
 
     loop = asyncio.get_event_loop()
     _depth_cycle = 0  # throttle depth to ~10 fps (every other 20fps cycle)
+    _loop_i = 0       # drives the ~2 Hz "readout_slow" lane (every 10th cycle)
 
     while True:
         if connected_clients:
@@ -1760,14 +1761,7 @@ async def broadcast_loop():
             if img_bytes:
                 websockets.broadcast(connected_clients, img_bytes)
 
-            # 8. Build readout (P10: removed always-None/False fields; P3: no "image" key)
-            if nav2_client:
-                if now - _nav2_cache_time >= 0.5:  # Throttle to 2Hz (Idea 71)
-                    _nav2_cache_status = nav2_client.get_status()
-                    _nav2_cache_time = now
-                nav_status = _nav2_cache_status
-            else:
-                nav_status = {"state": "UNAVAILABLE"}
+            # 8. Fast readout lane (20 Hz): pose, motors, power, detections, depth.
             msg = {
                 "type": "readout",
                 "depth_image": depth_str,
@@ -1784,19 +1778,8 @@ async def broadcast_loop():
                 "right_power": current_right_power,
                 "detection_enabled": detection_enabled,
                 "is_auto_driving": is_auto_driving,
-                "nav_phase": nav_status["state"],
-                "nav": nav_status,
-                "slam_active": _slam_proc is not None and _slam_proc.poll() is None,
-                "frontier": frontier_explorer.status() if frontier_explorer else None,
-                "active_model_name": active_model_name,
-                "active_velocity_model_name": active_velocity_model_name,
-                "velocity_estimates": velocity_estimates,
-                "p2p_test_running": _p2p_proc is not None and _p2p_proc.poll() is None,
-                "ab_test_running": _ab_test_proc is not None and _ab_test_proc.poll() is None,
-                "ab_test_mode": _ab_test_mode if (_ab_test_proc is not None and _ab_test_proc.poll() is None) else None,
-                "fps_camera": fps_camera,
-                "fps_detection": fps_detection,
                 "detections": last_detections,
+                "velocity_estimates": velocity_estimates,
                 "battery": {"voltage": batt_v, "amps": est_current, "watts": est_watts},
                 "power": {
                     "voltage":     batt_v,
@@ -1805,9 +1788,31 @@ async def broadcast_loop():
                     "battery_pct": batt_pct,
                 },
             }
-
             # Fast orjson serialization with fallback (Idea 87)
             websockets.broadcast(connected_clients, orjson_dumps(msg))
+
+            # 9. Slow readout lane (~2 Hz): nav / SLAM / frontier / model / fps / test
+            #    status. These are subprocess polls or dict-builds that don't need 20 Hz,
+            #    so we compute and broadcast them only every 10th cycle.
+            _loop_i += 1
+            if _loop_i % 10 == 0:
+                nav_status = nav2_client.get_status() if nav2_client else {"state": "UNAVAILABLE"}
+                _ab_running = _ab_test_proc is not None and _ab_test_proc.poll() is None
+                slow = {
+                    "type": "readout_slow",
+                    "nav_phase": nav_status["state"],
+                    "nav": nav_status,
+                    "slam_active": _slam_proc is not None and _slam_proc.poll() is None,
+                    "frontier": frontier_explorer.status() if frontier_explorer else None,
+                    "active_model_name": active_model_name,
+                    "active_velocity_model_name": active_velocity_model_name,
+                    "p2p_test_running": _p2p_proc is not None and _p2p_proc.poll() is None,
+                    "ab_test_running": _ab_running,
+                    "ab_test_mode": _ab_test_mode if _ab_running else None,
+                    "fps_camera": fps_camera,
+                    "fps_detection": fps_detection,
+                }
+                websockets.broadcast(connected_clients, orjson_dumps(slow))
 
         await asyncio.sleep(0.05)  # 20 FPS cap
 
