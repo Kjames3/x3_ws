@@ -621,3 +621,103 @@ Previously, if the robot's target waypoint was beyond a wall (e.g. a corridor sh
 **Deployment:** All three files transferred to `jetson@10.13.197.109:/home/jetson/x3_ws/src/` via paramiko SFTP and verified by MD5 checksum.
 
 **Status:** Completed 🟢. 33 improvements implemented across all three core scripts and deployed to the robot.
+
+
+
+---
+
+### [2026-06-09] Camera-Estimator Blindness Fix — Far-Range Detection & Track Confirmation
+**Scripts Modified:**
+- [velocity_estimator.py](file:///home/kamren/x3_ws/src/velocity_estimator.py) (Removed alternating-row/column decimation from the far-range depth mask; restructured `ObstacleTracker` visible-count accounting so the confirmation gate is reachable)
+
+**Symptom Reported:**
+During `ab_comparison_test.py` runs in both reactive and predictive modes, the robot completed the 4 m out-and-back path correctly but would **drive straight into a person standing in its path** instead of slowing/bypassing. The GUI obstacle panel permanently displayed *"Awaiting obstacles and velocity reports…"*, indicating the velocity-estimate list was always empty. Live inspection of the server `readout` over `ws://localhost:8081` confirmed `velocity_estimates` was empty on every frame even with a wall 1.8 m ahead filling the depth image.
+
+**Root-Cause Diagnosis (on-robot):**
+The obstacle-avoidance stack is **camera-primary** (depth-blob detection → tracking → MLP velocity → bypass/TTC speed-scaling), with LiDAR only as a ±0.75 m bumper fallback. Two independent latent bugs collapsed the camera path to zero output, leaving only the weak short-range LiDAR stop — which fires too late and only nudges 0.15 m, so a pedestrian gets struck.
+
+**Bugs Found & Technical Rationales:**
+
+1. **Far-Range Depth Mask Erased by Morphological Opening (`_extract_depth_centroids`)**
+   * **Bug:** The "dynamic voxel downsampling" step built the far-range (1.5–4.0 m) obstacle mask on the already-2×-downsampled depth frame and then zeroed alternating rows **and** columns (`far_mask_ds[1::2, :] = False; far_mask_ds[:, 1::2] = False`). This leaves set pixels spaced two apart — no two adjacent. The immediately following $5\times5$ `MORPH_OPEN` erosion then deletes every isolated pixel, so the far-range mask is wiped out entirely. **Every obstacle beyond ~1.5 m produced zero contours and was invisible to the estimator.** Verified live against a real depth frame (~120 k valid pixels, nearest return 1.8 m): buggy code → **0 contours**; with the two decimation lines removed → **3 contours / 2 centroids**.
+   * **Fix:** Removed the alternating-row/column zeroing. The far-range region stays contiguous (the frame is already 2× downsampled for cost), so erosion preserves real obstacle blobs while still cleaning speckle.
+
+2. **`visible_count` Confirmation Gate Mathematically Unreachable (`ObstacleTracker.update`)**
+   * **Bug:** The aging loop decremented `visible_count` for *every* track on *every* frame (`visible_count = max(0, visible_count - 1)`), while a successful match incremented it by exactly 1. A track matched every frame therefore netted **zero** change and stayed pinned at its initial value of **1**. The estimate-eligibility gate requires `visible_count >= 3` (the 3-of-N track-initiation rule, Idea 109), so **no track could ever be confirmed** and the estimates list was always empty — even though tracks existed (live debug showed `tracks=2–4`).
+   * **Fix:** Removed the unconditional per-frame decrement. Staleness is already handled by `age`/`max_age` (tracks unseen for >10 frames are deleted). A separate decay step now decrements `visible_count` only for tracks that were **not** matched this frame, preserving the "recent consecutive visibility" semantics. The gate is reachable after ~3 frames (~0.3 s at the 10 Hz inference rate).
+
+**Verification:** After both fixes and a service restart, the live `readout` went from `n_estimates=0` to stable detections (e.g. obstacles at 1.95 m and 3.61 m with persistent track IDs). The GUI obstacle panel now populates, and both reactive and predictive modes share this restored detection path.
+
+**Deployment:** Both fixes applied to the local workspace and directly to `jetson@10.13.245.176:/home/jetson/x3_ws/src/velocity_estimator.py`; `x3_server` restarted and confirmed healthy. (Robot working copy currently diverges from local `main` — reconcile on next git deploy.)
+
+**Status:** Completed 🟢. Far-range camera detection and track confirmation are restored and verified on the physical robot.
+
+---
+
+### [2026-06-09] Detection Model Switch — Cans Detector → Standard COCO (Person-Capable)
+**Scripts Modified:**
+- [server_x3.py](file:///home/kamren/x3_ws/src/server_x3.py) (Changed default `YOLO_MODEL = find_model_path("yolo26n")` and `active_model_name = "yolo26n"`, replacing `yolo11n_cans`)
+- Robot environment: installed `torchvision==0.25.0`; moved the broken prebuilt engine `yolo_models/default/yolo26n.engine` → `yolo26n.engine.broken-296cls`
+
+**Motivation:**
+The active detector was `yolo11n_cans`, a soda-can model with no `person` class, so the visual-LiDAR person-confirmation gate (Idea 146) and the predictive "dynamic pedestrian" corridor widening could never identify a human as such. A standard COCO model (`class 0 = person`) is required for human-aware behaviour.
+
+**Findings & Technical Rationales:**
+
+1. **YOLO Detection Was Environment-Broken Independent of Model Choice**
+   * **Finding:** The robot's system Python (`/usr/bin/python3` 3.10, `torch 2.10.0+cpu`) was **missing `torchvision`** (only an orphaned `0.15.0` `.dist-info` with no package remained, which blocked imports and confused `pip`). With no `torchvision`, every `.pt` model fails to load and the failure was silently swallowed by the YOLO-init try/except — so `yolo11n_cans` had in practice been producing **zero detections all along** (it had no `.engine`, so it fell to the broken `.pt` path).
+   * **Resolution:** Removed the stale `0.15.0` metadata and installed `torchvision==0.25.0` (the version paired with torch 2.10) using `--no-deps` so the existing torch build was untouched.
+
+2. **Prebuilt `yolo26n.engine` Was Mismatched and Non-Functional**
+   * **Finding:** The TensorRT wrapper derives class count from the engine output as `out_shape[1] - 4`, which reported **296 classes** for the on-disk `yolo26n.engine` — yet the matching `.pt` is standard **80-class COCO**. The engine had been built from a different model/device and, when exercised, threw `IExecutionContext::enqueueV3: Cask convolution execution` (TRT Error Code 1) and returned no detections. It was therefore unusable on this robot.
+   * **Resolution:** Renamed the bad engine to `yolo26n.engine.broken-296cls` so the server's "prefer `.engine` else `.pt`" loader falls through to the correct CPU `.pt`. A `yolo26n.onnx` remains in the directory for rebuilding a correct GPU engine later (now possible since `torchvision` is present).
+
+3. **Switched Active Model to COCO `yolo26n` (CPU)**
+   * **Change:** Set the default model name to `yolo26n` in `server_x3.py`. After restart the server logs `Loading YOLO (CPU) … yolo26n.pt` and `YOLO classes (80): 0:person, 1:bicycle, …`. Standalone inference on the Ultralytics `bus.jpg` reference image returned `person` @ 0.91 and `bus` @ 0.92, confirming correct class mapping. The live detection loop runs at **~1.9 fps on CPU** (no `.engine`), which is acceptable for low-speed indoor avoidance but is the main candidate for future GPU acceleration.
+   * **Rationale:** Provides a real `person` class so the velocity estimator's person-gating and the predictive pedestrian-corridor logic become meaningful, while keeping the depth-based avoidance (which needs no YOLO) fully functional regardless.
+
+**Operational Notes:**
+- Camera detection defaults **OFF** and resets OFF on every server restart; enable it from the GUI (or `{"type":"toggle_detection","enabled":true}`) when person-confirmation is wanted.
+- Future option for fast GPU person detection: export `yolo26n.pt` → ONNX → a device-correct TensorRT `.engine` (torchvision is now installed to support this).
+
+**Deployment:** `server_x3.py` model name changed locally and on `jetson@10.13.245.176`; `torchvision` installed and broken engine renamed on the robot; `x3_server` restarted and CPU person detection verified live.
+
+**Status:** Completed 🟢. The robot now runs a standard COCO detector with a working `person` class; obstacle avoidance verified functional in both modes.
+
+---
+
+### [2026-06-09] Demo-Prep Live Diagnostics, Operational Settings & Known Issues
+**Scripts Analyzed (no code edits this session):**
+- [velocity_estimator.py](file:///home/kamren/x3_ws/src/velocity_estimator.py) (visual-LiDAR person gate, MLP velocity output behaviour while driving)
+- [ab_comparison_test.py](file:///home/kamren/x3_ws/src/ab_comparison_test.py) (`_update_bypass_offset` side-selection, LiDAR-blocked bypass branch)
+
+**Context:**
+Final walk-in testing before the live demo. The fixes above restored detection, but pedestrian avoidance still looked glitchy: reactive mode stuttered (expected), and predictive mode also stuttered, sometimes bumped a stationary person's shoes, and on one return pass appeared to **steer toward** the person. Root-caused live on the robot by capturing the server `readout` (`ws://localhost:8081`) and the A/B diagnostic block from `journalctl`. No code was changed; the outcomes are operational settings + documented limitations.
+
+**Findings & Technical Rationales:**
+
+1. **Slow CPU-YOLO Person-Gate Starves the Estimator While Walking**
+   * **Finding:** With camera detection enabled, YOLO runs at only ~2–2.4 fps on CPU. The visual-LiDAR fusion gate (Idea 146) keeps a depth centroid only if it reprojects inside a YOLO `person` box (+15 px). At ~2.4 fps the box is stale by ~0.4 s, so a *moving* person's fresh 10 Hz depth centroid frequently falls outside the stale box and gets discarded — the track drops in and out, the MLP can't hold a velocity, and predictive mode loses its early-reaction signal.
+   * **Operational fix for demo:** Run with camera detection **OFF** (the default; it also resets OFF on restart and must be started clean, since toggling it off in the GUI does not clear the last `person` box). With detection off the gate is skipped entirely, so the depth + MLP estimator tracks pedestrians continuously at 10 Hz. The depth-based avoidance needs no YOLO.
+
+2. **Depth Near-Field Dead Zone Explains "Bumps Shoes When Standing Still"**
+   * **Finding:** The Astra depth camera has a <0.5 m near-field dead zone and a vertical FOV that often excludes feet right at the bumper, so a person standing toe-to-bumper is simply not in the depth data. A stationary target also reads speed ≈ 0, so predictive treats it as a *static* obstacle (tight corridor, small bypass) rather than widening. Only the ±0.75 m LiDAR bumper catches that case, and it only nudges.
+   * **Operational note:** Demo with the person approaching from ≥ ~0.6 m (legs/torso in depth range), not toe-to-bumper.
+
+3. **"Steers Into Me" Root-Caused — Bypass Picks the Open Side Without Checking for a Person (primary), Compounded by Phantom MLP Velocities (secondary)**
+   * **Evidence (return pass, person = track ID 180 on the robot's LEFT at `left=+0.21 m`, `fwd=0.66 m`):** Front LiDAR was blocked, the robot's **right** side was cluttered with other returns (IDs 167/174, which the MLP also tagged with phantom speeds of 0.27–0.69 m/s), so `Right Blocked=True`. The LiDAR-blocked bypass branch therefore chose the only "open" side — **left** (`Target Lateral Offset=+0.15 m`) — and strafed there, directly into the person's position. It then froze when both sides read blocked (`speed_scale → 0`). The robot never selected the person as the obstacle to avoid; it escaped the cluttered side *into* the person.
+   * **Sign check (forward pass):** A right-side obstacle correctly produced a left strafe (`offset=+0.40`, `path_y −0.058 → +0.197`), confirming the lateral command **sign is correct** — this is a side-*selection/salience* flaw, not a sign inversion.
+   * **Secondary cause (estimator):** While driving, the MLP reports phantom velocities up to **0.8 m/s** on physically static objects (ego-motion not fully cancelled). Anything > 0.15 m/s is treated as a fast "dynamic pedestrian," so predictive applies the widest 0.40 m corridor to clutter and over-reacts/jitters.
+   * **Operational fix for demo:** Run in a corridor clear of objects within ~1.5 m on either side, with the person approaching from straight ahead or one open side. Removing side clutter prevents the "escape into the open side" failure and removes most phantom-velocity triggers.
+
+**Demo Configuration Used (presentable state):**
+- Camera detection **OFF** (predictive avoidance runs on depth + MLP at 10 Hz, no YOLO gate).
+- Test environment cleared of side obstacles within ~1.5 m of the path.
+- Person approaches from ahead / one open side, ≥ ~0.6 m from the bumper.
+
+**Known Issues / Future Work (carry into paper limitations & next steps):**
+1. **Bypass side-selection is obstacle-agnostic:** when the front is blocked and the preferred escape side is also blocked, it strafes to the open side without checking whether a tracked person is standing there. Planned fix: forbid strafing toward a side that has a tracked obstacle/person on it.
+2. **Phantom MLP velocities while driving:** ego-motion compensation (Ideas 1 & 11) does not fully cancel the robot's own motion, so static objects read up to ~0.8 m/s. Planned fix: gate/zero MLP velocity for tracks whose global-frame position is stationary, and revisit the pose used for compensation.
+3. **CPU-only YOLO (~2 fps)** is too slow for the real-time person-gate; build a device-correct TensorRT engine from `yolo26n.onnx` for GPU detection (torchvision now present).
+
+**Status:** Diagnosed & demo-configured 🟢. Items 1–3 above are open and documented for post-demo work; no code changes were made in this session.

@@ -52,11 +52,11 @@ KD_ROT  = 0.1   # Derivative gain for rotation (active damping)
 
 MAX_LINEAR_SPEED  = 0.15   # m/s
 MIN_LINEAR_SPEED  = 0.06   # m/s
-MAX_ANGULAR_SPEED = 0.30   # rad/s
+MAX_ANGULAR_SPEED = 0.50   # rad/s
 MIN_ANGULAR_SPEED = 0.12   # rad/s
 
 SEGMENT_TIMEOUT  = 35.0    # seconds (4m / 0.20 m/s = 20 s + buffer for driver init)
-ROTATION_TIMEOUT = 10.0    # seconds — tighter timeout for rotation states
+ROTATION_TIMEOUT = 30.0    # seconds — 180° at 0.50 rad/s = ~6 s; 30 s gives ample margin
 SETTLE_DURATION  = 1.0     # seconds between segments
 LOG_HZ           = 10      # rows per second written to CSV
 
@@ -431,7 +431,7 @@ class ABComparisonTest(Node):
                 if abs(angle) < 0.52:
                     y_lat = r * math.sin(angle)
                     x_fwd = r * math.cos(angle)
-                    if abs(y_lat) < 0.4 and x_fwd < 0.75:
+                    if abs(y_lat) < 0.25 and x_fwd < 0.75:
                         lidar_blocked = True
                 
                 # Left side block sector: 45 to 135 degrees (0.785 to 2.356 rad)
@@ -996,7 +996,7 @@ class ABComparisonTest(Node):
             # Lateral speed controller — only active during bypass (obstacle detected).
             # During straight-line driving vy=0 avoids mecanum-calibration-induced heading spin.
             KP_LATERAL = 0.8
-            MAX_LATERAL_SPEED = 0.10
+            MAX_LATERAL_SPEED = 0.05  # reduced from 0.10 — limits heading spin on imperfect mecanum
             MAX_LATERAL_ACCEL = 0.5  # m/s^2
             if self.is_paused or abs(self.target_lateral_offset) > 0.01:
                 vy_target = (self.target_lateral_offset - path_y) * KP_LATERAL + self.vy_rep
@@ -1079,15 +1079,16 @@ class ABComparisonTest(Node):
             self._maybe_log("settle_1")
             self._stop_robot()
             if now - self.state_start_time >= SETTLE_DURATION:
-                self.start_yaw  = self.corrected_yaw
+                self.start_yaw  = self.current_yaw
                 self._cos_start_yaw = math.cos(self.start_yaw)
                 self._sin_start_yaw = math.sin(self.start_yaw)
                 self.target_yaw = normalize_angle(self.init_yaw + ROTATION_ANGLE)
-                yaw_error = normalize_angle(self.target_yaw - self.corrected_yaw)
+                yaw_error = normalize_angle(self.target_yaw - self.current_yaw)
                 self.prev_yaw_error = yaw_error
                 self.last_time = now
                 self.state = self.ROTATE_180
                 self.state_start_time = now
+                self.state_elapsed_time = 0.0
                 self.last_vy_cmd = 0.0
                 self.get_logger().info(
                     f"Rotating 180° ({math.degrees(self.start_yaw):.1f}° → "
@@ -1097,12 +1098,7 @@ class ABComparisonTest(Node):
         # -- ROTATE_180 --
         elif self.state == self.ROTATE_180:
             self._maybe_log("rotate_180")
-            if self.last_scan_ranges:
-                _min_r = min((r for r in self.last_scan_ranges if 0.15 < r < 4.0), default=999.0)
-                if _min_r < 0.22:
-                    self._stop_robot()
-                    return
-            yaw_error = normalize_angle(self.target_yaw - self.corrected_yaw)
+            yaw_error = normalize_angle(self.target_yaw - self.current_yaw)
             if abs(yaw_error) > math.pi - 0.1:
                 yaw_error = math.pi - 0.05  # break chattering at ±180° boundary
 
@@ -1123,7 +1119,7 @@ class ABComparisonTest(Node):
             self.prev_yaw_error = yaw_error
             self.last_time = now
 
-            # PD Controller
+            # PD controller — use raw odom yaw; ICP yaw drifts during in-place rotation
             u = yaw_error * KP_ROT + yaw_error_dot * KD_ROT
             speed_magnitude = abs(u)
             speed_magnitude = max(MIN_ANGULAR_SPEED, min(MAX_ANGULAR_SPEED, speed_magnitude))
@@ -1200,7 +1196,7 @@ class ABComparisonTest(Node):
 
             # Lateral speed controller — only active during bypass (obstacle detected).
             KP_LATERAL = 0.8
-            MAX_LATERAL_SPEED = 0.10
+            MAX_LATERAL_SPEED = 0.05  # reduced from 0.10 — limits heading spin on imperfect mecanum
             MAX_LATERAL_ACCEL = 0.5  # m/s^2
             if self.is_paused or abs(self.target_lateral_offset) > 0.01:
                 vy_target = (self.target_lateral_offset - path_y) * KP_LATERAL + self.vy_rep
@@ -1283,24 +1279,20 @@ class ABComparisonTest(Node):
             self._maybe_log("settle_3")
             self._stop_robot()
             if now - self.state_start_time >= SETTLE_DURATION:
-                self.start_yaw  = self.corrected_yaw
+                self.start_yaw  = self.current_yaw
                 self.target_yaw = normalize_angle(self.init_yaw)
-                yaw_error = normalize_angle(self.target_yaw - self.corrected_yaw)
+                yaw_error = normalize_angle(self.target_yaw - self.current_yaw)
                 self.prev_yaw_error = yaw_error
                 self.last_time = now
                 self.state = self.ROTATE_HOME
                 self.state_start_time = now
+                self.state_elapsed_time = 0.0
                 self.get_logger().info("Final rotation back to start heading...")
 
         # -- ROTATE_HOME --
         elif self.state == self.ROTATE_HOME:
             self._maybe_log("rotate_home")
-            if self.last_scan_ranges:
-                _min_r = min((r for r in self.last_scan_ranges if 0.15 < r < 4.0), default=999.0)
-                if _min_r < 0.22:
-                    self._stop_robot()
-                    return
-            yaw_error = normalize_angle(self.target_yaw - self.corrected_yaw)
+            yaw_error = normalize_angle(self.target_yaw - self.current_yaw)
             if abs(yaw_error) > math.pi - 0.1:
                 yaw_error = math.pi - 0.05
 

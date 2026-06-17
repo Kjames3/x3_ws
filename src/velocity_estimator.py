@@ -55,10 +55,13 @@ class ObstacleTracker:
         centroids_g: list of (x, y, z) in global map frame.
         Returns dict of updated tracks.
         """
-        # Age all tracks
+        # Age all tracks. NOTE: do NOT decrement visible_count here — a track that
+        # matches every frame would net zero (decrement here, +1 on match below) and
+        # stay pinned at its initial value of 1, making the visible_count >= 3
+        # confirmation gate unreachable. Stale tracks are pruned via age/max_age,
+        # and unmatched-frame decay is applied after matching below.
         for tid in list(self.tracks):
             self.tracks[tid]['age'] += 1
-            self.tracks[tid]['visible_count'] = max(0, self.tracks[tid]['visible_count'] - 1)
             if self.tracks[tid]['age'] > self.max_age:
                 del self.tracks[tid]
 
@@ -88,6 +91,13 @@ class ObstacleTracker:
                 track['age']      = 0
                 track['visible_count'] += 1  # Increment visible count (Idea 109)
                 track['history_global'].append((cx_g, cy_g, cz_filtered))
+
+        # Decay confirmation for tracks that were NOT matched this frame
+        # (matched tracks had age reset to 0 above). This keeps visible_count a
+        # measure of recent, consecutive visibility without pinning it at 1.
+        for tid, track in self.tracks.items():
+            if track['age'] > 0:
+                track['visible_count'] = max(0, track['visible_count'] - 1)
 
         # Create new tracks for unmatched detections
         for idx in unmatched:
@@ -214,15 +224,15 @@ class VelocityEstimator:
             close_mask = (raw_depth_frame >= 0.5) & (raw_depth_frame < 1.5)
             mask_orig[close_mask] = 255
 
-            # Downsample first, then apply far-range stride on smaller frame
+            # Downsample first, then add the far-range region on the smaller frame.
             raw_depth_frame = raw_depth_frame[::2, ::2]
             mask = mask_orig[::2, ::2]
 
-            # Far-range mask on downsampled frame (stride 2 relative to downsampled = stride 4 vs original)
-            h_ds, w_ds = raw_depth_frame.shape[:2]
+            # Far-range mask on the (already 2x downsampled) frame. NOTE: do NOT
+            # zero out alternating rows/cols here — that leaves isolated, non-adjacent
+            # set pixels that the 5x5 MORPH_OPEN erosion below erases completely,
+            # making every obstacle beyond 1.5 m invisible. Keep the region contiguous.
             far_mask_ds = (raw_depth_frame >= 1.5) & (raw_depth_frame <= 4.0)
-            far_mask_ds[1::2, :] = False  # keep only even rows (equivalent to stride 2 on downsampled)
-            far_mask_ds[:, 1::2] = False  # keep only even cols
             mask[far_mask_ds] = 255
             
             # Morphological cleanup

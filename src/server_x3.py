@@ -141,7 +141,7 @@ def find_model_path(model_name):
     # Fallback default
     return os.path.join(MODELS_DIR, f"{model_name}.pt")
 
-YOLO_MODEL = find_model_path("yolo11n_cans")
+YOLO_MODEL = find_model_path("yolo26n")
 CONFIDENCE_THRESHOLD = 0.25
 INFERENCE_SIZE = 640
 
@@ -177,7 +177,7 @@ depth_enabled = False
 lidar_enabled = False
 is_auto_driving = False
 last_detections = []
-active_model_name = "yolo11n_cans"
+active_model_name = "yolo26n"
 
 # Current motor powers (tank-drive representation for GUI readout)
 current_left_power = 0.0
