@@ -194,10 +194,6 @@ fps_detection = 0.0
 _batt_cache_v    = 12.0
 _batt_cache_time = 0.0
 
-# Nav2 status cache (refreshed at 2 Hz, not every frame) (Idea 71)
-_nav2_cache_status = {"state": "UNAVAILABLE"}
-_nav2_cache_time = 0.0
-
 connected_clients = set()
 
 # =============================================================================
@@ -1644,7 +1640,6 @@ async def broadcast_loop():
     global _cam_frame_count, _yolo_frame_count, _fps_last_time
     global fps_camera, fps_detection, last_detections, depth_enabled, lidar_enabled
     global _batt_cache_v, _batt_cache_time  # P9
-    global _nav2_cache_status, _nav2_cache_time  # Idea 71
     global _ab_test_mode
 
     loop = asyncio.get_event_loop()

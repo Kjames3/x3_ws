@@ -135,7 +135,6 @@ const elements = {
     metricLatency: document.getElementById('metric-latency'),
 
     // Camera & Detection
-    cameraFeed: document.getElementById('camera-feed'),
     cameraCanvas: document.getElementById('camera-canvas'),
     cameraPlaceholder: document.getElementById('camera-placeholder'),
     depthFeed: document.getElementById('depth-feed'),
@@ -164,14 +163,8 @@ const elements = {
     demoBannerRole: document.getElementById('demo-banner-role'),
     demoBannerModel: document.getElementById('demo-banner-model'),
 
-    // Power Stats
-    powerStatsPanel: document.getElementById('power-stats'),
-    statVolts: document.getElementById('stat-volts'),
-    statAmps: document.getElementById('stat-amps'),
-    statWatts: document.getElementById('stat-watts'),
+    // Session uptime (in the Position power block)
     statUptime: document.getElementById('stat-uptime'),
-    statTimeRemaining: document.getElementById('stat-time-remaining'),
-    timeRemainingContainer: document.getElementById('time-remaining-container'),
 
     // Motor Readouts (Status Section)
     m1Pos: document.getElementById('m1-pos'),
@@ -2271,8 +2264,19 @@ function updatePowerUI() {
         }
     }
 
-    // Estimate Time
-    if (elements.powerTimeRemaining && pwr.current > 0.1) {
+    // Estimate Time / low-voltage critical countdown.
+    // Below LOW_VOLTAGE_THRESHOLD, show the red time-to-critical countdown (re-homed
+    // here from the removed header readout); otherwise show the runtime estimate.
+    const LOW_VOLTAGE_THRESHOLD = 12.2;
+    const CRITICAL_VOLTAGE = 11.8;
+    if (elements.powerTimeRemaining && pwr.voltage <= LOW_VOLTAGE_THRESHOLD) {
+        const pct = Math.max(0, pwr.voltage - CRITICAL_VOLTAGE) / (LOW_VOLTAGE_THRESHOLD - CRITICAL_VOLTAGE);
+        const secs = Math.floor(pct * 150); // ~2.5 min linear map to critical
+        const m = Math.floor(secs / 60);
+        const s = secs % 60;
+        elements.powerTimeRemaining.textContent = `⚠ ${m}:${s.toString().padStart(2, '0')}`;
+        elements.powerTimeRemaining.style.color = 'var(--accent-red)';
+    } else if (elements.powerTimeRemaining && pwr.current > 0.1) {
         const BATTERY_CAPACITY_AH = 6.0;
         const remainingCapacity = (pwr.battery_pct / 100.0) * BATTERY_CAPACITY_AH;
         const hoursRemaining = remainingCapacity / pwr.current;
@@ -2288,32 +2292,6 @@ function updatePowerUI() {
         else elements.powerTimeRemaining.style.color = 'var(--accent-red)';
     } else if (elements.powerTimeRemaining) {
         elements.powerTimeRemaining.textContent = '--';
-    }
-
-    // Fallback Battery Voltage Logic (for header)
-    if (state.latestData.battery) { // Legacy battery object
-        const voltage = state.latestData.battery.voltage;
-        if (elements.statVolts) elements.statVolts.textContent = voltage.toFixed(2) + ' V';
-        if (elements.statAmps) elements.statAmps.textContent = state.latestData.battery.amps.toFixed(3) + ' A';
-        if (elements.statWatts) elements.statWatts.textContent = state.latestData.battery.watts.toFixed(2) + ' W';
-
-        // Simple linear check for header time remaining
-        const LOW_VOLTAGE_THRESHOLD = 12.2;
-        const CRITICAL_VOLTAGE = 11.8;
-
-        if (voltage <= LOW_VOLTAGE_THRESHOLD && elements.statTimeRemaining) {
-            const sub = voltage - CRITICAL_VOLTAGE;
-            const range = LOW_VOLTAGE_THRESHOLD - CRITICAL_VOLTAGE;
-            const pct = Math.max(0, sub) / range;
-            const secs = Math.floor(pct * 150); // 2.5 mins
-            const m = Math.floor(secs / 60);
-            const s = secs % 60;
-            elements.statTimeRemaining.textContent = `${m}:${s.toString().padStart(2, '0')}`;
-            elements.statTimeRemaining.style.color = 'var(--accent-red)';
-        } else if (elements.statTimeRemaining) {
-            elements.statTimeRemaining.textContent = 'OK';
-            elements.statTimeRemaining.style.color = 'var(--accent-green)';
-        }
     }
 }
 
