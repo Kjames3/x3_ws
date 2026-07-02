@@ -186,8 +186,43 @@
             </geometry>
         </collision>
     </link>
+    <!-- 4ROS lidar riser mount (75 mm tall, 35 g). Sits where the lidar used to
+         be (base_link top at z=0.11); the lidar now sits on top of it.
+         Mesh is in millimeters (scale 0.001) and modeled Y-up, so it is rolled
+         90 deg about X to stand vertical. Horizontal offset centers the mesh
+         centroid under the laser axis; verify alignment in RViz. -->
+    <link name="lidar_mount_link">
+        <inertial>
+            <!-- 35 g; box approx 55 x 55 x 75 mm, I = m/12 * (a^2 + b^2) -->
+            <origin xyz="0 0 0.0375" rpy="0 0 0"/>
+            <mass value="0.035"/>
+            <inertia ixx="2.55E-05" ixy="0" ixz="0"
+                     iyy="2.55E-05" iyz="0" izz="1.76E-05"/>
+        </inertial>
+        <visual>
+            <origin xyz="-0.0275 0.03368 0" rpy="1.5707963 0 0"/>
+            <geometry>
+                <mesh filename="package://yahboomcar_description/meshes/4ROS_lidar_mount.STL" scale="0.001 0.001 0.001"/>
+            </geometry>
+            <material name="">
+                <color rgba="0.3 0.3 0.3 1"/>
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="-0.0275 0.03368 0" rpy="1.5707963 0 0"/>
+            <geometry>
+                <mesh filename="package://yahboomcar_description/meshes/4ROS_lidar_mount.STL" scale="0.001 0.001 0.001"/>
+            </geometry>
+        </collision>
+    </link>
+    <joint name="lidar_mount_joint" type="fixed">
+        <origin xyz="0.0435 5.25826986680105E-05 0.11" rpy="0 0 0"/>
+        <parent link="base_link"/>
+        <child link="lidar_mount_link"/>
+    </joint>
     <joint name="laser_joint" type="fixed">
-        <origin xyz="0.0435 5.25826986680105E-05 0.11" rpy="0 0 3.14159265"/>
+        <!-- raised 75 mm (0.11 -> 0.185) to clear the riser mount -->
+        <origin xyz="0.0435 5.25826986680105E-05 0.185" rpy="0 0 3.14159265"/>
         <parent link="base_link"/>
         <child link="laser_link"/>
     </joint>

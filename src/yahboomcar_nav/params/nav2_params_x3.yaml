@@ -173,6 +173,11 @@ controller_server:
         - "PathAlignCritic"
         - "PathFollowCritic"
         - "PreferForwardCritic"
+        - "DBaSCritic"
+      DBaSCritic:
+        enabled: true
+        safe_radius: 0.6
+        collision_cost: 100000.0
       ConstraintCritic:
         enabled: true
         cost_power: 1

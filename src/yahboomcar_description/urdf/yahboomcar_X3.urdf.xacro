@@ -109,7 +109,29 @@
                      iyy="3.89262522903605E-05" iyz="3.24809725932687E-07" izz="4.86230801106223E-05"/>
         </inertial>
     </common_link>
-    <fixed_joint name="laser_joint" parent="base_link" child="laser_link" xyz="0.0435 5.25826986680105E-05 0.11" rpy="0 0 3.14159265"/>
+    <link name="${ns}/lidar_mount_link">
+        <inertial>
+            <origin xyz="0 0 0.0375" rpy="0 0 0"/>
+            <mass value="0.035"/>
+            <inertia ixx="2.55E-05" ixy="0" ixz="0"
+                     iyy="2.55E-05" iyz="0" izz="1.76E-05"/>
+        </inertial>
+        <visual>
+            <origin xyz="-0.0275 0.03368 0" rpy="1.5707963 0 0"/>
+            <geometry>
+                <mesh filename="package://yahboomcar_description/meshes/4ROS_lidar_mount.STL" scale="0.001 0.001 0.001"/>
+            </geometry>
+            <material name="White"/>
+        </visual>
+        <collision>
+            <origin xyz="-0.0275 0.03368 0" rpy="1.5707963 0 0"/>
+            <geometry>
+                <mesh filename="package://yahboomcar_description/meshes/4ROS_lidar_mount.STL" scale="0.001 0.001 0.001"/>
+            </geometry>
+        </collision>
+    </link>
+    <fixed_joint name="lidar_mount_joint" parent="base_link" child="lidar_mount_link" xyz="0.0435 5.25826986680105E-05 0.11" rpy="0 0 0"/>
+    <fixed_joint name="laser_joint" parent="base_link" child="laser_link" xyz="0.0435 5.25826986680105E-05 0.185" rpy="0 0 3.14159265"/>
     <common_link name="camera_link" material="White" path="sensor">
         <inertial>
             <origin xyz="0 0 0" rpy="0 0 0"/>

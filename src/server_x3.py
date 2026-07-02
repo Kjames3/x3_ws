@@ -123,8 +123,19 @@ def _resolve_discovery_server() -> str:
         pass
     return "127.0.0.1:11811"
 
+# Opt-out of the FastDDS discovery server in favour of default ROS2 Simple
+# discovery.  Set X3_SIMPLE_DISCOVERY=1 to enable.  This is required for
+# cross-machine RViz over unicast initial peers: the discovery server's EDP
+# forwarding between clients is broken (subscribers stay invisible to
+# publishers, so data never flows), whereas Simple discovery + unicast peers
+# delivers /tf, /scan, /map reliably.  When unset, behaviour is unchanged.
+SIMPLE_DISCOVERY = os.environ.get('X3_SIMPLE_DISCOVERY', '').lower() in ('1', 'true', 'yes', 'on')
+
 if ROS2_MODE:
-    os.environ['ROS_DISCOVERY_SERVER'] = _resolve_discovery_server()
+    if SIMPLE_DISCOVERY:
+        os.environ.pop('ROS_DISCOVERY_SERVER', None)
+    else:
+        os.environ['ROS_DISCOVERY_SERVER'] = _resolve_discovery_server()
 
 # Hardware Ports
 # SERIAL_PORT auto-detected in drivers_x3 (/dev/ttyCH341USB0 or /dev/ttyUSB0)
@@ -238,6 +249,12 @@ class ROS2Bridge:
         from geometry_msgs.msg import Twist
         from nav_msgs.msg import Odometry, OccupancyGrid
         from std_msgs.msg import Float32
+        from sensor_msgs.msg import LaserScan
+
+        import sys
+        import os
+        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from src.cbf_filter import HolonomicCBFFilter
 
         from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 
@@ -251,6 +268,15 @@ class ROS2Bridge:
         self._twist = {"vx": 0.0, "vy": 0.0, "wz": 0.0}   # body velocity m/s, rad/s
         self._voltage = 12.0               # volts, updated by /voltage subscriber
         self._occupancy_grid: dict | None = None  # latest OccupancyGrid info dict for frontier explorer
+        # safe_distance MUST stay ABOVE the _scan_cb min-range gate (0.33 m). The CBF
+        # only brakes hard as distance -> safe_distance; if safe_distance were below the
+        # gate, a real obstacle would be filtered out (mistaken for the chassis) before
+        # the brake engaged and the robot would drive straight through it. 0.42 m stops
+        # the robot with the wall still visible. Lower toward ~0.35 m for tighter
+        # doorways (at the cost of a thinner stop margin). This whole range-gate
+        # workaround goes away once the Lidar is raised above the chassis.
+        self.cbf = HolonomicCBFFilter(safe_distance=0.30, gamma=1.0)
+        self._latest_obstacles = []
 
         # SLAM Toolbox publishes /map as TRANSIENT_LOCAL; match so late-joining still gets the map
         _map_qos = QoSProfile(depth=1,
@@ -268,13 +294,17 @@ class ROS2Bridge:
         self._node.create_subscription(Odometry,       '/odom_raw',         self._odom_cb,  10)
         self._node.create_subscription(Float32,        '/voltage',          self._voltage_cb, 10)
         self._node.create_subscription(OccupancyGrid,  '/map',              self._map_cb,    _map_qos)
+        from rclpy.qos import qos_profile_sensor_data
+        self._node.create_subscription(LaserScan,      '/scan',             self._scan_cb,   qos_profile_sensor_data)
         self._cmd_vel_pub = self._node.create_publisher(Twist, '/cmd_vel', 10)
 
         # Publishers for pedestrian tracking (EE244 Project)
         from geometry_msgs.msg import PoseArray
         from visualization_msgs.msg import MarkerArray
+        from x3_msgs.msg import PedestrianArray
         self._pedestrian_pub = self._node.create_publisher(PoseArray, '/pedestrian_poses', 10)
         self._pedestrian_marker_pub = self._node.create_publisher(MarkerArray, '/pedestrian_markers', 10)
+        self._pedestrian_state_pub = self._node.create_publisher(PedestrianArray, '/pedestrian_states', 10)
 
         # Staleness tracking for odom (Idea 225) and depth (Idea 230)
         self._odom_stamp = 0.0
@@ -283,7 +313,24 @@ class ROS2Bridge:
         self._spin_thread = threading.Thread(
             target=rclpy.spin, args=(self._node,), daemon=True)
         self._spin_thread.start()
-        logger.info("ROS2Bridge: spinning — subscribed /camera/image_raw /odom /voltage /map, publishing /cmd_vel")
+        logger.info("ROS2Bridge: spinning — subscribed /camera/image_raw /odom /voltage /map /scan, publishing /cmd_vel")
+
+    def _scan_cb(self, msg):
+        import math as _math
+        obstacles = []
+        angle = msg.angle_min
+        for r in msg.ranges:
+            if 0.12 < r < 1.0:
+                # Transform from laser_link (yaw=180 deg) to base_link
+                # x_base = -x_laser + x_offset, y_base = -y_laser
+                x_laser = r * _math.cos(angle)
+                y_laser = r * _math.sin(angle)
+                x = -x_laser + 0.0435
+                y = -y_laser
+                obstacles.append((x, y))
+            angle += msg.angle_increment
+        with self._lock:
+            self._latest_obstacles = obstacles
 
     def _image_cb(self, msg):
         """Convert sensor_msgs/Image (RGB_INT8 from Fortress) to cv2 BGR ndarray."""
@@ -457,9 +504,17 @@ class ROS2Bridge:
 
     def move(self, vx: float, vy: float, omega: float):
         from geometry_msgs.msg import Twist
+        
+        with self._lock:
+            obstacles = list(self._latest_obstacles)
+        
+        # Apply CBF safety filter to translation (always active, even when vx, vy == 0, to enable proactive repulsion)
+        # Assume robot is at (0,0) in its local frame to match local obstacle coordinates
+        safe_vx, safe_vy = self.cbf.filter_velocity(vx, vy, (0.0, 0.0), obstacles)
+
         msg = Twist()
-        msg.linear.x  = float(vx)    * self.LINEAR_SCALE
-        msg.linear.y  = float(vy)    * self.LINEAR_SCALE
+        msg.linear.x  = float(safe_vx)    * self.LINEAR_SCALE
+        msg.linear.y  = float(safe_vy)    * self.LINEAR_SCALE
         msg.angular.z = float(omega) * self.ANGULAR_SCALE
         self._cmd_vel_pub.publish(msg)
 
@@ -481,6 +536,7 @@ class ROS2Bridge:
     def publish_pedestrians(self, estimates):
         from geometry_msgs.msg import PoseArray, Pose
         from visualization_msgs.msg import MarkerArray, Marker
+        from x3_msgs.msg import PedestrianArray, PedestrianState
         import math
 
         pose_array = PoseArray()
@@ -488,6 +544,9 @@ class ROS2Bridge:
         pose_array.header.frame_id = 'base_link'
 
         marker_array = MarkerArray()
+
+        state_array = PedestrianArray()
+        state_array.header = pose_array.header
 
         for est in estimates:
             x = est.get("x", 0.0)
@@ -507,6 +566,23 @@ class ROS2Bridge:
             pose.orientation.z = math.sin(yaw / 2.0)
             pose.orientation.w = math.cos(yaw / 2.0)
             pose_array.poses.append(pose)
+
+            state = PedestrianState()
+            state.id = int(tid)
+            state.position.x = float(z)
+            state.position.y = -float(x)
+            state.position.z = 0.0
+            state.velocity.x = float(vy) # math.atan2(vy, vx) uses vy for y-component and vx for x-component
+            state.velocity.y = float(vx) # Actually atan2(y, x). So if yaw = atan2(vy, vx), then vy is Y, vx is X? Wait.
+            # Usually atan2 is atan2(y, x). So vy is y, vx is x.
+            # In camera frame, x is right, y is down, z is forward.
+            # The pose maps z to x (forward) and -x to y (left).
+            # So velocity vx, vy might map similarly, but we will just pass vx, vy as given by the estimator.
+            state.velocity.x = float(vx)
+            state.velocity.y = float(vy)
+            state.velocity.z = 0.0
+            state.radius = 0.3
+            state_array.pedestrians.append(state)
 
             # Marker Arrow
             marker = Marker()
@@ -557,6 +633,7 @@ class ROS2Bridge:
 
         self._pedestrian_pub.publish(pose_array)
         self._pedestrian_marker_pub.publish(marker_array)
+        self._pedestrian_state_pub.publish(state_array)
 
 
 def _launch_gazebo():
@@ -643,7 +720,10 @@ def _launch_ros2_stack():
     install_setup = os.path.join(ws_root, 'install', 'setup.bash')
 
     child_env = os.environ.copy()
-    child_env['ROS_DISCOVERY_SERVER'] = os.environ.get('ROS_DISCOVERY_SERVER', '127.0.0.1:11811')
+    if SIMPLE_DISCOVERY:
+        child_env.pop('ROS_DISCOVERY_SERVER', None)
+    else:
+        child_env['ROS_DISCOVERY_SERVER'] = os.environ.get('ROS_DISCOVERY_SERVER', '127.0.0.1:11811')
     # Strip conda dirs — they inject Python 3.13 which breaks rclpy C extensions
     child_env['PATH'] = ':'.join(
         p for p in child_env.get('PATH', '').split(':')
@@ -695,7 +775,10 @@ def _launch_slam(use_sim_time: bool = False):
     launch_file = f'x3_slam_sim.launch.py {st_arg}'
 
     child_env = os.environ.copy()
-    child_env['ROS_DISCOVERY_SERVER'] = os.environ.get('ROS_DISCOVERY_SERVER', '127.0.0.1:11811')
+    if SIMPLE_DISCOVERY:
+        child_env.pop('ROS_DISCOVERY_SERVER', None)
+    else:
+        child_env['ROS_DISCOVERY_SERVER'] = os.environ.get('ROS_DISCOVERY_SERVER', '127.0.0.1:11811')
     child_env.setdefault('DISPLAY', ':0')
     # Strip conda dirs so system Python 3.10 is used for ROS2 nodes
     clean_path = ':'.join(
@@ -741,7 +824,10 @@ def _save_map(name: str) -> tuple[bool, str]:
 
     install_setup = os.path.join(ws_root, 'install', 'setup.bash')
     child_env = os.environ.copy()
-    child_env['ROS_DISCOVERY_SERVER'] = os.environ.get('ROS_DISCOVERY_SERVER', '127.0.0.1:11811')
+    if SIMPLE_DISCOVERY:
+        child_env.pop('ROS_DISCOVERY_SERVER', None)
+    else:
+        child_env['ROS_DISCOVERY_SERVER'] = os.environ.get('ROS_DISCOVERY_SERVER', '127.0.0.1:11811')
     clean_path = ':'.join(
         p for p in child_env.get('PATH', '').split(':')
         if 'conda' not in p.lower()

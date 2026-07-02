@@ -309,7 +309,8 @@ class VelocityEstimator:
                                     break
                             if not inside_any:
                                 # Centroid does not match any person detection, discard
-                                continue
+                                # continue # [DISABLED FOR TESTING] - allow tracking of all objects
+                                pass
                     except Exception as ex:
                         logger.warning(f"VelocityEstimator: failed visual-lidar gating check: {ex}")
                 

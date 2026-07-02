@@ -49,24 +49,55 @@ fi
 
 export ROS_DOMAIN_ID="$DOMAIN_ID"
 export ROS_LOCALHOST_ONLY=0
-# Point this machine at the Jetson's FastDDS discovery server over TCP.
-# This bypasses multicast and works on school/enterprise WiFi with client isolation.
-export ROS_DISCOVERY_SERVER="TCPv4:[${JETSON_IP}]:11811"
-export ROS_SUPER_CLIENT=TRUE
+# Default ROS2 Simple discovery — NOT the FastDDS discovery server.
+# The discovery server's EDP forwarding between clients is broken in this setup
+# (topics become visible but publishers never learn the subscriber exists, so
+# data never flows).  Instead we use plain Simple discovery driven by explicit
+# UNICAST initial peers below.  Multicast is blocked across the school subnets,
+# but unicast UDP between the laptop and Jetson works — verified.
+unset ROS_DISCOVERY_SERVER
+unset ROS_SUPER_CLIENT
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(dirname "$SCRIPT_DIR")"
 
-# Use the TCP client profile for ROS2 RTPS data transport. This ensures large
-# messages like LiDAR /scan and depth camera image_raw flow reliably over TCP
-# on networks where UDP client-to-client traffic is blocked (e.g. school/enterprise WiFi).
-export FASTDDS_DEFAULT_PROFILES_FILE="$WS_ROOT/config/fastdds_tcp_client.xml"
+# ── Generate a FastDDS profile with unicast initial peers ────────────────────
+# Multicast can't reach the Jetson across subnets, so we tell our participant to
+# announce directly (unicast) to each Jetson ROS node's metatraffic port.  The
+# RTPS metatraffic-unicast port for participant id P on a domain is:
+#     7400 + 250*DOMAIN + 10 + 2*P
+# Enumerate ids 0..31 to cover all current + future Jetson nodes (incl. SLAM).
+# Each Jetson node learns OUR locators from the announcement we send and replies
+# directly, so the Jetson side needs no knowledge of this laptop's (DHCP) IP.
+PROFILE="/tmp/fastdds_unicast_${JETSON_IP}_d${DOMAIN_ID}.xml"
+{
+    echo '<?xml version="1.0" encoding="utf-8" ?>'
+    echo '<dds xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">'
+    echo '  <profiles>'
+    echo '    <participant profile_name="unicast_peer" is_default_profile="true">'
+    echo '      <rtps><builtin><initialPeersList>'
+    for pid in $(seq 0 31); do
+        port=$(( 7400 + 250 * DOMAIN_ID + 10 + 2 * pid ))
+        echo "        <locator><udpv4><address>${JETSON_IP}</address><port>${port}</port></udpv4></locator>"
+    done
+    echo '      </initialPeersList></builtin></rtps>'
+    echo '    </participant>'
+    echo '  </profiles>'
+    echo '</dds>'
+} > "$PROFILE"
+# Set BOTH env var names: ROS2 Humble ships Fast-DDS 2.6, which honors the legacy
+# FASTRTPS_DEFAULT_PROFILES_FILE.  The newer FASTDDS_* name is silently IGNORED on
+# this version — if only that is set, the profile never loads, the unicast initial
+# peers never take effect, discovery falls back to (blocked) multicast, and no
+# topics appear.  Setting both is harmless and forward-compatible.
+export FASTRTPS_DEFAULT_PROFILES_FILE="$PROFILE"
+export FASTDDS_DEFAULT_PROFILES_FILE="$PROFILE"
 
 source /opt/ros/humble/setup.bash
 source "$WS_ROOT/install/setup.bash"
 
 echo "[laptop_viz] ROS_DOMAIN_ID=$DOMAIN_ID"
-echo "[laptop_viz] ROS_DISCOVERY_SERVER=$ROS_DISCOVERY_SERVER"
+echo "[laptop_viz] Discovery: Simple + unicast initial peers -> $JETSON_IP (ids 0-31)"
 echo "[laptop_viz] Workspace: $WS_ROOT"
 if [ -n "${FASTDDS_DEFAULT_PROFILES_FILE:-}" ]; then
     echo "[laptop_viz] FastDDS profile: $FASTDDS_DEFAULT_PROFILES_FILE"
@@ -76,16 +107,32 @@ if [ ${#EXTRA_ARGS[@]} -ne 0 ]; then
 fi
 echo ""
 
-# Restart the ROS2 daemon with the updated env vars (discovery server address,
-# domain ID, super-client mode).  A stale daemon started without these vars
-# won't see any Jetson topics.  The new daemon inherits the env already exported
-# above, so it connects to the correct discovery server immediately.
+# Restart the ROS2 daemon so it picks up the unicast-peer profile and domain id
+# from the env exported above.  A stale daemon started without these won't see
+# any Jetson topics.
 ros2 daemon stop 2>/dev/null || true
 ros2 daemon start 2>/dev/null
 
-# ── Verify discovery server is reachable ─────────────────────────────────────
-# The daemon needs a few seconds to perform participant discovery via the server.
-# Poll ros2 topic list (uses the daemon) until /scan appears or 30s elapses.
+# ── Verify the Jetson is reachable before doing anything ─────────────────────
+# Discovery now rides on unicast UDP, which can't be probed as easily as a TCP
+# port, so we just confirm there is an IP path (ICMP).  If the robot is down or
+# the IP is wrong, fail fast with an actionable message instead of an empty RViz.
+echo "[laptop_viz] Checking the Jetson is reachable at ${JETSON_IP} ..."
+if ! ping -c 1 -W 3 "$JETSON_IP" >/dev/null 2>&1; then
+    echo ""
+    echo "[laptop_viz] ERROR: cannot reach the Jetson at ${JETSON_IP}."
+    echo "  RViz would have nothing to show.  Check, in order:"
+    echo "    1. Is the IP correct? (it is DHCP and changes) — run 'hostname -I' on the Jetson"
+    echo "    2. Same/routable network?   ping ${JETSON_IP}"
+    echo "    3. On Jetson: sudo systemctl status x3_server orbbec_depth"
+    exit 1
+fi
+echo "[laptop_viz] Jetson reachable."
+
+# ── Verify topics actually arrive ────────────────────────────────────────────
+# With Simple discovery the discovery path and the data path are the same UDP
+# transport, so unlike the old discovery-server setup, visible topics here mean
+# data will actually flow.  Poll until /scan appears or 30s elapses.
 echo "[laptop_viz] Waiting for Jetson topics (up to 30s)..."
 FOUND=0
 for i in $(seq 1 30); do
@@ -99,10 +146,10 @@ done
 if [ "$FOUND" -eq 0 ]; then
     echo ""
     echo "[laptop_viz] WARNING: No topics visible. Check:"
-    echo "  On Jetson: sudo systemctl status fastdds_discovery x3_server orbbec_depth"
-    echo "  On Jetson: journalctl -u fastdds_discovery -n 20"
-    echo "  Port reachable? nc -uvz $JETSON_IP 11811"
-    echo "  Firewall:   sudo ufw allow 11811/udp   (run on Jetson)"
+    echo "  On Jetson: sudo systemctl status x3_server orbbec_depth"
+    echo "  Jetson must use Simple discovery (NO ROS_DISCOVERY_SERVER) for this to work."
+    echo "  Reachable?  ping $JETSON_IP"
+    echo "  UDP open?   sudo ufw status   (run on Jetson; allow if active)"
     echo ""
     echo "[laptop_viz] Launching RViz anyway..."
 else
