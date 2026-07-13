@@ -1907,8 +1907,21 @@ def _step_toward(current: float, target: float, accel: float, decel: float) -> f
     return current + (step if diff > 0 else -step)
 
 
+_standalone_test_cache = (False, 0.0)   # (last_result, last_scan_monotonic)
+_STANDALONE_TEST_SCAN_INTERVAL = 1.0    # seconds between full /proc scans
+
 def _is_standalone_test_running() -> bool:
+    # Scanning every process' cmdline is expensive (~260 /proc reads). motion_loop
+    # calls this at ~30 Hz, so cache the result and only re-scan at ~1 Hz — an
+    # externally-launched test appearing/disappearing within 1 s is harmless.
+    global _standalone_test_cache
+    now = time.monotonic()
+    last_result, last_scan = _standalone_test_cache
+    if now - last_scan < _STANDALONE_TEST_SCAN_INTERVAL:
+        return last_result
+
     import psutil
+    result = False
     try:
         for proc in psutil.process_iter(['cmdline']):
             cmd = proc.info.get('cmdline')
@@ -1916,10 +1929,12 @@ def _is_standalone_test_running() -> bool:
                 cmd_str = ' '.join(cmd)
                 if 'ab_comparison_test.py' in cmd_str or 'point_to_point_test.py' in cmd_str:
                     if 'server_x3.py' not in cmd_str:
-                        return True
+                        result = True
+                        break
     except Exception:
         pass
-    return False
+    _standalone_test_cache = (result, now)
+    return result
 
 
 async def motion_loop():
