@@ -191,6 +191,9 @@ _gazebo_proc    = None   # subprocess handle when --sim auto-launches Gazebo
 _ros2_stack_proc = None  # subprocess handle for x3_bringup (launched by default in ROS2 mode)
 _mediamtx_proc = None    # subprocess handle for mediamtx (WebRTC camera, --webrtc-camera)
 _slam_proc      = None   # subprocess handle when SLAM Toolbox is running
+_shutting_down  = False  # set on SIGINT/SIGTERM/cleanup so motion_loop stops publishing
+                         # to /cmd_vel before rclpy is torn down (avoids a publish-on-dead-
+                         # context RCLError → C++ abort that orphaned the bringup stack)
 velocity_estimator = None  # VelocityEstimator instance (EE244 project)
 active_velocity_model_name = "velocity_mlp"  # currently loaded torchscript velocity model
 velocity_estimation_enabled = True  # A/B toggle: False = reactive, True = predictive
@@ -1119,7 +1122,8 @@ def initialize_hardware():
     logger.info("="*50)
 
 def cleanup():
-    global _p2p_proc, _ab_test_proc, _shared_bgr_shm, _shared_depth_shm
+    global _p2p_proc, _ab_test_proc, _shared_bgr_shm, _shared_depth_shm, _shutting_down
+    _shutting_down = True   # stop motion_loop publishing before rclpy is torn down
     logger.info("Cleaning up...")
     if _shared_bgr_shm is not None:
         try:
@@ -1187,7 +1191,18 @@ def cleanup():
     if _ros2_stack_proc is not None:
         logger.info("Shutting down ROS2 hardware stack...")
         try:
-            os.killpg(os.getpgid(_ros2_stack_proc.pid), signal.SIGTERM)
+            _pgid = os.getpgid(_ros2_stack_proc.pid)
+            os.killpg(_pgid, signal.SIGTERM)
+            # Guarantee it's gone — a lingering Mcnamu_driver_X3 keeps the Rosmaster
+            # serial open and a fresh bringup then fights it (robot won't move).
+            try:
+                _ros2_stack_proc.wait(timeout=5.0)
+            except Exception:
+                logger.warning("ROS2 stack did not exit on SIGTERM — sending SIGKILL")
+                try:
+                    os.killpg(_pgid, signal.SIGKILL)
+                except Exception:
+                    pass
         except Exception:
             pass
     if _mediamtx_proc is not None:
@@ -1828,6 +1843,8 @@ async def broadcast_loop():
     _loop_i = 0       # drives the ~2 Hz "readout_slow" lane (every 10th cycle)
 
     while True:
+        if _shutting_down:
+            break
         if connected_clients:
             now = time.time()
 
@@ -2087,6 +2104,8 @@ async def motion_loop():
     _watchdog_fired = False
 
     while True:
+        if _shutting_down:
+            break
         if motion_queue is None:
             await asyncio.sleep(0.033)
             continue
@@ -2125,8 +2144,17 @@ async def motion_loop():
         test_running = (_p2p_proc is not None and _p2p_proc.poll() is None) or \
                        (_ab_test_proc is not None and _ab_test_proc.poll() is None) or \
                        _is_standalone_test_running()
-        if drive and not test_running:
-            drive.move(_ramp_vx, _ramp_vy, _ramp_omega)
+        if drive and not test_running and not _shutting_down:
+            try:
+                drive.move(_ramp_vx, _ramp_vy, _ramp_omega)
+            except Exception as e:
+                # During shutdown the rclpy context may already be torn down;
+                # publishing then raises RCLError. Never let that propagate — an
+                # unhandled error here aborts the process before cleanup() can kill
+                # the ROS2 bringup stack, orphaning Mcnamu/base_node on the serial.
+                if _shutting_down:
+                    break
+                logger.warning(f"motion_loop: drive.move failed: {e}")
 
         await asyncio.sleep(0.033)  # ~30 Hz (Idea 111)
 
@@ -2134,6 +2162,8 @@ async def motion_loop():
 async def oled_loop():
     """Refresh OLED with WiFi SSID and IP every 5 seconds."""
     while True:
+        if _shutting_down:
+            break
         try:
             if oled:
                 ssid    = _get_ssid()
@@ -2157,6 +2187,8 @@ async def map_push_loop():
     """
     _last_grid_id = None
     while True:
+        if _shutting_down:
+            break
         await asyncio.sleep(1.0)
         if not connected_clients or ros_bridge is None:
             continue
@@ -2201,6 +2233,23 @@ async def main():
     _start_http_server()
     initialize_hardware()
     motion_queue = asyncio.Queue(maxsize=2)
+
+    # Graceful shutdown: on SIGINT/SIGTERM (e.g. `systemctl restart`) set the flag so
+    # the async loops exit, gather() returns, and the finally-block cleanup() runs —
+    # sending a motor stop and cleanly killing the ROS2 bringup. Without this the loops
+    # spin forever and systemd escalates to SIGKILL (no graceful cleanup).
+    def _on_shutdown_signal():
+        global _shutting_down
+        if not _shutting_down:
+            logger.info("Shutdown signal received — stopping loops for graceful cleanup")
+        _shutting_down = True
+    _loop = asyncio.get_running_loop()
+    for _s in (signal.SIGINT, signal.SIGTERM):
+        try:
+            _loop.add_signal_handler(_s, _on_shutdown_signal)
+        except (NotImplementedError, RuntimeError):
+            pass  # platform without signal-handler support
+
     # Disable websockets deflate compression to avoid blocking main thread zlib operations (Idea 117)
     async with websockets.serve(handle_client, "0.0.0.0", WS_PORT, compression=None):
         logger.info(f"Server started on ws://0.0.0.0:{WS_PORT}")
