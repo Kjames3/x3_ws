@@ -72,6 +72,10 @@
                             <span class="toggle-label">Detection</span>
                             <div id="detection-toggle" class="toggle" title="Toggle object detection"></div>
                         </div>
+                        <div class="toggle-wrapper">
+                            <span class="toggle-label">Stereo</span>
+                            <div id="stereo-toggle" class="toggle" title="Toggle OAK-D stereo (left/right) view"></div>
+                        </div>
                         <select id="model-select" class="btn"
                             style="padding: 0.3rem 0.6rem; font-size: 0.75rem; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); outline: none;">
                             <optgroup label="── Standard COCO ──">
@@ -128,6 +132,8 @@
                 <div id="camera-panels" style="display: flex; gap: 0.5rem; width: 100%;">
                     <!-- RGB Panel -->
                     <div id="rgb-panel" style="flex: 1; position: relative; min-width: 0;">
+                        <!-- WebRTC feed (shown when server runs with --webrtc-camera) -->
+                        <video id="webrtc-cam" class="camera-feed" autoplay muted playsinline style="display: none; width: 100%;"></video>
                         <canvas id="camera-canvas" class="camera-feed" style="display: none; width: 100%;"></canvas>
                         <div id="camera-placeholder" class="camera-placeholder">
                             <span class="camera-placeholder-icon">📷</span>
@@ -147,6 +153,36 @@
                     <div id="minimap-panel" style="flex: 1; position: relative; min-width: 0; display: none;">
                         <canvas id="mini-map-canvas" class="nav-canvas" style="width: 100%; height: auto; aspect-ratio: 1; background: #000; border-radius: 8px;"></canvas>
                         <div class="overlay-chip" style="color: #a78bfa;">MAP</div>
+                    </div>
+                    <!-- OAK-D Stereo Panels (hidden until stereo toggle is on) -->
+                    <div id="oak-left-panel" style="flex: 1; position: relative; min-width: 0; display: none;">
+                        <img id="oak-left-feed" class="camera-feed" alt="OAK-D left" style="display: none; width: 100%;">
+                        <div class="camera-placeholder" id="oak-left-placeholder">
+                            <span class="camera-placeholder-icon">🅛</span>
+                            <span>Awaiting OAK-D left...</span>
+                        </div>
+                        <div class="overlay-chip" style="color: #86efac;">OAK L</div>
+                    </div>
+                    <div id="oak-right-panel" style="flex: 1; position: relative; min-width: 0; display: none;">
+                        <img id="oak-right-feed" class="camera-feed" alt="OAK-D right" style="display: none; width: 100%;">
+                        <div class="camera-placeholder" id="oak-right-placeholder">
+                            <span class="camera-placeholder-icon">🅡</span>
+                            <span>Awaiting OAK-D right...</span>
+                        </div>
+                        <div class="overlay-chip" style="color: #86efac;">OAK R</div>
+                    </div>
+                </div>
+
+                <!-- OAK-D telemetry strip: IMU + on-device 3D spatial detections -->
+                <div id="oak-info-strip" style="display: none; gap: 0.75rem; margin-top: 0.5rem; flex-wrap: wrap;">
+                    <div id="oak-imu-box" style="flex: 1; min-width: 200px; padding: 0.5rem 0.75rem; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 6px; font-size: 0.75rem; font-family: monospace;">
+                        <div style="color: #86efac; font-weight: 600; margin-bottom: 0.25rem;">OAK-D IMU (BMI270)</div>
+                        <div>accel: <span id="oak-imu-accel">—</span> m/s²</div>
+                        <div>gyro:&nbsp; <span id="oak-imu-gyro">—</span> rad/s</div>
+                    </div>
+                    <div id="oak-det-box" style="flex: 2; min-width: 240px; padding: 0.5rem 0.75rem; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 6px; font-size: 0.75rem;">
+                        <div style="color: #86efac; font-weight: 600; margin-bottom: 0.25rem;">OAK-D 3D detections <span id="oak-det-count" style="color: var(--text-secondary);">(0)</span></div>
+                        <div id="oak-det-list" style="font-family: monospace; line-height: 1.5;"><span style="color: var(--text-secondary);">none</span></div>
                     </div>
                 </div>
 

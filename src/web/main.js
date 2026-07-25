@@ -6,6 +6,7 @@ const state = {
     connected: false,
     detectionEnabled: false,
     depthEnabled: false,
+    stereoEnabled: false,
     mapEnabled: false,
     lidarEnabled: false,
     autoDriveEnabled: false, // Local toggle tracking
@@ -136,6 +137,7 @@ const elements = {
 
     // Camera & Detection
     cameraCanvas: document.getElementById('camera-canvas'),
+    webrtcCam: document.getElementById('webrtc-cam'),
     cameraPlaceholder: document.getElementById('camera-placeholder'),
     depthFeed: document.getElementById('depth-feed'),
     cameraPanels: document.getElementById('camera-panels'),
@@ -146,6 +148,19 @@ const elements = {
     mapToggle: document.getElementById('map-toggle'),
     minimapPanel: document.getElementById('minimap-panel'),
     miniMapCanvas: document.getElementById('mini-map-canvas'),
+    // OAK-D stereo + IMU + spatial detections
+    stereoToggle: document.getElementById('stereo-toggle'),
+    oakLeftPanel: document.getElementById('oak-left-panel'),
+    oakLeftFeed: document.getElementById('oak-left-feed'),
+    oakLeftPlaceholder: document.getElementById('oak-left-placeholder'),
+    oakRightPanel: document.getElementById('oak-right-panel'),
+    oakRightFeed: document.getElementById('oak-right-feed'),
+    oakRightPlaceholder: document.getElementById('oak-right-placeholder'),
+    oakInfoStrip: document.getElementById('oak-info-strip'),
+    oakImuAccel: document.getElementById('oak-imu-accel'),
+    oakImuGyro: document.getElementById('oak-imu-gyro'),
+    oakDetCount: document.getElementById('oak-det-count'),
+    oakDetList: document.getElementById('oak-det-list'),
     frontierBtn: document.getElementById('frontier-btn'),
     frontierStateBadge: document.getElementById('frontier-state-badge'),
     frontierStats: document.getElementById('frontier-stats'),
@@ -1661,6 +1676,13 @@ function handleMessage(data) {
 
         state.serverMode = mode;
 
+        // WebRTC color camera: if the server released the Astra to mediamtx, show
+        // the low-latency <video> feed instead of the base64 canvas.
+        if (data.webrtc_camera && !state.webrtcCamStarted) {
+            state.webrtcCamStarted = true;
+            startWebRTCCamera();
+        }
+
         // Request map list when connected in a nav-capable mode
         if (mode === 'ros2' || mode === 'sim') {
             sendMessage({ type: 'get_maps' });
@@ -1988,6 +2010,43 @@ function updateUI() {
         elements.depthFeed.src = "data:image/jpeg;base64," + data.depth_image;
         elements.depthFeed.style.display = 'block';
         if (elements.depthPlaceholder) elements.depthPlaceholder.style.display = 'none';
+    }
+
+    // 2b. OAK-D stereo frames (base64 JPEG, only sent while Stereo is toggled on)
+    if (data.oak_left && elements.oakLeftFeed) {
+        elements.oakLeftFeed.src = "data:image/jpeg;base64," + data.oak_left;
+        elements.oakLeftFeed.style.display = 'block';
+        if (elements.oakLeftPlaceholder) elements.oakLeftPlaceholder.style.display = 'none';
+    }
+    if (data.oak_right && elements.oakRightFeed) {
+        elements.oakRightFeed.src = "data:image/jpeg;base64," + data.oak_right;
+        elements.oakRightFeed.style.display = 'block';
+        if (elements.oakRightPlaceholder) elements.oakRightPlaceholder.style.display = 'none';
+    }
+
+    // 2c. OAK-D IMU (6-axis BMI270)
+    if (data.oak_imu && elements.oakImuAccel) {
+        const a = data.oak_imu.accel, g = data.oak_imu.gyro;
+        elements.oakImuAccel.textContent =
+            `${a.x.toFixed(2)}, ${a.y.toFixed(2)}, ${a.z.toFixed(2)}`;
+        elements.oakImuGyro.textContent =
+            `${g.x.toFixed(2)}, ${g.y.toFixed(2)}, ${g.z.toFixed(2)}`;
+    }
+
+    // 2d. OAK-D on-device 3D spatial detections (base_link frame: x fwd, y left, z up)
+    if (data.oak_detections !== undefined && elements.oakDetList) {
+        const dets = data.oak_detections || [];
+        if (elements.oakDetCount) elements.oakDetCount.textContent = `(${dets.length})`;
+        if (dets.length === 0) {
+            elements.oakDetList.innerHTML = '<span style="color: var(--text-secondary);">none</span>';
+        } else {
+            elements.oakDetList.innerHTML = dets.slice(0, 8).map(d => {
+                const b = d.xyz_base_m || { x: 0, y: 0, z: 0 };
+                return `${d.label} ${(d.conf * 100).toFixed(0)}% ` +
+                    `<span style="color:#86efac;">` +
+                    `fwd ${b.x.toFixed(2)} · left ${b.y.toFixed(2)} · up ${b.z.toFixed(2)} m</span>`;
+            }).join('<br>');
+        }
     }
 
     // 3. FPS
@@ -2720,6 +2779,47 @@ if (elements.stopBtn) elements.stopBtn.addEventListener('click', () => {
     if (elements.rightSlider) { elements.rightSlider.value = 0; elements.rightSliderValue.textContent = "0"; updateVisuals(0, elements.rightFill, elements.rightThumb); }
 });
 
+// WebRTC (WHEP) color camera — connects to mediamtx's /astra stream and shows it
+// in the <video> element with the jitter buffer minimized for low latency.
+async function startWebRTCCamera() {
+    const v = elements.webrtcCam;
+    if (!v) return;
+    const host = window.location.hostname || 'jetson-desktop.local';
+    const WHEP = `http://${host}:8889/astra/whep`;
+    const lowLatency = (pc) => pc.getReceivers().forEach(r => {
+        try { r.jitterBufferTarget = 0; } catch (_) {}
+        try { r.playoutDelayHint = 0; } catch (_) {}
+    });
+    try {
+        const pc = new RTCPeerConnection();
+        pc.addTransceiver('video', { direction: 'recvonly' });
+        pc.ontrack = e => {
+            v.srcObject = e.streams[0];
+            v.style.display = 'block';
+            if (elements.cameraCanvas) elements.cameraCanvas.style.display = 'none';
+            if (elements.cameraPlaceholder) elements.cameraPlaceholder.style.display = 'none';
+            lowLatency(pc);
+        };
+        await pc.setLocalDescription(await pc.createOffer());
+        await new Promise(res => {
+            if (pc.iceGatheringState === 'complete') return res();
+            pc.addEventListener('icegatheringstatechange',
+                () => pc.iceGatheringState === 'complete' && res());
+            setTimeout(res, 2000);
+        });
+        const r = await fetch(WHEP, { method: 'POST',
+            headers: { 'Content-Type': 'application/sdp' }, body: pc.localDescription.sdp });
+        if (!r.ok) { console.warn('[webrtc-cam] WHEP HTTP', r.status); return; }
+        await pc.setRemoteDescription({ type: 'answer', sdp: await r.text() });
+        lowLatency(pc);
+        state.webrtcCamPc = pc;
+        console.log('[webrtc-cam] connected to', WHEP);
+    } catch (err) {
+        console.warn('[webrtc-cam] failed (falling back to base64 canvas):', err);
+        state.webrtcCamStarted = false;   // allow a retry on the next hello
+    }
+}
+
 function updateCameraLayout() {
     if (!elements.cameraPanels) return;
     if (state.mapEnabled) {
@@ -2740,6 +2840,9 @@ function updateCameraLayout() {
             elements.minimapPanel.style.gridColumn = '2';
             elements.minimapPanel.style.gridRow = '1 / span 2';
         }
+        // Stereo panels don't fit the 2-col map grid — hide them while the map is up.
+        if (elements.oakLeftPanel) elements.oakLeftPanel.style.display = 'none';
+        if (elements.oakRightPanel) elements.oakRightPanel.style.display = 'none';
     } else {
         elements.cameraPanels.style.display = 'flex';
         if (elements.rgbPanel) elements.rgbPanel.style.flex = '1';
@@ -2748,7 +2851,17 @@ function updateCameraLayout() {
             elements.depthPanel.style.flex = '1';
         }
         if (elements.minimapPanel) elements.minimapPanel.style.display = 'none';
+        if (elements.oakLeftPanel) {
+            elements.oakLeftPanel.style.display = state.stereoEnabled ? 'block' : 'none';
+            elements.oakLeftPanel.style.flex = '1';
+        }
+        if (elements.oakRightPanel) {
+            elements.oakRightPanel.style.display = state.stereoEnabled ? 'block' : 'none';
+            elements.oakRightPanel.style.flex = '1';
+        }
     }
+    // IMU + 3D-detection strip follows the stereo toggle.
+    if (elements.oakInfoStrip) elements.oakInfoStrip.style.display = state.stereoEnabled ? 'flex' : 'none';
 }
 
 if (elements.depthToggle) elements.depthToggle.addEventListener('click', () => {
@@ -2757,6 +2870,14 @@ if (elements.depthToggle) elements.depthToggle.addEventListener('click', () => {
     elements.depthToggle.classList.toggle('active', state.depthEnabled);
     updateCameraLayout();
     sendMessage({ type: "toggle_depth", enabled: state.depthEnabled });
+});
+
+if (elements.stereoToggle) elements.stereoToggle.addEventListener('click', () => {
+    if (!state.connected) return;
+    state.stereoEnabled = !state.stereoEnabled;
+    elements.stereoToggle.classList.toggle('active', state.stereoEnabled);
+    updateCameraLayout();
+    sendMessage({ type: "toggle_stereo", enabled: state.stereoEnabled });
 });
 
 if (elements.mapToggle) elements.mapToggle.addEventListener('click', () => {

@@ -130,8 +130,9 @@
             </geometry>
         </collision>
     </link>
-    <fixed_joint name="lidar_mount_joint" parent="base_link" child="lidar_mount_link" xyz="0.0435 5.25826986680105E-05 0.11" rpy="0 0 0"/>
-    <fixed_joint name="laser_joint" parent="base_link" child="laser_link" xyz="0.0435 5.25826986680105E-05 0.185" rpy="0 0 3.14159265"/>
+    <!-- lidar moved 55 mm rearward, 6 mm up (2026); OAK-D took its old front spot -->
+    <fixed_joint name="lidar_mount_joint" parent="base_link" child="lidar_mount_link" xyz="-0.0115 5.25826986680105E-05 0.116" rpy="0 0 0"/>
+    <fixed_joint name="laser_joint" parent="base_link" child="laser_link" xyz="-0.0115 5.25826986680105E-05 0.191" rpy="0 0 3.14159265"/>
     <common_link name="camera_link" material="White" path="sensor">
         <inertial>
             <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -140,4 +141,53 @@
         </inertial>
     </common_link>
     <fixed_joint name="camera_joint" parent="base_link" child="camera_link" xyz="0.057105 1.7948E-05 0.03755" rpy="0 0 0"/>
+
+    <!-- ==================== OAK-D Lite (2026) ====================
+         Mounted at the lidar's previous front location (x=0.0435, z=0.185).
+         Frame names follow the depthai_ros convention (camera name "oak").
+         Stereo baseline 75 mm: left mono +Y, right mono -Y. -->
+    <link name="${ns}/oak-d-base-frame">
+        <inertial>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <mass value="0.0611"/>
+            <inertia ixx="4.3E-05" ixy="0" ixz="0"
+                     iyy="4.5E-06" iyz="0" izz="4.5E-05"/>
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.028 0.091 0.0175"/>
+            </geometry>
+            <material name="White"/>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.028 0.091 0.0175"/>
+            </geometry>
+        </collision>
+    </link>
+    <fixed_joint name="oak_center_joint" parent="base_link" child="oak-d-base-frame" xyz="0.0435 5.25826986680105E-05 0.185" rpy="0 0 0"/>
+
+    <!-- RGB camera (center) -->
+    <link name="${ns}/oak_rgb_camera_frame"/>
+    <fixed_joint name="oak_rgb_camera_joint" parent="oak-d-base-frame" child="oak_rgb_camera_frame" xyz="0 0 0" rpy="0 0 0"/>
+    <link name="${ns}/oak_rgb_camera_optical_frame"/>
+    <fixed_joint name="oak_rgb_camera_optical_joint" parent="oak_rgb_camera_frame" child="oak_rgb_camera_optical_frame" xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
+
+    <!-- Left mono camera (+Y) -->
+    <link name="${ns}/oak_left_camera_frame"/>
+    <fixed_joint name="oak_left_camera_joint" parent="oak-d-base-frame" child="oak_left_camera_frame" xyz="0 0.0375 0" rpy="0 0 0"/>
+    <link name="${ns}/oak_left_camera_optical_frame"/>
+    <fixed_joint name="oak_left_camera_optical_joint" parent="oak_left_camera_frame" child="oak_left_camera_optical_frame" xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
+
+    <!-- Right mono camera (-Y) -->
+    <link name="${ns}/oak_right_camera_frame"/>
+    <fixed_joint name="oak_right_camera_joint" parent="oak-d-base-frame" child="oak_right_camera_frame" xyz="0 -0.0375 0" rpy="0 0 0"/>
+    <link name="${ns}/oak_right_camera_optical_frame"/>
+    <fixed_joint name="oak_right_camera_optical_joint" parent="oak_right_camera_frame" child="oak_right_camera_optical_frame" xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
+
+    <!-- On-board IMU -->
+    <link name="${ns}/oak_imu_frame"/>
+    <fixed_joint name="oak_imu_joint" parent="oak-d-base-frame" child="oak_imu_frame" xyz="0 0 0" rpy="0 0 0"/>
 </robot>

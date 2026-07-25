@@ -186,8 +186,10 @@
             </geometry>
         </collision>
     </link>
-    <!-- 4ROS lidar riser mount (75 mm tall, 35 g). Sits where the lidar used to
-         be (base_link top at z=0.11); the lidar now sits on top of it.
+    <!-- 4ROS lidar riser mount (75 mm tall, 35 g). Moved 55 mm rearward and
+         6 mm up from its previous location (x 0.0435 -> -0.0115, z 0.11 -> 0.116)
+         to make room for the OAK-D Lite, which now occupies the lidar's old
+         front position (see oak-d-base-frame below).
          Mesh is in millimeters (scale 0.001) and modeled Y-up, so it is rolled
          90 deg about X to stand vertical. Horizontal offset centers the mesh
          centroid under the laser axis; verify alignment in RViz. -->
@@ -216,13 +218,14 @@
         </collision>
     </link>
     <joint name="lidar_mount_joint" type="fixed">
-        <origin xyz="0.0435 5.25826986680105E-05 0.11" rpy="0 0 0"/>
+        <origin xyz="-0.0115 5.25826986680105E-05 0.116" rpy="0 0 0"/>
         <parent link="base_link"/>
         <child link="lidar_mount_link"/>
     </joint>
     <joint name="laser_joint" type="fixed">
-        <!-- raised 75 mm (0.11 -> 0.185) to clear the riser mount -->
-        <origin xyz="0.0435 5.25826986680105E-05 0.185" rpy="0 0 3.14159265"/>
+        <!-- raised 75 mm above the riser base, then +6 mm with the 2026 move
+             (0.11 -> 0.116 base, scan plane 0.185 -> 0.191); shifted 55 mm rear -->
+        <origin xyz="-0.0115 5.25826986680105E-05 0.191" rpy="0 0 3.14159265"/>
         <parent link="base_link"/>
         <child link="laser_link"/>
     </joint>
@@ -252,5 +255,94 @@
         <origin xyz="0.057105 1.7948E-05 0.03755" rpy="0 0 0"/>
         <parent link="base_link"/>
         <child link="camera_link"/>
+    </joint>
+
+    <!-- ==================== OAK-D Lite (2026) ====================
+         Luxonis OAK-D Lite stereo depth + RGB camera, mounted at the lidar's
+         previous front location: base_link-relative x=0.0435, y~0, z=0.185
+         (the old scan-plane height). Frame names follow the depthai_ros
+         (depthai_ros_driver) convention with camera name "oak" so published
+         image/pointcloud TF (oak_rgb_camera_optical_frame, etc.) resolves
+         against these static frames. Set the driver's `camera.i_tf_prefix`
+         / publish_tf_from_calibration=false so it does NOT re-publish these.
+         Stereo baseline 75 mm: left mono +Y, right mono -Y from center. -->
+    <link name="oak-d-base-frame">
+        <inertial>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <mass value="0.0611"/>
+            <inertia ixx="4.3E-05" ixy="0" ixz="0"
+                     iyy="4.5E-06" iyz="0" izz="4.5E-05"/>
+        </inertial>
+        <visual>
+            <!-- OAK-D Lite body approx 91 (Y) x 28 (X) x 17.5 (Z) mm -->
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.028 0.091 0.0175"/>
+            </geometry>
+            <material name="">
+                <color rgba="0.15 0.15 0.15 1"/>
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.028 0.091 0.0175"/>
+            </geometry>
+        </collision>
+    </link>
+    <joint name="oak_center_joint" type="fixed">
+        <origin xyz="0.0435 5.25826986680105E-05 0.185" rpy="0 0 0"/>
+        <parent link="base_link"/>
+        <child link="oak-d-base-frame"/>
+    </joint>
+
+    <!-- RGB camera (center) -->
+    <link name="oak_rgb_camera_frame"/>
+    <joint name="oak_rgb_camera_joint" type="fixed">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <parent link="oak-d-base-frame"/>
+        <child link="oak_rgb_camera_frame"/>
+    </joint>
+    <link name="oak_rgb_camera_optical_frame"/>
+    <joint name="oak_rgb_camera_optical_joint" type="fixed">
+        <origin xyz="0 0 0" rpy="-1.5707963 0 -1.5707963"/>
+        <parent link="oak_rgb_camera_frame"/>
+        <child link="oak_rgb_camera_optical_frame"/>
+    </joint>
+
+    <!-- Left mono camera (+Y, robot left) -->
+    <link name="oak_left_camera_frame"/>
+    <joint name="oak_left_camera_joint" type="fixed">
+        <origin xyz="0 0.0375 0" rpy="0 0 0"/>
+        <parent link="oak-d-base-frame"/>
+        <child link="oak_left_camera_frame"/>
+    </joint>
+    <link name="oak_left_camera_optical_frame"/>
+    <joint name="oak_left_camera_optical_joint" type="fixed">
+        <origin xyz="0 0 0" rpy="-1.5707963 0 -1.5707963"/>
+        <parent link="oak_left_camera_frame"/>
+        <child link="oak_left_camera_optical_frame"/>
+    </joint>
+
+    <!-- Right mono camera (-Y, robot right) -->
+    <link name="oak_right_camera_frame"/>
+    <joint name="oak_right_camera_joint" type="fixed">
+        <origin xyz="0 -0.0375 0" rpy="0 0 0"/>
+        <parent link="oak-d-base-frame"/>
+        <child link="oak_right_camera_frame"/>
+    </joint>
+    <link name="oak_right_camera_optical_frame"/>
+    <joint name="oak_right_camera_optical_joint" type="fixed">
+        <origin xyz="0 0 0" rpy="-1.5707963 0 -1.5707963"/>
+        <parent link="oak_right_camera_frame"/>
+        <child link="oak_right_camera_optical_frame"/>
+    </joint>
+
+    <!-- On-board IMU -->
+    <link name="oak_imu_frame"/>
+    <joint name="oak_imu_joint" type="fixed">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <parent link="oak-d-base-frame"/>
+        <child link="oak_imu_frame"/>
     </joint>
 </robot>

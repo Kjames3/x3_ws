@@ -1,0 +1,41 @@
+###############################################################################
+# mediamtx.yml — low-latency WebRTC PoC for the OAK-D Lite H.264 stream.
+# Tested against mediamtx v1.9+.  Run:  ./mediamtx mediamtx.yml
+#
+# Flow:  ffmpeg publishes RTSP -> path "oak" -> browser reads WebRTC on :8889
+###############################################################################
+
+logLevel: info
+
+# --- RTSP: where the OAK publisher (ffmpeg) pushes the H.264 stream ---
+rtsp: yes
+rtspTransports: [tcp, udp]
+rtspAddress: :8554
+
+# --- WebRTC: where the browser connects to watch ---
+webrtc: yes
+webrtcAddress: :8889              # http://<jetson-ip>:8889/oak  (built-in player)
+webrtcLocalUDPAddress: :8189      # media UDP; open this port on the robot if firewalled
+# On a LAN mediamtx normally auto-detects the robot's IP. If the WebRTC page
+# loads but stays black (ICE can't connect), uncomment and set the Jetson's LAN IP:
+# webrtcAdditionalHosts: [192.168.1.150]
+
+# --- keep everything else off for a clean PoC ---
+hls: no
+rtmp: no
+srt: no
+
+# --- low latency: a shallow write queue avoids buffering up ---
+writeQueueSize: 512
+readTimeout: 10s
+
+paths:
+  oak:
+    source: publisher            # OAK on-device H.264 (manual PoC: oakd_webrtc_poc.py)
+  astra:
+    # Production: mediamtx spawns the Astra->H.264 encoder only while the GUI is
+    # watching, and stops it ~10s after the last viewer leaves (frees the camera).
+    runOnDemand: /home/jetson/x3_ws/src/webrtc_poc/astra_ffmpeg.sh
+    runOnDemandRestart: yes
+    runOnDemandStartTimeout: 10s
+    runOnDemandCloseAfter: 10s
