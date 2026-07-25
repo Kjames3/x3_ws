@@ -32,7 +32,8 @@ const state = {
         trajectory: null,
         lidarPoints: null,
         detections: [],
-        fps: { cam: 0, yolo: 0 },
+        fps: { cam: 0, yolo: 0, oak: 0, render: 0, video: 0,
+               _renderFrames: 0, _videoFrames: 0, _lastCalc: 0 },
         battery: null
     },
 
@@ -202,6 +203,10 @@ const elements = {
     fpsDetectionWrapper: document.getElementById('fps-detection-wrapper'),
     fpsCameraInline: document.getElementById('fps-camera-inline'),
     fpsYoloInline: document.getElementById('fps-yolo-inline'),
+    fpsOak: document.getElementById('fps-oak'),
+    fpsRender: document.getElementById('fps-render'),
+    fpsVideo: document.getElementById('fps-video'),
+    fpsVideoWrapper: document.getElementById('fps-video-wrapper'),
 
     // Position Section
     robotX: document.getElementById('robot-x'),
@@ -1407,6 +1412,7 @@ function handleBinaryFrame(buf) {
             const ctx = cvs._ctx || (cvs._ctx = cvs.getContext('2d'));
             ctx.drawImage(bitmap, 0, 0);
             bitmap.close();
+            state.latestData.fps._renderFrames++;   // client-side render-rate counter
             if (cvs.style.display === 'none') cvs.style.display = 'block';
             if (elements.cameraPlaceholder && elements.cameraPlaceholder.style.display !== 'none') {
                 elements.cameraPlaceholder.style.display = 'none';
@@ -1879,6 +1885,7 @@ function handleMessage(data) {
 
         if (data.fps_camera !== undefined) state.latestData.fps.cam = data.fps_camera;
         if (data.fps_detection !== undefined) state.latestData.fps.yolo = data.fps_detection;
+        if (data.fps_oak_depth !== undefined) state.latestData.fps.oak = data.fps_oak_depth;
 
         if (data.p2p_test_running !== undefined) {
             state.p2pTestRunning = data.p2p_test_running;
@@ -2057,6 +2064,12 @@ function updateUI() {
         elements.fpsDisplay.style.display = 'block';
         if (elements.fpsCamera) elements.fpsCamera.textContent = state.latestData.fps.cam.toFixed(1);
         if (elements.fpsCameraInline) elements.fpsCameraInline.textContent = state.latestData.fps.cam.toFixed(0);
+        if (elements.fpsOak) elements.fpsOak.textContent = state.latestData.fps.oak.toFixed(1);
+        if (elements.fpsRender) elements.fpsRender.textContent = state.latestData.fps.render.toFixed(1);
+        // WebRTC video FPS only meaningful in --webrtc-camera mode; hide otherwise.
+        if (elements.fpsVideoWrapper)
+            elements.fpsVideoWrapper.style.display = state.webrtcCamStarted ? 'inline' : 'none';
+        if (elements.fpsVideo) elements.fpsVideo.textContent = state.latestData.fps.video.toFixed(1);
 
         if (state.detectionEnabled) {
             if (elements.fpsDetectionWrapper) elements.fpsDetectionWrapper.style.display = 'inline';
@@ -2784,9 +2797,38 @@ if (elements.stopBtn) elements.stopBtn.addEventListener('click', () => {
 
 // WebRTC (WHEP) color camera — connects to mediamtx's /astra stream and shows it
 // in the <video> element with the jitter buffer minimized for low latency.
+// Count presented WebRTC video frames via requestVideoFrameCallback (fires once
+// per painted frame — accurate playback rate, no polling). Registered once.
+function trackWebRTCVideoFps() {
+    const v = elements.webrtcCam;
+    if (!v || typeof v.requestVideoFrameCallback !== 'function' || v._fpsTracked) return;
+    v._fpsTracked = true;
+    const cb = () => {
+        state.latestData.fps._videoFrames++;
+        v.requestVideoFrameCallback(cb);
+    };
+    v.requestVideoFrameCallback(cb);
+}
+
+// Convert the render/video frame counters into per-second rates (1 Hz, one
+// division each — negligible). Client-side only; no robot/network impact.
+setInterval(() => {
+    const now = performance.now();
+    const f = state.latestData.fps;
+    const dt = f._lastCalc ? (now - f._lastCalc) / 1000 : 1;
+    if (dt > 0) {
+        f.render = f._renderFrames / dt;
+        f.video  = f._videoFrames / dt;
+    }
+    f._renderFrames = 0;
+    f._videoFrames = 0;
+    f._lastCalc = now;
+}, 1000);
+
 async function startWebRTCCamera(webrtcCamConfig) {
     const v = elements.webrtcCam;
     if (!v) return;
+    trackWebRTCVideoFps();
 
     if (state.webrtcCamPc) {
         try { state.webrtcCamPc.close(); } catch (_) {}

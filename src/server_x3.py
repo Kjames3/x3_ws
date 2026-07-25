@@ -2015,6 +2015,11 @@ async def broadcast_loop():
                     "ab_test_mode": _ab_test_mode if _ab_running else None,
                     "fps_camera": fps_camera,
                     "fps_detection": fps_detection,
+                    # OAK-D stereo/depth capture rate — cheap cached read from the
+                    # driver's worker thread (no capture-path impact).
+                    "fps_oak_depth": (oak.get_depth_fps()
+                                      if (oak is not None and getattr(oak, "available", False))
+                                      else 0.0),
                 }
                 websockets.broadcast(connected_clients, orjson_dumps(slow))
 

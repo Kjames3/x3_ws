@@ -140,6 +140,7 @@ class OakDCamera:
         self._last_depth_time = 0.0
         self._latest_imu = None
         self._latest_detections = []
+        self.depth_fps = 0.0              # live depth/stereo capture rate (~1s window)
 
         # CAM_A intrinsics at (nn_w, nn_h), filled once the device is up.
         self._fx = self._fy = self._cx = self._cy = None
@@ -303,7 +304,6 @@ class OakDCamera:
                     self.available = True
                     self.spatial_active = with_spatial
                     backoff = 1.0
-                    spatial_failures = 0
                     if with_spatial:
                         self._read_intrinsics(device)
                     logger.info(f"OakDCamera: connected (USB {self.usb_speed}) — depth + imu"
@@ -324,13 +324,19 @@ class OakDCamera:
                     qDet = device.getOutputQueue("det", maxSize=1, blocking=False) if with_spatial else None
 
                     fps_n, fps_t = 0, time.monotonic()
+                    fps_win_n, fps_win_t = 0, fps_t   # ~1s window for the live get_depth_fps() value
                     # Block on the depth queue (paces the loop at the depth rate, no busy-spin).
                     while self._running:
                         inDepth = qDepth.get()          # blocks until the next (freshest) depth frame
                         if inDepth is not None:
                             self._process_depth(inDepth.getFrame())
                             fps_n += 1
+                            fps_win_n += 1
                             _now = time.monotonic()
+                            # Live depth FPS on a ~1s window (one division/sec — negligible cost)
+                            if _now - fps_win_t >= 1.0:
+                                self.depth_fps = round(fps_win_n / (_now - fps_win_t), 1)
+                                fps_win_n, fps_win_t = 0, _now
                             if _now - fps_t >= 5.0:
                                 logger.info(f"OakDCamera: depth {fps_n / (_now - fps_t):.1f} fps "
                                             f"(USB {self.usb_speed}, mono {self.mono_fps} req"
@@ -592,6 +598,11 @@ class OakDCamera:
         with self._lock:
             t = self._last_depth_time
         return float("inf") if t == 0.0 else time.monotonic() - t
+
+    def get_depth_fps(self) -> float:
+        """Live depth/stereo capture rate (Hz), updated on a ~1s window by the
+        worker thread. Cheap read of a cached float — no capture-path impact."""
+        return self.depth_fps
 
     def get_stereo_frames(self):
         with self._lock:

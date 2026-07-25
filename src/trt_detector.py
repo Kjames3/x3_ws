@@ -89,6 +89,8 @@ class TRTDetector:
         self.conf_thres = conf_thres
         self.iou_thres  = iou_thres
         self.names: dict = {}
+        import threading
+        self._lock = threading.Lock()
 
         # ── Class names from .pt checkpoint ────────────────────────────────
         #   Done BEFORE creating our CUDA context: torch.load() initialises CUDA
@@ -117,9 +119,9 @@ class TRTDetector:
         # All engine/context/buffer creation must happen while self._ctx is the
         # current context, so those resources bind to THIS context (see above).
         try:
-            trt_logger = trt.Logger(trt.Logger.WARNING)
+            self._trt_logger = trt.Logger(trt.Logger.WARNING)
             with open(engine_path, "rb") as f:
-                runtime      = trt.Runtime(trt_logger)
+                runtime      = trt.Runtime(self._trt_logger)
                 self._engine = runtime.deserialize_cuda_engine(f.read())
 
             self._context = self._engine.create_execution_context()
@@ -252,25 +254,29 @@ class TRTDetector:
         Run inference on a single BGR frame.
         Signature matches: model(frame, verbose=False, conf=..., imgsz=...)
         """
-        if conf is not None:
-            self.conf_thres = conf
+        with self._lock:
+            if getattr(self, "_ctx", None) is None:
+                return [_TRTResult(_TRTBoxes(np.empty((0, 4)), np.empty(0), np.empty(0, dtype=float)))]
 
-        orig_h, orig_w = frame.shape[:2]
-        inp = self._preprocess(frame)
+            if conf is not None:
+                self.conf_thres = conf
 
-        self._ctx.push()
-        try:
-            self._cuda.memcpy_htod_async(self._d_input, inp, self._stream)
-            self._context.set_tensor_address(self._in_name,  int(self._d_input))
-            self._context.set_tensor_address(self._out_name, int(self._d_output))
-            self._context.execute_async_v3(stream_handle=self._stream.handle)
-            self._cuda.memcpy_dtoh_async(self._h_output, self._d_output, self._stream)
-            self._stream.synchronize()
-        finally:
-            self._ctx.pop()
+            orig_h, orig_w = frame.shape[:2]
+            inp = self._preprocess(frame)
 
-        xyxy, confs, cls_ids = self._postprocess(self._h_output, orig_w, orig_h)
-        return [_TRTResult(_TRTBoxes(xyxy, confs, cls_ids))]
+            self._ctx.push()
+            try:
+                self._cuda.memcpy_htod_async(self._d_input, inp, self._stream)
+                self._context.set_tensor_address(self._in_name,  int(self._d_input))
+                self._context.set_tensor_address(self._out_name, int(self._d_output))
+                self._context.execute_async_v3(stream_handle=self._stream.handle)
+                self._cuda.memcpy_dtoh_async(self._h_output, self._d_output, self._stream)
+                self._stream.synchronize()
+            finally:
+                self._ctx.pop()
+
+            xyxy, confs, cls_ids = self._postprocess(self._h_output, orig_w, orig_h)
+            return [_TRTResult(_TRTBoxes(xyxy, confs, cls_ids))]
 
     def cleanup(self):
         """Release GPU buffers and TRT/CUDA resources.
@@ -280,28 +286,29 @@ class TRTDetector:
         destructors later run against an already-detached context, raising
         "Error 709 destroying stream" and segfaulting at shutdown. Idempotent.
         """
-        ctx = getattr(self, "_ctx", None)
-        if ctx is None:
-            return
-        ctx.push()
-        try:
-            for name in ("_d_input", "_d_output"):
-                buf = getattr(self, name, None)
-                if buf is not None:
-                    try:
-                        buf.free()
-                    except Exception:
-                        pass
-                    setattr(self, name, None)
-            # Drop TRT + stream refs while this context is current so their
-            # CUDA resources release against the correct context.
-            self._context = None
-            self._engine  = None
-            self._stream  = None
-        finally:
-            ctx.pop()
-        ctx.detach()
-        self._ctx = None
+        with self._lock:
+            ctx = getattr(self, "_ctx", None)
+            if ctx is None:
+                return
+            ctx.push()
+            try:
+                for name in ("_d_input", "_d_output"):
+                    buf = getattr(self, name, None)
+                    if buf is not None:
+                        try:
+                            buf.free()
+                        except Exception:
+                            pass
+                        setattr(self, name, None)
+                # Drop TRT + stream refs while this context is current so their
+                # CUDA resources release against the correct context.
+                self._context = None
+                self._engine  = None
+                self._stream  = None
+            finally:
+                ctx.pop()
+            ctx.detach()
+            self._ctx = None
 
     def __del__(self):
         # Best-effort teardown if the owner never called cleanup() (e.g. the
