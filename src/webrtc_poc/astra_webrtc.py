@@ -42,11 +42,14 @@ def find_astra_rgb():
                     return v
         except Exception:
             pass
-    return "/dev/video0"
+    return None
 
 
 def main():
     dev = find_astra_rgb()
+    if dev is None:
+        print("ERROR: Astra RGB camera (product ID 0501) not found.")
+        sys.exit(1)
     if ENCODER == "h264_v4l2m2m":
         venc = ["-c:v", "h264_v4l2m2m", "-b:v", BITRATE]
     else:

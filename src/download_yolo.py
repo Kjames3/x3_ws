@@ -22,11 +22,18 @@ def download_yolo_model():
     try:
         # Use urllib to download the weights from GitHub releases
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req) as response, open(target_path, 'wb') as out_file:
+        temp_path = target_path + ".tmp"
+        with urllib.request.urlopen(req) as response, open(temp_path, 'wb') as out_file:
             data = response.read()
             out_file.write(data)
+        os.replace(temp_path, target_path)
         print("Download complete!")
     except Exception as e:
+        if 'temp_path' in locals() and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
         print(f"Error downloading model via URL: {e}")
 
         # Fallback to using the ultralytics python package if installed.
@@ -35,10 +42,12 @@ def download_yolo_model():
         print("Attempting to use ultralytics package to download...")
         try:
             from ultralytics.utils.downloads import attempt_download_asset
-            attempt_download_asset(target_path, release=ASSETS_RELEASE)
+            attempt_download_asset(model_name, release=ASSETS_RELEASE)
             print("Download complete via ultralytics package!")
         except ImportError:
             print("Failed. Please install the 'ultralytics' package via pip.")
+        except Exception as err:
+            print(f"Failed to download via ultralytics package: {err}")
 
 
 if __name__ == "__main__":

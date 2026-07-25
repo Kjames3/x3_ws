@@ -303,6 +303,7 @@ class OakDCamera:
                     self.available = True
                     self.spatial_active = with_spatial
                     backoff = 1.0
+                    spatial_failures = 0
                     if with_spatial:
                         self._read_intrinsics(device)
                     logger.info(f"OakDCamera: connected (USB {self.usb_speed}) — depth + imu"

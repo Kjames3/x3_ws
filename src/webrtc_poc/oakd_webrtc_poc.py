@@ -80,8 +80,16 @@ def start_ffmpeg():
 def main():
     print(f"OAK H.264 PoC -> {RTSP_URL}  ({RESOLUTION}@{FPS}, {BITRATE // 1000} kbps CBR, "
           f"no B-frames, keyframe/{KEYFRAME_S}s)")
-    ff = start_ffmpeg()
+    ff = None
+    max_retries = 3
+    retry_count = 0
     try:
+        ff = start_ffmpeg()
+        time.sleep(0.2)
+        if ff.poll() is not None:
+            err = ff.stderr.read().decode('utf-8', errors='replace') if ff.stderr else "early exit"
+            print(f"ERROR: FFmpeg failed to start: {err}")
+            sys.exit(ff.poll() or 1)
         with dai.Device(build_pipeline(), maxUsbSpeed=dai.UsbSpeed.SUPER) as dev:
             print("OAK USB link:", dev.getUsbSpeed().name)
             if dev.getUsbSpeed().name not in ("SUPER", "SUPER_PLUS"):
@@ -93,24 +101,44 @@ def main():
             while True:
                 pkt = q.get()
                 data = pkt.getData().tobytes()
+                if ff.poll() is not None:
+                    retry_count += 1
+                    if retry_count > max_retries:
+                        err = ff.stderr.read().decode('utf-8', errors='replace') if ff.stderr else "process exited"
+                        print(f"ERROR: FFmpeg publishing failed after {max_retries} retries: {err}")
+                        sys.exit(ff.poll() or 1)
+                    print(f"ffmpeg exited ({ff.poll()}); restarting (attempt {retry_count}/{max_retries})...")
+                    time.sleep(0.5)
+                    ff = start_ffmpeg()
                 try:
                     ff.stdin.write(data)
+                    retry_count = 0
                 except (BrokenPipeError, OSError):
-                    print("ffmpeg exited; restarting it...")
+                    retry_count += 1
+                    if retry_count > max_retries:
+                        err = ff.stderr.read().decode('utf-8', errors='replace') if ff.stderr else "broken pipe"
+                        print(f"ERROR: FFmpeg pipe broken after {max_retries} retries: {err}")
+                        sys.exit(1)
+                    print(f"ffmpeg write failed; restarting it (attempt {retry_count}/{max_retries})...")
                     time.sleep(0.5)
                     ff = start_ffmpeg()
     except KeyboardInterrupt:
         print("\nstopping...")
+    except FileNotFoundError:
+        print("ERROR: ffmpeg binary not found.")
+        sys.exit(1)
     except Exception as e:
         print(f"ERROR: {e!r}")
         print("If it's a device-busy error, stop the main server first: sudo systemctl stop x3_server")
         sys.exit(1)
     finally:
-        try:
-            ff.stdin.close()
-        except Exception:
-            pass
-        ff.terminate()
+        if ff is not None:
+            try:
+                if ff.stdin:
+                    ff.stdin.close()
+            except Exception:
+                pass
+            ff.terminate()
 
 
 if __name__ == "__main__":

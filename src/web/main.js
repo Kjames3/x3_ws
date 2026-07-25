@@ -1680,7 +1680,7 @@ function handleMessage(data) {
         // the low-latency <video> feed instead of the base64 canvas.
         if (data.webrtc_camera && !state.webrtcCamStarted) {
             state.webrtcCamStarted = true;
-            startWebRTCCamera();
+            startWebRTCCamera(typeof data.webrtc_camera === 'object' ? data.webrtc_camera : null);
         }
 
         // Request map list when connected in a nav-capable mode
@@ -2041,7 +2041,10 @@ function updateUI() {
             elements.oakDetList.innerHTML = '<span style="color: var(--text-secondary);">none</span>';
         } else {
             elements.oakDetList.innerHTML = dets.slice(0, 8).map(d => {
-                const b = d.xyz_base_m || { x: 0, y: 0, z: 0 };
+                if (!d.xyz_base_m) {
+                    return `${d.label} ${(d.conf * 100).toFixed(0)}% <span style="color:#f87171;">range unknown</span>`;
+                }
+                const b = d.xyz_base_m;
                 return `${d.label} ${(d.conf * 100).toFixed(0)}% ` +
                     `<span style="color:#86efac;">` +
                     `fwd ${b.x.toFixed(2)} · left ${b.y.toFixed(2)} · up ${b.z.toFixed(2)} m</span>`;
@@ -2781,17 +2784,50 @@ if (elements.stopBtn) elements.stopBtn.addEventListener('click', () => {
 
 // WebRTC (WHEP) color camera — connects to mediamtx's /astra stream and shows it
 // in the <video> element with the jitter buffer minimized for low latency.
-async function startWebRTCCamera() {
+async function startWebRTCCamera(webrtcCamConfig) {
     const v = elements.webrtcCam;
     if (!v) return;
+
+    if (state.webrtcCamPc) {
+        try { state.webrtcCamPc.close(); } catch (_) {}
+        state.webrtcCamPc = null;
+    }
+
+    const proto = window.location.protocol === 'https:' ? 'https' : 'http';
     const host = window.location.hostname || 'jetson-desktop.local';
-    const WHEP = `http://${host}:8889/astra/whep`;
+    const port = (webrtcCamConfig && webrtcCamConfig.port) || 8889;
+    const streamPath = (webrtcCamConfig && webrtcCamConfig.stream) || 'astra';
+    const WHEP = (webrtcCamConfig && webrtcCamConfig.url) || `${proto}://${host}:${port}/${streamPath}/whep`;
+
     const lowLatency = (pc) => pc.getReceivers().forEach(r => {
         try { r.jitterBufferTarget = 0; } catch (_) {}
         try { r.playoutDelayHint = 0; } catch (_) {}
     });
+
+    const cleanupAndFallback = (pc) => {
+        if (pc) {
+            try { pc.close(); } catch (_) {}
+        }
+        if (state.webrtcCamPc === pc) {
+            state.webrtcCamPc = null;
+        }
+        state.webrtcCamStarted = false;
+        if (elements.webrtcCam) elements.webrtcCam.style.display = 'none';
+        if (elements.cameraCanvas) elements.cameraCanvas.style.display = 'block';
+    };
+
+    let pc = null;
     try {
-        const pc = new RTCPeerConnection();
+        pc = new RTCPeerConnection();
+        state.webrtcCamPc = pc;
+
+        pc.onconnectionstatechange = () => {
+            if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
+                console.warn('[webrtc-cam] connection state:', pc.connectionState);
+                cleanupAndFallback(pc);
+            }
+        };
+
         pc.addTransceiver('video', { direction: 'recvonly' });
         pc.ontrack = e => {
             v.srcObject = e.streams[0];
@@ -2809,14 +2845,17 @@ async function startWebRTCCamera() {
         });
         const r = await fetch(WHEP, { method: 'POST',
             headers: { 'Content-Type': 'application/sdp' }, body: pc.localDescription.sdp });
-        if (!r.ok) { console.warn('[webrtc-cam] WHEP HTTP', r.status); return; }
+        if (!r.ok) {
+            console.warn('[webrtc-cam] WHEP HTTP', r.status);
+            cleanupAndFallback(pc);
+            return;
+        }
         await pc.setRemoteDescription({ type: 'answer', sdp: await r.text() });
         lowLatency(pc);
-        state.webrtcCamPc = pc;
         console.log('[webrtc-cam] connected to', WHEP);
     } catch (err) {
         console.warn('[webrtc-cam] failed (falling back to base64 canvas):', err);
-        state.webrtcCamStarted = false;   // allow a retry on the next hello
+        cleanupAndFallback(pc);
     }
 }
 

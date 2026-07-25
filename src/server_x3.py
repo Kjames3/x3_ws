@@ -284,11 +284,11 @@ class ROS2Bridge:
         self._twist = {"vx": 0.0, "vy": 0.0, "wz": 0.0}   # body velocity m/s, rad/s
         self._voltage = 12.0               # volts, updated by /voltage subscriber
         self._occupancy_grid: dict | None = None  # latest OccupancyGrid info dict for frontier explorer
-        # safe_distance MUST stay ABOVE the _scan_cb min-range gate (0.33 m). The CBF
+        # safe_distance MUST stay ABOVE the _scan_cb min-range gate (0.12 m). The CBF
         # only brakes hard as distance -> safe_distance; if safe_distance were below the
         # gate, a real obstacle would be filtered out (mistaken for the chassis) before
-        # the brake engaged and the robot would drive straight through it. 0.42 m stops
-        # the robot with the wall still visible. Lower toward ~0.35 m for tighter
+        # the brake engaged and the robot would drive straight through it. 0.30 m stops
+        # the robot with the wall still visible. Lower toward ~0.15 m for tighter
         # doorways (at the cost of a thinner stop margin). This whole range-gate
         # workaround goes away once the Lidar is raised above the chassis.
         self.cbf = HolonomicCBFFilter(safe_distance=0.30, gamma=1.0)
@@ -1082,9 +1082,14 @@ def initialize_hardware():
         model_name = active_velocity_model_name
         model_path = str(Path(__file__).parent.resolve() / f"{model_name}.torchscript")
         logger.info(f"Initializing VelocityEstimator with model: {model_path}...")
-        # Depth source priority: OAK-D Lite (when present) > ROS2 bridge (/camera/depth,
-        # ROS2/sim) > direct Astra USB. The OAK supplies denser, better-registered depth.
-        depth_source = oak if oak is not None else (ros_bridge if (ROS2_MODE or SIM_MODE) else camera)
+        # Depth source priority: OAK-D Lite (when available) > ROS2 bridge (/camera/depth,
+        # ROS2/sim) > direct Astra USB.
+        def get_current_depth_source():
+            if oak is not None and getattr(oak, "available", False):
+                return oak
+            if ROS2_MODE or SIM_MODE:
+                return ros_bridge
+            return camera
         
         # Callback to retrieve EKF pose and twist (Idea 1 & 11)
         def get_robot_pose_and_twist():
@@ -1103,7 +1108,7 @@ def initialize_hardware():
             global last_detections
             return list(last_detections)
 
-        velocity_estimator = VelocityEstimator(depth_source, lidar, robot_pose_fn=get_robot_pose_and_twist, model_path=model_path, detections_fn=get_latest_yolo_detections)
+        velocity_estimator = VelocityEstimator(get_current_depth_source, lidar, robot_pose_fn=get_robot_pose_and_twist, model_path=model_path, detections_fn=get_latest_yolo_detections)
         velocity_estimator.start()
         logger.info("VelocityEstimator started successfully")
     except Exception as e:

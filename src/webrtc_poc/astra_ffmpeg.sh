@@ -4,12 +4,18 @@
 # viewer is connected). Auto-detects the Astra RGB node (USB product 0501).
 set -e
 
-DEV=/dev/video0
+DEV=""
+FOUND=0
 for v in /dev/video*; do
   n=$(basename "$v")
   p=$(cat "/sys/class/video4linux/$n/device/../idProduct" 2>/dev/null || true)
-  if [ "$p" = "0501" ]; then DEV="$v"; break; fi
+  if [ "$p" = "0501" ]; then DEV="$v"; FOUND=1; break; fi
 done
+
+if [ "$FOUND" -eq 0 ] || [ -z "$DEV" ]; then
+  echo "ERROR: Astra RGB camera (product ID 0501) not found!" >&2
+  exit 1
+fi
 
 # ENCODER: libx264 (CPU) is low-latency and cheap at 640x480. Swap to
 # h264_v4l2m2m for the Jetson hardware encoder to nearly eliminate the CPU cost.
