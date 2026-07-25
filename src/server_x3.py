@@ -93,9 +93,22 @@ parser.add_argument('--sim', action='store_true', help='Run in simulation mode (
 parser.add_argument('--domain-id', type=int, default=42, dest='domain_id',
                     help='ROS_DOMAIN_ID for multi-machine ROS2 (must match laptop). '
                          'Overrides the ROS_DOMAIN_ID environment variable.')
+parser.add_argument('--no-oak', action='store_true', dest='no_oak',
+                    help='Disable the OAK-D Lite driver (stereo + depth + IMU). '
+                         'When enabled (default), the OAK-D is the depth source.')
+parser.add_argument('--no-oak-spatial', action='store_true', dest='no_oak_spatial',
+                    help='Disable on-device YOLO spatial detection on the OAK-D '
+                         '(still streams stereo/depth/IMU).')
+parser.add_argument('--webrtc-camera', action='store_true', dest='webrtc_camera',
+                    help='Serve the color camera over WebRTC (via mediamtx) instead of '
+                         'base64/WebSocket. Releases the Astra so ffmpeg can capture it at '
+                         'full framerate; launches mediamtx. GUI shows the WebRTC <video>.')
 args = parser.parse_args()
 SIM_MODE  = args.sim
 ROS2_MODE = not args.sim  # ROS2 hardware bridge is the default; only --sim disables it
+OAK_ENABLED = not args.no_oak  # OAK-D Lite supplies stereo/depth/imu unless --no-oak
+OAK_SPATIAL = not args.no_oak_spatial  # on-device YOLO spatial detection (if blob present)
+WEBRTC_CAMERA = args.webrtc_camera  # color via WebRTC/mediamtx instead of base64 (releases Astra)
 
 # Apply ROS_DOMAIN_ID early — must be set before rclpy.init() inside ROS2Bridge
 if args.domain_id is not None:
@@ -169,12 +182,14 @@ ros_bridge = None   # ROS2Bridge instance (always active unless --sim); used for
 drive = None
 lidar = None
 camera = None
+oak = None          # OakDCamera instance (stereo + depth + IMU); depth source when present
 model = None
 oled = None
 nav2_client = None    # Nav2Client instance (ROS2/sim modes only)
 frontier_explorer = None  # FrontierExplorer instance (ROS2 mode only)
 _gazebo_proc    = None   # subprocess handle when --sim auto-launches Gazebo
 _ros2_stack_proc = None  # subprocess handle for x3_bringup (launched by default in ROS2 mode)
+_mediamtx_proc = None    # subprocess handle for mediamtx (WebRTC camera, --webrtc-camera)
 _slam_proc      = None   # subprocess handle when SLAM Toolbox is running
 velocity_estimator = None  # VelocityEstimator instance (EE244 project)
 active_velocity_model_name = "velocity_mlp"  # currently loaded torchscript velocity model
@@ -185,6 +200,7 @@ _ab_test_mode = None       # A/B comparison test mode ("reactive" or "predictive
 
 detection_enabled = False
 depth_enabled = False
+stereo_enabled = False   # OAK-D left/right mono streaming to the GUI (off by default; bandwidth)
 lidar_enabled = False
 is_auto_driving = False
 last_detections = []
@@ -709,6 +725,31 @@ def _launch_gazebo():
     return proc
 
 
+def _launch_mediamtx():
+    """Launch mediamtx (WebRTC server) for the --webrtc-camera color feed.
+
+    mediamtx spawns the Astra->H.264 ffmpeg encoder on-demand (see mediamtx.yml
+    runOnDemand), so nothing touches the camera until the GUI actually watches.
+    Returns/stores the Popen handle so cleanup() can stop it.
+    """
+    global _mediamtx_proc
+    poc_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'webrtc_poc')
+    binary = os.path.join(poc_dir, 'mediamtx')
+    config = os.path.join(poc_dir, 'mediamtx.yml')
+    if not os.path.exists(binary):
+        logger.error(f"WebRTC: mediamtx binary not found at {binary} — color feed unavailable")
+        return
+    try:
+        _mediamtx_proc = subprocess.Popen(
+            [binary, config], cwd=poc_dir,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            preexec_fn=os.setsid,
+        )
+        logger.info(f"WebRTC: mediamtx started (pid {_mediamtx_proc.pid}) — GUI camera on :8889/astra")
+    except Exception as e:
+        logger.error(f"WebRTC: failed to launch mediamtx: {e}")
+
+
 def _launch_ros2_stack():
     """Auto-launch the X3 hardware bringup (drivers + EKF, no SLAM) as a subprocess.
 
@@ -896,7 +937,7 @@ def _encode_mapu(grid: dict) -> bytes | None:
 
 
 def initialize_hardware():
-    global ros_board, ros_bridge, drive, lidar, camera, model, oled, _gazebo_proc
+    global ros_board, ros_bridge, drive, lidar, camera, oak, model, oled, _gazebo_proc
     global nav2_client, _ros2_stack_proc, frontier_explorer
     global velocity_estimator, active_velocity_model_name
     global _shared_bgr_shm, _shared_depth_shm, _shared_bgr_array, _shared_depth_array
@@ -976,12 +1017,43 @@ def initialize_hardware():
 
     # 3. Camera — direct USB in both direct-hardware and --ros2 modes.
     #    Only --sim uses ROS2Bridge.get_frame() (Gazebo publishes /camera/image_raw).
-    if not SIM_MODE:
+    #    With --webrtc-camera we DON'T open the Astra here — mediamtx's ffmpeg owns it
+    #    and serves it over WebRTC (full framerate); the base64 path stays empty.
+    if not SIM_MODE and not WEBRTC_CAMERA:
         logger.info("Initializing Camera...")
         # In ROS2 mode the depth stream is owned by the orbbec_depth service,
         # so direct USB depth stream initialization is disabled to prevent conflicts.
         _enable_direct_depth = not ROS2_MODE
         camera = AstraCamera(width=640, height=480, sim_mode=False, enable_depth=_enable_direct_depth)
+    elif WEBRTC_CAMERA:
+        logger.info("Camera: --webrtc-camera set — Astra released for the WebRTC/mediamtx feed")
+        _launch_mediamtx()
+
+    # 3b. OAK-D Lite — stereo + on-device metric depth + 6-axis IMU (no color; the
+    #     Astra keeps RGB). When present it becomes the depth source for the
+    #     broadcast loop and VelocityEstimator, superseding the Astra/orbbec depth.
+    #     The driver degrades gracefully (getters return None, worker retries) if
+    #     the device is unplugged, so the server still runs without it.
+    if not SIM_MODE and OAK_ENABLED:
+        try:
+            from oakd_driver import OakDCamera
+            # Auto-enable on-device YOLO spatial detection if the plain blob exists
+            # (extract it from the .superblob once via blobs/extract_superblob.py).
+            _blob_dir = Path(__file__).parent / "blobs" / "yolo26n"
+            _blob = _blob_dir / "yolo26n.blob"
+            _cfg = _blob_dir / "config.json"
+            _spatial_blob = str(_blob) if (OAK_SPATIAL and _blob.exists()) else None
+            _spatial_cfg = str(_cfg) if (_spatial_blob and _cfg.exists()) else None
+            # mono_fps targets high on-device stereo/depth rate for perception; the
+            # actual rate is gated by the USB link (needs USB3/SUPER to approach it).
+            oak = OakDCamera(mono_fps=80, spatial_blob=_spatial_blob, spatial_config=_spatial_cfg,
+                             conf_threshold=0.35, accel_hz=500, gyro_hz=400)
+            oak.start()
+            logger.info("OAK-D Lite: driver started (stereo + depth + IMU"
+                        + (" + spatial detection)" if _spatial_blob else ")"))
+        except Exception as e:
+            logger.error(f"OAK-D Lite: init failed: {e}")
+            oak = None
 
     # 4. YOLO Model — prefer TRT engine (.engine), fall back to .pt on CPU
     try:
@@ -1010,8 +1082,9 @@ def initialize_hardware():
         model_name = active_velocity_model_name
         model_path = str(Path(__file__).parent.resolve() / f"{model_name}.torchscript")
         logger.info(f"Initializing VelocityEstimator with model: {model_path}...")
-        # In ROS2 and SIM modes, retrieve depth frames from the active ROS2 topic bridge to avoid conflicts.
-        depth_source = ros_bridge if (ROS2_MODE or SIM_MODE) else camera
+        # Depth source priority: OAK-D Lite (when present) > ROS2 bridge (/camera/depth,
+        # ROS2/sim) > direct Astra USB. The OAK supplies denser, better-registered depth.
+        depth_source = oak if oak is not None else (ros_bridge if (ROS2_MODE or SIM_MODE) else camera)
         
         # Callback to retrieve EKF pose and twist (Idea 1 & 11)
         def get_robot_pose_and_twist():
@@ -1084,6 +1157,12 @@ def cleanup():
             except Exception:
                 pass
         _ab_test_proc = None
+    if oak is not None:
+        try:
+            logger.info("Stopping OAK-D Lite driver...")
+            oak.cleanup()
+        except Exception as e:
+            logger.error(f"Failed to stop OAK-D driver: {e}")
     if velocity_estimator is not None:
         try:
             logger.info("Stopping VelocityEstimator...")
@@ -1104,6 +1183,12 @@ def cleanup():
         logger.info("Shutting down ROS2 hardware stack...")
         try:
             os.killpg(os.getpgid(_ros2_stack_proc.pid), signal.SIGTERM)
+        except Exception:
+            pass
+    if _mediamtx_proc is not None:
+        logger.info("Shutting down mediamtx (WebRTC camera)...")
+        try:
+            os.killpg(os.getpgid(_mediamtx_proc.pid), signal.SIGTERM)
         except Exception:
             pass
     if _slam_proc is not None:
@@ -1227,7 +1312,7 @@ def _load_map_data(yaml_name: str) -> dict | None:
 
 
 async def handle_client(websocket):
-    global detection_enabled, depth_enabled, lidar_enabled, is_auto_driving
+    global detection_enabled, depth_enabled, stereo_enabled, lidar_enabled, is_auto_driving
     global current_left_power, current_right_power
     global model, active_model_name
     global _gazebo_proc, nav2_client
@@ -1244,7 +1329,8 @@ async def handle_client(websocket):
     await websocket.send(json.dumps({
         "type": "hello",
         "mode": _mode,
-        "active_velocity_model": active_velocity_model_name
+        "active_velocity_model": active_velocity_model_name,
+        "webrtc_camera": WEBRTC_CAMERA,   # GUI shows a WebRTC <video> instead of base64 frames
     }))
 
     try:
@@ -1330,6 +1416,10 @@ async def handle_client(websocket):
                         elif not depth_enabled and camera._depth_stream is not None:
                             camera._close_depth()
                     logger.info(f"Depth streaming: {depth_enabled}")
+
+                elif msg_type == "toggle_stereo":
+                    stereo_enabled = data.get("enabled", False)
+                    logger.info(f"OAK-D stereo streaming: {stereo_enabled}")
 
                 elif msg_type == "start_auto_drive":
                     is_auto_driving = True
@@ -1726,7 +1816,7 @@ async def broadcast_loop():
     global _cam_frame_count, _yolo_frame_count, _fps_last_time
     global fps_camera, fps_detection, last_detections, depth_enabled, lidar_enabled
     global _batt_cache_v, _batt_cache_time  # P9
-    global _ab_test_mode
+    global _ab_test_mode, stereo_enabled
 
     loop = asyncio.get_event_loop()
     _depth_cycle = 0  # throttle depth to ~10 fps (every other 20fps cycle)
@@ -1780,11 +1870,15 @@ async def broadcast_loop():
                 _yolo_frame_count = 0
                 _fps_last_time    = now
 
-            # 4. Depth frame — throttled to 10fps; encode also in executor (P1)
+            # 4. Depth frame — throttled to 10fps; encode also in executor (P1).
+            #    Depth source priority: OAK-D Lite > ROS2 bridge (/camera/depth) > Astra USB.
             depth_str = ""
             _depth_cycle += 1
+            # Prefer the OAK-D only while its link is live; otherwise fall back so the
+            # GUI depth view keeps working if the OAK is unplugged.
+            _oak_up = oak is not None and getattr(oak, "available", False)
+            depth_source = oak if _oak_up else (ros_bridge if (ROS2_MODE or SIM_MODE) else camera)
             if depth_enabled and (_depth_cycle % 2 == 0):
-                depth_source = ros_bridge if (ROS2_MODE or SIM_MODE) else camera
                 if depth_source is not None:
                     def _get_depth():
                         df = depth_source.get_depth_frame()
@@ -1795,6 +1889,26 @@ async def broadcast_loop():
                         _, dbuf = cv2.imencode('.jpg', df_downscaled, [cv2.IMWRITE_JPEG_QUALITY, 60])
                         return base64.b64encode(dbuf).decode('utf-8')
                     depth_str = await loop.run_in_executor(None, _get_depth)
+
+            # 4b. OAK-D stereo (left/right mono) — toggled off by default (bandwidth),
+            #     throttled to the same 10fps cadence as depth. IMU is cheap and always sent.
+            oak_left_str = ""
+            oak_right_str = ""
+            if stereo_enabled and oak is not None and (_depth_cycle % 2 == 0):
+                def _get_stereo():
+                    left, right = oak.get_stereo_frames()
+                    out = ["", ""]
+                    for i, gray in enumerate((left, right)):
+                        if gray is None:
+                            continue
+                        small = cv2.resize(gray, (320, 200), interpolation=cv2.INTER_NEAREST)
+                        _, buf = cv2.imencode('.jpg', small, [cv2.IMWRITE_JPEG_QUALITY, 60])
+                        out[i] = base64.b64encode(buf).decode('utf-8')
+                    return out
+                oak_left_str, oak_right_str = await loop.run_in_executor(None, _get_stereo)
+            oak_imu = oak.get_imu() if oak is not None else None
+            # On-device YOLO spatial detections (3D positions), when the OAK NN is running.
+            oak_detections = oak.get_spatial_detections() if (oak is not None and getattr(oak, "spatial_active", False)) else []
 
             # 5. Lidar points — served via Foxglove bridge (/scan topic); not sent here
 
@@ -1846,6 +1960,10 @@ async def broadcast_loop():
             msg = {
                 "type": "readout",
                 "depth_image": depth_str,
+                "oak_left": oak_left_str,
+                "oak_right": oak_right_str,
+                "oak_imu": oak_imu,
+                "oak_detections": oak_detections,
                 "robot_pose": pose,
                 "m1_pos": m1_enc,
                 "m2_pos": m2_enc,
