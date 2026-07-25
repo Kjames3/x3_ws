@@ -24,3 +24,7 @@ log/
 
 # Ignore folder
 archive/
+
+# Cache directories and cache files
+.cache/
+*.cache
