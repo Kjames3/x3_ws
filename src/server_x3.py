@@ -141,7 +141,7 @@ def find_model_path(model_name):
     # Fallback default
     return os.path.join(MODELS_DIR, f"{model_name}.pt")
 
-YOLO_MODEL = find_model_path("yolo11n_cans")
+YOLO_MODEL = find_model_path("yolo26n")
 CONFIDENCE_THRESHOLD = 0.25
 INFERENCE_SIZE = 640
 
@@ -177,7 +177,7 @@ depth_enabled = False
 lidar_enabled = False
 is_auto_driving = False
 last_detections = []
-active_model_name = "yolo11n_cans"
+active_model_name = "yolo26n"
 
 # Current motor powers (tank-drive representation for GUI readout)
 current_left_power = 0.0
@@ -280,6 +280,10 @@ class ROS2Bridge:
         self._pedestrian_pub = self._node.create_publisher(PoseArray, '/pedestrian_poses', 10)
         self._pedestrian_marker_pub = self._node.create_publisher(MarkerArray, '/pedestrian_markers', 10)
 
+        # Staleness tracking for odom (Idea 225) and depth (Idea 230)
+        self._odom_stamp = 0.0
+        self._last_depth_write_time = 0.0
+
         self._spin_thread = threading.Thread(
             target=rclpy.spin, args=(self._node,), daemon=True)
         self._spin_thread.start()
@@ -308,6 +312,7 @@ class ROS2Bridge:
     def _depth_cb(self, msg):
         """Convert depth image to colourised BGR uint8.
         Handles both 32FC1 (meters, Gazebo) and 16UC1/mono16 (millimeters, physical robot)."""
+        self._last_depth_write_time = time.monotonic()  # Idea 230: record arrival time for staleness gate
         import numpy as np, cv2
         global _shared_depth_array
         try:
@@ -361,8 +366,18 @@ class ROS2Bridge:
             f = self._latest_raw_depth
         return f if f is not None else None
 
+    def get_depth_frame_age(self) -> float:
+        """Return seconds since the last depth frame was received. Returns inf if never received.
+
+        Used by VelocityEstimator to gate depth-based inference on frame freshness (Idea 230).
+        """
+        if self._last_depth_write_time == 0.0:
+            return float('inf')
+        return time.monotonic() - self._last_depth_write_time
+
     def _odom_cb(self, msg):
         """Extract position (metres), yaw (radians), and body twist from nav_msgs/Odometry."""
+        self._odom_stamp = time.monotonic()  # Idea 225: record arrival time for staleness guard
         import math
         p = msg.pose.pose.position
         q = msg.pose.pose.orientation
@@ -919,6 +934,9 @@ def initialize_hardware():
         # Callback to retrieve EKF pose and twist (Idea 1 & 11)
         def get_robot_pose_and_twist():
             if ros_bridge is not None:
+                # Idea 225: reject stale odom — prevents frozen pose from corrupting velocity estimation
+                if time.monotonic() - ros_bridge._odom_stamp > 0.5:
+                    return None
                 pose = ros_bridge.get_pose_m()
                 with ros_bridge._lock:
                     twist = dict(ros_bridge._twist)
@@ -1819,15 +1837,15 @@ def _is_standalone_test_running() -> bool:
 
 
 async def motion_loop():
-    """Dedicated 20 Hz motion command consumer with velocity ramping.
+    """Dedicated ~30 Hz motion command consumer with velocity ramping (Idea 111).
 
     Maintains a ramped velocity that smoothly tracks commanded targets.
-    - Runs at 20 Hz to avoid flooding DDS buffers and causing network command latency.
+    - Runs at ~30 Hz (0.033 s sleep) to reduce serial write CPU overhead vs 100 Hz.
     - Continuously publishes cmd_vel as an active keep-alive heartbeat.
     - Safety watchdog: zero targets if input silent for too long.
     """
     global _p2p_proc, _ab_test_proc
-    # Ramp rates per tick at 20 Hz
+    # Ramp rates per tick at ~30 Hz
     _ACCEL      = 0.5     # m/s  per tick
     _DECEL      = 1.0     # m/s  per tick
     _OACCEL     = 0.8     # rad/s per tick
@@ -1841,7 +1859,7 @@ async def motion_loop():
 
     while True:
         if motion_queue is None:
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.033)
             continue
 
         # 1. Drain latest command from queue
@@ -1872,14 +1890,16 @@ async def motion_loop():
         _ramp_vy    = _step_toward(_ramp_vy,    _target_vy,    _ACCEL,  _DECEL)
         _ramp_omega = _step_toward(_ramp_omega, _target_omega, _OACCEL, _ODECEL)
 
-        # 4. Continuous active heartbeat to hardware at 20 Hz (only if no test process is running)
+        # 4. Continuous active heartbeat to hardware at 30 Hz (only if no test process is running)
+        # Idea 111: reduced from 20 Hz (0.05 s) to 30 Hz (0.033 s) — reduces serial write CPU overhead
+        # and prevents serial port lock contention without sacrificing control responsiveness.
         test_running = (_p2p_proc is not None and _p2p_proc.poll() is None) or \
                        (_ab_test_proc is not None and _ab_test_proc.poll() is None) or \
                        _is_standalone_test_running()
         if drive and not test_running:
             drive.move(_ramp_vx, _ramp_vy, _ramp_omega)
 
-        await asyncio.sleep(0.05)  # 20 Hz
+        await asyncio.sleep(0.033)  # ~30 Hz (Idea 111)
 
 
 async def oled_loop():

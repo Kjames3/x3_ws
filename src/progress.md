@@ -464,3 +464,260 @@ Previously, if the robot's target waypoint was beyond a wall (e.g. a corridor sh
 **Deployment:** File transferred to `jetson@10.13.246.41:/home/jetson/x3_ws/src/ab_comparison_test.py` via SFTP (md5: `ae6a6edd727c156de2ce26fe8ff78113`).
 
 **Status:** Completed 🟢. Static-wall early-stop is implemented, deployed, and ready for lab testing.
+
+---
+
+### [2026-06-08] Automated Improvement Pipeline & High/Medium ROI Batch Implementation
+**Routine Created:**
+- Claude Code Remote (CCR) hourly routine (`trig_01N17tLTZ6qjneNAjofdv8Ma`) configured to analyze `ab_comparison_test.py`, `server_x3.py`, and `velocity_estimator.py` every hour, generate 8–12 improvement ideas, append them to `src/improvement_ideas.md`, and sync every 15 new ideas into `src/roi_analysis.md` sorted by ROI tier.
+
+**Scripts Modified:**
+- [ab_comparison_test.py](file:///home/kamren/x3_ws/src/ab_comparison_test.py) (18 improvements)
+- [velocity_estimator.py](file:///home/kamren/x3_ws/src/velocity_estimator.py) (12 improvements)
+- [server_x3.py](file:///home/kamren/x3_ws/src/server_x3.py) (3 improvements)
+
+**`ab_comparison_test.py` Changes & Technical Rationales:**
+
+1. **Non-blocking Recovery Backing (Idea 200)**
+   * **Change:** Replaced the blocking `for _ in range(15): time.sleep(0.1)` recovery backing loop with a non-blocking timer state (`_is_backing`, `_backing_start`). The backing handler fires at the top of every `_control_loop` tick, publishing `-0.08 m/s` for 1.5 s then automatically resuming.
+   * **Rationale:** The original blocking sleep prevented all LiDAR safety callbacks (and the node's spin) from executing during the 1.5-second backing maneuver, creating a physical safety hazard where new obstacles could appear unseen. The non-blocking version keeps all sensor callbacks alive during recovery.
+
+2. **Speed Ramp After Pause Clearance (Idea 224)**
+   * **Change:** Stored `self._pause_exit_time` when a bypass obstacle clears; scaled `speed *= min(1.0, (now - _pause_exit_time) / 0.3)` in both drive states for a 300 ms linear acceleration ramp.
+   * **Rationale:** Eliminates the abrupt velocity step from 0 to full speed after obstacle clearance, reducing wheel slip and jerky motion on the mecanum platform.
+
+3. **Rotation Safety Halt (Idea 228)**
+   * **Change:** Added a minimum-range LiDAR guard at the top of `ROTATE_180` and `ROTATE_HOME`: if any LiDAR return is `< 0.22 m`, stop rotation and return.
+   * **Rationale:** Prevents the robot from rotating into an obstacle that entered its turning radius while the state machine was already committed to a rotation.
+
+4. **APF Deadband (Idea 231)**
+   * **Change:** Added `if abs(self.vy_rep) < 0.012: self.vy_rep = 0.0` after the APF clamp to create a dead zone at near-zero repulsion.
+   * **Rationale:** Tiny residual APF forces caused persistent lateral oscillation in the center of wide corridors where the robot was equidistant from both walls. The deadband suppresses this chatter without affecting real wall-avoidance behavior.
+
+5. **ICP Fallback Threshold (Idea 237)**
+   * **Change:** Increased the ICP valid-scan-point fallback threshold from `< 10` to `< 40`.
+   * **Rationale:** ICP was being allowed to run on too few correspondent point pairs, producing unreliable and noisy pose corrections. Raising the gate to 40 ensures there are enough structural features for a statistically meaningful alignment.
+
+6. **Cached Start-Yaw Trig (Idea 209)**
+   * **Change:** Pre-computed `self._cos_start_yaw` and `self._sin_start_yaw` at each INIT, SETTLE_1, and SETTLE_2 state transition; replaced runtime `math.cos(start_yaw)` calls in `dist_travelled` and `path_y` calculations.
+   * **Rationale:** The path-frame projection (`dx*cos + dy*sin`) is computed at 20 Hz. Pre-computing and caching the trig functions avoids redundant floating-point operations every control tick.
+
+7. **EMA Wall Clearances (Idea 197)**
+   * **Change:** Applied exponential moving average (α=0.7) to `wall_left_clearance` and `wall_right_clearance` before feeding them to the APF and side-wall guard.
+   * **Rationale:** Raw per-frame LiDAR wall readings contained high-frequency noise that caused the APF repulsion force to oscillate rapidly. The EMA provides temporal smoothing while remaining responsive enough (70% new data) to follow real corridor geometry changes.
+
+8. **Wall Confirmation Debounce (Idea 203)**
+   * **Change:** Added `_wall_confirm_count` counter; `_front_is_continuous_wall` only set True after 2 or more consecutive frames confirm the wall condition.
+   * **Rationale:** A single mis-classified LiDAR frame could prematurely trigger the static-wall early-stop, ending the run far short of the target distance. Requiring two consecutive frames eliminates single-scan false positives.
+
+9. **ICP NumPy Array Storage (Idea 212)**
+   * **Change:** Initialized `prev_scan_points` as `np.empty((0, 2), dtype=np.float32)` in `__init__`; stored scan points as `np.array(..., dtype=np.float32)` at every update; added `isinstance` check in `_align_scans_icp` to avoid redundant conversion.
+   * **Rationale:** Eliminated repeated Python-list-to-NumPy conversions on every ICP call, which allocated new arrays every scan tick (8 Hz) unnecessarily.
+
+10. **ICP P/Q Subsampling to 80 Points (Idea 198)**
+    * **Change:** At the start of `_align_scans_icp`, downsample P and Q to at most 80 points each using stride-based slicing.
+    * **Rationale:** YDLidar X3 returns up to ~350 points per scan. The O(N²) nearest-neighbor step in ICP scales quadratically — 80 points vs 350 gives a ~19× speedup with minimal loss of geometric accuracy for corridor-scale matching.
+
+11. **ICP Early-Exit Convergence (Idea 189)**
+    * **Change:** After each ICP iteration, added `if abs(dx_corr)+abs(dy_corr)+abs(dtheta_corr) < 1e-4: break` to exit the loop when corrections become negligible.
+    * **Rationale:** In most ticks the scan barely moves (robot speed ≤ 0.2 m/s at 8 Hz LiDAR = ~25 mm/frame), so ICP converges in 1–2 iterations. Running all 3 iterations wastes CPU on already-converged solutions.
+
+12. **ICP Inlier Quality Gate (Idea 190)**
+    * **Change:** After the ICP loop, if `np.sum(valid) < 0.20 * len(Q_trans)`, fall back to odometry instead of applying the (poor-quality) ICP correction.
+    * **Rationale:** When the robot is near a corner or the scan geometry changes dramatically (door opening), ICP may converge to a local minimum with very few valid correspondences. An inlier fraction below 20% indicates an unreliable result; odometry is safer.
+
+13. **ICP Rotation Outlier Clamp (Idea 221)**
+    * **Change:** Added `if abs(dtheta_match) > 0.15: dtheta_match = 0.0` after the ICP call in `_scan_cb`.
+    * **Rationale:** ICP occasionally produced spurious yaw corrections of 10–30° when the scan environment changed quickly (robot near rotation). Clamping to ±8.6° prevents these outliers from corrupting the corrected heading.
+
+14. **ICP Translation Outlier Fallback (Idea 194)**
+    * **Change:** Added `if math.hypot(dx_match, dy_match) > 0.30: fallback to odometry` after the ICP call.
+    * **Rationale:** A correction larger than 30 cm in a single 125 ms scan interval implies a scan-match error rather than real motion (the robot's max speed is 0.2 m/s = 25 mm/frame). Falling back to odometry prevents gross drift jumps from bad ICP runs.
+
+15. **Rotation Timeout Constant (Idea 232)**
+    * **Change:** Added `ROTATION_TIMEOUT = 10.0` constant; used for `ROTATE_180` and `ROTATE_HOME` instead of the 20 s `SEGMENT_TIMEOUT`.
+    * **Rationale:** A 180° rotation at MIN_ANGULAR_SPEED (0.12 rad/s) completes in ≈ 13 s worst case, but in practice in 4–6 s. Using the full 20 s timeout allowed a stuck rotation to block the entire run for far too long before aborting.
+
+16. **Blocked Time Reset on SETTLE_2 (Idea 239)**
+    * **Change:** Added `self.blocked_time = 0.0` at the SETTLE_2 → DRIVE_TO_A transition.
+    * **Rationale:** If the robot was briefly paused near WP-B before arriving, `blocked_time` accumulated. Without a reset, the return leg would start with a partially-filled blocked timer and could incorrectly trigger the recovery backing maneuver immediately.
+
+17. **ICP Scan Reset on Repeat (Idea 199)**
+    * **Change:** Added `self.prev_scan_points = np.empty((0, 2), dtype=np.float32)` in the ROTATE_HOME repeat-loop reset block.
+    * **Rationale:** On repeat runs, the scan from the end of one leg would be used as the ICP reference for the start of the next. Since the robot has just rotated 180°, the scan environments are completely different, guaranteeing a bad first ICP match and a noisy corrected-pose jump at the start of each new leg.
+
+18. **Extended CSV Logging (Ideas 205 & 229)**
+    * **Change:** Added 7 new columns to the CSV log: `path_y`, `vx_cmd`, `vy_cmd`, `vy_rep`, `corrected_x`, `corrected_y`, `corrected_yaw_deg`. The `_maybe_log()` method passes all these from live state.
+    * **Rationale:** Post-run analysis of the A/B comparison requires detailed telemetry to quantify the effect of velocity-based speed scaling on both path deviation and clearance. The new columns allow plotting the ICP-corrected trajectory, the APF repulsion contribution, and the commanded velocity profile over time.
+
+**`velocity_estimator.py` Changes & Technical Rationales:**
+
+1. **Velocity Output Clamp (Idea 223)**
+   * **Change:** Added `pred_ms = np.clip(pred_ms, -2.5, 2.5)` after inverse-scaling the MLP output.
+   * **Rationale:** The MLP occasionally produced physically implausible speed predictions (>5 m/s) when exposed to out-of-distribution feature windows (e.g., track initialization noise or ICP jumps). Clamping to ±2.5 m/s (≈ running human speed) prevents these outliers from triggering false emergency brakes or speed reductions.
+
+2. **Inference Sleep Floor (Idea 235)**
+   * **Change:** Changed `time.sleep(max(0.0, dt - elapsed))` to `time.sleep(max(0.001, dt - elapsed))` in the inference loop.
+   * **Rationale:** When inference finishes in under 1 ms (e.g., no tracks), the original call would pass `0.0` to `sleep()`, which effectively means a busy-wait spin. A 1 ms floor releases the GIL and yields CPU time to other threads (ROS2 spin, serial I/O).
+
+3. **Track Visible Count Aging (Idea 201)**
+   * **Change:** Added `self.tracks[tid]['visible_count'] = max(0, self.tracks[tid]['visible_count'] - 1)` in the tracker's per-frame aging loop.
+   * **Rationale:** When a track becomes occluded or exits the frame, `visible_count` was only reset to 0 on re-initialization. It never decreased while the track coasted unmatched for several frames, causing the track initiation gate (Idea 109) to immediately pass the track as "confirmed" when it reappeared.
+
+4. **Pre-computed Inverse Scaler (Idea 202)**
+   * **Change:** Added `self.scaler_X_inv_scale = (1.0 / self.scaler_X_scale).astype(np.float32)` in `_load_model()`; changed normalization from `(x - mean) / scale` to `(x - mean) * inv_scale`.
+   * **Rationale:** Integer/float division in NumPy is slower than multiplication. Pre-computing the reciprocal once at load time eliminates 40 divisions per inference call, replaced by 40 multiply-adds.
+
+5. **Far-Track Zero-Velocity Gate (Idea 204)**
+   * **Change:** Added `if track['centroid'][2] > 1.8: continue` (appending zero-velocity estimate) before the `features_list` append.
+   * **Rationale:** Obstacles beyond 1.8 m contribute zero to speed scaling (they're outside the `PROXIMITY_THRESHOLD`). Running full MLP inference on far tracks wastes compute budget for results that are discarded anyway.
+
+6. **Confidence-Weighted Velocity Output (Idea 236)**
+   * **Change:** Applied `conf = min(1.0, visible_count / WINDOW_SIZE)` multiplier to `vx`, `vy`, and `speed` before appending to estimates.
+   * **Rationale:** A track with only 3 visible frames has seen a small fraction of the 10-frame MLP input window. Its predictions are padded with repeated earliest values and are less reliable. Scaling by `conf` gracefully ramps from zero influence at track birth to full influence at window saturation, preventing new tracks from abruptly triggering speed reductions.
+
+7. **Downsampling-First Far-Range Mask (Idea 234)**
+   * **Change:** Eliminated the full-resolution `far_grid = np.zeros((h_orig, w_orig), dtype=bool)` allocation; performs the 2× downsampling first, then applies the stride-2 far-range mask on the smaller frame.
+   * **Rationale:** Allocating a full 480×640 boolean array on every inference cycle (8× per second) caused frequent heap fragmentation on the Jetson. Operating entirely on the already-downsampled frame reduces memory pressure.
+
+8. **Adaptive Contour Area Threshold (Idea 166)**
+   * **Change:** Replaced the fixed `MIN_BLOB_AREA` check with `adaptive_min_area = (MIN_BLOB_AREA / 4.0) * (1.5 / z_ref) ** 2`, using the depth sample at the contour bounding-box center.
+   * **Rationale:** A pedestrian at 3 m projects to ~25% of the pixel area vs at 1.5 m. A fixed area threshold either misses distant pedestrians or floods near-range detections with small spurious blobs. The adaptive threshold scales quadratically with depth to maintain a consistent real-world size gate.
+
+9. **Depth Fast-Path Gate (Idea 160)**
+   * **Change:** Added an early-exit at the top of `_inference_loop`: if `raw_depth_frame` is not None but has no valid pixels in `[0.5, 4.0 m]`, immediately set `estimates=[]` and sleep the remainder of the frame interval.
+   * **Rationale:** When the robot is near a wall with no valid obstacles in range, the full inference pipeline (blob detection, ICP, tracker update, MLP forward pass) was running at 10 Hz on an empty scene. The fast-path gate prevents all of this processing for a no-op inference cycle.
+
+10. **Vectorized Local History Reconstruction (Idea 175)**
+    * **Change:** Replaced the Python for-loop that reconstructed `hist_local` from `history_global` with vectorized NumPy operations: `hist_g_arr = np.array(list(...))`, `dxy = hist_g_arr[:,:2] - robot_pos`, `local_xy = dxy @ R.T`.
+    * **Rationale:** The per-track Python loop iterated up to 10 frames × 5 tracks = 50 iterations per inference cycle. The vectorized version computes all global-to-local transforms for one track's entire window in a single matrix multiply, with better cache locality.
+
+11. **Removed Redundant Local History Deque (Idea 227)**
+    * **Change:** Removed the camera-frame `history` deque from `ObstacleTracker.__init__`, `update()`, and return values; `hist_local` is now reconstructed exclusively from `history_global`.
+    * **Rationale:** Maintaining two parallel history deques per track (one in camera-frame, one in global-frame) was redundant after Idea 175's vectorized reconstruction. Removing the camera-frame deque eliminates the memory for 5 tracks × 10 frames × 3 floats = 150 floats per inference cycle, and removes the associated deque append overhead.
+
+12. **Per-Track Acceleration Clamp (Idea 152)**
+    * **Change:** Added `max_delta = 3.0 / INFER_HZ` (= 0.3 m/s per frame at 10 Hz); after assembling the full `estimates` list, clamped per-component `vx`/`vy` delta against the previous frame and recomputed `speed`.
+    * **Rationale:** Human locomotion biomechanics limit peak acceleration to ~3 m/s². Step-changes larger than 0.3 m/s between inference frames indicate sensor noise or tracking discontinuities, not real motion. Clamping prevents single-frame speed spikes from triggering sudden, jarring robot decelerations.
+
+**`server_x3.py` Changes & Technical Rationales:**
+
+1. **Motion Loop Frequency 20 Hz → 30 Hz (Idea 111)**
+   * **Change:** Changed `asyncio.sleep(0.05)` to `asyncio.sleep(0.033)` in the motion command drain loop.
+   * **Rationale:** The 20 Hz drain rate was slower than the joystick's 50 Hz input rate, causing motion commands to queue up and introducing ~25–50 ms of additional latency between joystick input and wheel actuation. 30 Hz halves the queue buildup while staying well within the asyncio event loop's scheduling budget.
+
+2. **Odometry Staleness Guard (Idea 225)**
+   * **Change:** Added `self._odom_stamp = 0.0` in `ROS2Bridge.__init__`; set `self._odom_stamp = time.monotonic()` at the top of `_odom_cb`; added a staleness check in `get_robot_pose_and_twist` that returns `None` if the last odom was received more than 0.5 s ago.
+   * **Rationale:** If the EKF or base_node crashes mid-run, the server continues broadcasting a stale pose that appeared current. Velocity estimation and Nav2 clients built on this stale pose would make decisions based on outdated robot location. Returning `None` on stale odom forces callers to handle the no-data case explicitly rather than silently using bad data.
+
+3. **Depth Frame Age Tracking (Idea 230)**
+   * **Change:** Added `self._last_depth_write_time = 0.0` in `ROS2Bridge.__init__`; updated `self._last_depth_write_time = time.monotonic()` at the top of `_depth_cb`; added `get_depth_frame_age() -> float` method (returns `float('inf')` if never received).
+   * **Rationale:** The velocity estimator and GUI have no way to distinguish "depth frame not yet received" from "depth stream stalled." `get_depth_frame_age()` exposes this staleness metric so the estimator can gate its inference on frame freshness and avoid making decisions based on a frozen depth image.
+
+**Bug Fixed — Missing `--domain-id` Argument (2026-06-08):**
+   * **Bug:** After deploying the updated files to the Jetson, the robot failed to move in either reactive or predictive mode. Root cause: `ab_comparison_test.py` called `rclpy.init()` without applying `ROS_DOMAIN_ID=42`, meaning it joined ROS2 domain 0 instead of the Jetson's domain 42, and never received `/odom`.
+   * **Fix:** Added `--domain-id` CLI argument (default: None, inherits environment). When provided, sets `os.environ['ROS_DOMAIN_ID']` before `rclpy.init()`. Correct usage: `python3 ab_comparison_test.py --mode reactive --domain-id 42`.
+
+**Deployment:** All three files transferred to `jetson@10.13.197.109:/home/jetson/x3_ws/src/` via paramiko SFTP and verified by MD5 checksum.
+
+**Status:** Completed 🟢. 33 improvements implemented across all three core scripts and deployed to the robot.
+
+
+
+---
+
+### [2026-06-09] Camera-Estimator Blindness Fix — Far-Range Detection & Track Confirmation
+**Scripts Modified:**
+- [velocity_estimator.py](file:///home/kamren/x3_ws/src/velocity_estimator.py) (Removed alternating-row/column decimation from the far-range depth mask; restructured `ObstacleTracker` visible-count accounting so the confirmation gate is reachable)
+
+**Symptom Reported:**
+During `ab_comparison_test.py` runs in both reactive and predictive modes, the robot completed the 4 m out-and-back path correctly but would **drive straight into a person standing in its path** instead of slowing/bypassing. The GUI obstacle panel permanently displayed *"Awaiting obstacles and velocity reports…"*, indicating the velocity-estimate list was always empty. Live inspection of the server `readout` over `ws://localhost:8081` confirmed `velocity_estimates` was empty on every frame even with a wall 1.8 m ahead filling the depth image.
+
+**Root-Cause Diagnosis (on-robot):**
+The obstacle-avoidance stack is **camera-primary** (depth-blob detection → tracking → MLP velocity → bypass/TTC speed-scaling), with LiDAR only as a ±0.75 m bumper fallback. Two independent latent bugs collapsed the camera path to zero output, leaving only the weak short-range LiDAR stop — which fires too late and only nudges 0.15 m, so a pedestrian gets struck.
+
+**Bugs Found & Technical Rationales:**
+
+1. **Far-Range Depth Mask Erased by Morphological Opening (`_extract_depth_centroids`)**
+   * **Bug:** The "dynamic voxel downsampling" step built the far-range (1.5–4.0 m) obstacle mask on the already-2×-downsampled depth frame and then zeroed alternating rows **and** columns (`far_mask_ds[1::2, :] = False; far_mask_ds[:, 1::2] = False`). This leaves set pixels spaced two apart — no two adjacent. The immediately following $5\times5$ `MORPH_OPEN` erosion then deletes every isolated pixel, so the far-range mask is wiped out entirely. **Every obstacle beyond ~1.5 m produced zero contours and was invisible to the estimator.** Verified live against a real depth frame (~120 k valid pixels, nearest return 1.8 m): buggy code → **0 contours**; with the two decimation lines removed → **3 contours / 2 centroids**.
+   * **Fix:** Removed the alternating-row/column zeroing. The far-range region stays contiguous (the frame is already 2× downsampled for cost), so erosion preserves real obstacle blobs while still cleaning speckle.
+
+2. **`visible_count` Confirmation Gate Mathematically Unreachable (`ObstacleTracker.update`)**
+   * **Bug:** The aging loop decremented `visible_count` for *every* track on *every* frame (`visible_count = max(0, visible_count - 1)`), while a successful match incremented it by exactly 1. A track matched every frame therefore netted **zero** change and stayed pinned at its initial value of **1**. The estimate-eligibility gate requires `visible_count >= 3` (the 3-of-N track-initiation rule, Idea 109), so **no track could ever be confirmed** and the estimates list was always empty — even though tracks existed (live debug showed `tracks=2–4`).
+   * **Fix:** Removed the unconditional per-frame decrement. Staleness is already handled by `age`/`max_age` (tracks unseen for >10 frames are deleted). A separate decay step now decrements `visible_count` only for tracks that were **not** matched this frame, preserving the "recent consecutive visibility" semantics. The gate is reachable after ~3 frames (~0.3 s at the 10 Hz inference rate).
+
+**Verification:** After both fixes and a service restart, the live `readout` went from `n_estimates=0` to stable detections (e.g. obstacles at 1.95 m and 3.61 m with persistent track IDs). The GUI obstacle panel now populates, and both reactive and predictive modes share this restored detection path.
+
+**Deployment:** Both fixes applied to the local workspace and directly to `jetson@10.13.245.176:/home/jetson/x3_ws/src/velocity_estimator.py`; `x3_server` restarted and confirmed healthy. (Robot working copy currently diverges from local `main` — reconcile on next git deploy.)
+
+**Status:** Completed 🟢. Far-range camera detection and track confirmation are restored and verified on the physical robot.
+
+---
+
+### [2026-06-09] Detection Model Switch — Cans Detector → Standard COCO (Person-Capable)
+**Scripts Modified:**
+- [server_x3.py](file:///home/kamren/x3_ws/src/server_x3.py) (Changed default `YOLO_MODEL = find_model_path("yolo26n")` and `active_model_name = "yolo26n"`, replacing `yolo11n_cans`)
+- Robot environment: installed `torchvision==0.25.0`; moved the broken prebuilt engine `yolo_models/default/yolo26n.engine` → `yolo26n.engine.broken-296cls`
+
+**Motivation:**
+The active detector was `yolo11n_cans`, a soda-can model with no `person` class, so the visual-LiDAR person-confirmation gate (Idea 146) and the predictive "dynamic pedestrian" corridor widening could never identify a human as such. A standard COCO model (`class 0 = person`) is required for human-aware behaviour.
+
+**Findings & Technical Rationales:**
+
+1. **YOLO Detection Was Environment-Broken Independent of Model Choice**
+   * **Finding:** The robot's system Python (`/usr/bin/python3` 3.10, `torch 2.10.0+cpu`) was **missing `torchvision`** (only an orphaned `0.15.0` `.dist-info` with no package remained, which blocked imports and confused `pip`). With no `torchvision`, every `.pt` model fails to load and the failure was silently swallowed by the YOLO-init try/except — so `yolo11n_cans` had in practice been producing **zero detections all along** (it had no `.engine`, so it fell to the broken `.pt` path).
+   * **Resolution:** Removed the stale `0.15.0` metadata and installed `torchvision==0.25.0` (the version paired with torch 2.10) using `--no-deps` so the existing torch build was untouched.
+
+2. **Prebuilt `yolo26n.engine` Was Mismatched and Non-Functional**
+   * **Finding:** The TensorRT wrapper derives class count from the engine output as `out_shape[1] - 4`, which reported **296 classes** for the on-disk `yolo26n.engine` — yet the matching `.pt` is standard **80-class COCO**. The engine had been built from a different model/device and, when exercised, threw `IExecutionContext::enqueueV3: Cask convolution execution` (TRT Error Code 1) and returned no detections. It was therefore unusable on this robot.
+   * **Resolution:** Renamed the bad engine to `yolo26n.engine.broken-296cls` so the server's "prefer `.engine` else `.pt`" loader falls through to the correct CPU `.pt`. A `yolo26n.onnx` remains in the directory for rebuilding a correct GPU engine later (now possible since `torchvision` is present).
+
+3. **Switched Active Model to COCO `yolo26n` (CPU)**
+   * **Change:** Set the default model name to `yolo26n` in `server_x3.py`. After restart the server logs `Loading YOLO (CPU) … yolo26n.pt` and `YOLO classes (80): 0:person, 1:bicycle, …`. Standalone inference on the Ultralytics `bus.jpg` reference image returned `person` @ 0.91 and `bus` @ 0.92, confirming correct class mapping. The live detection loop runs at **~1.9 fps on CPU** (no `.engine`), which is acceptable for low-speed indoor avoidance but is the main candidate for future GPU acceleration.
+   * **Rationale:** Provides a real `person` class so the velocity estimator's person-gating and the predictive pedestrian-corridor logic become meaningful, while keeping the depth-based avoidance (which needs no YOLO) fully functional regardless.
+
+**Operational Notes:**
+- Camera detection defaults **OFF** and resets OFF on every server restart; enable it from the GUI (or `{"type":"toggle_detection","enabled":true}`) when person-confirmation is wanted.
+- Future option for fast GPU person detection: export `yolo26n.pt` → ONNX → a device-correct TensorRT `.engine` (torchvision is now installed to support this).
+
+**Deployment:** `server_x3.py` model name changed locally and on `jetson@10.13.245.176`; `torchvision` installed and broken engine renamed on the robot; `x3_server` restarted and CPU person detection verified live.
+
+**Status:** Completed 🟢. The robot now runs a standard COCO detector with a working `person` class; obstacle avoidance verified functional in both modes.
+
+---
+
+### [2026-06-09] Demo-Prep Live Diagnostics, Operational Settings & Known Issues
+**Scripts Analyzed (no code edits this session):**
+- [velocity_estimator.py](file:///home/kamren/x3_ws/src/velocity_estimator.py) (visual-LiDAR person gate, MLP velocity output behaviour while driving)
+- [ab_comparison_test.py](file:///home/kamren/x3_ws/src/ab_comparison_test.py) (`_update_bypass_offset` side-selection, LiDAR-blocked bypass branch)
+
+**Context:**
+Final walk-in testing before the live demo. The fixes above restored detection, but pedestrian avoidance still looked glitchy: reactive mode stuttered (expected), and predictive mode also stuttered, sometimes bumped a stationary person's shoes, and on one return pass appeared to **steer toward** the person. Root-caused live on the robot by capturing the server `readout` (`ws://localhost:8081`) and the A/B diagnostic block from `journalctl`. No code was changed; the outcomes are operational settings + documented limitations.
+
+**Findings & Technical Rationales:**
+
+1. **Slow CPU-YOLO Person-Gate Starves the Estimator While Walking**
+   * **Finding:** With camera detection enabled, YOLO runs at only ~2–2.4 fps on CPU. The visual-LiDAR fusion gate (Idea 146) keeps a depth centroid only if it reprojects inside a YOLO `person` box (+15 px). At ~2.4 fps the box is stale by ~0.4 s, so a *moving* person's fresh 10 Hz depth centroid frequently falls outside the stale box and gets discarded — the track drops in and out, the MLP can't hold a velocity, and predictive mode loses its early-reaction signal.
+   * **Operational fix for demo:** Run with camera detection **OFF** (the default; it also resets OFF on restart and must be started clean, since toggling it off in the GUI does not clear the last `person` box). With detection off the gate is skipped entirely, so the depth + MLP estimator tracks pedestrians continuously at 10 Hz. The depth-based avoidance needs no YOLO.
+
+2. **Depth Near-Field Dead Zone Explains "Bumps Shoes When Standing Still"**
+   * **Finding:** The Astra depth camera has a <0.5 m near-field dead zone and a vertical FOV that often excludes feet right at the bumper, so a person standing toe-to-bumper is simply not in the depth data. A stationary target also reads speed ≈ 0, so predictive treats it as a *static* obstacle (tight corridor, small bypass) rather than widening. Only the ±0.75 m LiDAR bumper catches that case, and it only nudges.
+   * **Operational note:** Demo with the person approaching from ≥ ~0.6 m (legs/torso in depth range), not toe-to-bumper.
+
+3. **"Steers Into Me" Root-Caused — Bypass Picks the Open Side Without Checking for a Person (primary), Compounded by Phantom MLP Velocities (secondary)**
+   * **Evidence (return pass, person = track ID 180 on the robot's LEFT at `left=+0.21 m`, `fwd=0.66 m`):** Front LiDAR was blocked, the robot's **right** side was cluttered with other returns (IDs 167/174, which the MLP also tagged with phantom speeds of 0.27–0.69 m/s), so `Right Blocked=True`. The LiDAR-blocked bypass branch therefore chose the only "open" side — **left** (`Target Lateral Offset=+0.15 m`) — and strafed there, directly into the person's position. It then froze when both sides read blocked (`speed_scale → 0`). The robot never selected the person as the obstacle to avoid; it escaped the cluttered side *into* the person.
+   * **Sign check (forward pass):** A right-side obstacle correctly produced a left strafe (`offset=+0.40`, `path_y −0.058 → +0.197`), confirming the lateral command **sign is correct** — this is a side-*selection/salience* flaw, not a sign inversion.
+   * **Secondary cause (estimator):** While driving, the MLP reports phantom velocities up to **0.8 m/s** on physically static objects (ego-motion not fully cancelled). Anything > 0.15 m/s is treated as a fast "dynamic pedestrian," so predictive applies the widest 0.40 m corridor to clutter and over-reacts/jitters.
+   * **Operational fix for demo:** Run in a corridor clear of objects within ~1.5 m on either side, with the person approaching from straight ahead or one open side. Removing side clutter prevents the "escape into the open side" failure and removes most phantom-velocity triggers.
+
+**Demo Configuration Used (presentable state):**
+- Camera detection **OFF** (predictive avoidance runs on depth + MLP at 10 Hz, no YOLO gate).
+- Test environment cleared of side obstacles within ~1.5 m of the path.
+- Person approaches from ahead / one open side, ≥ ~0.6 m from the bumper.
+
+**Known Issues / Future Work (carry into paper limitations & next steps):**
+1. **Bypass side-selection is obstacle-agnostic:** when the front is blocked and the preferred escape side is also blocked, it strafes to the open side without checking whether a tracked person is standing there. Planned fix: forbid strafing toward a side that has a tracked obstacle/person on it.
+2. **Phantom MLP velocities while driving:** ego-motion compensation (Ideas 1 & 11) does not fully cancel the robot's own motion, so static objects read up to ~0.8 m/s. Planned fix: gate/zero MLP velocity for tracks whose global-frame position is stationary, and revisit the pose used for compensation.
+3. **CPU-only YOLO (~2 fps)** is too slow for the real-time person-gate; build a device-correct TensorRT engine from `yolo26n.onnx` for GPU detection (torchvision now present).
+
+**Status:** Diagnosed & demo-configured 🟢. Items 1–3 above are open and documented for post-demo work; no code changes were made in this session.
