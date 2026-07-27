@@ -1,5 +1,7 @@
 # Yahboom X3 — ROS2 Workspace
 
+[![checks](https://github.com/Kjames3/x3_ws/actions/workflows/checks.yml/badge.svg)](https://github.com/Kjames3/x3_ws/actions/workflows/checks.yml)
+
 WebSocket-based control server and ROS2 navigation stack for the **Yahboom X3 mecanum-wheel robot** running on a **Jetson Orin Nano (JetPack 6.2 / Ubuntu 22.04)**.
 
 ---
@@ -300,6 +302,8 @@ x3_ws/
 │   ├── navigation_fsm.py         # YOLO-driven target tracking FSM
 │   ├── frontier_explorer.py      # Autonomous frontier exploration
 │   ├── trt_detector.py           # TensorRT YOLO wrapper
+│   ├── oakd_driver.py            # OAK-D Lite DepthAI driver (stereo/depth/IMU)
+│   ├── oakd_ros_publisher.py     # Republishes OAK-D streams as /oak/* ROS2 topics
 │   ├── Rosmaster_Lib.py          # Yahboom serial protocol library
 │   ├── x3_server.service         # systemd: control server
 │   ├── foxglove_bridge.service   # systemd: Foxglove WebSocket bridge
@@ -317,6 +321,7 @@ x3_ws/
 ├── scripts/
 │   ├── install.sh                # Full first-time setup script
 │   └── build_ros2.sh             # Workspace build + YDLidar SDK
+├── record_bag.sh                 # Domain-adaptation rosbag recording
 └── README.md
 ```
 
@@ -379,6 +384,107 @@ ros2 service call /slam_toolbox/save_map slam_toolbox/srv/SaveMap \
 ```
 
 Maps are saved as `<name>.pgm` + `<name>.yaml` pairs in `src/yahboomcar_nav/maps/` and are automatically discovered by the server.
+
+---
+
+## Rosbag Data Collection (OAK-D Lite)
+
+`record_bag.sh` records a rosbag for domain-adaptation training — the robot is teleoperated while people walk around it.
+
+### Why the OAK-D needs a server flag
+
+The OAK-D Lite is driven **in-process** by `src/oakd_driver.py` inside `server_x3.py`. DepthAI opens the device **exclusively**, so no separate ROS2 node can ever open the camera — which means the OAK streams are invisible to `ros2 bag record` by default.
+
+`src/oakd_ros_publisher.py` bridges this: it polls the driver's cached frames from a background thread and republishes them as standard `sensor_msgs`. It is **off unless the server is started with `--oak-ros-publish`**, because publishing costs real CPU and bandwidth.
+
+| Topic | Type | Notes |
+|---|---|---|
+| `/oak/depth/image_raw` | `sensor_msgs/Image` | 16UC1, millimetres — same convention as the Astra |
+| `/oak/depth/camera_info` | `sensor_msgs/CameraInfo` | CAM_A intrinsics, required to reproject depth |
+| `/oak/left/image_raw` | `sensor_msgs/Image` | mono8 |
+| `/oak/right/image_raw` | `sensor_msgs/Image` | mono8 |
+| `/oak/imu` | `sensor_msgs/Imu` | accel + gyro; no fused orientation (`orientation_covariance[0] = -1`) |
+| `/oak/detections` | `vision_msgs/Detection3DArray` | on-device YOLO spatial detections |
+
+Frame ids follow the URDF: `oak_rgb_camera_optical_frame` (depth is aligned to CAM_A), `oak_left/right_camera_optical_frame`, `oak_imu_frame`.
+
+Server flags:
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--oak-ros-publish` | off | Enable `/oak/*` publishing |
+| `--oak-ros-rate N` | 10 | Publish rate in Hz |
+| `--oak-ros-no-stereo` | off | Skip mono L/R (keeps depth + IMU + detections) |
+
+### Enabling recording mode
+
+The `x3_server` unit takes a `$SERVER_ARGS` environment variable. Add a drop-in — `30-` sorts after the existing `20-webrtc.conf`, so it wins:
+
+```bash
+sudo tee /etc/systemd/system/x3_server.service.d/30-oak-record.conf >/dev/null <<'EOF'
+[Service]
+Environment="SERVER_ARGS=--domain-id 42 --webrtc-camera --oak-ros-publish"
+EOF
+sudo systemctl daemon-reload && sudo systemctl restart x3_server
+```
+
+> **Verify it actually took.** A successful `systemctl restart` does **not** prove the drop-in was installed. Check the live process:
+> ```bash
+> tr '\0' ' ' < /proc/$(systemctl show x3_server -p MainPID --value)/cmdline
+> ```
+> `--oak-ros-publish` must appear. Allow ~40–90 s for the stack to come up, then confirm:
+> ```bash
+> journalctl -u x3_server | grep OakRosPublisher
+> # OakRosPublisher: publishing /oak/* at 10 Hz (stereo on, detections on)
+> ```
+
+**Remove the drop-in when the recording session is over** — otherwise the server keeps paying for publishing forever:
+
+```bash
+sudo rm /etc/systemd/system/x3_server.service.d/30-oak-record.conf
+sudo systemctl daemon-reload && sudo systemctl restart x3_server
+```
+
+### Recording
+
+```bash
+cd ~/x3_ws
+RECORD_OAK_STEREO=true ./record_bag.sh              # stereo + depth + IMU
+./record_bag.sh                                     # depth + IMU only
+./record_bag.sh /path/to/output_dir                 # custom output dir
+```
+
+> ⚠️ **Options are environment variables, not arguments.** The variable must come *before* the script name, with no space around `=`. Running `./record_bag.sh RECORD_OAK_STEREO=true` silently creates an output **directory named** `RECORD_OAK_STEREO=true` and records with stereo **off**.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `RECORD_OAK_STEREO` | `false` | Also record `/oak/left` + `/oak/right` |
+| `RECORD_ASTRA_DEPTH` | `false` | Also record the Astra's `/camera/depth/image_raw` |
+| `RECORD_DURATION` | (unset) | Auto-stop after N seconds — use for trial runs |
+| `BYPASS_TOPIC_CHECK` | `false` | Skip the pre-flight publisher check |
+
+Always recorded: the three `/oak` core topics plus `/scan`, `/odom`, `/tf`, `/tf_static`. Default output is `~/bags/domain_adapt/`. Press **Ctrl+C** to stop (or let `RECORD_DURATION` end it).
+
+The script auto-detects the DDS configuration from the **live `server_x3.py` process environment** — adopting a discovery server only if the robot actually uses one, and plain multicast otherwise. Do not hardcode `ROS_DISCOVERY_SERVER`: pointing the recorder at a discovery server nothing else uses produces a bag with zero messages.
+
+A pre-flight check aborts if a required topic has no publisher, so you find out before recording rather than after. Optional topics only warn.
+
+**Sizing** (measured, 10 Hz, ~8.9 Hz achieved): roughly **211 MB/min with stereo** (~6.3 GB per 30 min), about half that depth-only. Check free space before a long session.
+
+### Reading a recorded bag
+
+Bags are zstd file-compressed, so `rosbag2_py` needs the decompressing reader:
+
+```python
+from rosbag2_py import SequentialCompressionReader, StorageOptions, ConverterOptions
+reader = SequentialCompressionReader()      # NOT SequentialReader
+reader.open(StorageOptions(uri=bag_path, storage_id="sqlite3"),
+            ConverterOptions("cdr", "cdr"))
+```
+
+> Reading decompresses a `.db3` alongside the `.zstd`. The `.zstd` is what `metadata.yaml` references — delete the loose `.db3` afterwards to reclaim the space.
+
+> **On `/oak/detections`:** the on-device YOLO works (verified detecting `person` at 2.8–4.2 m), but in testing it fired on only ~12% of frames at confidence 0.37–0.43 against a 0.35 threshold. Treat it as a bonus label track, not reliable training ground truth. Depth, stereo and IMU are the dependable streams.
 
 ---
 

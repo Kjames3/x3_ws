@@ -1,0 +1,16 @@
+# ShellCheck configuration — see .github/workflows/checks.yml
+#
+# Gate severity is set in the workflow (warning). These two codes are disabled
+# repo-wide because they are noise in this codebase, not because they found
+# anything wrong:
+#
+#   SC1090/SC1091 — "can't follow non-constant source". Nearly every script here
+#     sources ROS 2 setup files whose paths are runtime-dependent
+#     (/opt/ros/humble/setup.bash, $WS_DIR/install/local_setup.bash). ShellCheck
+#     cannot follow them by design and there is nothing to fix.
+#
+#   SC2088 — "tilde does not expand in quotes". The only hits are inside
+#     user-facing log messages such as  ok "~/.bashrc updated"  where a literal
+#     "~" is exactly what we want to print.
+#
+disable=SC1090,SC1091,SC2088

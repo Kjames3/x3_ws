@@ -1,0 +1,7 @@
+<library path="nav2_mppi_dbas_controller">
+  <class name="mppi::critics::DBaSCritic" type="mppi::critics::DBaSCritic" base_class_type="mppi::critics::CriticFunction">
+    <description>
+      Critic that penalizes trajectories passing through dynamic pedestrian barriers using DBaS concepts.
+    </description>
+  </class>
+</library>

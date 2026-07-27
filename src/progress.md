@@ -469,7 +469,7 @@ Previously, if the robot's target waypoint was beyond a wall (e.g. a corridor sh
 
 ### [2026-06-08] Automated Improvement Pipeline & High/Medium ROI Batch Implementation
 **Routine Created:**
-- Claude Code Remote (CCR) hourly routine (`trig_01N17tLTZ6qjneNAjofdv8Ma`) configured to analyze `ab_comparison_test.py`, `server_x3.py`, and `velocity_estimator.py` every hour, generate 8–12 improvement ideas, append them to `src/improvement_ideas.md`, and sync every 15 new ideas into `src/roi_analysis.md` sorted by ROI tier.
+- Claude Code Remote (CCR) hourly routine (`trig_01N17tLTZ6qjneNAjofdv8Ma`) configured to analyze `ab_comparison_test.py`, `server_x3.py`, and `velocity_estimator.py` every hour, generate 8–12 improvement ideas, append them to `src/improvement_ideas.md` (now archived in `ideas/June_architectural_ideas.md`), and sync every 15 new ideas into `src/roi_analysis.md` (now archived in `ideas/June_roi_analysis.md`) sorted by ROI tier.
 
 **Scripts Modified:**
 - [ab_comparison_test.py](file:///home/kamren/x3_ws/src/ab_comparison_test.py) (18 improvements)

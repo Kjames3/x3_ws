@@ -6,6 +6,7 @@ const state = {
     connected: false,
     detectionEnabled: false,
     depthEnabled: false,
+    stereoEnabled: false,
     mapEnabled: false,
     lidarEnabled: false,
     autoDriveEnabled: false, // Local toggle tracking
@@ -25,12 +26,14 @@ const state = {
     // Data Buffer for Render Loop
     latestData: {
         readout: null,        // Motor positions, power, image
+        slowFields: {},       // last-seen 2Hz fields (active_model_name, nav_phase) merged onto fast readout
         robotPose: null,
         targetPose: null,
         trajectory: null,
         lidarPoints: null,
         detections: [],
-        fps: { cam: 0, yolo: 0 },
+        fps: { cam: 0, yolo: 0, oak: 0, render: 0, video: 0,
+               _renderFrames: 0, _videoFrames: 0, _lastCalc: 0 },
         battery: null
     },
 
@@ -134,8 +137,8 @@ const elements = {
     metricLatency: document.getElementById('metric-latency'),
 
     // Camera & Detection
-    cameraFeed: document.getElementById('camera-feed'),
     cameraCanvas: document.getElementById('camera-canvas'),
+    webrtcCam: document.getElementById('webrtc-cam'),
     cameraPlaceholder: document.getElementById('camera-placeholder'),
     depthFeed: document.getElementById('depth-feed'),
     cameraPanels: document.getElementById('camera-panels'),
@@ -146,6 +149,19 @@ const elements = {
     mapToggle: document.getElementById('map-toggle'),
     minimapPanel: document.getElementById('minimap-panel'),
     miniMapCanvas: document.getElementById('mini-map-canvas'),
+    // OAK-D stereo + IMU + spatial detections
+    stereoToggle: document.getElementById('stereo-toggle'),
+    oakLeftPanel: document.getElementById('oak-left-panel'),
+    oakLeftFeed: document.getElementById('oak-left-feed'),
+    oakLeftPlaceholder: document.getElementById('oak-left-placeholder'),
+    oakRightPanel: document.getElementById('oak-right-panel'),
+    oakRightFeed: document.getElementById('oak-right-feed'),
+    oakRightPlaceholder: document.getElementById('oak-right-placeholder'),
+    oakInfoStrip: document.getElementById('oak-info-strip'),
+    oakImuAccel: document.getElementById('oak-imu-accel'),
+    oakImuGyro: document.getElementById('oak-imu-gyro'),
+    oakDetCount: document.getElementById('oak-det-count'),
+    oakDetList: document.getElementById('oak-det-list'),
     frontierBtn: document.getElementById('frontier-btn'),
     frontierStateBadge: document.getElementById('frontier-state-badge'),
     frontierStats: document.getElementById('frontier-stats'),
@@ -163,14 +179,8 @@ const elements = {
     demoBannerRole: document.getElementById('demo-banner-role'),
     demoBannerModel: document.getElementById('demo-banner-model'),
 
-    // Power Stats
-    powerStatsPanel: document.getElementById('power-stats'),
-    statVolts: document.getElementById('stat-volts'),
-    statAmps: document.getElementById('stat-amps'),
-    statWatts: document.getElementById('stat-watts'),
+    // Session uptime (in the Position power block)
     statUptime: document.getElementById('stat-uptime'),
-    statTimeRemaining: document.getElementById('stat-time-remaining'),
-    timeRemainingContainer: document.getElementById('time-remaining-container'),
 
     // Motor Readouts (Status Section)
     m1Pos: document.getElementById('m1-pos'),
@@ -193,6 +203,10 @@ const elements = {
     fpsDetectionWrapper: document.getElementById('fps-detection-wrapper'),
     fpsCameraInline: document.getElementById('fps-camera-inline'),
     fpsYoloInline: document.getElementById('fps-yolo-inline'),
+    fpsOak: document.getElementById('fps-oak'),
+    fpsRender: document.getElementById('fps-render'),
+    fpsVideo: document.getElementById('fps-video'),
+    fpsVideoWrapper: document.getElementById('fps-video-wrapper'),
 
     // Position Section
     robotX: document.getElementById('robot-x'),
@@ -1398,6 +1412,7 @@ function handleBinaryFrame(buf) {
             const ctx = cvs._ctx || (cvs._ctx = cvs.getContext('2d'));
             ctx.drawImage(bitmap, 0, 0);
             bitmap.close();
+            state.latestData.fps._renderFrames++;   // client-side render-rate counter
             if (cvs.style.display === 'none') cvs.style.display = 'block';
             if (elements.cameraPlaceholder && elements.cameraPlaceholder.style.display !== 'none') {
                 elements.cameraPlaceholder.style.display = 'none';
@@ -1667,6 +1682,13 @@ function handleMessage(data) {
 
         state.serverMode = mode;
 
+        // WebRTC color camera: if the server released the Astra to mediamtx, show
+        // the low-latency <video> feed instead of the base64 canvas.
+        if (data.webrtc_camera && !state.webrtcCamStarted) {
+            state.webrtcCamStarted = true;
+            startWebRTCCamera(typeof data.webrtc_camera === 'object' ? data.webrtc_camera : null);
+        }
+
         // Request map list when connected in a nav-capable mode
         if (mode === 'ros2' || mode === 'sim') {
             sendMessage({ type: 'get_maps' });
@@ -1784,7 +1806,10 @@ function handleMessage(data) {
     }
 
     if (data.type === "readout") {
-        // Update State Buffer
+        // Fast lane (20 Hz). Merge in the most-recent slow-lane fields (active_model_name,
+        // nav_phase) so updateUI — which reads them off `data` — keeps working between the
+        // 2 Hz "readout_slow" messages.
+        Object.assign(data, state.latestData.slowFields);
         state.latestData.readout = data;
         state.needsUIUpdate = true;
         state.latestData.robotPose = data.robot_pose;
@@ -1799,23 +1824,6 @@ function handleMessage(data) {
             state.latestData.velocityEstimates = data.velocity_estimates;
         }
 
-        if (data.p2p_test_running !== undefined) {
-            state.p2pTestRunning = data.p2p_test_running;
-            updateP2pButtonUI();
-        }
-
-        if (data.ab_test_running !== undefined) {
-            const wasRunning = state.abTestRunning;
-            state.abTestRunning = data.ab_test_running;
-            state.abTestMode = data.ab_test_mode || null;
-            if (wasRunning !== state.abTestRunning) {
-                updateAbTestButtonsUI();
-            }
-        }
-
-        if (data.fps_camera !== undefined) state.latestData.fps.cam = data.fps_camera;
-        if (data.fps_detection !== undefined) state.latestData.fps.yolo = data.fps_detection;
-
         if (data.battery) state.latestData.battery = data.battery;
 
         // Sync flags
@@ -1825,14 +1833,8 @@ function handleMessage(data) {
             state.isDemoMode = data.is_demo_mode;
             updateDemoBannerFromReadout(data);
         }
-        state.latestData.navPhase = data.nav_phase;
         state.latestData.autoDriveStart = data.auto_drive_start;
         state.latestData.power = data.power; // Power stats from INA219
-
-        // Update navigation panel status
-        if (data.nav) updateNavStatus(data.nav);
-        if (data.slam_active !== undefined) updateSlamStatus(data.slam_active);
-        if (data.frontier) updateFrontierStatus(data.frontier);
 
         state.needs3DUpdate = true;
 
@@ -1870,6 +1872,40 @@ function handleMessage(data) {
 
             state.lastLogTime = data.latest_log.time;
         }
+
+    } else if (data.type === "readout_slow") {
+        // Low-rate lane (~2 Hz): nav / SLAM / frontier / model / fps / test status.
+        // Persist the fields updateUI reads off the fast readout object so they survive
+        // between slow messages (the fast handler replaces state.latestData.readout each frame).
+        state.latestData.slowFields = {
+            active_model_name: data.active_model_name,
+            nav_phase: data.nav_phase,
+        };
+        state.latestData.navPhase = data.nav_phase;
+
+        if (data.fps_camera !== undefined) state.latestData.fps.cam = data.fps_camera;
+        if (data.fps_detection !== undefined) state.latestData.fps.yolo = data.fps_detection;
+        if (data.fps_oak_depth !== undefined) state.latestData.fps.oak = data.fps_oak_depth;
+
+        if (data.p2p_test_running !== undefined) {
+            state.p2pTestRunning = data.p2p_test_running;
+            updateP2pButtonUI();
+        }
+
+        if (data.ab_test_running !== undefined) {
+            const wasRunning = state.abTestRunning;
+            state.abTestRunning = data.ab_test_running;
+            state.abTestMode = data.ab_test_mode || null;
+            if (wasRunning !== state.abTestRunning) {
+                updateAbTestButtonsUI();
+            }
+        }
+
+        if (data.nav) updateNavStatus(data.nav);
+        if (data.slam_active !== undefined) updateSlamStatus(data.slam_active);
+        if (data.frontier) updateFrontierStatus(data.frontier);
+
+        state.needsUIUpdate = true;  // refresh nav-metrics / fps text
 
     } else if (data.type === "capture_response") {
         const category = data.category || "saved";
@@ -1983,11 +2019,57 @@ function updateUI() {
         if (elements.depthPlaceholder) elements.depthPlaceholder.style.display = 'none';
     }
 
+    // 2b. OAK-D stereo frames (base64 JPEG, only sent while Stereo is toggled on)
+    if (data.oak_left && elements.oakLeftFeed) {
+        elements.oakLeftFeed.src = "data:image/jpeg;base64," + data.oak_left;
+        elements.oakLeftFeed.style.display = 'block';
+        if (elements.oakLeftPlaceholder) elements.oakLeftPlaceholder.style.display = 'none';
+    }
+    if (data.oak_right && elements.oakRightFeed) {
+        elements.oakRightFeed.src = "data:image/jpeg;base64," + data.oak_right;
+        elements.oakRightFeed.style.display = 'block';
+        if (elements.oakRightPlaceholder) elements.oakRightPlaceholder.style.display = 'none';
+    }
+
+    // 2c. OAK-D IMU (6-axis BMI270)
+    if (data.oak_imu && elements.oakImuAccel) {
+        const a = data.oak_imu.accel, g = data.oak_imu.gyro;
+        elements.oakImuAccel.textContent =
+            `${a.x.toFixed(2)}, ${a.y.toFixed(2)}, ${a.z.toFixed(2)}`;
+        elements.oakImuGyro.textContent =
+            `${g.x.toFixed(2)}, ${g.y.toFixed(2)}, ${g.z.toFixed(2)}`;
+    }
+
+    // 2d. OAK-D on-device 3D spatial detections (base_link frame: x fwd, y left, z up)
+    if (data.oak_detections !== undefined && elements.oakDetList) {
+        const dets = data.oak_detections || [];
+        if (elements.oakDetCount) elements.oakDetCount.textContent = `(${dets.length})`;
+        if (dets.length === 0) {
+            elements.oakDetList.innerHTML = '<span style="color: var(--text-secondary);">none</span>';
+        } else {
+            elements.oakDetList.innerHTML = dets.slice(0, 8).map(d => {
+                if (!d.xyz_base_m) {
+                    return `${d.label} ${(d.conf * 100).toFixed(0)}% <span style="color:#f87171;">range unknown</span>`;
+                }
+                const b = d.xyz_base_m;
+                return `${d.label} ${(d.conf * 100).toFixed(0)}% ` +
+                    `<span style="color:#86efac;">` +
+                    `fwd ${b.x.toFixed(2)} · left ${b.y.toFixed(2)} · up ${b.z.toFixed(2)} m</span>`;
+            }).join('<br>');
+        }
+    }
+
     // 3. FPS
     if (elements.fpsDisplay) {
         elements.fpsDisplay.style.display = 'block';
         if (elements.fpsCamera) elements.fpsCamera.textContent = state.latestData.fps.cam.toFixed(1);
         if (elements.fpsCameraInline) elements.fpsCameraInline.textContent = state.latestData.fps.cam.toFixed(0);
+        if (elements.fpsOak) elements.fpsOak.textContent = state.latestData.fps.oak.toFixed(1);
+        if (elements.fpsRender) elements.fpsRender.textContent = state.latestData.fps.render.toFixed(1);
+        // WebRTC video FPS only meaningful in --webrtc-camera mode; hide otherwise.
+        if (elements.fpsVideoWrapper)
+            elements.fpsVideoWrapper.style.display = state.webrtcCamStarted ? 'inline' : 'none';
+        if (elements.fpsVideo) elements.fpsVideo.textContent = state.latestData.fps.video.toFixed(1);
 
         if (state.detectionEnabled) {
             if (elements.fpsDetectionWrapper) elements.fpsDetectionWrapper.style.display = 'inline';
@@ -2257,8 +2339,19 @@ function updatePowerUI() {
         }
     }
 
-    // Estimate Time
-    if (elements.powerTimeRemaining && pwr.current > 0.1) {
+    // Estimate Time / low-voltage critical countdown.
+    // Below LOW_VOLTAGE_THRESHOLD, show the red time-to-critical countdown (re-homed
+    // here from the removed header readout); otherwise show the runtime estimate.
+    const LOW_VOLTAGE_THRESHOLD = 12.2;
+    const CRITICAL_VOLTAGE = 11.8;
+    if (elements.powerTimeRemaining && pwr.voltage <= LOW_VOLTAGE_THRESHOLD) {
+        const pct = Math.max(0, pwr.voltage - CRITICAL_VOLTAGE) / (LOW_VOLTAGE_THRESHOLD - CRITICAL_VOLTAGE);
+        const secs = Math.floor(pct * 150); // ~2.5 min linear map to critical
+        const m = Math.floor(secs / 60);
+        const s = secs % 60;
+        elements.powerTimeRemaining.textContent = `⚠ ${m}:${s.toString().padStart(2, '0')}`;
+        elements.powerTimeRemaining.style.color = 'var(--accent-red)';
+    } else if (elements.powerTimeRemaining && pwr.current > 0.1) {
         const BATTERY_CAPACITY_AH = 6.0;
         const remainingCapacity = (pwr.battery_pct / 100.0) * BATTERY_CAPACITY_AH;
         const hoursRemaining = remainingCapacity / pwr.current;
@@ -2274,32 +2367,6 @@ function updatePowerUI() {
         else elements.powerTimeRemaining.style.color = 'var(--accent-red)';
     } else if (elements.powerTimeRemaining) {
         elements.powerTimeRemaining.textContent = '--';
-    }
-
-    // Fallback Battery Voltage Logic (for header)
-    if (state.latestData.battery) { // Legacy battery object
-        const voltage = state.latestData.battery.voltage;
-        if (elements.statVolts) elements.statVolts.textContent = voltage.toFixed(2) + ' V';
-        if (elements.statAmps) elements.statAmps.textContent = state.latestData.battery.amps.toFixed(3) + ' A';
-        if (elements.statWatts) elements.statWatts.textContent = state.latestData.battery.watts.toFixed(2) + ' W';
-
-        // Simple linear check for header time remaining
-        const LOW_VOLTAGE_THRESHOLD = 12.2;
-        const CRITICAL_VOLTAGE = 11.8;
-
-        if (voltage <= LOW_VOLTAGE_THRESHOLD && elements.statTimeRemaining) {
-            const sub = voltage - CRITICAL_VOLTAGE;
-            const range = LOW_VOLTAGE_THRESHOLD - CRITICAL_VOLTAGE;
-            const pct = Math.max(0, sub) / range;
-            const secs = Math.floor(pct * 150); // 2.5 mins
-            const m = Math.floor(secs / 60);
-            const s = secs % 60;
-            elements.statTimeRemaining.textContent = `${m}:${s.toString().padStart(2, '0')}`;
-            elements.statTimeRemaining.style.color = 'var(--accent-red)';
-        } else if (elements.statTimeRemaining) {
-            elements.statTimeRemaining.textContent = 'OK';
-            elements.statTimeRemaining.style.color = 'var(--accent-green)';
-        }
     }
 }
 
@@ -2728,6 +2795,112 @@ if (elements.stopBtn) elements.stopBtn.addEventListener('click', () => {
     if (elements.rightSlider) { elements.rightSlider.value = 0; elements.rightSliderValue.textContent = "0"; updateVisuals(0, elements.rightFill, elements.rightThumb); }
 });
 
+// WebRTC (WHEP) color camera — connects to mediamtx's /astra stream and shows it
+// in the <video> element with the jitter buffer minimized for low latency.
+// Count presented WebRTC video frames via requestVideoFrameCallback (fires once
+// per painted frame — accurate playback rate, no polling). Registered once.
+function trackWebRTCVideoFps() {
+    const v = elements.webrtcCam;
+    if (!v || typeof v.requestVideoFrameCallback !== 'function' || v._fpsTracked) return;
+    v._fpsTracked = true;
+    const cb = () => {
+        state.latestData.fps._videoFrames++;
+        v.requestVideoFrameCallback(cb);
+    };
+    v.requestVideoFrameCallback(cb);
+}
+
+// Convert the render/video frame counters into per-second rates (1 Hz, one
+// division each — negligible). Client-side only; no robot/network impact.
+setInterval(() => {
+    const now = performance.now();
+    const f = state.latestData.fps;
+    const dt = f._lastCalc ? (now - f._lastCalc) / 1000 : 1;
+    if (dt > 0) {
+        f.render = f._renderFrames / dt;
+        f.video  = f._videoFrames / dt;
+    }
+    f._renderFrames = 0;
+    f._videoFrames = 0;
+    f._lastCalc = now;
+}, 1000);
+
+async function startWebRTCCamera(webrtcCamConfig) {
+    const v = elements.webrtcCam;
+    if (!v) return;
+    trackWebRTCVideoFps();
+
+    if (state.webrtcCamPc) {
+        try { state.webrtcCamPc.close(); } catch (_) {}
+        state.webrtcCamPc = null;
+    }
+
+    const proto = window.location.protocol === 'https:' ? 'https' : 'http';
+    const host = window.location.hostname || 'jetson-desktop.local';
+    const port = (webrtcCamConfig && webrtcCamConfig.port) || 8889;
+    const streamPath = (webrtcCamConfig && webrtcCamConfig.stream) || 'astra';
+    const WHEP = (webrtcCamConfig && webrtcCamConfig.url) || `${proto}://${host}:${port}/${streamPath}/whep`;
+
+    const lowLatency = (pc) => pc.getReceivers().forEach(r => {
+        try { r.jitterBufferTarget = 0; } catch (_) {}
+        try { r.playoutDelayHint = 0; } catch (_) {}
+    });
+
+    const cleanupAndFallback = (pc) => {
+        if (pc) {
+            try { pc.close(); } catch (_) {}
+        }
+        if (state.webrtcCamPc === pc) {
+            state.webrtcCamPc = null;
+        }
+        state.webrtcCamStarted = false;
+        if (elements.webrtcCam) elements.webrtcCam.style.display = 'none';
+        if (elements.cameraCanvas) elements.cameraCanvas.style.display = 'block';
+    };
+
+    let pc = null;
+    try {
+        pc = new RTCPeerConnection();
+        state.webrtcCamPc = pc;
+
+        pc.onconnectionstatechange = () => {
+            if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
+                console.warn('[webrtc-cam] connection state:', pc.connectionState);
+                cleanupAndFallback(pc);
+            }
+        };
+
+        pc.addTransceiver('video', { direction: 'recvonly' });
+        pc.ontrack = e => {
+            v.srcObject = e.streams[0];
+            v.style.display = 'block';
+            if (elements.cameraCanvas) elements.cameraCanvas.style.display = 'none';
+            if (elements.cameraPlaceholder) elements.cameraPlaceholder.style.display = 'none';
+            lowLatency(pc);
+        };
+        await pc.setLocalDescription(await pc.createOffer());
+        await new Promise(res => {
+            if (pc.iceGatheringState === 'complete') return res();
+            pc.addEventListener('icegatheringstatechange',
+                () => pc.iceGatheringState === 'complete' && res());
+            setTimeout(res, 2000);
+        });
+        const r = await fetch(WHEP, { method: 'POST',
+            headers: { 'Content-Type': 'application/sdp' }, body: pc.localDescription.sdp });
+        if (!r.ok) {
+            console.warn('[webrtc-cam] WHEP HTTP', r.status);
+            cleanupAndFallback(pc);
+            return;
+        }
+        await pc.setRemoteDescription({ type: 'answer', sdp: await r.text() });
+        lowLatency(pc);
+        console.log('[webrtc-cam] connected to', WHEP);
+    } catch (err) {
+        console.warn('[webrtc-cam] failed (falling back to base64 canvas):', err);
+        cleanupAndFallback(pc);
+    }
+}
+
 function updateCameraLayout() {
     if (!elements.cameraPanels) return;
     if (state.mapEnabled) {
@@ -2748,6 +2921,9 @@ function updateCameraLayout() {
             elements.minimapPanel.style.gridColumn = '2';
             elements.minimapPanel.style.gridRow = '1 / span 2';
         }
+        // Stereo panels don't fit the 2-col map grid — hide them while the map is up.
+        if (elements.oakLeftPanel) elements.oakLeftPanel.style.display = 'none';
+        if (elements.oakRightPanel) elements.oakRightPanel.style.display = 'none';
     } else {
         elements.cameraPanels.style.display = 'flex';
         if (elements.rgbPanel) elements.rgbPanel.style.flex = '1';
@@ -2756,7 +2932,17 @@ function updateCameraLayout() {
             elements.depthPanel.style.flex = '1';
         }
         if (elements.minimapPanel) elements.minimapPanel.style.display = 'none';
+        if (elements.oakLeftPanel) {
+            elements.oakLeftPanel.style.display = state.stereoEnabled ? 'block' : 'none';
+            elements.oakLeftPanel.style.flex = '1';
+        }
+        if (elements.oakRightPanel) {
+            elements.oakRightPanel.style.display = state.stereoEnabled ? 'block' : 'none';
+            elements.oakRightPanel.style.flex = '1';
+        }
     }
+    // IMU + 3D-detection strip follows the stereo toggle.
+    if (elements.oakInfoStrip) elements.oakInfoStrip.style.display = state.stereoEnabled ? 'flex' : 'none';
 }
 
 if (elements.depthToggle) elements.depthToggle.addEventListener('click', () => {
@@ -2765,6 +2951,14 @@ if (elements.depthToggle) elements.depthToggle.addEventListener('click', () => {
     elements.depthToggle.classList.toggle('active', state.depthEnabled);
     updateCameraLayout();
     sendMessage({ type: "toggle_depth", enabled: state.depthEnabled });
+});
+
+if (elements.stereoToggle) elements.stereoToggle.addEventListener('click', () => {
+    if (!state.connected) return;
+    state.stereoEnabled = !state.stereoEnabled;
+    elements.stereoToggle.classList.toggle('active', state.stereoEnabled);
+    updateCameraLayout();
+    sendMessage({ type: "toggle_stereo", enabled: state.stereoEnabled });
 });
 
 if (elements.mapToggle) elements.mapToggle.addEventListener('click', () => {

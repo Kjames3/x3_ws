@@ -1,6 +1,6 @@
 # Project Improvement Ideas ROI Analysis
 
-This document records the ROI rankings and evaluation metrics for the enhancement ideas logged in `improvement_ideas.md` for the predictive planning and local velocity estimation project.
+This document records the ROI rankings and evaluation metrics for the enhancement ideas logged in `June_architectural_ideas.md` for the predictive planning and local velocity estimation project.
 
 ## Last Updated
 2026-06-08: Added 22 ideas (199–220) across tiers. 13 new High-ROI, 9 new Medium-ROI entries added.

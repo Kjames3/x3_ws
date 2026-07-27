@@ -309,7 +309,8 @@ class VelocityEstimator:
                                     break
                             if not inside_any:
                                 # Centroid does not match any person detection, discard
-                                continue
+                                # continue # [DISABLED FOR TESTING] - allow tracking of all objects
+                                pass
                     except Exception as ex:
                         logger.warning(f"VelocityEstimator: failed visual-lidar gating check: {ex}")
                 
@@ -424,8 +425,9 @@ class VelocityEstimator:
 
             try:
                 # 1. Get depth and raw depth frames
-                depth_frame = self.camera.get_depth_frame() if hasattr(self.camera, 'get_depth_frame') else None
-                raw_depth_frame = self.camera.get_raw_depth_frame() if hasattr(self.camera, 'get_raw_depth_frame') else None
+                cam_src = self.camera() if callable(self.camera) else self.camera
+                depth_frame = cam_src.get_depth_frame() if (cam_src is not None and hasattr(cam_src, 'get_depth_frame')) else None
+                raw_depth_frame = cam_src.get_raw_depth_frame() if (cam_src is not None and hasattr(cam_src, 'get_raw_depth_frame')) else None
 
                 # Fast-path: skip all processing when no valid depth data exists
                 if raw_depth_frame is not None and raw_depth_frame.size > 0:

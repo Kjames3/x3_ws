@@ -93,9 +93,43 @@ parser.add_argument('--sim', action='store_true', help='Run in simulation mode (
 parser.add_argument('--domain-id', type=int, default=42, dest='domain_id',
                     help='ROS_DOMAIN_ID for multi-machine ROS2 (must match laptop). '
                          'Overrides the ROS_DOMAIN_ID environment variable.')
+parser.add_argument('--no-oak', action='store_true', dest='no_oak',
+                    help='Disable the OAK-D Lite driver (stereo + depth + IMU). '
+                         'When enabled (default), the OAK-D is the depth source.')
+parser.add_argument('--no-oak-spatial', action='store_true', dest='no_oak_spatial',
+                    help='Disable on-device YOLO spatial detection on the OAK-D '
+                         '(still streams stereo/depth/IMU).')
+parser.add_argument('--oak-ros-publish', action='store_true', dest='oak_ros_publish',
+                    help='Republish the OAK-D streams on ROS2 topics (/oak/depth/image_raw, '
+                         '/oak/left|right/image_raw, /oak/imu, /oak/detections) so they can be '
+                         'recorded with "ros2 bag record" or viewed in RViz. Off by default — '
+                         'the images cost real CPU/bandwidth. See record_bag.sh.')
+
+def _valid_oak_ros_rate(val_str):
+    import math
+    val = float(val_str)
+    if math.isnan(val) or math.isinf(val) or val <= 0.0:
+        raise argparse.ArgumentTypeError(f"oak_ros_rate must be a positive finite float, got '{val_str}'")
+    return val
+
+parser.add_argument('--oak-ros-rate', type=_valid_oak_ros_rate, default=10.0, dest='oak_ros_rate',
+                    help='Publish rate (Hz) for --oak-ros-publish. Default 10.')
+parser.add_argument('--oak-ros-no-stereo', action='store_true', dest='oak_ros_no_stereo',
+                    help='With --oak-ros-publish, skip the mono left/right images '
+                         '(roughly halves the bag size; keeps depth + IMU + detections).')
+parser.add_argument('--webrtc-camera', action='store_true', dest='webrtc_camera',
+                    help='Serve the color camera over WebRTC (via mediamtx) instead of '
+                         'base64/WebSocket. Releases the Astra so ffmpeg can capture it at '
+                         'full framerate; launches mediamtx. GUI shows the WebRTC <video>.')
 args = parser.parse_args()
 SIM_MODE  = args.sim
 ROS2_MODE = not args.sim  # ROS2 hardware bridge is the default; only --sim disables it
+OAK_ENABLED = not args.no_oak  # OAK-D Lite supplies stereo/depth/imu unless --no-oak
+OAK_SPATIAL = not args.no_oak_spatial  # on-device YOLO spatial detection (if blob present)
+OAK_ROS_PUBLISH = args.oak_ros_publish      # republish OAK streams as ROS2 topics (bagging/RViz)
+OAK_ROS_RATE = args.oak_ros_rate
+OAK_ROS_STEREO = not args.oak_ros_no_stereo
+WEBRTC_CAMERA = args.webrtc_camera  # color via WebRTC/mediamtx instead of base64 (releases Astra)
 
 # Apply ROS_DOMAIN_ID early — must be set before rclpy.init() inside ROS2Bridge
 if args.domain_id is not None:
@@ -123,8 +157,19 @@ def _resolve_discovery_server() -> str:
         pass
     return "127.0.0.1:11811"
 
+# Opt-out of the FastDDS discovery server in favour of default ROS2 Simple
+# discovery.  Set X3_SIMPLE_DISCOVERY=1 to enable.  This is required for
+# cross-machine RViz over unicast initial peers: the discovery server's EDP
+# forwarding between clients is broken (subscribers stay invisible to
+# publishers, so data never flows), whereas Simple discovery + unicast peers
+# delivers /tf, /scan, /map reliably.  When unset, behaviour is unchanged.
+SIMPLE_DISCOVERY = os.environ.get('X3_SIMPLE_DISCOVERY', '').lower() in ('1', 'true', 'yes', 'on')
+
 if ROS2_MODE:
-    os.environ['ROS_DISCOVERY_SERVER'] = _resolve_discovery_server()
+    if SIMPLE_DISCOVERY:
+        os.environ.pop('ROS_DISCOVERY_SERVER', None)
+    else:
+        os.environ['ROS_DISCOVERY_SERVER'] = _resolve_discovery_server()
 
 # Hardware Ports
 # SERIAL_PORT auto-detected in drivers_x3 (/dev/ttyCH341USB0 or /dev/ttyUSB0)
@@ -158,13 +203,19 @@ ros_bridge = None   # ROS2Bridge instance (always active unless --sim); used for
 drive = None
 lidar = None
 camera = None
+oak = None          # OakDCamera instance (stereo + depth + IMU); depth source when present
+oak_ros_pub = None  # OakRosPublisher — republishes /oak/* topics (--oak-ros-publish only)
 model = None
 oled = None
 nav2_client = None    # Nav2Client instance (ROS2/sim modes only)
 frontier_explorer = None  # FrontierExplorer instance (ROS2 mode only)
 _gazebo_proc    = None   # subprocess handle when --sim auto-launches Gazebo
 _ros2_stack_proc = None  # subprocess handle for x3_bringup (launched by default in ROS2 mode)
+_mediamtx_proc = None    # subprocess handle for mediamtx (WebRTC camera, --webrtc-camera)
 _slam_proc      = None   # subprocess handle when SLAM Toolbox is running
+_shutting_down  = False  # set on SIGINT/SIGTERM/cleanup so motion_loop stops publishing
+                         # to /cmd_vel before rclpy is torn down (avoids a publish-on-dead-
+                         # context RCLError → C++ abort that orphaned the bringup stack)
 velocity_estimator = None  # VelocityEstimator instance (EE244 project)
 active_velocity_model_name = "velocity_mlp"  # currently loaded torchscript velocity model
 velocity_estimation_enabled = True  # A/B toggle: False = reactive, True = predictive
@@ -174,6 +225,7 @@ _ab_test_mode = None       # A/B comparison test mode ("reactive" or "predictive
 
 detection_enabled = False
 depth_enabled = False
+stereo_enabled = False   # OAK-D left/right mono streaming to the GUI (off by default; bandwidth)
 lidar_enabled = False
 is_auto_driving = False
 last_detections = []
@@ -193,10 +245,6 @@ fps_detection = 0.0
 # Battery voltage cache (refreshed at 1 Hz, not every frame)
 _batt_cache_v    = 12.0
 _batt_cache_time = 0.0
-
-# Nav2 status cache (refreshed at 2 Hz, not every frame) (Idea 71)
-_nav2_cache_status = {"state": "UNAVAILABLE"}
-_nav2_cache_time = 0.0
 
 connected_clients = set()
 
@@ -242,6 +290,12 @@ class ROS2Bridge:
         from geometry_msgs.msg import Twist
         from nav_msgs.msg import Odometry, OccupancyGrid
         from std_msgs.msg import Float32
+        from sensor_msgs.msg import LaserScan
+
+        import sys
+        import os
+        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from src.cbf_filter import HolonomicCBFFilter
 
         from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 
@@ -255,6 +309,15 @@ class ROS2Bridge:
         self._twist = {"vx": 0.0, "vy": 0.0, "wz": 0.0}   # body velocity m/s, rad/s
         self._voltage = 12.0               # volts, updated by /voltage subscriber
         self._occupancy_grid: dict | None = None  # latest OccupancyGrid info dict for frontier explorer
+        # safe_distance MUST stay ABOVE the _scan_cb min-range gate (0.12 m). The CBF
+        # only brakes hard as distance -> safe_distance; if safe_distance were below the
+        # gate, a real obstacle would be filtered out (mistaken for the chassis) before
+        # the brake engaged and the robot would drive straight through it. 0.30 m stops
+        # the robot with the wall still visible. Lower toward ~0.15 m for tighter
+        # doorways (at the cost of a thinner stop margin). This whole range-gate
+        # workaround goes away once the Lidar is raised above the chassis.
+        self.cbf = HolonomicCBFFilter(safe_distance=0.30, gamma=1.0)
+        self._latest_obstacles = []
 
         # SLAM Toolbox publishes /map as TRANSIENT_LOCAL; match so late-joining still gets the map
         _map_qos = QoSProfile(depth=1,
@@ -272,13 +335,17 @@ class ROS2Bridge:
         self._node.create_subscription(Odometry,       '/odom_raw',         self._odom_cb,  10)
         self._node.create_subscription(Float32,        '/voltage',          self._voltage_cb, 10)
         self._node.create_subscription(OccupancyGrid,  '/map',              self._map_cb,    _map_qos)
+        from rclpy.qos import qos_profile_sensor_data
+        self._node.create_subscription(LaserScan,      '/scan',             self._scan_cb,   qos_profile_sensor_data)
         self._cmd_vel_pub = self._node.create_publisher(Twist, '/cmd_vel', 10)
 
         # Publishers for pedestrian tracking (EE244 Project)
         from geometry_msgs.msg import PoseArray
         from visualization_msgs.msg import MarkerArray
+        from x3_msgs.msg import PedestrianArray
         self._pedestrian_pub = self._node.create_publisher(PoseArray, '/pedestrian_poses', 10)
         self._pedestrian_marker_pub = self._node.create_publisher(MarkerArray, '/pedestrian_markers', 10)
+        self._pedestrian_state_pub = self._node.create_publisher(PedestrianArray, '/pedestrian_states', 10)
 
         # Staleness tracking for odom (Idea 225) and depth (Idea 230)
         self._odom_stamp = 0.0
@@ -287,7 +354,24 @@ class ROS2Bridge:
         self._spin_thread = threading.Thread(
             target=rclpy.spin, args=(self._node,), daemon=True)
         self._spin_thread.start()
-        logger.info("ROS2Bridge: spinning — subscribed /camera/image_raw /odom /voltage /map, publishing /cmd_vel")
+        logger.info("ROS2Bridge: spinning — subscribed /camera/image_raw /odom /voltage /map /scan, publishing /cmd_vel")
+
+    def _scan_cb(self, msg):
+        import math as _math
+        obstacles = []
+        angle = msg.angle_min
+        for r in msg.ranges:
+            if 0.12 < r < 1.0:
+                # Transform from laser_link (yaw=180 deg) to base_link
+                # x_base = -x_laser + x_offset, y_base = -y_laser
+                x_laser = r * _math.cos(angle)
+                y_laser = r * _math.sin(angle)
+                x = -x_laser + 0.0435
+                y = -y_laser
+                obstacles.append((x, y))
+            angle += msg.angle_increment
+        with self._lock:
+            self._latest_obstacles = obstacles
 
     def _image_cb(self, msg):
         """Convert sensor_msgs/Image (RGB_INT8 from Fortress) to cv2 BGR ndarray."""
@@ -461,9 +545,17 @@ class ROS2Bridge:
 
     def move(self, vx: float, vy: float, omega: float):
         from geometry_msgs.msg import Twist
+        
+        with self._lock:
+            obstacles = list(self._latest_obstacles)
+        
+        # Apply CBF safety filter to translation (always active, even when vx, vy == 0, to enable proactive repulsion)
+        # Assume robot is at (0,0) in its local frame to match local obstacle coordinates
+        safe_vx, safe_vy = self.cbf.filter_velocity(vx, vy, (0.0, 0.0), obstacles)
+
         msg = Twist()
-        msg.linear.x  = float(vx)    * self.LINEAR_SCALE
-        msg.linear.y  = float(vy)    * self.LINEAR_SCALE
+        msg.linear.x  = float(safe_vx)    * self.LINEAR_SCALE
+        msg.linear.y  = float(safe_vy)    * self.LINEAR_SCALE
         msg.angular.z = float(omega) * self.ANGULAR_SCALE
         self._cmd_vel_pub.publish(msg)
 
@@ -485,6 +577,7 @@ class ROS2Bridge:
     def publish_pedestrians(self, estimates):
         from geometry_msgs.msg import PoseArray, Pose
         from visualization_msgs.msg import MarkerArray, Marker
+        from x3_msgs.msg import PedestrianArray, PedestrianState
         import math
 
         pose_array = PoseArray()
@@ -492,6 +585,9 @@ class ROS2Bridge:
         pose_array.header.frame_id = 'base_link'
 
         marker_array = MarkerArray()
+
+        state_array = PedestrianArray()
+        state_array.header = pose_array.header
 
         for est in estimates:
             x = est.get("x", 0.0)
@@ -511,6 +607,23 @@ class ROS2Bridge:
             pose.orientation.z = math.sin(yaw / 2.0)
             pose.orientation.w = math.cos(yaw / 2.0)
             pose_array.poses.append(pose)
+
+            state = PedestrianState()
+            state.id = int(tid)
+            state.position.x = float(z)
+            state.position.y = -float(x)
+            state.position.z = 0.0
+            state.velocity.x = float(vy) # math.atan2(vy, vx) uses vy for y-component and vx for x-component
+            state.velocity.y = float(vx) # Actually atan2(y, x). So if yaw = atan2(vy, vx), then vy is Y, vx is X? Wait.
+            # Usually atan2 is atan2(y, x). So vy is y, vx is x.
+            # In camera frame, x is right, y is down, z is forward.
+            # The pose maps z to x (forward) and -x to y (left).
+            # So velocity vx, vy might map similarly, but we will just pass vx, vy as given by the estimator.
+            state.velocity.x = float(vx)
+            state.velocity.y = float(vy)
+            state.velocity.z = 0.0
+            state.radius = 0.3
+            state_array.pedestrians.append(state)
 
             # Marker Arrow
             marker = Marker()
@@ -561,6 +674,7 @@ class ROS2Bridge:
 
         self._pedestrian_pub.publish(pose_array)
         self._pedestrian_marker_pub.publish(marker_array)
+        self._pedestrian_state_pub.publish(state_array)
 
 
 def _launch_gazebo():
@@ -636,6 +750,31 @@ def _launch_gazebo():
     return proc
 
 
+def _launch_mediamtx():
+    """Launch mediamtx (WebRTC server) for the --webrtc-camera color feed.
+
+    mediamtx spawns the Astra->H.264 ffmpeg encoder on-demand (see mediamtx.yml
+    runOnDemand), so nothing touches the camera until the GUI actually watches.
+    Returns/stores the Popen handle so cleanup() can stop it.
+    """
+    global _mediamtx_proc
+    poc_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'webrtc_poc')
+    binary = os.path.join(poc_dir, 'mediamtx')
+    config = os.path.join(poc_dir, 'mediamtx.yml')
+    if not os.path.exists(binary):
+        logger.error(f"WebRTC: mediamtx binary not found at {binary} — color feed unavailable")
+        return
+    try:
+        _mediamtx_proc = subprocess.Popen(
+            [binary, config], cwd=poc_dir,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            preexec_fn=os.setsid,
+        )
+        logger.info(f"WebRTC: mediamtx started (pid {_mediamtx_proc.pid}) — GUI camera on :8889/astra")
+    except Exception as e:
+        logger.error(f"WebRTC: failed to launch mediamtx: {e}")
+
+
 def _launch_ros2_stack():
     """Auto-launch the X3 hardware bringup (drivers + EKF, no SLAM) as a subprocess.
 
@@ -647,7 +786,10 @@ def _launch_ros2_stack():
     install_setup = os.path.join(ws_root, 'install', 'setup.bash')
 
     child_env = os.environ.copy()
-    child_env['ROS_DISCOVERY_SERVER'] = os.environ.get('ROS_DISCOVERY_SERVER', '127.0.0.1:11811')
+    if SIMPLE_DISCOVERY:
+        child_env.pop('ROS_DISCOVERY_SERVER', None)
+    else:
+        child_env['ROS_DISCOVERY_SERVER'] = os.environ.get('ROS_DISCOVERY_SERVER', '127.0.0.1:11811')
     # Strip conda dirs — they inject Python 3.13 which breaks rclpy C extensions
     child_env['PATH'] = ':'.join(
         p for p in child_env.get('PATH', '').split(':')
@@ -699,7 +841,10 @@ def _launch_slam(use_sim_time: bool = False):
     launch_file = f'x3_slam_sim.launch.py {st_arg}'
 
     child_env = os.environ.copy()
-    child_env['ROS_DISCOVERY_SERVER'] = os.environ.get('ROS_DISCOVERY_SERVER', '127.0.0.1:11811')
+    if SIMPLE_DISCOVERY:
+        child_env.pop('ROS_DISCOVERY_SERVER', None)
+    else:
+        child_env['ROS_DISCOVERY_SERVER'] = os.environ.get('ROS_DISCOVERY_SERVER', '127.0.0.1:11811')
     child_env.setdefault('DISPLAY', ':0')
     # Strip conda dirs so system Python 3.10 is used for ROS2 nodes
     clean_path = ':'.join(
@@ -745,7 +890,10 @@ def _save_map(name: str) -> tuple[bool, str]:
 
     install_setup = os.path.join(ws_root, 'install', 'setup.bash')
     child_env = os.environ.copy()
-    child_env['ROS_DISCOVERY_SERVER'] = os.environ.get('ROS_DISCOVERY_SERVER', '127.0.0.1:11811')
+    if SIMPLE_DISCOVERY:
+        child_env.pop('ROS_DISCOVERY_SERVER', None)
+    else:
+        child_env['ROS_DISCOVERY_SERVER'] = os.environ.get('ROS_DISCOVERY_SERVER', '127.0.0.1:11811')
     clean_path = ':'.join(
         p for p in child_env.get('PATH', '').split(':')
         if 'conda' not in p.lower()
@@ -814,7 +962,7 @@ def _encode_mapu(grid: dict) -> bytes | None:
 
 
 def initialize_hardware():
-    global ros_board, ros_bridge, drive, lidar, camera, model, oled, _gazebo_proc
+    global ros_board, ros_bridge, drive, lidar, camera, oak, oak_ros_pub, model, oled, _gazebo_proc
     global nav2_client, _ros2_stack_proc, frontier_explorer
     global velocity_estimator, active_velocity_model_name
     global _shared_bgr_shm, _shared_depth_shm, _shared_bgr_array, _shared_depth_array
@@ -894,12 +1042,59 @@ def initialize_hardware():
 
     # 3. Camera — direct USB in both direct-hardware and --ros2 modes.
     #    Only --sim uses ROS2Bridge.get_frame() (Gazebo publishes /camera/image_raw).
-    if not SIM_MODE:
+    #    With --webrtc-camera we DON'T open the Astra here — mediamtx's ffmpeg owns it
+    #    and serves it over WebRTC (full framerate); the base64 path stays empty.
+    if not SIM_MODE and not WEBRTC_CAMERA:
         logger.info("Initializing Camera...")
         # In ROS2 mode the depth stream is owned by the orbbec_depth service,
         # so direct USB depth stream initialization is disabled to prevent conflicts.
         _enable_direct_depth = not ROS2_MODE
         camera = AstraCamera(width=640, height=480, sim_mode=False, enable_depth=_enable_direct_depth)
+    elif WEBRTC_CAMERA:
+        logger.info("Camera: --webrtc-camera set — Astra released for the WebRTC/mediamtx feed")
+        _launch_mediamtx()
+
+    # 3b. OAK-D Lite — stereo + on-device metric depth + 6-axis IMU (no color; the
+    #     Astra keeps RGB). When present it becomes the depth source for the
+    #     broadcast loop and VelocityEstimator, superseding the Astra/orbbec depth.
+    #     The driver degrades gracefully (getters return None, worker retries) if
+    #     the device is unplugged, so the server still runs without it.
+    if not SIM_MODE and OAK_ENABLED:
+        try:
+            from oakd_driver import OakDCamera
+            # Auto-enable on-device YOLO spatial detection if the plain blob exists
+            # (extract it from the .superblob once via blobs/extract_superblob.py).
+            _blob_dir = Path(__file__).parent / "blobs" / "yolo26n"
+            _blob = _blob_dir / "yolo26n.blob"
+            _cfg = _blob_dir / "config.json"
+            _spatial_blob = str(_blob) if (OAK_SPATIAL and _blob.exists()) else None
+            _spatial_cfg = str(_cfg) if (_spatial_blob and _cfg.exists()) else None
+            # mono_fps targets high on-device stereo/depth rate for perception; the
+            # actual rate is gated by the USB link (needs USB3/SUPER to approach it).
+            oak = OakDCamera(mono_fps=80, spatial_blob=_spatial_blob, spatial_config=_spatial_cfg,
+                             conf_threshold=0.35, accel_hz=500, gyro_hz=400)
+            oak.start()
+            logger.info("OAK-D Lite: driver started (stereo + depth + IMU"
+                        + (" + spatial detection)" if _spatial_blob else ")"))
+        except Exception as e:
+            logger.error(f"OAK-D Lite: init failed: {e}")
+            oak = None
+
+        # DepthAI opens the device exclusively, so nothing outside this process can
+        # see the OAK streams. --oak-ros-publish republishes them as sensor_msgs so
+        # they can be bagged (record_bag.sh) or viewed in RViz/Foxglove.
+        if oak is not None and OAK_ROS_PUBLISH and ros_bridge is not None:
+            try:
+                from oakd_ros_publisher import OakRosPublisher
+                oak_ros_pub = OakRosPublisher(ros_bridge._node, oak,
+                                              rate_hz=OAK_ROS_RATE,
+                                              publish_stereo=OAK_ROS_STEREO)
+                oak_ros_pub.start()
+            except Exception as e:
+                logger.error(f"OAK-D ROS publisher: init failed: {e}")
+                oak_ros_pub = None
+        elif OAK_ROS_PUBLISH and ros_bridge is None:
+            logger.warning("--oak-ros-publish ignored: no ROS2 bridge in this mode")
 
     # 4. YOLO Model — prefer TRT engine (.engine), fall back to .pt on CPU
     try:
@@ -928,8 +1123,14 @@ def initialize_hardware():
         model_name = active_velocity_model_name
         model_path = str(Path(__file__).parent.resolve() / f"{model_name}.torchscript")
         logger.info(f"Initializing VelocityEstimator with model: {model_path}...")
-        # In ROS2 and SIM modes, retrieve depth frames from the active ROS2 topic bridge to avoid conflicts.
-        depth_source = ros_bridge if (ROS2_MODE or SIM_MODE) else camera
+        # Depth source priority: OAK-D Lite (when available) > ROS2 bridge (/camera/depth,
+        # ROS2/sim) > direct Astra USB.
+        def get_current_depth_source():
+            if oak is not None and getattr(oak, "available", False):
+                return oak
+            if ROS2_MODE or SIM_MODE:
+                return ros_bridge
+            return camera
         
         # Callback to retrieve EKF pose and twist (Idea 1 & 11)
         def get_robot_pose_and_twist():
@@ -948,7 +1149,7 @@ def initialize_hardware():
             global last_detections
             return list(last_detections)
 
-        velocity_estimator = VelocityEstimator(depth_source, lidar, robot_pose_fn=get_robot_pose_and_twist, model_path=model_path, detections_fn=get_latest_yolo_detections)
+        velocity_estimator = VelocityEstimator(get_current_depth_source, lidar, robot_pose_fn=get_robot_pose_and_twist, model_path=model_path, detections_fn=get_latest_yolo_detections)
         velocity_estimator.start()
         logger.info("VelocityEstimator started successfully")
     except Exception as e:
@@ -959,7 +1160,8 @@ def initialize_hardware():
     logger.info("="*50)
 
 def cleanup():
-    global _p2p_proc, _ab_test_proc, _shared_bgr_shm, _shared_depth_shm
+    global _p2p_proc, _ab_test_proc, _shared_bgr_shm, _shared_depth_shm, _shutting_down
+    _shutting_down = True   # stop motion_loop publishing before rclpy is torn down
     logger.info("Cleaning up...")
     if _shared_bgr_shm is not None:
         try:
@@ -1002,6 +1204,17 @@ def cleanup():
             except Exception:
                 pass
         _ab_test_proc = None
+    if oak_ros_pub is not None:
+        try:
+            oak_ros_pub.stop()
+        except Exception as e:
+            logger.error(f"Failed to stop OAK-D ROS publisher: {e}")
+    if oak is not None:
+        try:
+            logger.info("Stopping OAK-D Lite driver...")
+            oak.cleanup()
+        except Exception as e:
+            logger.error(f"Failed to stop OAK-D driver: {e}")
     if velocity_estimator is not None:
         try:
             logger.info("Stopping VelocityEstimator...")
@@ -1021,7 +1234,24 @@ def cleanup():
     if _ros2_stack_proc is not None:
         logger.info("Shutting down ROS2 hardware stack...")
         try:
-            os.killpg(os.getpgid(_ros2_stack_proc.pid), signal.SIGTERM)
+            _pgid = os.getpgid(_ros2_stack_proc.pid)
+            os.killpg(_pgid, signal.SIGTERM)
+            # Guarantee it's gone — a lingering Mcnamu_driver_X3 keeps the Rosmaster
+            # serial open and a fresh bringup then fights it (robot won't move).
+            try:
+                _ros2_stack_proc.wait(timeout=5.0)
+            except Exception:
+                logger.warning("ROS2 stack did not exit on SIGTERM — sending SIGKILL")
+                try:
+                    os.killpg(_pgid, signal.SIGKILL)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    if _mediamtx_proc is not None:
+        logger.info("Shutting down mediamtx (WebRTC camera)...")
+        try:
+            os.killpg(os.getpgid(_mediamtx_proc.pid), signal.SIGTERM)
         except Exception:
             pass
     if _slam_proc is not None:
@@ -1145,7 +1375,7 @@ def _load_map_data(yaml_name: str) -> dict | None:
 
 
 async def handle_client(websocket):
-    global detection_enabled, depth_enabled, lidar_enabled, is_auto_driving
+    global detection_enabled, depth_enabled, stereo_enabled, lidar_enabled, is_auto_driving
     global current_left_power, current_right_power
     global model, active_model_name
     global _gazebo_proc, nav2_client
@@ -1162,7 +1392,8 @@ async def handle_client(websocket):
     await websocket.send(json.dumps({
         "type": "hello",
         "mode": _mode,
-        "active_velocity_model": active_velocity_model_name
+        "active_velocity_model": active_velocity_model_name,
+        "webrtc_camera": WEBRTC_CAMERA,   # GUI shows a WebRTC <video> instead of base64 frames
     }))
 
     try:
@@ -1248,6 +1479,10 @@ async def handle_client(websocket):
                         elif not depth_enabled and camera._depth_stream is not None:
                             camera._close_depth()
                     logger.info(f"Depth streaming: {depth_enabled}")
+
+                elif msg_type == "toggle_stereo":
+                    stereo_enabled = data.get("enabled", False)
+                    logger.info(f"OAK-D stereo streaming: {stereo_enabled}")
 
                 elif msg_type == "start_auto_drive":
                     is_auto_driving = True
@@ -1644,13 +1879,15 @@ async def broadcast_loop():
     global _cam_frame_count, _yolo_frame_count, _fps_last_time
     global fps_camera, fps_detection, last_detections, depth_enabled, lidar_enabled
     global _batt_cache_v, _batt_cache_time  # P9
-    global _nav2_cache_status, _nav2_cache_time  # Idea 71
-    global _ab_test_mode
+    global _ab_test_mode, stereo_enabled
 
     loop = asyncio.get_event_loop()
     _depth_cycle = 0  # throttle depth to ~10 fps (every other 20fps cycle)
+    _loop_i = 0       # drives the ~2 Hz "readout_slow" lane (every 10th cycle)
 
     while True:
+        if _shutting_down:
+            break
         if connected_clients:
             now = time.time()
 
@@ -1698,11 +1935,15 @@ async def broadcast_loop():
                 _yolo_frame_count = 0
                 _fps_last_time    = now
 
-            # 4. Depth frame — throttled to 10fps; encode also in executor (P1)
+            # 4. Depth frame — throttled to 10fps; encode also in executor (P1).
+            #    Depth source priority: OAK-D Lite > ROS2 bridge (/camera/depth) > Astra USB.
             depth_str = ""
             _depth_cycle += 1
+            # Prefer the OAK-D only while its link is live; otherwise fall back so the
+            # GUI depth view keeps working if the OAK is unplugged.
+            _oak_up = oak is not None and getattr(oak, "available", False)
+            depth_source = oak if _oak_up else (ros_bridge if (ROS2_MODE or SIM_MODE) else camera)
             if depth_enabled and (_depth_cycle % 2 == 0):
-                depth_source = ros_bridge if (ROS2_MODE or SIM_MODE) else camera
                 if depth_source is not None:
                     def _get_depth():
                         df = depth_source.get_depth_frame()
@@ -1713,6 +1954,26 @@ async def broadcast_loop():
                         _, dbuf = cv2.imencode('.jpg', df_downscaled, [cv2.IMWRITE_JPEG_QUALITY, 60])
                         return base64.b64encode(dbuf).decode('utf-8')
                     depth_str = await loop.run_in_executor(None, _get_depth)
+
+            # 4b. OAK-D stereo (left/right mono) — toggled off by default (bandwidth),
+            #     throttled to the same 10fps cadence as depth. IMU is cheap and always sent.
+            oak_left_str = ""
+            oak_right_str = ""
+            if stereo_enabled and oak is not None and (_depth_cycle % 2 == 0):
+                def _get_stereo():
+                    left, right = oak.get_stereo_frames()
+                    out = ["", ""]
+                    for i, gray in enumerate((left, right)):
+                        if gray is None:
+                            continue
+                        small = cv2.resize(gray, (320, 200), interpolation=cv2.INTER_NEAREST)
+                        _, buf = cv2.imencode('.jpg', small, [cv2.IMWRITE_JPEG_QUALITY, 60])
+                        out[i] = base64.b64encode(buf).decode('utf-8')
+                    return out
+                oak_left_str, oak_right_str = await loop.run_in_executor(None, _get_stereo)
+            oak_imu = oak.get_imu() if oak is not None else None
+            # On-device YOLO spatial detections (3D positions), when the OAK NN is running.
+            oak_detections = oak.get_spatial_detections() if (oak is not None and getattr(oak, "spatial_active", False)) else []
 
             # 5. Lidar points — served via Foxglove bridge (/scan topic); not sent here
 
@@ -1760,17 +2021,14 @@ async def broadcast_loop():
             if img_bytes:
                 websockets.broadcast(connected_clients, img_bytes)
 
-            # 8. Build readout (P10: removed always-None/False fields; P3: no "image" key)
-            if nav2_client:
-                if now - _nav2_cache_time >= 0.5:  # Throttle to 2Hz (Idea 71)
-                    _nav2_cache_status = nav2_client.get_status()
-                    _nav2_cache_time = now
-                nav_status = _nav2_cache_status
-            else:
-                nav_status = {"state": "UNAVAILABLE"}
+            # 8. Fast readout lane (20 Hz): pose, motors, power, detections, depth.
             msg = {
                 "type": "readout",
                 "depth_image": depth_str,
+                "oak_left": oak_left_str,
+                "oak_right": oak_right_str,
+                "oak_imu": oak_imu,
+                "oak_detections": oak_detections,
                 "robot_pose": pose,
                 "m1_pos": m1_enc,
                 "m2_pos": m2_enc,
@@ -1784,19 +2042,8 @@ async def broadcast_loop():
                 "right_power": current_right_power,
                 "detection_enabled": detection_enabled,
                 "is_auto_driving": is_auto_driving,
-                "nav_phase": nav_status["state"],
-                "nav": nav_status,
-                "slam_active": _slam_proc is not None and _slam_proc.poll() is None,
-                "frontier": frontier_explorer.status() if frontier_explorer else None,
-                "active_model_name": active_model_name,
-                "active_velocity_model_name": active_velocity_model_name,
-                "velocity_estimates": velocity_estimates,
-                "p2p_test_running": _p2p_proc is not None and _p2p_proc.poll() is None,
-                "ab_test_running": _ab_test_proc is not None and _ab_test_proc.poll() is None,
-                "ab_test_mode": _ab_test_mode if (_ab_test_proc is not None and _ab_test_proc.poll() is None) else None,
-                "fps_camera": fps_camera,
-                "fps_detection": fps_detection,
                 "detections": last_detections,
+                "velocity_estimates": velocity_estimates,
                 "battery": {"voltage": batt_v, "amps": est_current, "watts": est_watts},
                 "power": {
                     "voltage":     batt_v,
@@ -1805,9 +2052,36 @@ async def broadcast_loop():
                     "battery_pct": batt_pct,
                 },
             }
-
             # Fast orjson serialization with fallback (Idea 87)
             websockets.broadcast(connected_clients, orjson_dumps(msg))
+
+            # 9. Slow readout lane (~2 Hz): nav / SLAM / frontier / model / fps / test
+            #    status. These are subprocess polls or dict-builds that don't need 20 Hz,
+            #    so we compute and broadcast them only every 10th cycle.
+            _loop_i += 1
+            if _loop_i % 10 == 0:
+                nav_status = nav2_client.get_status() if nav2_client else {"state": "UNAVAILABLE"}
+                _ab_running = _ab_test_proc is not None and _ab_test_proc.poll() is None
+                slow = {
+                    "type": "readout_slow",
+                    "nav_phase": nav_status["state"],
+                    "nav": nav_status,
+                    "slam_active": _slam_proc is not None and _slam_proc.poll() is None,
+                    "frontier": frontier_explorer.status() if frontier_explorer else None,
+                    "active_model_name": active_model_name,
+                    "active_velocity_model_name": active_velocity_model_name,
+                    "p2p_test_running": _p2p_proc is not None and _p2p_proc.poll() is None,
+                    "ab_test_running": _ab_running,
+                    "ab_test_mode": _ab_test_mode if _ab_running else None,
+                    "fps_camera": fps_camera,
+                    "fps_detection": fps_detection,
+                    # OAK-D stereo/depth capture rate — cheap cached read from the
+                    # driver's worker thread (no capture-path impact).
+                    "fps_oak_depth": (oak.get_depth_fps()
+                                      if (oak is not None and getattr(oak, "available", False))
+                                      else 0.0),
+                }
+                websockets.broadcast(connected_clients, orjson_dumps(slow))
 
         await asyncio.sleep(0.05)  # 20 FPS cap
 
@@ -1821,8 +2095,21 @@ def _step_toward(current: float, target: float, accel: float, decel: float) -> f
     return current + (step if diff > 0 else -step)
 
 
+_standalone_test_cache = (False, 0.0)   # (last_result, last_scan_monotonic)
+_STANDALONE_TEST_SCAN_INTERVAL = 1.0    # seconds between full /proc scans
+
 def _is_standalone_test_running() -> bool:
+    # Scanning every process' cmdline is expensive (~260 /proc reads). motion_loop
+    # calls this at ~30 Hz, so cache the result and only re-scan at ~1 Hz — an
+    # externally-launched test appearing/disappearing within 1 s is harmless.
+    global _standalone_test_cache
+    now = time.monotonic()
+    last_result, last_scan = _standalone_test_cache
+    if now - last_scan < _STANDALONE_TEST_SCAN_INTERVAL:
+        return last_result
+
     import psutil
+    result = False
     try:
         for proc in psutil.process_iter(['cmdline']):
             cmd = proc.info.get('cmdline')
@@ -1830,10 +2117,12 @@ def _is_standalone_test_running() -> bool:
                 cmd_str = ' '.join(cmd)
                 if 'ab_comparison_test.py' in cmd_str or 'point_to_point_test.py' in cmd_str:
                     if 'server_x3.py' not in cmd_str:
-                        return True
+                        result = True
+                        break
     except Exception:
         pass
-    return False
+    _standalone_test_cache = (result, now)
+    return result
 
 
 async def motion_loop():
@@ -1858,6 +2147,8 @@ async def motion_loop():
     _watchdog_fired = False
 
     while True:
+        if _shutting_down:
+            break
         if motion_queue is None:
             await asyncio.sleep(0.033)
             continue
@@ -1896,8 +2187,17 @@ async def motion_loop():
         test_running = (_p2p_proc is not None and _p2p_proc.poll() is None) or \
                        (_ab_test_proc is not None and _ab_test_proc.poll() is None) or \
                        _is_standalone_test_running()
-        if drive and not test_running:
-            drive.move(_ramp_vx, _ramp_vy, _ramp_omega)
+        if drive and not test_running and not _shutting_down:
+            try:
+                drive.move(_ramp_vx, _ramp_vy, _ramp_omega)
+            except Exception as e:
+                # During shutdown the rclpy context may already be torn down;
+                # publishing then raises RCLError. Never let that propagate — an
+                # unhandled error here aborts the process before cleanup() can kill
+                # the ROS2 bringup stack, orphaning Mcnamu/base_node on the serial.
+                if _shutting_down:
+                    break
+                logger.warning(f"motion_loop: drive.move failed: {e}")
 
         await asyncio.sleep(0.033)  # ~30 Hz (Idea 111)
 
@@ -1905,6 +2205,8 @@ async def motion_loop():
 async def oled_loop():
     """Refresh OLED with WiFi SSID and IP every 5 seconds."""
     while True:
+        if _shutting_down:
+            break
         try:
             if oled:
                 ssid    = _get_ssid()
@@ -1928,6 +2230,8 @@ async def map_push_loop():
     """
     _last_grid_id = None
     while True:
+        if _shutting_down:
+            break
         await asyncio.sleep(1.0)
         if not connected_clients or ros_bridge is None:
             continue
@@ -1972,6 +2276,23 @@ async def main():
     _start_http_server()
     initialize_hardware()
     motion_queue = asyncio.Queue(maxsize=2)
+
+    # Graceful shutdown: on SIGINT/SIGTERM (e.g. `systemctl restart`) set the flag so
+    # the async loops exit, gather() returns, and the finally-block cleanup() runs —
+    # sending a motor stop and cleanly killing the ROS2 bringup. Without this the loops
+    # spin forever and systemd escalates to SIGKILL (no graceful cleanup).
+    def _on_shutdown_signal():
+        global _shutting_down
+        if not _shutting_down:
+            logger.info("Shutdown signal received — stopping loops for graceful cleanup")
+        _shutting_down = True
+    _loop = asyncio.get_running_loop()
+    for _s in (signal.SIGINT, signal.SIGTERM):
+        try:
+            _loop.add_signal_handler(_s, _on_shutdown_signal)
+        except (NotImplementedError, RuntimeError):
+            pass  # platform without signal-handler support
+
     # Disable websockets deflate compression to avoid blocking main thread zlib operations (Idea 117)
     async with websockets.serve(handle_client, "0.0.0.0", WS_PORT, compression=None):
         logger.info(f"Server started on ws://0.0.0.0:{WS_PORT}")

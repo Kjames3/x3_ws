@@ -11,12 +11,39 @@
 #
 # Default output dir: ~/bags/domain_adapt/
 #
-# Topics recorded:
-#   /camera/depth/image_raw   — Orbbec Astra Pro depth stream (16UC1)
+# Topics recorded (always):
+#   /oak/depth/image_raw      — OAK-D Lite on-device stereo depth (16UC1, mm)
+#   /oak/depth/camera_info    — OAK-D CAM_A intrinsics (needed to reproject depth)
+#   /oak/imu                  — OAK-D 6-axis IMU (accel + gyro)
+#   /oak/detections           — OAK-D on-device YOLO spatial detections (3D)
 #   /scan                     — YDLidar X3 laser scan
 #   /odom                     — EKF-fused odometry (robot position/velocity)
 #   /tf                       — Dynamic coordinate frame transforms
 #   /tf_static                — Static coordinate frame transforms
+#
+# Optional topics (opt in — they roughly double or triple the bag size):
+#   RECORD_OAK_STEREO=true    /oak/left/image_raw, /oak/right/image_raw (mono8)
+#   RECORD_ASTRA_DEPTH=true   /camera/depth/image_raw (Orbbec Astra Pro, 16UC1)
+#
+# Other knobs:
+#   RECORD_DURATION=60        stop automatically after N seconds (trial runs)
+#   BYPASS_TOPIC_CHECK=true   skip the pre-flight publisher check
+#
+# IMPORTANT — the /oak/* topics only exist if x3_server was started with
+# --oak-ros-publish. DepthAI opens the OAK-D exclusively, so the server process
+# that owns the device is the only thing that can publish its streams; a second
+# process cannot open the camera. To enable:
+#
+#   sudo mkdir -p /etc/systemd/system/x3_server.service.d
+#   sudo tee /etc/systemd/system/x3_server.service.d/oak-record.conf >/dev/null <<'EOF'
+#   [Service]
+#   ExecStart=
+#   ExecStart=/usr/bin/python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --oak-ros-publish
+#   EOF
+#   sudo systemctl daemon-reload && sudo systemctl restart x3_server
+#
+# ...then remove that drop-in and restart once the recording session is done, so
+# normal operation isn't paying for the extra publishing.
 #
 # After recording, transfer the bag to your laptop:
 #   scp -r <JETSON_IP>:~/bags/domain_adapt/ ~/EE_244_Final_Project/bags/
@@ -30,13 +57,34 @@ TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 BAG_NAME="domain_adapt_${TIMESTAMP}"
 BAG_PATH="${OUTPUT_DIR}/${BAG_NAME}"
 
+# Opt-in extras (see header). Default off to keep ~30 min sessions a sane size.
+RECORD_OAK_STEREO="${RECORD_OAK_STEREO:-false}"
+RECORD_ASTRA_DEPTH="${RECORD_ASTRA_DEPTH:-false}"
+
 TOPICS=(
-    "/camera/depth/image_raw"
+    "/oak/depth/image_raw"
+    "/oak/depth/camera_info"
+    "/oak/imu"
     "/scan"
     "/odom"
     "/tf"
     "/tf_static"
 )
+
+# Recorded when present but never fatal: /oak/detections needs the on-device YOLO
+# blob (skipped if it was never extracted), and the optional streams below are
+# only published on request. ros2 bag record accepts topics that appear later.
+OPTIONAL_TOPICS=(
+    "/oak/detections"
+)
+
+if [[ "${RECORD_OAK_STEREO}" == "true" ]]; then
+    OPTIONAL_TOPICS+=("/oak/left/image_raw" "/oak/right/image_raw")
+fi
+
+if [[ "${RECORD_ASTRA_DEPTH}" == "true" ]]; then
+    OPTIONAL_TOPICS+=("/camera/depth/image_raw")
+fi
 
 # ── Checks ─────────────────────────────────────────────────────────────────────
 if ! command -v ros2 &>/dev/null; then
@@ -45,56 +93,53 @@ if ! command -v ros2 &>/dev/null; then
     exit 1
 fi
 
-# Check ROS_DOMAIN_ID
+# ── DDS configuration ──────────────────────────────────────────────────────────
+# The recorder MUST join the DDS network exactly the way the robot's own nodes
+# did, or it discovers nothing and silently records an empty bag. The single
+# source of truth is the environment of the LIVE server_x3.py process — the
+# service definition can lie (its ExecStart currently unsets the discovery-server
+# vars that the [Service] Environment= lines set).
+#
+# As of 2026-07 the robot runs PLAIN DDS MULTICAST on ROS_DOMAIN_ID=42 with no
+# discovery server. Do not re-add a ROS_DISCOVERY_SERVER guess here: pointing the
+# recorder at a discovery server that nothing else uses is exactly how you get a
+# bag with zero messages in it.
+SERVER_PID=$(pgrep -f "server_x3.py" | head -n 1 || echo "")
+SERVER_ENV=""
+if [[ -n "$SERVER_PID" ]]; then
+    SERVER_ENV=$(tr '\0' '\n' < "/proc/${SERVER_PID}/environ" 2>/dev/null || echo "")
+fi
+
+# ROS_DOMAIN_ID — inherit from the live server when we can read it.
 if [[ -z "${ROS_DOMAIN_ID:-}" ]]; then
-    echo "[WARN] ROS_DOMAIN_ID not set — defaulting to 42 (Jetson default)"
-    export ROS_DOMAIN_ID=42
-fi
-
-# Check ROS_DISCOVERY_SERVER
-if [[ -z "${ROS_DISCOVERY_SERVER:-}" ]]; then
-    # 1. Try to detect from running server_x3.py process environment (most reliable!)
-    PID=$(pgrep -f "server_x3.py" | head -n 1 || echo "")
-    DETECTED=""
-    if [[ -n "$PID" ]]; then
-        RUNNING_ENV=$(cat "/proc/${PID}/environ" 2>/dev/null | tr '\0' '\n' | grep "ROS_DISCOVERY_SERVER=" || echo "")
-        if [[ "$RUNNING_ENV" =~ ROS_DISCOVERY_SERVER=(TCPv4:\[[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\]:11811) ]]; then
-            DETECTED="${BASH_REMATCH[1]}"
-        elif [[ "$RUNNING_ENV" =~ ROS_DISCOVERY_SERVER=(TCPv4:\[127\.0\.0\.1\]:11811) ]]; then
-            DETECTED="${BASH_REMATCH[1]}"
-        fi
-    fi
-
-    if [[ -n "$DETECTED" ]]; then
-        echo "  [$(date +%H:%M:%S)] Auto-detected active discovery server from running robot service: $DETECTED"
-        export ROS_DISCOVERY_SERVER="$DETECTED"
+    DETECTED_DOMAIN=$(grep -m1 "^ROS_DOMAIN_ID=" <<<"$SERVER_ENV" | cut -d= -f2 || echo "")
+    if [[ -n "$DETECTED_DOMAIN" ]]; then
+        echo "  [$(date +%H:%M:%S)] ROS_DOMAIN_ID=$DETECTED_DOMAIN (inherited from running server)"
+        export ROS_DOMAIN_ID="$DETECTED_DOMAIN"
     else
-        # 2. Fallback: Dynamically match current WiFi IP or loopback
-        JETSON_IP=""
-        for ip in $(hostname -I); do
-            if [[ ! "$ip" =~ ^172\. ]]; then
-                JETSON_IP="$ip"
-                break
-            fi
-        done
-        if [ -n "$JETSON_IP" ]; then
-            echo "  [$(date +%H:%M:%S)] No running robot process found — resolved active IP: TCPv4:[$JETSON_IP]:11811"
-            export ROS_DISCOVERY_SERVER="TCPv4:[$JETSON_IP]:11811"
-        else
-            echo "  [$(date +%H:%M:%S)] No network IP found — defaulting to TCPv4:[127.0.0.1]:11811"
-            export ROS_DISCOVERY_SERVER="TCPv4:[127.0.0.1]:11811"
-        fi
+        echo "  [WARN] ROS_DOMAIN_ID not set and no running server — defaulting to 42"
+        export ROS_DOMAIN_ID=42
     fi
 fi
 
-# Force Super Client mode so that CLI/introspection tools can query the DDS topology
-export ROS_SUPER_CLIENT=TRUE
-
-# Load the FastDDS TCP Server profile on the Jetson (or local path on laptop if run there)
-if [[ -f "/home/jetson/x3_ws/config/fastdds_tcp_server.xml" ]]; then
-    export FASTDDS_DEFAULT_PROFILES_FILE="/home/jetson/x3_ws/config/fastdds_tcp_server.xml"
-elif [[ -f "$(dirname "$0")/config/fastdds_tcp_server.xml" ]]; then
-    export FASTDDS_DEFAULT_PROFILES_FILE="$(dirname "$0")/config/fastdds_tcp_server.xml"
+# ROS_DISCOVERY_SERVER — adopt ONLY if the live server actually uses one.
+if [[ -z "${ROS_DISCOVERY_SERVER:-}" ]]; then
+    DETECTED_DS=$(grep -m1 "^ROS_DISCOVERY_SERVER=" <<<"$SERVER_ENV" | cut -d= -f2- || echo "")
+    if [[ -n "$DETECTED_DS" ]]; then
+        echo "  [$(date +%H:%M:%S)] Discovery server in use by the robot: $DETECTED_DS"
+        export ROS_DISCOVERY_SERVER="$DETECTED_DS"
+        # Super Client mode lets CLI/introspection tools query the DDS topology.
+        export ROS_SUPER_CLIENT=TRUE
+        DETECTED_PROFILE=$(grep -m1 "^FASTDDS_DEFAULT_PROFILES_FILE=" <<<"$SERVER_ENV" | cut -d= -f2- || echo "")
+        if [[ -n "$DETECTED_PROFILE" ]]; then
+            export FASTDDS_DEFAULT_PROFILES_FILE="$DETECTED_PROFILE"
+        fi
+    elif [[ -n "$SERVER_PID" ]]; then
+        echo "  [$(date +%H:%M:%S)] Robot is on plain DDS multicast (no discovery server) — matching it"
+        unset ROS_DISCOVERY_SERVER FASTDDS_DEFAULT_PROFILES_FILE 2>/dev/null || true
+    else
+        echo "  [WARN] No running server_x3.py found — assuming plain DDS multicast"
+    fi
 fi
 
 # Restart the ROS2 daemon so it inherits the correct DDS network settings immediately
@@ -111,9 +156,13 @@ echo "  EE244 Domain Adaptation — Rosbag Recording"
 echo "======================================================================="
 echo "  Bag path:       ${BAG_PATH}"
 echo "  ROS_DOMAIN_ID:  ${ROS_DOMAIN_ID}"
-echo "  ROS_DISCOVERY_SERVER: ${ROS_DISCOVERY_SERVER}"
-echo "  Topics:"
+echo "  Discovery:      ${ROS_DISCOVERY_SERVER:-plain DDS multicast (no discovery server)}"
+echo "  Topics (required):"
 for t in "${TOPICS[@]}"; do echo "    $t"; done
+echo "  Topics (optional — recorded if published):"
+for t in "${OPTIONAL_TOPICS[@]}"; do echo "    $t"; done
+echo "  OAK stereo L/R:  ${RECORD_OAK_STEREO}   (RECORD_OAK_STEREO=true to enable)"
+echo "  Astra depth:     ${RECORD_ASTRA_DEPTH}   (RECORD_ASTRA_DEPTH=true to enable)"
 echo ""
 
 # Check if pre-flight check should be bypassed
@@ -134,6 +183,14 @@ else
         fi
     done
 
+    # Optional topics only warn — a missing one costs you a stream, not the session.
+    for t in "${OPTIONAL_TOPICS[@]}"; do
+        PUB_COUNT=$(ros2 topic info "$t" 2>/dev/null | grep "Publisher count:" | awk '{print $3}' || echo "0")
+        if [[ -z "$PUB_COUNT" || "$PUB_COUNT" -eq 0 ]]; then
+            echo "  [WARN] optional topic $t has no publisher — it will be absent from the bag"
+        fi
+    done
+
     if [[ ${#MISSING_TOPICS[@]} -gt 0 ]]; then
         echo ""
         echo "======================================================================="
@@ -148,9 +205,15 @@ else
         echo "       sudo systemctl status fastdds_discovery"
         echo "    2. The hardware drivers are running (x3_server / jetson_bringup):"
         echo "       sudo systemctl status x3_server"
-        echo "    3. The Orbbec depth camera service is running:"
+        echo "    3. For any /oak/* topic: x3_server must be running WITH --oak-ros-publish."
+        echo "       The OAK-D is opened exclusively by that process, so nothing else can"
+        echo "       publish its streams. Check the flag is in effect:"
+        echo "         systemctl show x3_server -p ExecStart | grep -o -- --oak-ros-publish"
+        echo "       and add it via a drop-in (see the header of this script), then:"
+        echo "         sudo systemctl daemon-reload && sudo systemctl restart x3_server"
+        echo "    4. For /camera/depth/image_raw: the Orbbec depth camera service is running:"
         echo "       sudo systemctl status orbbec_depth"
-        echo "    4. Your ROS_DOMAIN_ID matches ($ROS_DOMAIN_ID) and ROS_DISCOVERY_SERVER"
+        echo "    5. Your ROS_DOMAIN_ID matches ($ROS_DOMAIN_ID) and ROS_DISCOVERY_SERVER"
         echo "       is pointing to 127.0.0.1:11811"
         echo ""
         echo "  Aborting recording to prevent saving an empty bag."
@@ -165,14 +228,19 @@ fi
 
 echo "  INSTRUCTIONS:"
 echo "    1. Make sure the robot bringup is running (x3_bringup.launch.py)"
-echo "    2. Make sure the Orbbec camera is streaming on /camera/depth/image_raw"
+echo "    2. Make sure x3_server runs with --oak-ros-publish so /oak/* is on the network"
 echo "    3. Use the joystick/GUI to teleoperate the robot through the classroom"
 echo "    4. Have 2–3 people walk naturally around the robot at 0.5–2m distance"
 echo "    5. Target: ~30 minutes of diverse walking scenarios"
-echo "    6. Press Ctrl+C to stop recording when done"
+echo "    6. Keep an eye on free disk space — OAK depth alone is roughly 1–2 GB per"
+echo "       10 min after zstd; enabling stereo/Astra depth multiplies that"
+echo "    7. Press Ctrl+C to stop recording when done"
 echo ""
-echo "  Starting in 5 seconds... (Ctrl+C to abort)"
-sleep 5
+echo "  Countdown to recording (Ctrl+C to abort):"
+for i in 5 4 3 2 1; do
+    echo "    ${i}..."
+    sleep 1
+done
 
 echo ""
 echo "  [$(date +%H:%M:%S)] Recording started — bag: ${BAG_NAME}"
@@ -180,11 +248,31 @@ echo "  -----------------------------------------------------------------------"
 
 # ── Record ─────────────────────────────────────────────────────────────────────
 # Compression keeps bag size manageable (depth images are large)
-ros2 bag record \
-    --output "${BAG_PATH}" \
-    --compression-mode file \
-    --compression-format zstd \
-    "${TOPICS[@]}"
+#
+# RECORD_DURATION=<seconds> stops automatically instead of waiting for Ctrl+C —
+# used for short trial runs to size the data rate before a real session.
+# ros2 bag record has no --duration in Humble, so send it SIGINT (the same signal
+# Ctrl+C sends) to get a cleanly finalised bag.
+if [[ -n "${RECORD_DURATION:-}" ]]; then
+    echo "  [$(date +%H:%M:%S)] Timed run — stopping automatically after ${RECORD_DURATION}s"
+    ros2 bag record \
+        --output "${BAG_PATH}" \
+        --compression-mode file \
+        --compression-format zstd \
+        "${TOPICS[@]}" "${OPTIONAL_TOPICS[@]}" &
+    REC_PID=$!
+    # Stop on our timer, but don't hang forever if the user Ctrl+Cs first.
+    ( sleep "${RECORD_DURATION}"; kill -INT "${REC_PID}" 2>/dev/null || true ) &
+    TIMER_PID=$!
+    wait "${REC_PID}" || true
+    kill "${TIMER_PID}" 2>/dev/null || true
+else
+    ros2 bag record \
+        --output "${BAG_PATH}" \
+        --compression-mode file \
+        --compression-format zstd \
+        "${TOPICS[@]}" "${OPTIONAL_TOPICS[@]}"
+fi
 
 # ── Summary ────────────────────────────────────────────────────────────────────
 echo ""

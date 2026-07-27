@@ -1,0 +1,61 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>OAK low-latency viewer</title>
+<body style="margin:0;background:#000;overflow:hidden">
+<video id="v" autoplay muted playsinline style="width:100vw;height:100vh;object-fit:contain"></video>
+<div id="s" style="position:fixed;top:6px;left:8px;color:#0f0;font:13px monospace;text-shadow:0 0 3px #000"></div>
+<script>
+// Minimal WHEP client for mediamtx that forces the receive jitter buffer to ~0.
+// Open this file in Chrome. If the robot isn't reachable as jetson-desktop.local,
+// append the host in the URL hash, e.g.  viewer.html#http://192.168.1.150:8889/oak/whep
+const HOST = location.hostname && location.hostname !== '' ? location.hostname : 'jetson-desktop.local';
+const WHEP = location.hash.slice(1) || `http://${HOST}:8889/oak/whep`;
+const v = document.getElementById('v'), s = document.getElementById('s');
+
+function lowLatency(pc) {
+  pc.getReceivers().forEach(r => {
+    try { r.jitterBufferTarget = 0; } catch (_) {}   // newer Chrome
+    try { r.playoutDelayHint = 0; } catch (_) {}      // older Chrome
+  });
+}
+
+async function start() {
+  const pc = new RTCPeerConnection();
+  pc.addTransceiver('video', { direction: 'recvonly' });
+  pc.ontrack = e => { v.srcObject = e.streams[0]; lowLatency(pc); };
+
+  await pc.setLocalDescription(await pc.createOffer());
+  // non-trickle WHEP: wait for ICE gathering, then POST the offer
+  await new Promise(res => {
+    if (pc.iceGatheringState === 'complete') return res();
+    pc.addEventListener('icegatheringstatechange',
+      () => pc.iceGatheringState === 'complete' && res());
+    setTimeout(res, 2000);
+  });
+
+  let r;
+  try {
+    r = await fetch(WHEP, { method: 'POST',
+      headers: { 'Content-Type': 'application/sdp' }, body: pc.localDescription.sdp });
+  } catch (err) { s.textContent = 'fetch failed (CORS/host?): ' + err; return; }
+  if (!r.ok) { s.textContent = 'WHEP HTTP ' + r.status; return; }
+
+  await pc.setRemoteDescription({ type: 'answer', sdp: await r.text() });
+  lowLatency(pc);
+
+  // live jitter-buffer readout
+  setInterval(async () => {
+    const stats = await pc.getStats(); let line = 'connecting…';
+    stats.forEach(x => {
+      if (x.type === 'inbound-rtp' && x.kind === 'video' && x.jitterBufferEmittedCount) {
+        const jb = 1000 * x.jitterBufferDelay / x.jitterBufferEmittedCount;
+        line = `jitterBuffer ${jb.toFixed(0)} ms | ${x.framesPerSecond || '?'} fps | ${x.frameWidth}x${x.frameHeight}`;
+      }
+    });
+    s.textContent = line;
+  }, 1000);
+}
+start();
+</script>
+</body>
+</html>
