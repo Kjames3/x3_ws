@@ -99,6 +99,16 @@ parser.add_argument('--no-oak', action='store_true', dest='no_oak',
 parser.add_argument('--no-oak-spatial', action='store_true', dest='no_oak_spatial',
                     help='Disable on-device YOLO spatial detection on the OAK-D '
                          '(still streams stereo/depth/IMU).')
+parser.add_argument('--oak-ros-publish', action='store_true', dest='oak_ros_publish',
+                    help='Republish the OAK-D streams on ROS2 topics (/oak/depth/image_raw, '
+                         '/oak/left|right/image_raw, /oak/imu, /oak/detections) so they can be '
+                         'recorded with "ros2 bag record" or viewed in RViz. Off by default — '
+                         'the images cost real CPU/bandwidth. See record_bag.sh.')
+parser.add_argument('--oak-ros-rate', type=float, default=10.0, dest='oak_ros_rate',
+                    help='Publish rate (Hz) for --oak-ros-publish. Default 10.')
+parser.add_argument('--oak-ros-no-stereo', action='store_true', dest='oak_ros_no_stereo',
+                    help='With --oak-ros-publish, skip the mono left/right images '
+                         '(roughly halves the bag size; keeps depth + IMU + detections).')
 parser.add_argument('--webrtc-camera', action='store_true', dest='webrtc_camera',
                     help='Serve the color camera over WebRTC (via mediamtx) instead of '
                          'base64/WebSocket. Releases the Astra so ffmpeg can capture it at '
@@ -108,6 +118,9 @@ SIM_MODE  = args.sim
 ROS2_MODE = not args.sim  # ROS2 hardware bridge is the default; only --sim disables it
 OAK_ENABLED = not args.no_oak  # OAK-D Lite supplies stereo/depth/imu unless --no-oak
 OAK_SPATIAL = not args.no_oak_spatial  # on-device YOLO spatial detection (if blob present)
+OAK_ROS_PUBLISH = args.oak_ros_publish      # republish OAK streams as ROS2 topics (bagging/RViz)
+OAK_ROS_RATE = args.oak_ros_rate
+OAK_ROS_STEREO = not args.oak_ros_no_stereo
 WEBRTC_CAMERA = args.webrtc_camera  # color via WebRTC/mediamtx instead of base64 (releases Astra)
 
 # Apply ROS_DOMAIN_ID early — must be set before rclpy.init() inside ROS2Bridge
@@ -183,6 +196,7 @@ drive = None
 lidar = None
 camera = None
 oak = None          # OakDCamera instance (stereo + depth + IMU); depth source when present
+oak_ros_pub = None  # OakRosPublisher — republishes /oak/* topics (--oak-ros-publish only)
 model = None
 oled = None
 nav2_client = None    # Nav2Client instance (ROS2/sim modes only)
@@ -940,7 +954,7 @@ def _encode_mapu(grid: dict) -> bytes | None:
 
 
 def initialize_hardware():
-    global ros_board, ros_bridge, drive, lidar, camera, oak, model, oled, _gazebo_proc
+    global ros_board, ros_bridge, drive, lidar, camera, oak, oak_ros_pub, model, oled, _gazebo_proc
     global nav2_client, _ros2_stack_proc, frontier_explorer
     global velocity_estimator, active_velocity_model_name
     global _shared_bgr_shm, _shared_depth_shm, _shared_bgr_array, _shared_depth_array
@@ -1058,6 +1072,22 @@ def initialize_hardware():
             logger.error(f"OAK-D Lite: init failed: {e}")
             oak = None
 
+        # DepthAI opens the device exclusively, so nothing outside this process can
+        # see the OAK streams. --oak-ros-publish republishes them as sensor_msgs so
+        # they can be bagged (record_bag.sh) or viewed in RViz/Foxglove.
+        if oak is not None and OAK_ROS_PUBLISH and ros_bridge is not None:
+            try:
+                from oakd_ros_publisher import OakRosPublisher
+                oak_ros_pub = OakRosPublisher(ros_bridge._node, oak,
+                                              rate_hz=OAK_ROS_RATE,
+                                              publish_stereo=OAK_ROS_STEREO)
+                oak_ros_pub.start()
+            except Exception as e:
+                logger.error(f"OAK-D ROS publisher: init failed: {e}")
+                oak_ros_pub = None
+        elif OAK_ROS_PUBLISH and ros_bridge is None:
+            logger.warning("--oak-ros-publish ignored: no ROS2 bridge in this mode")
+
     # 4. YOLO Model — prefer TRT engine (.engine), fall back to .pt on CPU
     try:
         from trt_detector import TRTDetector
@@ -1166,6 +1196,11 @@ def cleanup():
             except Exception:
                 pass
         _ab_test_proc = None
+    if oak_ros_pub is not None:
+        try:
+            oak_ros_pub.stop()
+        except Exception as e:
+            logger.error(f"Failed to stop OAK-D ROS publisher: {e}")
     if oak is not None:
         try:
             logger.info("Stopping OAK-D Lite driver...")
