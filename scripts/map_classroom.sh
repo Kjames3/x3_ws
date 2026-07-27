@@ -111,7 +111,7 @@ echo ""
 # ── 5. Pre-flight Topic Health Check ──────────────────────────────────────────
 echo -e "${BLUE}[DDS Setup] Waiting for Jetson mapping topics to propagate (up to 30s)...${RESET}"
 FOUND_TOPICS=0
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
     TOPIC_LIST=$(ros2 topic list 2>/dev/null || echo "")
     if echo "$TOPIC_LIST" | grep -q "/scan" && echo "$TOPIC_LIST" | grep -q "/map"; then
         FOUND_TOPICS=1

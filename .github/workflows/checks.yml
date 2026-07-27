@@ -1,0 +1,58 @@
+name: checks
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:   # lets you run it by hand from the Actions tab
+
+# A new push to the same branch cancels the previous run instead of queueing.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+
+      # install/ holds colcon-GENERATED setup scripts (install/setup.sh,
+      # install/local_setup.sh). They are build output, not source, and they do
+      # not pass lint — exclude them rather than editing generated files.
+      - name: Collect scripts
+        id: collect
+        run: |
+          mapfile -t files < <(git ls-files '*.sh' | grep -v '^install/')
+          printf '  %s\n' "${files[@]}"
+          echo "count=${#files[@]}" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "${files[@]}" > /tmp/sh_files.txt
+
+      # Syntax check. Catches things shellcheck deliberately will not, since
+      # shellcheck is a linter rather than a parser for every construct.
+      - name: bash -n (syntax)
+        run: xargs -a /tmp/sh_files.txt -d '\n' -I{} bash -n {}
+
+      # The gate. Severity is 'warning'; suppressions live in .shellcheckrc with
+      # the reasoning for each. Anything at warning or above fails the build.
+      - name: shellcheck (gate, severity=warning)
+        run: xargs -a /tmp/sh_files.txt -d '\n' shellcheck --severity=warning --format=gcc
+
+      # Informational only — info/style findings are printed for visibility but
+      # never fail the build. Tighten the gate above if you want these enforced.
+      - name: shellcheck (info/style, non-blocking)
+        if: always()
+        run: |
+          xargs -a /tmp/sh_files.txt -d '\n' shellcheck --format=gcc || true
+
+  large-files:
+    name: large files / rosbag guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for oversized files and committed rosbags
+        run: ./scripts/ci/check_large_files.sh

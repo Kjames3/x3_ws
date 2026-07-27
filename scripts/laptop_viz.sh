@@ -135,7 +135,7 @@ echo "[laptop_viz] Jetson reachable."
 # data will actually flow.  Poll until /scan appears or 30s elapses.
 echo "[laptop_viz] Waiting for Jetson topics (up to 30s)..."
 FOUND=0
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
     if ros2 topic list 2>/dev/null | grep -q "/scan"; then
         FOUND=1
         break
