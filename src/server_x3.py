@@ -104,7 +104,15 @@ parser.add_argument('--oak-ros-publish', action='store_true', dest='oak_ros_publ
                          '/oak/left|right/image_raw, /oak/imu, /oak/detections) so they can be '
                          'recorded with "ros2 bag record" or viewed in RViz. Off by default — '
                          'the images cost real CPU/bandwidth. See record_bag.sh.')
-parser.add_argument('--oak-ros-rate', type=float, default=10.0, dest='oak_ros_rate',
+
+def _valid_oak_ros_rate(val_str):
+    import math
+    val = float(val_str)
+    if math.isnan(val) or math.isinf(val) or val <= 0.0:
+        raise argparse.ArgumentTypeError(f"oak_ros_rate must be a positive finite float, got '{val_str}'")
+    return val
+
+parser.add_argument('--oak-ros-rate', type=_valid_oak_ros_rate, default=10.0, dest='oak_ros_rate',
                     help='Publish rate (Hz) for --oak-ros-publish. Default 10.')
 parser.add_argument('--oak-ros-no-stereo', action='store_true', dest='oak_ros_no_stereo',
                     help='With --oak-ros-publish, skip the mono left/right images '

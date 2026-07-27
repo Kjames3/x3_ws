@@ -1,5 +1,7 @@
 # Yahboom X3 — ROS2 Workspace
 
+[![checks](https://github.com/Kjames3/x3_ws/actions/workflows/checks.yml/badge.svg)](https://github.com/Kjames3/x3_ws/actions/workflows/checks.yml)
+
 WebSocket-based control server and ROS2 navigation stack for the **Yahboom X3 mecanum-wheel robot** running on a **Jetson Orin Nano (JetPack 6.2 / Ubuntu 22.04)**.
 
 ---

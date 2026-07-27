@@ -3,10 +3,10 @@
 This document serves as the active improvement ideas log and architectural roadmap for the EE244 Computational Learning Project (Predictive Local Planning via Onboard Velocity Estimation) for **July 2026**.
 
 > [!NOTE]
-> For historical context and prior ideas generated during June 2026, refer to the centralized archive in the [`ideas/`](file:///home/kamren/x3_ws/ideas) directory:
-> - **Architectural Ideas (1–240)**: [ideas/June_architectural_ideas.md](file:///home/kamren/x3_ws/ideas/June_architectural_ideas.md)
-> - **Performance & Efficiency (1–120)**: [ideas/June_performance_ideas.md](file:///home/kamren/x3_ws/ideas/June_performance_ideas.md)
-> - **June ROI Analysis**: [ideas/June_roi_analysis.md](file:///home/kamren/x3_ws/ideas/June_roi_analysis.md)
+> For historical context and prior ideas generated during June 2026, refer to the centralized archive in the [`ideas/`](ideas) directory:
+> - **Architectural Ideas (1–240)**: [ideas/June_architectural_ideas.md](ideas/June_architectural_ideas.md)
+> - **Performance & Efficiency (1–120)**: [ideas/June_performance_ideas.md](ideas/June_performance_ideas.md)
+> - **June ROI Analysis**: [ideas/June_roi_analysis.md](ideas/June_roi_analysis.md)
 
 ---
 
@@ -72,7 +72,7 @@ Use this matrix to track active ideas and their ROI tier at a glance.
 - **ROI Tier:** **High ROI** (Low coding effort, enables proactive deceleration before breaching static proximity boundaries)
 - **Problem:** In `src/ab_comparison_test.py` (`_get_speed_scaling`, lines 814–844), Time-to-Collision (TTC) is calculated using the dot product `r_dot_v = rx_t * rvx_t + ry_t * rvy_t`, where `rvx_t, rvy_t` is the obstacle's velocity vector predicted by the MLP in the robot frame. For a stationary obstacle or an obstacle moving slowly away, `rvx_t` is zero or positive, making `r_dot_v >= 0`. As a result, predictive TTC scaling (`s_t`) is completely bypassed even when the robot is driving rapidly toward the obstacle at $V_{\text{rob}} = 0.5\text{ m/s}$. The robot remains blind to its own approach velocity, relying solely on reactive emergency braking once the static 1.8m boundary is breached.
 - **Proposed Solution:** Subtract the robot's commanded linear velocity vector $\mathbf{v}_{\text{rob}} = (vx_{\text{cmd}}, vy_{\text{cmd}})$ from the obstacle's velocity vector to compute true relative approach velocity $\mathbf{v}_{\text{rel}} = \mathbf{v}_{\text{obs}} - \mathbf{v}_{\text{rob}}$ before evaluating the travel-aligned dot product `r_dot_v`.
-- **Expected Benefit:** Actives predictive TTC deceleration whenever the robot is on a collision course with an obstacle, ensuring smooth, human-friendly slowdowns from 3.0 seconds away.
+- **Expected Benefit:** Activates predictive TTC deceleration whenever the robot is on a collision course with an obstacle, ensuring smooth, human-friendly slowdowns from 3.0 seconds away.
 
 ### Idea J-22: Decoupled Kinematic Acceleration Clamping from Confidence Gating
 - **Date Logged:** 2026-07-26 (Hourly Routine Iteration 6)
