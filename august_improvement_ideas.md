@@ -21,10 +21,45 @@ This document serves as the active improvement ideas log and architectural roadm
 | **A-11** | 2026-08-01 | Architecture | Gate-Emitted Zero Velocities Poison `_prev_estimates` and Impose a 0.5 s Ramp on Every Gate Release | **High** | Logged (Iter 2) |
 | **A-12** | 2026-08-01 | Performance | Unconditional Depth Colourisation in `_inference_loop` for a Debug Overlay That Is Off in Production | **High** | Logged (Iter 2) |
 | **A-13** | 2026-08-01 | Sensor Fusion | Visual Gating Reprojects OAK-D Centroids With Astra Intrinsics and No Inter-Camera Extrinsic | **High** | Logged (Iter 2) |
+| **A-14** | 2026-08-01 | Architecture | Stale-Odometry Fallback Substitutes the Map Origin and Annihilates Every Track | **High** | Logged (Iter 3) |
+| **A-15** | 2026-08-01 | Architecture | Confidence-Scaled Velocity Export Compounds the Padding Under-Report and Inverts the Braking Response | **High** | Logged (Iter 3) |
+| **A-16** | 2026-08-01 | Performance | Variable Batch Size Defeats the Traced Graph's Shape Specialisation on Every Cycle | **High** | Logged (Iter 3) |
+| **A-17** | 2026-08-01 | Sensor Fusion | No Ground-Plane Rejection — the Floor Is Inside the Acceptance Band and Merges With Every Pedestrian | **High** | Logged (Iter 3) |
 
 ---
-
 ## 2. Architecture & Algorithmic Enhancements
+
+### Idea A-14: Stale-Odometry Fallback Substitutes the Map Origin and Annihilates Every Track
+- **Date Logged:** 2026-08-01 (Hourly Routine Iteration 3)
+- **ROI Tier:** **High ROI** (Eight-line change, converts a full 1.0 s blind window per odometry hiccup into graceful degradation)
+- **Problem:** `get_robot_pose_and_twist` (`src/server_x3.py:1136–1145`) returns `None` on two separate paths: Idea 225's staleness guard at lines 1139–1140 (`time.monotonic() - ros_bridge._odom_stamp > 0.5`), and line 1145 when no bridge exists at all. `_inference_loop` handles `None` by silently substituting the **identity transform** — `rx_rob, ry_rob, rtheta_rob = 0.0, 0.0, 0.0` at `src/velocity_estimator.py:455–456` — which is exactly what Idea 225 specified. The exception handler at lines 449–450 lands on the same path. But the identity is not a neutral fallback: it is a *different coordinate frame*, and the projection at lines 463–469 (`global_xy = local_coords @ R.T + T`) then teleports every centroid.
+
+  With the robot at $(3.0, 1.5)\text{ m}, \theta = 0.6\text{ rad}$ and a pedestrian $2.0\text{ m}$ dead ahead, the global centroid moves from
+  $$(3.0 + 2\cos 0.6,\; 1.5 + 2\sin 0.6) = (4.651,\, 2.629) \quad\longrightarrow\quad (2.0,\, 0.0)$$
+  a jump of $\|\Delta\| = \sqrt{2.651^2 + 2.629^2} = 3.73\text{ m}$ in one frame. The tracker's association radius is `max_dist = 0.8` (line 45), so **not one track matches**. Every track goes unmatched, `visible_count` decays (line 100), and the new-track loop hits `if len(self.tracks) >= MAX_OBSTACLES: break` at lines 103–105 — with five live tracks squatting until `age > max_age = 10` frames, **no new track can be created for a full $1.0\text{ s}$** and the estimator publishes nothing at all for a pedestrian it is detecting perfectly well every frame. Below five tracks the damage is smaller but not small: fresh tracks start at `visible_count = 1`, so the `< 3` gate at line 481 suppresses inference for another $0.3\text{ s}$, and any track that *does* survive now holds a `history_global` window mixing two frames — a $3.73\text{ m}$ step into `dx`, clamped to $0.25\text{ m}$ (line 413), i.e. a saturated $2.5\text{ m/s}$ phantom that stays inside the 10-frame window for a full second. When odometry recovers the transform snaps back and the entire sequence repeats in reverse. A single dropped-odom window therefore costs up to $2\text{ s}$ of blindness plus a saturated phantom velocity, for a robot whose whole safety case rests on this estimator.
+- **Proposed Solution:** Never change frames mid-session; hold the last good pose and fail loudly rather than silently.
+  1. Cache it: `self._last_pose = (rx_rob, ry_rob, rtheta_rob)` and `self._last_pose_t` on every successful query; on `None`, reuse the cached triple. At the X3's $0.3\text{ m/s}$ nominal drive speed a $0.5\text{ s}$ odom gap displaces the robot at most $0.15\text{ m}$ — comfortably inside `max_dist = 0.8` — so every track survives the outage intact. Optionally dead-reckon the held pose with the `twist` the callback already returns: $x \mathrel{+}= (v_x\cos\theta - v_y\sin\theta)\Delta t$.
+  2. Bound the hold. If no pose has arrived for `POSE_HOLD_S = 1.0`, stop advancing the tracker entirely — skip `self._tracker.update()`, republish the previous estimates tagged `'stale': True` — instead of fusing fresh detections into a frame known to be wrong. Explicitly blind beats confidently mislocalised.
+  3. Handle the one case where the frame legitimately changes (first cycle, or a SLAM relocalisation jump) with an explicit `ObstacleTracker.reset()` rather than a silent reprojection. Detect it as $\|\mathbf{p}_t - \mathbf{p}_{t-1}\| > 0.8\text{ m}$ over $\Delta t \le 0.2\text{ s}$ — kinematically impossible at the X3's $0.5\text{ m/s}$ ceiling — so histories are never mixed across frames.
+  4. Independently, replace the `break` at lines 103–105 with eviction of the oldest (or farthest) track, so *any* event that invalidates all five at once cannot lock the estimator out for a second. This also caps the damage from Idea A-06's clutter case.
+- **Expected Benefit:** Removes a $1.0\text{–}2.0\text{ s}$ total-blindness window and a saturated $2.5\text{ m/s}$ phantom velocity from every odometry gap, `base_node_X3` restart, or EKF hiccup — events that occur precisely during bringup and hard braking, when pedestrian tracking matters most. Costs one cached tuple and about eight lines, and it makes Idea 225's staleness guard actually protective instead of self-defeating.
+
+### Idea A-15: Confidence-Scaled Velocity Export Compounds the Padding Under-Report and Inverts the Braking Response
+- **Date Logged:** 2026-08-01 (Hourly Routine Iteration 3)
+- **ROI Tier:** **High ROI** (Two-line change plus one downstream weighting, removes a $3.3\times$ TTC inflation on every newly eligible track)
+- **Problem:** `_inference_loop` multiplies the MLP's physical output by the tracking confidence before publishing — `conf = min(1.0, visible_count / WINDOW_SIZE)` at `src/velocity_estimator.py:577–578`, applied as `'vx': round(vx * conf, 3)` at lines 584–586. Idea 236 justified this damping on the premise that a padded window "systematically overestimates pedestrian speed". The padding is a **zero-order hold** — `hist.insert(0, hist[0])` at lines 375–376 — which duplicates the oldest sample, so every padded step contributes $dx = dy = 0$ (lines 405–414). A fresh window is therefore mostly *zero* displacement and under-reports, which is exactly what Idea J-10 independently quantifies at 60–80%. The damping premise is inverted with respect to the code it damps, and the two attenuations multiply.
+
+  At the moment a track first clears the initiation gate, `visible_count = 3` so $\text{conf} = 0.3$, and the reported speed is
+  $$v_{\text{rep}} \approx v_{\text{true}} \cdot \underbrace{(1 - 0.7)}_{\text{padding}} \cdot \underbrace{0.3}_{\text{conf}} \approx 0.09\, v_{\text{true}}$$
+  i.e. $0.13\text{ m/s}$ for a pedestrian walking at $1.4\text{ m/s}$. Reaching $\text{conf} = 1.0$ requires ten *consecutive* matched frames (line 92 increments, line 100 decrements on any miss), so a track that misses one frame in three never exceeds $\approx 0.5$ at all.
+
+  The safety consequence is the sign of the response. `_get_speed_scaling` in `src/ab_comparison_test.py` computes $\text{TTC} = -d^2/(\mathbf{r}\cdot\mathbf{v})$, which scales as $1/v$: a $0.3\times$ velocity inflates TTC by $3.33\times$. A pedestrian at $d = 1.8\text{ m}$ closing at $1.4\text{ m/s}$ has a true $\text{TTC} = 1.29\text{ s}$, well inside the $3.0\text{ s}$ brake threshold — but is reported at $\approx 4.3\text{ s}$, above it, so **no predictive braking occurs at all** for the $0.7\text{ s}$ it takes `conf` to climb, during which the pedestrian closes $0.98\text{ m}$. Low confidence therefore makes the robot *less* cautious, because the only channel confidence flows through is the magnitude that TTC divides by. The same scaling corrupts every other physical consumer of the vector: J-15's forward-projected point cloud places predicted positions at 30% of the true stride, J-13's obstacle-drift CBF term is scaled to 30%, and the A/B logs record a number that is not a velocity.
+- **Proposed Solution:** Stop scaling the physical quantity; publish the uncertainty beside it and let each consumer decide.
+  1. Emit unscaled `vx`, `vy`, `speed` at lines 584–586, and export `'conf': round(conf, 2)` and `'visible_count': visible_count` — which is precisely Idea J-08's export, and is a prerequisite for this change rather than a duplicate of it.
+  2. Address the real defect at its source with Idea J-10's backward linear extrapolation padding, which removes the 60–80% under-report instead of compounding it.
+  3. Move the confidence weighting to *brake severity* in `_get_speed_scaling`, per J-08's $s_{\text{obs,weighted}} = 1 - \text{conf}\,(1 - s_{\text{obs}})$. This is conservative in the correct direction — low confidence means less aggressive braking on a possibly-spurious track — rather than the current behaviour, where low confidence means a lower apparent speed and therefore *later* braking.
+  4. Ordering with the limiter: clamp the raw MLP output, store the raw clamped value in `_prev_estimates`, then publish raw plus a separate `conf` field. Combined with Idea J-22 (clamp before confidence) and Idea A-11 (do not clamp against gate-emitted zeros), the limiter, the exported vector and the consumer's weighting become three independent mechanisms that are each individually correct.
+- **Expected Benefit:** Restores full velocity magnitude on newly eligible tracks — the $0.09\times$ to $0.3\times$ attenuation disappears — removing the $3.33\times$ TTC inflation and recovering $\approx 0.98\text{ m}$ of braking distance on every first encounter, which is the single largest end-to-end error in the predictive path. Also flips the confidence response from anti-conservative to conservative, and makes the published `vx`/`vy` a physical velocity that Nav2, the CBF and the A/B logs can use without a hidden 0.3–1.0 gain.
 
 ### Idea A-09: Translation-Normalized Serving Features Contradict the Absolute-Coordinate Scaler the Model Was Fit On
 - **Date Logged:** 2026-08-01 (Hourly Routine Iteration 2)
@@ -122,6 +157,32 @@ This document serves as the active improvement ideas log and architectural roadm
 
 ## 3. Performance & Execution Efficiency
 
+### Idea A-16: Variable Batch Size Defeats the Traced Graph's Shape Specialisation on Every Cycle
+- **Date Logged:** 2026-08-01 (Hourly Routine Iteration 3)
+- **ROI Tier:** **High ROI** (Four-line change, recovers the entire benefit Idea 137's JIT tracing was added to obtain)
+- **Problem:** `_load_model` traces the model against a fixed batch of five — `dummy_input = torch.zeros((MAX_OBSTACLES, 40))`, `self._model = torch.jit.trace(self._model, dummy_input)` (`src/velocity_estimator.py:185–187`, Idea 137). But `_inference_loop` runs it against a **variable** batch: `x_tensor = self.x_tensor_preallocated[:num_tracks]` at line 562, where `num_tracks = len(eligible_tracks)` is whatever survived the `visible_count < 3` gate (line 481), the $1.8\text{ m}$ proximity gate (line 485), the short-history guard (line 498) and the stop gate (line 536). In a real scene that count oscillates every single cycle — one blob merge flips a track's `visible_count` below 3, one pedestrian crosses $1.8\text{ m}$, one noisy frame trips the stop gate — so the batch dimension is $1, 3, 2, 4, \ldots$ frame to frame and essentially never the $5$ the trace was specialised on.
+
+  TorchScript's profiling executor specialises the optimised graph on the observed input shape and guards it. Every batch-size change fails the guard, bails out to the unoptimised interpreted graph, and re-collects a profile — so the fused kernel that tracing exists to produce is almost never the one that actually executes. On this MLP class on the Orin's Cortex-A78AE the unfused path costs roughly $2\text{–}4\times$ the fused forward pass, i.e. $\approx 0.5\text{–}1.5\text{ ms}$ per cycle. That is small against the $100\text{ ms}$ budget in absolute terms, but it is **100% of what Idea 137 was logged to buy**, and it makes inference latency a function of scene clutter, adding jitter to a $10\text{ Hz}$ cadence that Idea J-04 is separately trying to make rigid.
+
+  A second, related defect sits in the same block: the traced module is *created* at line 187 but never *executed* before `start()`. The profiling executor needs its warm-up runs before an optimised graph exists at all, so the first inference cycles after every load run the slowest path — including the live hot-swap at `src/server_x3.py:1720–1726`, which calls `stop()` / `_load_model()` / `start()` while the robot is driving.
+- **Proposed Solution:** Pin the batch dimension and warm the trace.
+  1. Run the model on the **full** pre-allocated tensor and slice the output, instead of slicing the input:
+     ```python
+     self.x_tensor_preallocated[num_tracks:].zero_()          # ~140 floats
+     with torch.no_grad():
+         pred_scaled = self._model(self.x_tensor_preallocated).numpy()[:num_tracks]
+     ```
+     The shape is now permanently $(5, 40)$ — exactly the trace's — so the specialised graph stays resident and no guard ever fails. The extra FLOPs are a handful of microseconds for a 40-input MLP at batch 5, far below the bailout cost removed, and the tensor already exists (Idea 116) so nothing is allocated. Zeroing the unused rows each cycle also guarantees a stale row can never carry a NaN/inf into a shared op.
+  2. Add `self.x_tensor_preallocated.zero_()` once in `__init__` for determinism, and warm the trace inside `_load_model` immediately after line 187:
+     ```python
+     with torch.no_grad():
+         for _ in range(3):
+             self._model(dummy_input)
+     ```
+     Three runs is what the profiling executor needs to profile, specialise and settle; it costs a few milliseconds once, off the hot path, and it is the only way the hot-swap path avoids paying cold-start cost mid-drive.
+  Composes with June's performance item #23 (capping the intra-op thread count for small MLPs), which attacks the remaining per-call overhead from the other side.
+- **Expected Benefit:** Keeps the traced, fused graph resident on every cycle regardless of how many tracks are eligible, removing $\approx 0.5\text{–}1.5\text{ ms}$ per cycle of bailout and re-profiling overhead and making the forward pass **constant-time** rather than clutter-dependent — which removes a jitter source from the $10\text{ Hz}$ loop as well as the raw cost. Also eliminates the cold-start penalty on every model hot-swap, which today lands on the first cycles after a mid-drive model switch.
+
 ### Idea A-12: Unconditional Depth Colourisation in `_inference_loop` for a Debug Overlay That Is Off in Production
 - **Date Logged:** 2026-08-01 (Hourly Routine Iteration 2)
 - **ROI Tier:** **High ROI** (Three-line guard, deletes an entire 3–5 ms/cycle image pipeline that produces nothing in headless operation)
@@ -179,6 +240,31 @@ This document serves as the active improvement ideas log and architectural roadm
 
 ## 4. Sensor Fusion & Hardware Integration
 *Focus areas: OAK-D vs. Astra Pro depth calibration, YDLidar X3 mounting/scan-matching, IMU slip compensation, and motor driver telemetry.*
+
+### Idea A-17: No Ground-Plane Rejection — the Floor Is Inside the Acceptance Band and Merges With Every Pedestrian
+- **Date Logged:** 2026-08-01 (Hourly Routine Iteration 3)
+- **ROI Tier:** **High ROI** (One precomputed row vector plus two vectorised ops, deletes the largest false blob present in every single frame)
+- **Problem:** `_extract_depth_centroids` builds its obstacle mask from a depth **range** test alone — `(raw >= 0.5) & (raw < 1.5)` at `src/velocity_estimator.py:224` and `(raw >= 1.5) & (raw <= 4.0)` at line 235. There is no height test anywhere in the pipeline. The vertical coordinate is even computed and then discarded: `y_m` at line 288 is carried through the tracker as `cy_l` (lines 82, 89) and never read again, because feature construction uses only $r_x = c_z$ and $r_y = -c_x$ (lines 398–399, 533).
+
+  The OAK-D mounts at `base_link` $z = 0.185\text{ m}$ with no pitch (`OAK_MOUNT_Z = 0.185`, `src/oakd_driver.py:60–61`). For a forward-looking camera at height $h$ with vertical half-FOV $\phi$, the floor first enters the image at ground range
+  $$d_{\min} = \frac{h}{\tan\phi} = \frac{0.185}{\tan 25^\circ} = 0.40\text{ m}$$
+  which is **below the $0.5\text{ m}$ near clip**. Every floor pixel across the entire usable range therefore falls inside the acceptance band, so the lower portion of every depth frame is a solid, permanently-lit region of the mask. Three consequences follow, and the second is the serious one:
+  1. That region is the largest connected component in the frame. It survives the $5\times5$ `MORPH_OPEN`/`MORPH_CLOSE` at lines 239–241 trivially and clears the adaptive area gate (line 258) by orders of magnitude, so it permanently consumes at least one of the `MAX_OBSTACLES = 5` slots — the exact scarcity Idea A-06 has to ration.
+  2. The floor region is **contiguous with the feet** of anyone standing on it, so `cv2.findContours(..., RETR_EXTERNAL)` at line 243 returns *one* contour containing both. The blob's median depth (line 280) is then the median of a floor wedge spanning $0.5\text{–}4.0\text{ m}$ rather than of the person: for a pedestrian at $2.0\text{ m}$ the merged median lands nearer $1.2\text{–}1.5\text{ m}$, a $0.5\text{–}0.8\text{ m}$ bias. Worse, the bias *moves with the scene* — as the robot drives or the subject steps, the floor-to-person pixel ratio shifts and the median slides — injecting a phantom depth velocity of order $0.3\text{–}0.5\text{ m/s}$ directly into $r_x$ and $dx$. That is larger than the entire sensor-noise budget Ideas A-05 and A-08 are aimed at.
+  3. The `cv2.moments` centroid (lines 264–265) of the merged blob is dragged toward the image bottom and toward the floor's horizontal centre of mass, corrupting $x_m$ and therefore $r_y$ and all lateral velocity.
+
+  This is also why `MIN_BLOB_AREA` and the range-adaptive gate are so hard to tune: the dominant blob in every frame is not an obstacle.
+- **Proposed Solution:** Reject the ground plane before contour extraction, using quantities the codebase already holds. The height of the surface seen at working-resolution row $v$ and depth $Z$ is
+  $$h(v, Z) = z_{\text{cam}} - Z\,\frac{v - c_y}{f_y}, \qquad z_{\text{cam}} = 0.185\text{ m}$$
+  Precompute the row coefficient $k_v = (v - c_y)/f_y$ **once** in `__init__` as an $(H, 1)$ vector (~200 floats at the $320\times200$ working grid); the whole test is then two broadcast operations on the already-decimated frame:
+  ```python
+  height = self._z_cam - ds * self._k_v          # (H, W)
+  np.logical_and(mask_bool, height > 0.15, out=mask_bool)
+  ```
+  Threshold at $0.15\text{ m}$ — below the X3's chassis clearance, so nothing the robot can actually strike is discarded, while the floor (true height $0$) is cut with a margin of roughly $5\times$ the OAK-D's depth noise at $2\text{ m}$. An upper bound handles ceilings and overhead signage ($h > 1.9\text{ m}$) with the same two ops.
+
+  $f_y$ and $c_y$ come from `OakDCamera._read_intrinsics` (`src/oakd_driver.py:380–389`), via the `get_intrinsics()` accessor Idea A-13 already asks for. Note that $f_y \ne f_x$ on this pipeline: `setPreviewKeepAspectRatio(False)` (`src/oakd_driver.py:257`) squeezes the 1080p CAM_A sensor into the $480\times640$ preview (`nn_w, nn_h`, line 128), so the horizontal and vertical scale factors differ by $\tfrac{1920/480}{1080/640} = \tfrac{4.00}{1.69} = 2.37$. Reusing `fx` for the vertical axis — as line 288 does today for `y_m` — would misplace the horizon by more than a factor of two, which is exactly why this test must consume the measured $f_y$ rather than the hardcoded $277.0$. Fail safe: if intrinsics are unavailable (Astra path, or the OAK NN inactive), skip the height test and log once rather than apply a wrong $f_y$ — the same fail-closed discipline as Idea A-13(3). Apply it to the single mask Idea A-07 produces, **before** the morphology at lines 239–241, so the floor never reaches `findContours` and Idea A-02's `connectedComponentsWithStats` sees only real obstacles.
+- **Expected Benefit:** Removes the single largest, always-present false blob from every frame; frees one to two of the five track slots for genuine obstacles; and eliminates the $0.5\text{–}0.8\text{ m}$ depth bias and $0.3\text{–}0.5\text{ m/s}$ phantom depth velocity that floor-to-person contour merging injects into $r_x$ and $dx$ on every standing or walking pedestrian — a larger accuracy defect than the whole depth-noise budget the smoothing ideas address. Also cuts contour-stage work by deleting the biggest region in the mask, for a cost of one cached $(H,1)$ vector and two vectorised operations ($\approx 0.15\text{ ms}$ at $320\times200$).
 
 ### Idea A-13: Visual Gating Reprojects OAK-D Centroids With Astra Intrinsics and No Inter-Camera Extrinsic
 - **Date Logged:** 2026-08-01 (Hourly Routine Iteration 2)
