@@ -37,9 +37,47 @@ This document serves as the active improvement ideas log and architectural roadm
 | **A-27** | 2026-08-01 | Architecture | `scaler_y` vs `scaler_X` Audit — 79% of the `dx` Channel Is Noise, and Nothing Cross-Checks the MLP Against the Free Finite-Difference Estimate | **High** | Logged (Iter 6) |
 | **A-28** | 2026-08-01 | Performance | Pedestrian Topics Republished at 2× the Producer Rate and Never Published Empty — Unbounded Stale Markers and a `/pedestrian_states` Array That Never Clears | **High** | Logged (Iter 6) |
 | **A-29** | 2026-08-01 | Sensor Fusion | StereoDepth Built With Zero On-Device Post-Processing — Every Depth Cleanup Pass Is Paid on the Jetson at 10 Hz | **High** | Logged (Iter 6) |
+| **A-30** | 2026-08-01 | Architecture | Blob Depth Median Decimated by a Size-Dependent Stride — a Discontinuous Subsample That Steps `Z` and Buys ~10 µs | **High** | Logged (Iter 7) |
+| **A-31** | 2026-08-01 | Performance | Traced Graph Is Never Frozen — BatchNorm and Dropout Dispatched as Live Ops in a 40→256→128→64→2 MLP | **High** | Logged (Iter 7) |
+| **A-32** | 2026-08-01 | Performance | The Safety-Critical Speed Scaler Reads Velocities Through a WebSocket JSON Round-Trip, Not the ROS Topic Published Beside It | **High** | Logged (Iter 7) |
+| **A-33** | 2026-08-01 | Sensor Fusion | A 0.185 m Mount With a 24.8° Vertical Half-FOV Crops the Pedestrian at the Waist — the Depth Reference Migrates to the Legs and Picks Up Gait | **High** | Logged (Iter 7) |
 
 ---
 ## 2. Architecture & Algorithmic Enhancements
+
+### Idea A-30: Blob Depth Median Decimated by a Size-Dependent Stride — a Discontinuous Subsample That Steps `Z` and Buys ~10 µs
+- **Date Logged:** 2026-08-01 (Hourly Routine Iteration 7)
+- **ROI Tier:** **High ROI** (Delete two lines; removes a recurring 1–3 cm step in the depth reference in exchange for a saving that is under 0.01% of the cycle budget)
+- **Problem:** Each blob's depth reference — the single number that becomes $r_x$ and therefore every `dx` the MLP reads — is a median over a **subsample chosen by a stride that is a step function of the blob's own pixel count** (`src/velocity_estimator.py:277–280`):
+  ```python
+  # Decimate large depth arrays to speed up sorting (Idea 52)
+  if len(valid_depths) > 200:
+      valid_depths = valid_depths[::len(valid_depths) // 200]
+  Z = float(np.median(valid_depths))
+  ```
+  `valid_depths` comes from a boolean gather at lines 273–274, `depth_vals = depth_slice[cnt_mask == 255]`, which returns the masked pixels in **row-major raster order** — top of the blob first, bottom last. Three things follow, and the first is the one that costs velocity accuracy.
+
+  1. **The retained sample changes discontinuously with blob area.** The stride is $s = \lfloor n/200 \rfloor$, so $s = 1$ for $n \in [200, 399]$, $s = 2$ for $n \in [400, 599]$, $s = 3$ for $n \in [600, 799]$, and so on. A **one-pixel** change in the mask that carries $n$ from $399$ to $400$ switches the estimator from *all 399 valid depths* to *the 200 even-indexed ones* between two consecutive frames. The blob's silhouette breathes by far more than one pixel per frame — morphology at lines 239–241 opens and closes it, the range band at line 274 admits and drops edge pixels as depth flickers — so for a pedestrian at $2\text{ m}$ (a few hundred to a few thousand valid pixels at the $320\times200$ working grid) $n$ crosses a multiple of $200$ **several times per second**, and each crossing swaps the estimator underneath the median.
+
+  2. **Raster-order striding aliases onto vertical stripes.** Consecutive rows of the blob contribute roughly $w$ masked pixels each, so advancing by $s$ moves the sampled column by $s \bmod w$ per row. For $s$ commensurate with $w$ the sample degenerates toward a small set of near-vertical stripes rather than a uniform sample of the body. At the working resolution a pedestrian is $\approx 20\text{–}40\text{ px}$ wide and $s$ reaches $3\text{–}10$ on large near-field blobs, so the surviving set is a systematically biased slice of the silhouette — and *which* slice depends on $n \bmod w$, i.e. it re-randomises every frame.
+
+  3. **It buys essentially nothing, because the premise is wrong.** The comment says "to speed up sorting," but `np.median` does not sort: NumPy's `_median` calls `np.partition`, an $O(n)$ average-case introselect. Partitioning $n = 2{,}000$ float32 values costs $\approx 2\text{–}4\ \mu\text{s}$; decimating to $200$ first saves perhaps $2\ \mu\text{s}$ per blob, or **$\le 10\ \mu\text{s}$ per cycle** at the $\texttt{MAX\_OBSTACLES} = 5$ ceiling — $0.01\%$ of the $100\text{ ms}$ budget. Note the stride is also applied *before* the slice is even bounded correctly: it caps $n$ into $[200, 400)$, not at $200$, so the "optimization" does not do what its own comment claims either.
+
+  The cost side is not small. $Z$ is written straight into $r_x = c_z$ (line 398) and differenced at line 410, so a median displacement of $\delta Z$ in one frame **is** a `dx` of $\delta Z$, read by the model as $\delta Z / 0.1\text{ s}$. The depth spread across a pedestrian blob is $0.2\text{–}0.4\text{ m}$ (torso to arms to silhouette edge, before A-17's floor merging is even counted), and swapping between two different subsamples of that population moves the median by a few percent of the spread — **$1\text{–}3\text{ cm}$, i.e. $0.1\text{–}0.3\text{ m/s}$ of phantom velocity in a single frame.**
+
+  Critically, this is a **step between two estimators, not zero-mean measurement noise**, so the smoothing already logged does not remove it: Idea A-18's Savitzky–Golay operator reproduces low-order polynomials exactly and therefore *spreads* a step across its 5-point kernel rather than deleting it, and Idea A-05's causal EMA merely lags it. It also lands directly on Idea A-08's repaired stop gate, whose net-displacement threshold is $0.03\text{ m}$ over three frames — a single stride flip is enough to un-stop a genuinely stationary pedestrian.
+- **Proposed Solution:** Delete the decimation; if a bound is still wanted for very large near-field blobs, make the retained set vary *continuously* with $n$ instead of snapping between strides.
+  1. **Remove lines 278–279** and take `Z = float(np.median(valid_depths))` over the full valid set. `np.median` is already $O(n)$ introselect, so Idea 52's stated motivation does not apply, and the result becomes a deterministic function of the blob rather than of $n \bmod 200$.
+  2. If a ceiling is desired — $n$ can reach tens of thousands at the $0.5\text{ m}$ near clip — use a fixed-count index set whose members move smoothly as the blob grows:
+     ```python
+     if valid_depths.size > 512:
+         idx = np.linspace(0, valid_depths.size - 1, 512).astype(np.intp)
+         valid_depths = valid_depths[idx]
+     ```
+     512 samples bound the median's own sampling standard deviation at $\approx 1.25\,\sigma/\sqrt{512} = 0.055\,\sigma$, i.e. **under $2\text{ cm}$** for a $0.35\text{ m}$ blob spread, and — unlike the stride — a one-pixel change in $n$ perturbs each index by at most one element. Cost is a single `linspace` ($\approx 1\ \mu\text{s}$).
+  3. Ordering with Idea J-20: J-20 replaces the median with a 1-D histogram modal peak for occlusion robustness. That is a *different* estimator, and it inherits this defect wholesale if it is fed the decimated array — a histogram built from a stride-aliased vertical stripe is not the blob's depth mode. Whichever estimator wins, it must consume the full valid set, so this lands first.
+  4. Composes with, and is not covered by, Idea A-10 (which fixes `z_ref`, the *area-gate* depth reference at line 256) and Idea A-02 (`connectedComponentsWithStats` supplies the bounding box but does not change the gather order — the fix is deleting the stride, not reordering the pixels).
+- **Expected Benefit:** Removes a $1\text{–}3\text{ cm}$ discontinuous step in each blob's depth reference — $0.1\text{–}0.3\text{ m/s}$ of single-frame phantom velocity, recurring several times per second per track — in exchange for giving back at most $10\ \mu\text{s}$ per cycle. Because the artefact is a step rather than white noise, it is invisible to every smoother in this log (A-18, A-05) and is precisely the kind of transient that trips Idea A-08's $0.03\text{ m}$ stop gate and saturates Idea 152's acceleration clamp. Two deleted lines, no new state, and it makes $Z$ a deterministic function of the blob instead of of its pixel count modulo 200.
 
 ### Idea A-26: Exported Track Position Is the Stale Body-Frame Centroid From the Last Matched Frame While the Re-Referenced One Sits Unused
 - **Date Logged:** 2026-08-01 (Hourly Routine Iteration 6)
@@ -331,6 +369,72 @@ This document serves as the active improvement ideas log and architectural roadm
 
 ## 3. Performance & Execution Efficiency
 
+### Idea A-31: Traced Graph Is Never Frozen — BatchNorm and Dropout Dispatched as Live Ops in a 40→256→128→64→2 MLP
+- **Date Logged:** 2026-08-01 (Hourly Routine Iteration 7)
+- **ROI Tier:** **High ROI** (One line replacing `torch.jit.trace`; deletes 6 of the graph's 13 dispatched ops, all of which do no inference-time work)
+- **Problem:** `_load_model` loads the TorchScript module, calls `.eval()`, and then traces it (`src/velocity_estimator.py:181–187`):
+  ```python
+  self._model = torch.jit.load(self.model_path, map_location='cpu')
+  self._model.eval()
+  dummy_input = torch.zeros((MAX_OBSTACLES, 40), dtype=torch.float32)
+  self._model = torch.jit.trace(self._model, dummy_input)
+  ```
+  It never calls `torch.jit.freeze` or `torch.jit.optimize_for_inference`. That matters because of what is actually inside the archive. Unzipping `src/velocity_mlp.torchscript` and reading `code/__torch__/torch/nn/modules/container.py` gives the served `Sequential` verbatim — thirteen submodules:
+  $$\texttt{Linear} \to \texttt{BatchNorm1d} \to \texttt{ReLU} \to \texttt{Dropout}\;(\times 3\ \text{blocks}) \to \texttt{Linear}$$
+  and the tensor storages fix every dimension exactly: `data/0` is $40{,}960\text{ B} = 256 \times 40$ fp32, `data/7` is $131{,}072\text{ B} = 128 \times 256$, `data/14` is $32{,}768\text{ B} = 64 \times 128$, `data/21` is $512\text{ B} = 2 \times 64$. Each block additionally carries five same-width vectors (bias, $\gamma$, $\beta$, running mean, running variance) plus an 8-byte `num_batches_tracked`. So the model is **$40 \to 256 \to 128 \to 64 \to 2$**, $51{,}328$ MACs per sample, $\approx 209\text{ KiB}$ of tensor data in a $236\text{ KiB}$ archive.
+
+  Every forward pass therefore dispatches **13 ATen ops**: 4 × `aten::linear`, 3 × `aten::batch_norm`, 3 × `aten::relu`, 3 × `aten::dropout`. Six of those thirteen — the BatchNorms and the Dropouts — perform no inference-time function whatsoever:
+  - `aten::dropout` with `train=False` returns its input unchanged. It is pure dispatcher cost.
+  - `aten::batch_norm` in eval mode is a fixed per-channel affine, which is **exactly absorbable** into the preceding `aten::linear`.
+
+  `torch.jit.trace` at line 187 cannot remove either. Tracing an already-scripted module re-records the same `aten` calls with the parameters still bound as **module attributes**; the passes that would fix this — `FoldFrozenLinearBatchnorm`, dropout removal, and constant propagation — are all gated on the module being *frozen*, which promotes attributes to graph constants. Idea 137's trace is thus a no-op with respect to the two optimisations that actually apply to this graph, which is consistent with Idea A-16's separate finding that it also fails to hold its shape specialisation.
+
+  Magnitude: at batch 5 the network is $256{,}640$ MACs $= 513\text{ kFLOP}$, roughly $86\ \mu\text{s}$ of arithmetic for a single-threaded NEON sgemm at $\approx 6\text{ GFLOP/s}$ on the Orin's Cortex-A78AE. Thirteen ATen dispatches at $2\text{–}5\ \mu\text{s}$ each (dispatcher plus `TensorIterator` setup) is $26\text{–}65\ \mu\text{s}$ — **23–43% of the forward pass is dispatch overhead, and just under half of the dispatched ops are dead.** The BatchNorms additionally read-modify-write $256 + 128 + 64 = 448$ channels $\times$ batch 5 $= 2{,}240$ elements per cycle ($\approx 18\text{ kB}$ of traffic) to apply a transform that a folded weight matrix applies for free.
+- **Proposed Solution:** Freeze the module so the eval-mode collapse actually happens, then optionally take the folded weights out of PyTorch entirely.
+  1. **Replace line 187** with the frozen-and-optimised form:
+     ```python
+     self._model = torch.jit.optimize_for_inference(torch.jit.freeze(self._model))
+     ```
+     `freeze()` requires `.eval()` (already called at line 183) and inlines the parameters as constants; `optimize_for_inference` then folds each BatchNorm into its preceding Linear and drops the Dropouts as dead code. The graph goes from **13 dispatched ops to 7** (4 × `linear`, 3 × `relu`). Keep the existing `try/except` so a failure falls back to the untraced module exactly as it does today.
+  2. **The fold is exact**, which is why it is safe to do at load time. For $y = Wx + b$ followed by $z = \gamma\,(y - \mu)/\sqrt{\sigma^2 + \varepsilon} + \beta$:
+     $$W' = \operatorname{diag}\!\left(\frac{\gamma}{\sqrt{\sigma^2+\varepsilon}}\right)W, \qquad b' = \frac{\gamma\,(b - \mu)}{\sqrt{\sigma^2+\varepsilon}} + \beta$$
+     Bit-for-bit output equality is not guaranteed (different summation order), but the difference is at the fp32 rounding floor — five orders of magnitude below the $0.047\text{ m/s}$ estimator noise Idea A-27 measures. Verify with one assertion at load time: `"aten::batch_norm" not in self._model.inlined_graph.str()`.
+  3. **It closes a live hazard in Idea A-16.** A-16 proposes running permanently at batch 5 with `self.x_tensor_preallocated[num_tracks:].zero_()`. That is safe *today* only because this particular export happens to carry `training = False`; a retrain exported without `.eval()` would leave `aten::batch_norm` in training mode, and the zero-padded rows would then enter the batch statistics and corrupt **every real track's output in the batch**. After freezing, BN is a constant affine and no such coupling can exist by construction. The hot-swap path at `src/server_x3.py:1720–1726` reloads a model mid-drive, so this is not hypothetical — it is one bad export away, and it would fail silently.
+  4. **Optional follow-on, now trivial:** once folded there are exactly four weight matrices ($256\times40$, $128\times256$, $64\times128$, $2\times64$) and four bias vectors. Dump them once to a `.npz` beside `scaler_params.json` and serve the model as four NumPy GEMMs with three in-place `np.maximum(..., 0, out=...)` calls — no dispatcher, no shape guard to fail (which makes A-16's concern moot rather than mitigated), and no `torch.from_numpy` / `.copy_()` / `.numpy()` round-trip (Idea J-01's target). This is the cheaper half of Idea J-03: ONNX Runtime is a $\approx 50\text{ MB}$ dependency for a 52-thousand-parameter model, while NumPy is already imported at line 13.
+  5. **Explicitly not claimed:** this does not reduce process RSS. `src/server_x3.py` imports `torch` at line 47 and `ultralytics.YOLO` at line 66 regardless of the estimator, so the PyTorch runtime stays resident either way. The win here is per-call latency and determinism, not memory.
+- **Expected Benefit:** Cuts the served graph from 13 dispatched ATen ops to 7, deleting six that do no inference-time work — an estimated $12\text{–}30\ \mu\text{s}$ of dispatch and $\approx 18\text{ kB}$ of elementwise BatchNorm traffic per cycle, against a forward pass whose actual arithmetic is only $\approx 86\ \mu\text{s}$, i.e. a **15–25% reduction in MLP forward time**. Independent of and additive to Idea A-16: A-16 keeps the optimised graph *resident* across cycles, this makes the optimised graph *smaller*. Also converts the eval-mode BatchNorm collapse from an incidental property of one export into a structural guarantee, closing a silent-corruption path in the mid-drive model hot-swap. Cost is one line.
+
+### Idea A-32: The Safety-Critical Speed Scaler Reads Velocities Through a WebSocket JSON Round-Trip, Not the ROS Topic Published Beside It
+- **Date Logged:** 2026-08-01 (Hourly Routine Iteration 7)
+- **ROI Tier:** **High ROI** (One `create_subscription` in a node that is already an rclpy node; removes ~55 ms mean transport delay and an unbounded stale-snapshot latch from the braking path)
+- **Problem:** `_get_speed_scaling` — the function that decides whether the robot brakes for a pedestrian — reads `self._latest_estimates` under a lock (`src/ab_comparison_test.py:784–785`) at the $20\text{ Hz}$ control rate (`self._timer = self.create_timer(0.05, self._control_loop)`, line 225). The **only** writer of that field is inside a WebSocket client running in a daemon thread with its own asyncio loop (`_set_estimator_mode`, lines 720–747):
+  ```python
+  if data.get("type") == "readout":
+      with self._estimates_lock:
+          self._latest_estimates = data.get("velocity_estimates", [])
+  ```
+  So the estimates make a full round trip out of the process and back: estimator thread $\to$ asyncio broadcast coroutine $\to$ orjson $\to$ TCP loopback $\to$ `json.loads` $\to$ lock $\to$ control timer. Meanwhile `ROS2Bridge.publish_pedestrians` is building and publishing the same data as a typed `PedestrianArray` on `/pedestrian_states` (`src/server_x3.py:589–591, 611–626, 675–677`) — and a repository-wide grep for `pedestrian_states`, `pedestrian_poses` and the marker topic returns **no subscriber anywhere in the workspace**, not even an `.rviz` config. The one consumer with a safety function reads a JSON copy; the typed topic built for it is published to nobody.
+
+  **Latency.** Three delays stack on top of the estimate's own age:
+  1. Producer $\to$ broadcast poll. The estimator publishes at $10\text{ Hz}$ (`velocity_estimator.py:604–605`); the coroutine polls `get_estimates()` at $20\text{ Hz}$ (`server_x3.py:2011–2014`, `await asyncio.sleep(0.05)` at line 2086). Uniform $[0, 50)\text{ ms}$, mean $25\text{ ms}$.
+  2. Serialise, transport, parse. The estimates ride inside the *whole* readout payload — `detections`, battery, power, motor telemetry, ~40 fields (line 2046) — on the same coroutine tick that also ships the JPEG camera frame (line 2022). Both ends pay for the full dict: $\approx 2\text{–}8\text{ ms}$, and it is contended rather than fixed.
+  3. Client thread $\to$ control timer. Another uniform $[0, 50)\text{ ms}$, mean $25\text{ ms}$.
+
+  Mean added delay $\approx 55\text{ ms}$, worst case $\approx 108\text{ ms}$ — **on top of** the frame age Idea A-22 shows is already up to $100\text{ ms}$. The position and velocity the brake acts on are therefore typically $\approx 150\text{ ms}$ and up to $\approx 250\text{ ms}$ old. For a pedestrian at $1.4\text{ m/s}$ that is $0.21\text{ m}$ of stale position typically and $0.35\text{ m}$ worst case — the latter equal to the **entire** $\texttt{LATERAL\_THRESHOLD} = 0.35\text{ m}$ corridor half-width (line 795) that decides whether the person is in the path at all. As pure delay it also shows up directly as brake lag: $4.5\text{–}12.5\text{ cm}$ of extra robot travel at the $0.3\text{–}0.5\text{ m/s}$ drive speed before the response starts.
+
+  **Liveness, which is worse.** There is no timestamp and no staleness check on this path. On WebSocket loss the handler at lines 741–743 logs a warning, sleeps $1\text{ s}$ and reconnects — but `self._latest_estimates` is **never cleared**. `_get_speed_scaling` keeps evaluating a frozen snapshot indefinitely, in whichever of two bad directions the snapshot happens to hold: a frozen non-empty set with a closing velocity brakes the robot forever on empty floor, and a frozen empty list makes it blind. Note this is a **different** latch from the one Idea A-28 repairs. A-28 makes `/pedestrian_states` publish the empty state — which does nothing here, because the controller does not read that topic, and the readout JSON already carries `"velocity_estimates": []` correctly and unconditionally at line 2046. The content is fine; the *transport liveness* is not.
+- **Proposed Solution:** Consume the typed topic that is already being published, stamp it with capture time, and gate on staleness.
+  1. **Subscribe.** The controller is already an rclpy node with timers and publishers, so this is one call:
+     ```python
+     from x3_msgs.msg import PedestrianArray
+     self.create_subscription(PedestrianArray, '/pedestrian_states', self._ped_cb, 10)
+     ```
+     Intra-host DDS delivers in $\approx 1\text{ ms}$, and the callback fires **on production** rather than on a $20\text{ Hz}$ poll, which removes both $25\text{ ms}$ poll waits, not just the serialisation. Keep the WebSocket connection for the `set_velocity_estimation` toggle it was written for (lines 723–728) — that is a control message, not a data stream.
+  2. **Stamp it with the capture time, not the publish time.** `PedestrianArray.msg` already declares a `std_msgs/Header`, and `publish_pedestrians` already fills it — but with `self._node.get_clock().now()` at the moment of *publication* (`server_x3.py:584, 590`), which is the broadcast tick, not the frame. Carry Idea A-22's per-frame device timestamp through to `header.stamp` so the age is measurable end to end. Then gate in `_get_speed_scaling`: if `now - stamp > 0.3 s`, treat the estimate set as **unavailable** and fall back to the LiDAR corridor check the file already implements (lines ~690–712), rather than acting on a snapshot of unknown age.
+  3. **Lands with Idea A-28, not after it.** A-28 step 2 deletes the `and velocity_estimates` guard so the empty array is actually published; without that, a subscriber inherits exactly the latch it just escaped from — the topic would simply stop updating when the last person leaves. A-28 makes the topic's *content* correct; this makes it the controller's *source*. Neither is complete alone.
+  4. **Second-order saving.** With the controller off the readout, `velocity_estimates` in the $20\text{ Hz}$ JSON becomes GUI-only and can move to the existing $2\text{ Hz}$ slow lane (lines 2059–2085), removing per-tick serialisation of up to five nested dicts from the asyncio loop. Combined with A-28 step 4 (publishing from the estimator's own thread), no pedestrian data is constructed or serialised on the coroutine that owns the WebSocket clients at all.
+- **Expected Benefit:** Removes $\approx 55\text{ ms}$ mean and $\approx 108\text{ ms}$ worst-case of pure transport delay from the braking decision — $0.08\text{–}0.15\text{ m}$ of pedestrian position error at walking speed, against a corridor whose half-width is $0.35\text{ m}$ — and converts a poll-on-a-poll into event-driven delivery at the producer's own $10\text{ Hz}$. Eliminates an unbounded stale-snapshot latch that today has no timeout of any kind on the one path that can stop the robot, replacing it with an explicit LiDAR-only degradation. And it makes the three ROS topics that are already being built and published on every tick actually load-bearing, rather than the second copy of data the controller reads over TCP.
+
 ### Idea A-28: Pedestrian Topics Republished at 2× the Producer Rate and Never Published Empty — Unbounded Stale Markers and a `/pedestrian_states` Array That Never Clears
 - **Date Logged:** 2026-08-01 (Hourly Routine Iteration 6)
 - **ROI Tier:** **High ROI** (One sequence counter, one deleted `and`, and one DELETEALL marker; halves the DDS work and removes a hazard state that never expires)
@@ -481,6 +585,45 @@ This document serves as the active improvement ideas log and architectural roadm
 
 ## 4. Sensor Fusion & Hardware Integration
 *Focus areas: OAK-D vs. Astra Pro depth calibration, YDLidar X3 mounting/scan-matching, IMU slip compensation, and motor driver telemetry.*
+
+### Idea A-33: A 0.185 m Mount With a 24.8° Vertical Half-FOV Crops the Pedestrian at the Waist — the Depth Reference Migrates to the Legs and Picks Up Gait
+- **Date Logged:** 2026-08-01 (Hourly Routine Iteration 7)
+- **ROI Tier:** **High ROI** (Reuses the per-row height vector Idea A-17 already precomputes, applied as a selector instead of a rejector; removes a gait-coherent oscillation no smoother in this log can touch)
+- **Problem:** The OAK-D mounts at `base_link` $z = 0.185\text{ m}$ with no pitch (`OAK_MOUNT_Z = 0.185`, `src/oakd_driver.py:61`) and streams stereo at `THE_400_P`, i.e. $640\times400$ (`src/oakd_driver.py:222–226`). Using the CAM_B focal length Idea A-21 derives — $f_y \approx 432\text{ px}$ at $640$ width, square pixels — the vertical half-FOV is
+  $$\phi = \arctan\!\left(\frac{200}{432}\right) = 24.8^\circ, \qquad \tan\phi = 0.463$$
+  so the highest surface visible at ground range $Z$ is
+  $$h_{\max}(Z) = 0.185 + 0.463\,Z$$
+  A $1.70\text{ m}$ person is fully in frame only beyond $Z = (1.70 - 0.185)/0.463 = \mathbf{3.27\text{ m}}$. But the estimator's acceptance band ends at $4.0\text{ m}$ (`src/velocity_estimator.py:235, 274`) and the proximity gate zeroes velocity beyond $1.8\text{ m}$ (line 485), so **the MLP is only ever run on tracks in $[0.5, 1.8]\text{ m}$** — a range across which $h_{\max}$ runs from $0.42\text{ m}$ to $1.02\text{ m}$:
+
+  | $Z$ (m) | 1.8 | 1.5 | 1.2 | 1.0 | 0.8 | 0.5 |
+  |:--|:--|:--|:--|:--|:--|:--|
+  | $h_{\max}$ (m) | 1.02 | 0.88 | 0.74 | 0.65 | 0.56 | 0.42 |
+  | body part | waist | hips | upper thigh | mid-thigh | knee | shin |
+
+  Over its entire operating band the estimator therefore measures **legs**, and the leg fraction of the blob rises monotonically as the person approaches. Three consequences.
+
+  1. **The blob median at line 280 acquires a gait oscillation.** During walking the swing foot translates $\approx 0.6\text{–}0.7\text{ m}$ fore–aft per stride and the knee $\approx \pm 0.2\text{ m}$. The two legs partially cancel (one forward while the other is back), but not exactly: the forward leg is nearer and so projects larger ($\text{px} \propto 1/Z^2$), biasing the pixel-weighted median toward it during fore-swing. The residual median oscillation is $\approx \pm 0.05\text{–}0.10\text{ m}$ at the step frequency, $f \approx 1.8\text{–}2.0\text{ Hz}$ for normal walking. A $\pm 0.075\text{ m}$ sinusoid at $1.9\text{ Hz}$ has peak derivative
+     $$2\pi f A = 2\pi (1.9)(0.075) = 0.90\text{ m/s}$$
+     i.e. a per-frame displacement of $0.090\text{ m}$ — **45% of the $0.198\text{ m}$ training spread of the `dx` channel** and $2.1\times$ the $0.042\text{ m}$ sensor-noise term Idea A-18 is costed against. Unlike sensor noise it is **coherent**, so no smoother removes it: at $f/f_s = 0.19$ the 5-point quadratic Savitzky–Golay kernel passes it through nearly intact. And at $10\text{ Hz}$ it is sampled only $5.3\times$ per cycle, barely above Nyquist, so it aliases badly under the $\Delta t$ jitter Idea A-22 documents.
+  2. **It defeats Idea A-08's repaired stop gate in the worst direction.** For roughly half the gait cycle the visible legs are in stance — planted, momentarily stationary — while the torso translates. The measured depth is briefly still, so a stop gate raised to $>95\%$ sensitivity will **fire twice per stride on a pedestrian who is actively walking toward the robot**, hard-zeroing $v_x$ at exactly the moment TTC scaling needs it. A-08 is a good fix that this defect turns into a hazard, so the two must be considered together.
+  3. **The reference point slides with range, injecting a systematic drift.** Because $h_{\max}$ is a function of $Z$, the body part being measured changes continuously as the pedestrian closes — torso at $1.8\text{ m}$, thigh at $1.2\text{ m}$, shin at $0.5\text{ m}$. That is a slow, monotonic bias on top of the oscillation, and it is inseparable from real approach motion by any filter operating on $Z$ alone. It is also a further reason the visual gate never worked: Idea A-13's projection compares a legs-only depth centroid against a full-body YOLO `person` box whose vertical extent is dominated by a torso and head the depth frame physically cannot see.
+
+  This is distinct from everything already logged. Idea A-17 addresses the **floor** merging into the blob from below; this is the **pedestrian's own body** being cropped from above. Idea J-20 replaces the median with a histogram modal peak — which at these ranges locks onto the *legs*, since they dominate the pixel count once the head is out of frame, so J-20 does not fix it either.
+- **Proposed Solution:** Select a fixed band of *physical height* instead of taking the whole blob, using the row vector A-17 already builds.
+  1. **Reuse $k_v$.** A-17 precomputes $k_v = (v - c_y)/f_y$ once as an $(H,1)$ vector to reject the floor. The same vector gives each pixel's height, $h(v, Z) = z_{\text{cam}} - Z\,k_v$ with $z_{\text{cam}} = 0.185$. Inside the per-blob gather at lines 272–274, prefer the trunk band:
+     ```python
+     h_px  = self._z_cam - depth_slice * self._k_v[y_b:y_b+h_b]
+     trunk = (h_px >= 0.9) & (h_px <= 1.5) & (cnt_mask == 255)
+     sel   = trunk if trunk.sum() >= 40 else top_band
+     Z     = float(np.median(depth_slice[sel]))
+     ```
+     where `top_band` is the fallback for close range: the top $0.35\text{ m}$ of whatever is visible, $h \in [h_{\max} - 0.35,\ h_{\max}]$, with $h_{\max}$ read directly from the blob's own topmost row so no extra pass is needed. The top of a cropped body is always the part nearest the trunk and least affected by leg swing.
+  2. **Why a height band and not a depth band:** because the selector is defined in metres of height, the estimator measures the *same physical part of the body at every range*. That removes consequence (3) — the migration — outright, not just the oscillation, which is the larger of the two errors over an approach from $1.8\text{ m}$ to $0.5\text{ m}$.
+  3. **Hard precondition: Idea A-21.** This consumes measured $f_y$ and $c_y$, and A-21 shows the driver currently reports CAM_A's intrinsics for a CAM_B-aligned frame — with $c_y$ wrong by $120\text{ px}$ the band would be placed on the wrong rows entirely. Fail closed exactly as A-17 specifies: if intrinsics are unavailable or their declared $(w, h)$ disagrees with the frame, skip the band selection, log once, and fall back to the full-blob median.
+  4. **Complementary hardware change: pitch the mount up.** With an upward pitch $\theta_p$ about the camera $x$-axis the height map generalises exactly to
+     $$h(v, Z) = z_{\text{cam}} - Z\,(k_v\cos\theta_p - \sin\theta_p)$$
+     which reduces to A-17's expression at $\theta_p = 0$. At $\theta_p = 15^\circ$, $h_{\max}(Z) = 0.185 + 0.706\,Z$, so $h_{\max}(1.8\text{ m}) = 1.46\text{ m}$ — chest-height coverage across the whole gate range — and the floor's entry range moves from A-17's $0.40\text{ m}$ to $0.98\text{ m}$, halving the floor footprint A-17 has to mask. At $\theta_p \ge 24.8^\circ$ the floor leaves the image entirely, at the cost of near-field coverage below $\approx 0.6\text{ m}$. This requires a URDF/TF change and re-deriving $k_v$ with the pitch term, so it is the follow-up; the height-band selector above is implementable today with no hardware change and is the right first move.
+- **Expected Benefit:** Removes $\pm 0.05\text{–}0.10\text{ m}$ of gait-coherent oscillation from the depth reference — peak $0.90\text{ m/s}$ of phantom velocity, $45\%$ of the `dx` channel's entire training spread — which no idea in this log currently addresses, because every logged smoother (A-18, A-05, A-30) targets noise or steps, and this is a periodic signal sitting inside the passband. Also deletes the systematic torso-to-shin drift of the reference point across an approach from $1.8\text{ m}$ to $0.5\text{ m}$, and prevents Idea A-08's repaired stop gate from firing twice per stride on a walking pedestrian. Cost is a reuse of A-17's existing $(H,1)$ vector and one boolean mask per blob; the optional $15^\circ$ mount pitch additionally halves the floor region A-17 exists to remove.
 
 ### Idea A-29: StereoDepth Built With Zero On-Device Post-Processing — Every Depth Cleanup Pass Is Paid on the Jetson at 10 Hz
 - **Date Logged:** 2026-08-01 (Hourly Routine Iteration 6)
