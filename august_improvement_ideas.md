@@ -33,9 +33,79 @@ This document serves as the active improvement ideas log and architectural roadm
 | **A-23** | 2026-08-01 | Performance | Full-Frame `uint16`→`float32` Depth Conversion at 80 fps Capture for a 10 Hz Consumer | **High** | Logged (Iter 5) |
 | **A-24** | 2026-08-01 | Architecture | Frame-0 Displacement Hardcoded to Zero While the Scaler Shows `dx₀` Was a Real Displacement in Training | **High** | Logged (Iter 5) |
 | **A-25** | 2026-08-01 | Architecture | Acceleration Limiter Differences Two Velocities Expressed in Different Rotating Body Frames | **High** | Logged (Iter 5) |
+| **A-26** | 2026-08-01 | Architecture | Exported Track Position Is the Stale Body-Frame Centroid From the Last Matched Frame While the Re-Referenced One Sits Unused | **High** | Logged (Iter 6) |
+| **A-27** | 2026-08-01 | Architecture | `scaler_y` vs `scaler_X` Audit — 79% of the `dx` Channel Is Noise, and Nothing Cross-Checks the MLP Against the Free Finite-Difference Estimate | **High** | Logged (Iter 6) |
+| **A-28** | 2026-08-01 | Performance | Pedestrian Topics Republished at 2× the Producer Rate and Never Published Empty — Unbounded Stale Markers and a `/pedestrian_states` Array That Never Clears | **High** | Logged (Iter 6) |
+| **A-29** | 2026-08-01 | Sensor Fusion | StereoDepth Built With Zero On-Device Post-Processing — Every Depth Cleanup Pass Is Paid on the Jetson at 10 Hz | **High** | Logged (Iter 6) |
 
 ---
 ## 2. Architecture & Algorithmic Enhancements
+
+### Idea A-26: Exported Track Position Is the Stale Body-Frame Centroid From the Last Matched Frame While the Re-Referenced One Sits Unused
+- **Date Logged:** 2026-08-01 (Hourly Routine Iteration 6)
+- **ROI Tier:** **High ROI** (Hoist one existing three-line block above the gates and change one tuple unpack; the corrected position is already computed and discarded)
+- **Problem:** `ObstacleTracker` writes `track['centroid']` — the **body-frame** $(x, y, z)$ triple — only on a frame where the track matched a detection (`src/velocity_estimator.py:89`, and at creation, line 112). There is no `else` branch: an unmatched track keeps the tuple it was given in whatever body frame the robot occupied at its last match, while `age` climbs toward `max_age = 10` (line 49). Every consumer of a track's position reads that stale tuple — the $1.8\text{ m}$ proximity gate at line 485, all five estimate constructions (lines 486, 499, 513, 537, 576), and the debug overlay at line 624.
+
+  Meanwhile the loop **already computes the correct value and throws it away.** Lines 526–533 rotate the whole `history_global` deque out of the map frame and into the robot's *current* frame using this cycle's `rx_rob, ry_rob, cos_r, sin_r`:
+  ```python
+  dxy      = hist_g_arr[:, :2] - np.array([rx_rob, ry_rob])
+  local_xy = dxy @ R.T
+  hist_local = [(-float(local_xy[i, 1]), 0.0, float(local_xy[i, 0])) for i in ...]
+  ```
+  `hist_local[-1]` is exactly the track's position in the frame the robot is in *right now*, correctly translated and rotated regardless of how long ago the last match was. Line 576 then discards it and reads `tracks[tid]['centroid']` instead.
+
+  The error is dominated by ego-**rotation**, not translation, and it does not need a long outage to matter. For a track at range $R$ whose last match was $\Delta\theta$ of yaw ago, the exported lateral coordinate is wrong by $R\sin\Delta\theta$ and the exported range by $R(1 - \cos\Delta\theta)$. At the $\omega \approx 1.5\text{ rad/s}$ Nav2's `rotate_to_goal` and the ROTATE states in `src/ab_comparison_test.py` command, **one** missed frame is $\Delta\theta = 0.15\text{ rad}$, so a pedestrian at $2.0\text{ m}$ is reported $0.30\text{ m}$ off laterally. Three missed frames — well inside the `visible_count` budget, since a track that reached $10$ survives seven misses and still clears the `< 3` gate at line 481 — give $0.45\text{ rad}$, i.e. $0.87\text{ m}$ lateral and $0.20\text{ m}$ of range error. Pure translation adds up to $0.15\text{ m}$ per $0.3\text{ s}$ at the X3's $0.5\text{ m/s}$ ceiling.
+
+  Three consequences, in descending order of severity:
+  1. **The path-corridor test is destroyed.** `_get_speed_scaling` in `src/ab_comparison_test.py:829` admits an obstacle to proximity braking only if `abs(ry_t) <= LATERAL_THRESHOLD`, and `LATERAL_THRESHOLD = 0.35` (line 795). A single missed frame during a turn produces $0.30\text{ m}$ of lateral error — **86% of the entire corridor half-width.** A pedestrian standing dead in the path at $r_y = 0.10\text{ m}$ is reported at $0.40\text{ m}$ and drops out of the brake entirely; a bystander at $0.50\text{ m}$ is pulled to $0.20\text{ m}$ and triggers a false stop. The gate flips on ego-rotation alone.
+  2. **The proximity gate at line 485 mis-fires on stale depth.** A pedestrian truly at $1.75\text{ m}$ whose stale $z$ reads $1.90\text{ m}$ is forced to `vx = vy = 0.0` (lines 486–496) — and that policy zero is then written into `_prev_estimates` at line 602, so releasing it costs a further $0.5\text{ s}$ acceleration-limiter ramp by the exact mechanism Idea A-11 describes. The two defects chain.
+  3. **TTC is quadratic in the error.** $\text{TTC} = -d^2/(\mathbf{r}\cdot\mathbf{v})$ with $d = \text{hypot}(r_{x,t}, r_{y,t})$ (`ab_comparison_test.py:838–841`), so a $0.15\text{ m}$ range error at $d = 1.5\text{ m}$ is a $21\%$ TTC error, and `ROS2Bridge.publish_pedestrians` (`src/server_x3.py:602–603, 613–614, 635–636`) plants the RViz arrow and the `/pedestrian_states` entry at the stale point in `base_link`.
+
+  Note the input side is already correct — the MLP's window is re-referenced every cycle at lines 529–533, which is precisely why this survived: only the *exported* position was left behind. It is the positional twin of Idea A-25, which found the same staleness on the exported *velocity*.
+- **Proposed Solution:** Export the value the loop already has, and hoist the reconstruction above the gates that need it.
+  1. **Move lines 526–533 above the proximity gate at line 485.** They are three NumPy operations on a $(\le 10, 2)$ array — sub-microsecond — and the gate must test the fresh range, not the stale one, or fix (2) above does not land. The short-history guard at line 498 keeps its own `len < 2` check, which is what makes the hoist safe.
+  2. Replace `cx, cy, cz = tracks[tid]['centroid']` at lines 486, 499, 513, 537 and 576 with the current-frame position:
+     ```python
+     cz_cur = float(local_xy[-1, 0])          # forward range, r_x
+     cx_cur = -float(local_xy[-1, 1])         # camera-x, i.e. -r_y
+     ```
+     Caveat: line 533 hardcodes the vertical component to `0.0`, so the exported `y` becomes zero. That is already harmless — `y` is dead downstream (Idea A-17 shows `y_m` is never read after line 288, and `ab_comparison_test.py:806` uses it only as the dead fallback Idea 337 removes) — but carry the vertical through `history_global` as a fourth column if Idea A-17's height test is landing in the same change, since it wants the same quantity.
+  3. **Say when a position is a prediction rather than a measurement.** Export `'age': track['age']` alongside the estimate. A zero-age position is measured; a non-zero-age one is a constant-position extrapolation that is only valid while the *pedestrian* has not moved, and after $\approx 3$ frames should be dropped by the consumer rather than reported as fact. This is the same export discipline as Idea J-08 and Idea A-15's `conf` field and belongs in the same payload change.
+  4. Independent of, and required by, Idea A-14: A-14 keeps the robot pose from jumping to the origin, but even with a perfect pose the exported centroid is still frozen at its last match. Both are needed before `est['x']`/`est['z']` mean "where this person is now".
+- **Expected Benefit:** Removes up to $0.30\text{ m}$ of lateral and $0.02\text{ m}$ of range error per missed frame at $\omega = 1.5\text{ rad/s}$ ($0.87\text{ m}$ / $0.20\text{ m}$ after three), on a corridor test whose entire half-width is $0.35\text{ m}$ — the difference between braking for the pedestrian in the path and braking for the bystander beside it, precisely during the turns when the avoidance decision is being made. Also stops the $1.8\text{ m}$ proximity gate from flipping on stale depth (which chains into A-11's $0.5\text{ s}$ ramp), removes a $21\%$ TTC error at typical approach range, and puts the RViz arrow and `/pedestrian_states` entry where the person actually is. Costs one hoisted block and one changed tuple unpack, with no new computation — the corrected value is being computed today and discarded.
+
+### Idea A-27: `scaler_y` vs `scaler_X` Audit — 79% of the `dx` Channel Is Noise, and Nothing Cross-Checks the MLP Against the Free Finite-Difference Estimate
+- **Date Logged:** 2026-08-01 (Hourly Routine Iteration 6)
+- **ROI Tier:** **High ROI** (Four arithmetic operations per track for a runtime residual that makes every silent contract defect observable, plus a fallback estimator that is competitive with the model it checks)
+- **Problem:** Ideas A-09 and A-24 audited `scaler_X` against the feature builder. Nobody has audited `scaler_X` against **`scaler_y`** — and the two artifacts, read together, are strongly informative about what the model can and cannot be extracting.
+
+  `_load_model` reads both from the same file (`src/velocity_estimator.py:196–200`). The label scaler gives the training velocity spread directly:
+  $$\sigma(v_x) = 0.90467\text{ m/s}, \qquad \sigma(v_y) = 0.45487\text{ m/s}$$
+  The feature scaler gives the displacement spread, and it is remarkably uniform across the window — `scale[2::4]` runs $0.1984, 0.1985, \ldots, 0.1984$ (mean $0.1983$) and `scale[3::4]` runs $0.0739 \ldots 0.0736$ (mean $0.0737$). At the $\Delta t = 0.1\text{ s}$ that `INFER_HZ = 10` and `WINDOW_SIZE = 10  # matches training T=10` (lines 33–34) bake into the weights, true pedestrian motion can account for only
+  $$\sigma(v_x)\,\Delta t = 0.0905\text{ m}, \qquad \sigma(v_y)\,\Delta t = 0.0455\text{ m}$$
+  of those spreads. The observed spreads are $2.19\times$ and $1.62\times$ larger. Expressed as a variance fraction, **motion accounts for $20.8\%$ of the training variance of every `dx` channel and $38.1\%$ of every `dy` channel** — the remaining $79\%$ / $62\%$ is something else. Attributing it to per-sample position error (two independent samples per difference, $\sigma_{\text{tot}}^2 = (\sigma_v\Delta t)^2 + 2\sigma_{\text{pos}}^2$) gives
+  $$\sigma_{\text{pos},x} = 0.125\text{ m}, \qquad \sigma_{\text{pos},y} = 0.041\text{ m}$$
+  which is internally consistent and physically sensible: three times more error along the depth axis than across it, the exact signature of a stereo range measurement versus a pixel-quantised lateral one.
+
+  Two conclusions follow, and both are actionable.
+  1. **Any single displacement channel is nearly useless, and the model must be reading the long baseline.** Classical errors-in-variables attenuation on one channel is $\lambda = \sigma_{\text{sig}}^2/(\sigma_{\text{sig}}^2 + \sigma_{\text{noise}}^2) = \mathbf{0.208}$ — a regressor leaning on one `dx` would shrink its output by $5\times$. Across the window the noise telescopes: the mean of $dx_1 \ldots dx_9$ **is** the endpoint difference $(r_{x,9} - r_{x,0})/9$, whose noise variance is $2\sigma_{\text{pos}}^2/81$, giving $\lambda = \mathbf{0.955}$. So the trained network can only be well-calibrated by exploiting the $0.9\text{ s}$ baseline across the window — which is exactly the structure Idea A-09 destroys (the twenty position channels pinned to a constant) and Idea A-24 corrupts (a fabricated zero at the head). This is independent evidence that those two are the dominant accuracy defects, and it explains the reported symptom that the model "responds only to instantaneous per-frame motion".
+  2. **That same long baseline is a free estimator, and it is never computed.** After line 531 the loop holds `local_xy`, a $(10, 2)$ array of the track's positions in the current body frame. The endpoint difference costs two subtractions and two multiplies:
+     $$\hat{v}_x = \frac{r_{x,9} - r_{x,0}}{9\Delta t}, \qquad \hat{v}_y = \frac{r_{y,9} - r_{y,0}}{9\Delta t}$$
+     At the OAK-D Lite's actual $\sigma_{\text{pos}} \approx 0.03\text{ m}$ this has $\text{sd} = \sqrt{2}\,\sigma_{\text{pos}}/0.9 = \mathbf{0.047\text{ m/s}}$ — versus $0.42\text{ m/s}$ for a single-frame difference, the figure Idea A-18 is costed against. Nothing anywhere in `velocity_estimator.py` compares the model's output to it. The MLP output is inverse-transformed at line 568, clipped at line 569, and published, with **no consistency check of any kind** between the network and the kinematics of its own input window. Every contract defect logged this month — A-09's pinned position channels, A-24's fabricated frame-0 step, A-22's unmeasured $\Delta t$, and whatever the $\sigma$ ratio above turns out to reflect — is therefore *silent* at runtime.
+- **Proposed Solution:** Compute the kinematic estimate the window already contains, publish it, and use the residual as both a monitor and a fallback.
+  1. **Compute it.** Immediately after line 531:
+     ```python
+     n  = len(local_xy)
+     inv = 1.0 / ((n - 1) * dt)
+     vx_fd =  float(local_xy[-1, 0] - local_xy[0, 0]) * inv
+     vy_fd =  float(local_xy[-1, 1] - local_xy[0, 1]) * inv
+     ```
+     Use the *unpadded* sample count so a fresh track's duplicated head (lines 375–376) cannot flatten it, and take $\Delta t$ from Idea A-22's per-sample capture stamps once those exist rather than assuming $0.1$.
+  2. **Export it.** Add `'vx_fd'`, `'vy_fd'` and the residual `'v_res': hypot(vx - vx_fd, vy - vy_fd)` to the estimate dict at lines 579–587. It costs three floats in the readout payload and turns the A/B logs into a direct measurement of model-versus-kinematics agreement — which is the number `VELOCITY_SELF_TRAINING_PLAN.md` §3 needs anyway to score a retrain, now collected live instead of offline.
+  3. **Gate on it.** If `v_res` exceeds a threshold (start at $3\times$ the fallback's own $0.047\text{ m/s}$ sd, i.e. $0.15\text{ m/s}$) for $K = 5$ consecutive cycles on the same track, log once and publish $\hat{v}_{\text{fd}}$ in place of the model output for that track. This is not a downgrade: with $\lambda = 0.955$ the endpoint estimator is *nearly unbiased*, and it is unconditionally immune to every serving/training contract drift, because it never touches the scaler or the network. The model's advantage over it is trajectory shape — acceleration, curvature — which is exactly the advantage it currently cannot express while A-09 holds.
+  4. **Make the ratio an offline check.** Add the audit above to the load-time contract assertion Idea A-09 introduces: assert `scaler_X.scale[2] >= scaler_y.scale[0] * DT` — the displacement spread can never be *smaller* than the motion it must contain — and log the implied noise $\sigma_{\text{pos}}$ so a regenerated `scaler_params.json` that silently changes sampling rate or sensor is visible in `journalctl` rather than discovered as a velocity gain error on the robot.
+  5. Ordering: this composes with Idea A-18 rather than competing. A-18 attenuates the *per-frame* channels ($0.42 \to 0.19\text{ m/s}$); the endpoint estimator bypasses them entirely ($0.047\text{ m/s}$). Both feed the same network, and the residual computed here is the instrument that will show whether A-18, A-09 and A-24 actually moved the model's output toward the kinematics.
+- **Expected Benefit:** Establishes, from the shipped artifacts alone, that a single displacement channel carries only $20.8\%$ signal ($\lambda = 0.208$) while the $0.9\text{ s}$ window baseline carries $95.5\%$ ($\lambda = 0.955$) — which independently ranks A-09 and A-24 as the highest-value accuracy fixes, because both destroy precisely the long-baseline structure the model must depend on. Delivers a $0.047\text{ m/s}$-sd velocity estimate for four arithmetic operations per track, converts every silent training/serving contract defect in this log into an observable per-cycle residual, and gives the estimator a fallback that cannot be corrupted by a scaler or model mismatch. Costs no new state and no new full-frame work.
 
 ### Idea A-24: Frame-0 Displacement Hardcoded to Zero While the Scaler Shows `dx₀` Was a Real Displacement in Training
 - **Date Logged:** 2026-08-01 (Hourly Routine Iteration 5)
@@ -261,6 +331,30 @@ This document serves as the active improvement ideas log and architectural roadm
 
 ## 3. Performance & Execution Efficiency
 
+### Idea A-28: Pedestrian Topics Republished at 2× the Producer Rate and Never Published Empty — Unbounded Stale Markers and a `/pedestrian_states` Array That Never Clears
+- **Date Logged:** 2026-08-01 (Hourly Routine Iteration 6)
+- **ROI Tier:** **High ROI** (One sequence counter, one deleted `and`, and one DELETEALL marker; halves the DDS work and removes a hazard state that never expires)
+- **Problem:** The broadcast loop pulls and republishes the estimator's output on every tick (`src/server_x3.py:2011–2018`):
+  ```python
+  velocity_estimates = velocity_estimator.get_estimates()
+  if ROS2_MODE and ros_bridge is not None and velocity_estimates:
+      ros_bridge.publish_pedestrians(velocity_estimates)
+  ```
+  That loop runs at **20 Hz** (`await asyncio.sleep(0.05)  # 20 FPS cap`, line 2086) while the producer runs at **10 Hz** (`INFER_HZ = 10`, `src/velocity_estimator.py:34`, paced at lines 666–668). There is no freshness check, so every estimate set is serialised and published to three topics twice. Three distinct defects follow.
+
+  1. **Half the DDS work is a duplicate, and it runs on the asyncio event loop.** `publish_pedestrians` (`src/server_x3.py:577–677`) builds, per track, one `Pose`, one `PedestrianState`, an ARROW `Marker` and a TEXT_VIEW_FACING `Marker` — each marker carrying a nested `Header`, `Pose`, `Vector3` and `ColorRGBA`. At the `MAX_OBSTACLES = 5` ceiling that is 20 top-level messages and roughly 120 Python object constructions per call, then three `publish()` calls with their CDR serialisation (lines 675–677). At 20 Hz that is $\approx 2400$ object constructions per second, **half of them re-encoding bytes that were already sent $50\text{ ms}$ earlier**, on the same coroutine that must also ship the JPEG frame (line 2022) and the readout JSON (line 2056) inside the same $50\text{ ms}$ budget. Each call also takes `VelocityEstimator._lock` through `get_estimates()` (lines 685–688), contending with the inference thread that holds it at line 604.
+
+  2. **The "no pedestrians" state is never published at all.** The `and velocity_estimates` guard makes the publish conditional on the list being non-empty, so when the last person leaves the frame — or the empty-frame fast path clears `self._estimates` at lines 435–436 — *nothing is sent*. The last non-empty `PedestrianArray` therefore remains the newest message on `/pedestrian_states` indefinitely. Any consumer that treats the latest message as current state reads "there is still a pedestrian here, moving at $v$" forever. That is not hypothetical: Idea J-15's forward-projected costmap layer and Idea J-13's CBF obstacle-drift term are both specified to consume exactly this stream, and both would inherit a phantom hazard that no timeout clears. A stale *hazard* is the one kind of stale state that cannot be argued as fail-safe, because it makes the robot avoid empty floor.
+
+  3. **RViz markers accumulate without bound.** `marker.id = int(tid)` (line 632) and `text_marker.id = int(tid) + 1000` (line 661) come from `ObstacleTracker.next_id`, which increments on every new track and is **never reset** (`src/velocity_estimator.py:106–107`). No marker carries a `lifetime`, and no `Marker.DELETEALL` is ever published. Every ID that ever existed leaves a permanent arrow and label frozen at its last reported position. Under the track churn Idea A-06 documents — blobs merging and splitting in clutter destroy and recreate tracks continuously — even a modest 2 new IDs/s is $7{,}200$ permanent markers after an hour, all of which RViz keeps rendering and all of which are now in the wrong place (Idea A-26).
+- **Proposed Solution:** Publish once per produced frame, publish the empty state, and let markers expire.
+  1. **Sequence the producer.** Add `self._seq = 0` in `VelocityEstimator.__init__` and `self._seq += 1` inside the lock beside `self._estimates = estimates` (line 605); return it from `get_estimates()` (or add `get_seq()`). In the broadcast loop, republish only when `seq` changes. This halves the publish rate to the producer's $10\text{ Hz}$ with **zero information loss** — the second copy is bit-identical by construction. The same counter is what Idea A-22 step 2 needs to detect a duplicate depth frame, so one field serves both.
+  2. **Delete the `and velocity_estimates` guard** at line 2015. An empty `PoseArray` / `PedestrianArray` is the correct, unambiguous "no pedestrians" message, and it is nearly free to serialise. Combine with (1) so the empty state is published exactly once per producer frame rather than at $20\text{ Hz}$.
+  3. **Prepend a clear marker.** Make `markers[0]` a single `Marker` with `action = Marker.DELETEALL` on every `MarkerArray` — the standard RViz idiom — so the display is rebuilt from scratch each publish and no dead ID can survive. Belt-and-braces alternative, or addition: set `marker.lifetime = Duration(sec=0, nanosec=200_000_000)` (two producer periods) so a marker self-expires if a publish is ever missed. DELETEALL is the primary fix here because the ID space is unbounded, which is exactly the case `lifetime` alone handles poorly.
+  4. **Get it off the event loop.** With (1) in place, the natural home for `publish_pedestrians` is the estimator's own thread — call it at the end of `_inference_loop` right after line 605, where the data is produced and the cadence is already correct — or an `rclpy` timer on `self._node`. The broadcast coroutine then only puts `velocity_estimates` into the readout JSON at line 2046, and no ROS message construction or CDR serialisation happens on the thread that owns the WebSocket clients at all.
+  5. Composes with Idea A-26, which is what makes the published position correct in the first place, and with Idea A-15/J-08's `conf` export, which should ride in the same payload change.
+- **Expected Benefit:** Halves pedestrian-topic publishing work — $\approx 1200$ Python object constructions per second and three CDR serialisations per tick — and removes all of it from the asyncio event loop that also carries the $20\text{ Hz}$ JPEG and readout broadcasts, plus one lock acquisition per tick that today contends with the inference thread. More importantly it makes the *cleared* state representable: `/pedestrian_states` stops being a latch that holds the last pedestrian forever, which is a prerequisite for Ideas J-13 and J-15 consuming it safely, and RViz stops accumulating thousands of permanently wrong markers over a session. Cost is one counter, one deleted conjunction, and one extra marker per array.
+
 ### Idea A-23: Full-Frame `uint16`→`float32` Depth Conversion at 80 fps Capture for a 10 Hz Consumer
 - **Date Logged:** 2026-08-01 (Hourly Routine Iteration 5)
 - **ROI Tier:** **High ROI** (Ten lines following a lazy-cache pattern already present in the same file, deletes ~164 MB/s of heap churn and ~290 MB/s of DRAM traffic)
@@ -387,6 +481,47 @@ This document serves as the active improvement ideas log and architectural roadm
 
 ## 4. Sensor Fusion & Hardware Integration
 *Focus areas: OAK-D vs. Astra Pro depth calibration, YDLidar X3 mounting/scan-matching, IMU slip compensation, and motor driver telemetry.*
+
+### Idea A-29: StereoDepth Built With Zero On-Device Post-Processing — Every Depth Cleanup Pass Is Paid on the Jetson at 10 Hz
+- **Date Logged:** 2026-08-01 (Hourly Routine Iteration 6)
+- **ROI Tier:** **High ROI** (Six lines in `_build_pipeline` that move the entire depth-cleanup stage onto the OAK's VPU, delete two host morphology passes, halve XLink payload, and attack the one error term no host smoother can)
+- **Problem:** `OakDCamera._build_pipeline` configures `StereoDepth` with exactly three calls (`src/oakd_driver.py:230–232`):
+  ```python
+  stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.DEFAULT)
+  stereo.setLeftRightCheck(self.left_right_check)   # True (line 107)
+  stereo.setSubpixel(False)                          # Idea J-27's target
+  ```
+  `stereo.initialConfig` is **never touched anywhere in the file** — grep returns zero hits. So the device ships with the `DEFAULT` preset's permissive confidence threshold (245 of 255; the `HIGH_ACCURACY` preset uses 200) and with `postProcessing.speckleFilter`, `thresholdFilter`, `spatialFilter`, `temporalFilter` and `decimationFilter` all disabled. `_process_depth` (lines 392–397) then hands the raw device output straight to the host.
+
+  Every cleanup stage the raw map needs is consequently paid on the Jetson, at $10\text{ Hz}$, inside `_extract_depth_centroids`:
+  - the $0.5\text{–}4.0\text{ m}$ range tests at `src/velocity_estimator.py:224`, `235` and `274`;
+  - **two full-frame $5\times5$ `MORPH_OPEN` / `MORPH_CLOSE` passes** at lines 239–241, whose entire purpose is to erase isolated invalid-disparity blobs;
+  - the per-blob decimated median at lines 276–280 and the range-adaptive area gate at line 258, both of which exist to survive a noisy mask.
+
+  The device can do all of it, on the Myriad-X, for zero Jetson cycles — and the confidence threshold does something the host provably **cannot**. Passive stereo with no IR projector (Idea A-10 established this camera has none) does not return holes on untextured lab walls; at a $245/255$ threshold it returns a *confident, wrong* disparity. Those values land inside the $[0.5, 4.0]$ acceptance band, survive the morphology because they are spatially coherent, and become blobs and tracks. That is a **bias**, not zero-mean noise, so Idea A-18's Savitzky–Golay smoother, Idea A-05's EMA and Idea 218's z-score rejection are all structurally unable to remove it — they attenuate variance around a mean that is already in the wrong place. Only a match-cost threshold at the source converts a wrong-but-confident disparity into a zero, which the range mask then rejects for free.
+- **Proposed Solution:** Configure the stereo node's post-processing block in `_build_pipeline`, immediately after line 232.
+  ```python
+  stereo.initialConfig.setConfidenceThreshold(200)      # DEFAULT preset ships 245
+  cfg = stereo.initialConfig.get()
+  cfg.postProcessing.speckleFilter.enable      = True
+  cfg.postProcessing.speckleFilter.speckleRange = 50
+  cfg.postProcessing.thresholdFilter.minRange  = 500    # mm — the estimator's own 0.5 m
+  cfg.postProcessing.thresholdFilter.maxRange  = 4000   # mm — the estimator's own 4.0 m
+  cfg.postProcessing.decimationFilter.decimationFactor = 2
+  cfg.postProcessing.decimationFilter.decimationMode   = \
+      dai.RawStereoDepthConfig.PostProcessing.DecimationFilter.DecimationMode.NON_ZERO_MEDIAN
+  stereo.initialConfig.set(cfg)
+  stereo.setPostProcessingHardwareResources(3, 3)       # shaves/slices for the filter chain
+  ```
+  Taken in order of what each buys:
+  1. **Threshold filter** performs on-device precisely what lines 224/235/274 do on the host, using the same two constants. Semantically a no-op downstream; it simply means the frame arrives already restricted to the band the estimator accepts.
+  2. **Speckle filter** removes the isolated invalid-disparity islands that the host $5\times5$ `MORPH_OPEN` at line 240 exists to erase — the same pass Idea A-20 shows is silently paid *twice*, once inside `pyopencv_to`'s contiguity copy of the strided view and once in the operator itself. With speckle handled at the source, both morphology calls can be dropped or reduced to a $3\times3$ `MORPH_CLOSE`.
+  3. **Confidence threshold at 200** is the accuracy item, and it is the only one that attacks a bias rather than a variance. Note the second-order payoff: fewer garbage blobs means fewer contours reaching `findContours` (line 243), which directly relieves the `MAX_OBSTACLES = 5` scarcity that Idea A-06 has to ration and Idea A-17 shows the floor already consumes.
+  4. **Decimation filter, factor 2, `NON_ZERO_MEDIAN`** replaces the host `raw_depth_frame[::2, ::2]` at line 228 with an on-device **median of each $2\times2$** — strictly better than the host's point-sample, since a median rejects an invalid neighbour instead of possibly picking it. It halves the XLink depth payload ($512\text{ kB} \to 128\text{ kB}$ per frame at `THE_400_P`), which raises the *achieved* depth rate — exactly the quantity Idea A-22 shows the feature $\Delta t$ silently depends on — and it deletes Idea A-20's hidden contiguity copy and half of Idea A-23's conversion cost at the source.
+     **Two hard preconditions.** (a) The estimator's own `[::2, ::2]` at line 228 must be *removed*, not stacked, or the working grid collapses to $160\times100$ and the adaptive area gate (line 258, already calibrated against $\text{MIN\_BLOB\_AREA}/4$) is off by another $4\times$. (b) The emitted resolution and therefore the intrinsics change, so this must land with or after **Idea A-21**, whose `get_intrinsics() -> (fx, fy, cx, cy, w, h)` self-describing accessor and shape assertion are what make a resolution change detectable instead of silent. Landing decimation before A-21 would create exactly the transposition A-21 was written to prevent.
+  5. **Deliberately not proposed: the temporal filter.** DepthAI's `temporalFilter` is a causal IIR with persistency modes; on a walking pedestrian it smears the leading edge and biases depth toward the previous frame — the identical lag-for-jitter trade Idea A-18 rejects for the EMA, and worse here because it happens before the host can see it. Recording the exclusion explicitly so a later iteration does not add it as an apparent free win.
+  6. Independent of Idea J-27 (`setSubpixel(True)`), which improves disparity *resolution*; this improves disparity *validity*. They stack, though subpixel raises the on-device compute budget, so if both land, check the achieved `get_depth_fps()` (`src/oakd_driver.py:602–605`) rather than assuming the requested `mono_fps = 80` survives.
+- **Expected Benefit:** Moves the entire depth-cleanup stage from the Jetson's $10\text{ Hz}$ hot path onto the OAK's VPU: deletes two full-frame $5\times5$ morphology passes plus the strided-view contiguity copy Idea A-20 measures behind them, and halves the XLink depth payload from $512\text{ kB}$ to $128\text{ kB}$ per frame, which raises the achieved capture rate that Idea A-22 shows the feature $\Delta t$ silently tracks. On accuracy it removes the one error class no downstream filter can touch — confident-but-wrong disparities on untextured surfaces, which currently enter the acceptance band as spatially coherent phantom blobs, consume the $\text{MAX\_OBSTACLES} = 5$ budget, and are indistinguishable from an obstacle to every stage after them. Cost is six lines in `_build_pipeline` and one deleted line in `_extract_depth_centroids`.
 
 ### Idea A-22: Depth Frames Are Consumed on a Free-Running Host Clock With No Capture Timestamp — the Feature Δt Is Assumed, Never Measured
 - **Date Logged:** 2026-08-01 (Hourly Routine Iteration 5)
