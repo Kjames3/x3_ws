@@ -41,9 +41,89 @@ This document serves as the active improvement ideas log and architectural roadm
 | **A-31** | 2026-08-01 | Performance | Traced Graph Is Never Frozen — BatchNorm and Dropout Dispatched as Live Ops in a 40→256→128→64→2 MLP | **High** | Logged (Iter 7) |
 | **A-32** | 2026-08-01 | Performance | The Safety-Critical Speed Scaler Reads Velocities Through a WebSocket JSON Round-Trip, Not the ROS Topic Published Beside It | **High** | Logged (Iter 7) |
 | **A-33** | 2026-08-01 | Sensor Fusion | A 0.185 m Mount With a 24.8° Vertical Half-FOV Crops the Pedestrian at the Waist — the Depth Reference Migrates to the Legs and Picks Up Gait | **High** | Logged (Iter 7) |
+| **A-34** | 2026-08-01 | Performance | The Feature Window Round-Trips Through Python Objects Twice Between Two NumPy Arrays — 90 Scalar `np.clip` Dispatches per Cycle to Fill a Pre-Allocated Tensor | **High** | Logged (Iter 8) |
+| **A-35** | 2026-08-01 | Sensor Fusion | `self.lidar` Is Assigned and Never Read — a 2 cm Planar Ranger Is Wired In While the Radial Channel Runs on 12 cm Stereo Quantisation Steps | **High** | Logged (Iter 8) |
+| **A-36** | 2026-08-01 | Architecture | The Depth Frame Is From `t−τ` and the Pose Is From `t` — the `twist` the Docstring Reserves for Ego-Motion Compensation Is Fetched Every Cycle and Never Read | **High** | Logged (Iter 8) |
+| **A-37** | 2026-08-01 | Architecture | One `scaler_params.json` Behind a Module Constant Serves Two Different Model Artifacts, and the Runtime Model Switch Cannot Swap It | **High** | Logged (Iter 8) |
 
 ---
 ## 2. Architecture & Algorithmic Enhancements
+
+### Idea A-36: The Depth Frame Is From `t−τ` and the Pose Is From `t` — the `twist` the Docstring Reserves for Ego-Motion Compensation Is Fetched Every Cycle and Never Read
+- **Date Logged:** 2026-08-01 (Hourly Routine Iteration 8)
+- **ROI Tier:** **High ROI** (Two lines that back-date a pose using a field the callback already returns and the estimator already receives; removes the only error term in the pipeline that grows with the *robot's* rotation rather than the pedestrian's motion)
+- **Problem:** `VelocityEstimator.__init__`'s docstring reserves the robot twist for exactly this purpose — `'twist': {'vx': m/s, 'vy': m/s, 'wz': rad/s}} for EKF slip & ego-motion compensation` (`src/velocity_estimator.py:146–148`). `get_robot_pose_and_twist` in `src/server_x3.py:1136–1145` duly takes `ros_bridge._lock`, copies `_twist`, and returns `{"pose": pose, "twist": twist}` on every call. And a grep for `twist` across `src/velocity_estimator.py` returns **exactly one hit: line 147, the docstring.** The value is fetched under a lock at 10 Hz and discarded at line 452, where only `robot_data["pose"]` is unpacked.
+
+  What it was reserved for is a real, uncorrected error. `_inference_loop` reads the depth frame at line 430 and the pose at line 448 **in the same iteration, and treats them as simultaneous.** They are not. The frame's capture lag $\tau$ is the sum of on-device stereo compute, XLink transfer, and the up-to-$1/f_d$ wait in the `maxSize=1, blocking=False` queue (`src/oakd_driver.py:322`) — and Idea A-22 establishes there is no capture timestamp anywhere in the path, so $\tau$ is not merely uncorrected, it is unmeasured. A conservative $\tau = 50\text{ ms}$ is half a poll interval.
+
+  Lines 458–469 then project the centroid into the map frame with the **wrong pose**:
+  $$g_{\text{used}} = R(\theta_t)\,c_{t-\tau} + p_t \qquad\text{instead of}\qquad g_{\text{true}} = R(\theta_{t-\tau})\,c_{t-\tau} + p_{t-\tau}$$
+  giving a global-frame bias
+  $$b_t = \big[R(\theta_t) - R(\theta_{t-\tau})\big]c_{t-\tau} + \big(p_t - p_{t-\tau}\big) \;\approx\; \omega\tau\,R(\theta_t)Jc \;+\; v_{\text{rob}}\tau$$
+  with $J$ the $90°$ rotation. The magnitude of the rotational term is $\omega\tau\|c\|$: at $\omega = 1.0\text{ rad/s}$ — a routine in-place heading correction — and a pedestrian at $\|c\| = 2.0\text{ m}$, that is $\mathbf{0.10\ m}$ of phantom lateral displacement in the stored global position, perpendicular to the line of sight.
+
+  What reaches the MLP is the *difference* of that bias, and the honest accounting has three regimes:
+  1. **Straight, constant speed.** $b$ is a constant global offset, so it cancels in `dx`/`dy` entirely. It does **not** cancel in the exported position: at $0.3\text{ m/s}$ the reported obstacle sits $0.015\text{ m}$ off, which the CBF (`src/cbf_filter.py:45–61`) and the proximity gate at line 485 consume as truth. Small, but it is pure bias, not noise.
+  2. **Steady turn.** Both $\theta$ and $c$ rotate, so $b$ rotates with them and the per-frame change is $\approx \omega^2\tau\|c\|\Delta t = 1.0^2 \times 0.05 \times 2.0 \times 0.1 = \mathbf{0.010\ m/frame}$ — a **sustained $0.10\text{ m/s}$ phantom lateral velocity** for as long as the turn lasts. Against the `dy` channel's training spread of $0.0739\text{ m}$ (`scaler_X.scale[3::4]`) that is $14\%$ of the entire range the model was fit on, and roughly a quarter of the $0.042\text{ m}$ sensor-noise term Idea A-18's smoother is costed against.
+  3. **Turn onset and offset — the expensive one.** Nav2 and manual driving start and stop rotations constantly. Stepping $\omega$ from $0$ to $1.0\text{ rad/s}$ over two frames builds the full $0.10\text{ m}$ bias inside the window, injecting $\approx 0.05\text{ m}$ into a *single* `dy` sample — **68% of the whole $0.0739\text{ m}$ `dy` training spread in one frame**, reported as roughly $0.5\text{ m/s}$ of lateral velocity. Nothing in the pipeline catches it: it is far under the $\pm 0.25\text{ m}$ displacement clamp at line 414, it is under the $0.3\text{ m/s}$ per-frame acceleration limiter at line 590, and it is not high-frequency, so Idea A-18's Savitzky–Golay operator passes it through as signal.
+
+  Two properties make this worth ranking high. The sign is **opposite the turn direction**, so a robot rotating to face a pedestrian sees that pedestrian appear to slide *away* — precisely the wrong input for the avoidance decision the estimator exists to inform. And the error is a function of the *robot's* angular rate, so it is identically zero in every stationary-robot bench test and maximal during the manoeuvre where the velocity estimate is actually used.
+
+  This is a distinct locus from what is already logged. Idea A-14 is the pose being **absent** (`None` → identity transform); this is the pose being **present and from the wrong instant**. Idea A-22 is the interval **between** two samples; this is the alignment of **one** sample to its pose. Idea A-25 is the accelerator limiter differencing across frames; this is the projection into the frame in the first place.
+- **Proposed Solution:** Back-date the pose to the frame's capture time using the twist that is already on the wire.
+  1. Unpack what is already returned, at line 452: `tw = robot_data.get("twist") or {}`, giving body-frame $v_x, v_y, \omega_z$.
+  2. Form the capture-time pose before the projection at lines 458–469:
+     $$\theta_{t-\tau} = \theta_t - \omega_z\tau, \qquad p_{t-\tau} = p_t - R(\theta_t)\begin{bmatrix}v_x\\v_y\end{bmatrix}\tau$$
+     and use $(p_{t-\tau},\ \theta_{t-\tau})$ — i.e. a second `cos_r`/`sin_r` pair — for `centroids_g`.
+  3. **Keep the current pose at lines 529–531.** The global $\to$ local re-reference produces the position the CBF and speed scaler consume *now*, so it must use the pose *now*. The two transforms are deliberately on different clocks; today they are accidentally on the same one, which is the whole defect. Idea A-26 fixes what that output *is*; this fixes what it is measured *from*.
+  4. **Source of $\tau$.** Once Idea A-22 lands, $\tau = t_{\text{host}} - t_{\text{capture}}$ exactly, per frame. Until then, `OakDCamera.get_depth_frame_age()` already exists at `src/oakd_driver.py:597–600`, is already fed at line 397, and **the estimator has never once called it** — use it as a measured lower bound plus a one-off calibrated constant for the stereo+XLink leg. Clamp $\tau$ to $[0,\ 0.15]\text{ s}$ so a stalled driver cannot extrapolate wildly.
+  5. **Regression guard, three lines.** When $|\omega_z| > 0.2\text{ rad/s}$ and *every* live track reports lateral velocity of the same sign exceeding $0.4\text{ m/s}$, that is the signature of this bug rather than of a crowd walking in formation. Log it once per occurrence; it is also the cheapest acceptance test for the fix.
+- **Expected Benefit:** Removes a coherent, robot-correlated error that is invisible to both the acceleration limiter and the Savitzky–Golay smoother: $\approx 0.05\text{ m}$ injected into a single `dy` sample at every turn onset — 68% of that channel's entire training spread, worth $\approx 0.5\text{ m/s}$ of phantom lateral velocity — and a sustained $0.10\text{ m/s}$ phantom through steady turns at $1.0\text{ rad/s}$. Corrects the exported obstacle position by up to $0.10\text{ m}$ during rotation and $0.015\text{ m}$ in straight driving, on the number `HolonomicCBFFilter` treats as ground truth. Cost is one dictionary lookup, two multiplications and a second sine/cosine pair per cycle, using data the pose callback already builds under a lock and then throws away.
+
+### Idea A-37: One `scaler_params.json` Behind a Module Constant Serves Two Different Model Artifacts, and the Runtime Model Switch Cannot Swap It
+- **Date Logged:** 2026-08-01 (Hourly Routine Iteration 8)
+- **ROI Tier:** **High ROI** (One path derivation, one digest field, and moving three assignments below a `try` — closes an unbounded, entirely silent gain error on the exported velocity)
+- **Problem:** The model path is a *variable* and the scaler path is a *constant*, and the GUI can change only the first.
+  ```python
+  MODEL_PATH         = str(_SRC_DIR / "velocity_mlp.torchscript")      # line 30
+  SCALER_PARAMS_PATH = str(_SRC_DIR / "scaler_params.json")            # line 31
+  ...
+  self.model_path = model_path or MODEL_PATH                           # line 156 — overridable
+  ...
+  self._model = torch.jit.load(self.model_path, ...)                   # line 181 — follows the override
+  with open(SCALER_PARAMS_PATH, "r") as f:                             # line 193 — follows the constant
+  ```
+  There is no `self.scaler_path`. `_load_model` (lines 179–204) is the *only* place either is read, and it reloads the network from an instance attribute while reloading the normalisation from a module global.
+
+  `src/server_x3.py:1715–1726` exposes exactly that mismatch to the operator. The `set_velocity_model` message accepts two names, `velocity_mlp` and `velocity_mlp_finetuned`, then does:
+  ```python
+  velocity_estimator.stop()
+  velocity_estimator.model_path = new_path
+  velocity_estimator._load_model()
+  velocity_estimator.start()
+  ```
+  The weights swap; the scaler cannot. And the two artifacts are genuinely different networks — `velocity_mlp.torchscript` and `velocity_mlp_finetuned.torchscript` are both $241\,842$ bytes (same architecture) with different digests (`23d2feb…` vs `4ac71b5…`). There is exactly one scaler in the tree: `scaler_params.json`, `scaler_X.pkl`, `scaler_y.pkl`. No `*_finetuned` variant exists.
+
+  A `StandardScaler` is a property of the *dataset*, not of the architecture. If the fine-tune touched the data at all — which is the entire premise of `VELOCITY_SELF_TRAINING_PLAN.md` and the only reason a second artifact exists — then $(\mu_{\text{ft}}, \sigma_{\text{ft}}) \neq (\mu_{\text{base}}, \sigma_{\text{base}})$ and serving applies the wrong transform on **both** ends:
+  $$x_{\text{fed}} = \frac{x - \mu_{X,\text{base}}}{\sigma_{X,\text{base}}} \;\neq\; \frac{x - \mu_{X,\text{ft}}}{\sigma_{X,\text{ft}}}, \qquad \hat v = f_{\text{ft}}\!\left(x_{\text{fed}}\right)\cdot\sigma_{y,\text{base}} + \mu_{y,\text{base}}$$
+  The output side is the dangerous one, because $\sigma_y$ is a **pure multiplicative gain on the exported velocity** and nothing downstream can tell a gain error from a fast pedestrian. The shipped values are $\sigma_y = [0.9047,\ 0.4549]$, $\mu_y = [0.0031,\ 0.0013]$ (`scaler_params.json`). A fine-tune whose speed distribution is merely 30% narrower — an unremarkable outcome when the follow-up dataset is collected indoors at walking pace — yields $\sigma_{y,\text{ft}} \approx [0.633,\ 0.318]$, and serving those weights through the base scaler multiplies every reported $v_x$ by $0.9047 / 0.633 = \mathbf{1.43}$. A pedestrian at a true $1.0\text{ m/s}$ is exported at $1.43\text{ m/s}$ to the speed scaler and the CBF, with **no symptom at all**: the values stay inside the $\pm 2.5\text{ m/s}$ clip at line 569, inside the $0.3\text{ m/s}$ acceleration limit at line 590, and inside every plausibility range a human would eyeball in the throttled printout at lines 612–615. The error is a scale factor, so it survives every smoother in the pipeline including Idea A-18's, and it is the *opposite* sign of safe if the fine-tune widened the distribution instead.
+
+  A second failure rides on the same eleven lines. `_load_model`'s `except` at lines 203–204 **only logs**:
+  - If `torch.jit.load` raises (truncated file, wrong torch version), `self._model` keeps the *previously loaded object* while `self.model_path` was already rebound at `server_x3.py:1722`. No exception escapes, so the `try` at lines 1721–1726 completes and the GUI is sent `{"success": true, "model": "velocity_mlp_finetuned"}`. The operator is told the fine-tuned model is live; the base model is running.
+  - If the load succeeds but the scaler read fails, `self.scaler_X_mean` and friends retain the *previous* arrays and inference continues on a **half-swapped configuration** — new weights, old normalisation — which is the top defect above, now reached by accident rather than by design.
+  - Idea A-31's `torch.jit.freeze` and Idea A-16's fixed-shape trace both land inside this same function, so hardening it once pays for all three.
+- **Proposed Solution:** Make the scaler travel with the model, bind them by digest, and fail loudly.
+  1. **Make it an instance attribute.** Derive it from the model path — `Path(self.model_path).with_suffix('') .parent / f"{Path(self.model_path).stem}_scaler.json"`, falling back to `SCALER_PARAMS_PATH` when that file is absent — and store it as `self.scaler_path` so it is swappable exactly like `self.model_path`. Accept an optional `scaler_path=` constructor argument for symmetry with `model_path=`.
+  2. **Ship the missing artifact.** Export `velocity_mlp_finetuned_scaler.json` from the fine-tune's own training set (the recipe is already written down in `VELOCITY_SELF_TRAINING_PLAN.md` §3). If the fine-tune provably reused the base dataset's statistics, ship a copy anyway — an explicit duplicate is a checkable claim; a shared global is an assumption.
+  3. **Bind them cryptographically.** Emit into every scaler JSON at export time:
+     ```json
+     {"model_sha256": "...", "window": 10, "infer_hz": 10,
+      "feature_layout": "rel_x,rel_y,dx,dy x10", "translation_normalised": false}
+     ```
+     and assert the loaded artifact's digest matches in `_load_model`; refuse to start on mismatch rather than serving a silently mis-scaled velocity. The extra fields are not decoration: `window`/`infer_hz` pin the $\Delta t = 0.1\text{ s}$ contract that Idea A-22 shows is currently an unchecked assumption, and `translation_normalised` records the flag Idea A-09 shows is currently ambiguous between the training script and the serving path — the one bit whose value decides whether 20 of the 40 input channels are real data or a frozen constant.
+  4. **Publish atomically.** Load the model and the scaler into *locals*, and only assign `self._model` and the five scaler arrays after **both** succeed; then re-raise instead of swallowing. `server_x3.py:1727–1737` already has the `except` branch that reports `success: false` with the error text to the GUI — it is dead code today purely because `_load_model` never raises. On failure the estimator keeps running the previous, self-consistent pair.
+  5. **Show it in the readout.** Report the active model name *and* the first eight hex digits of the scaler digest alongside the estimates, so the GUI displays what is running rather than what was clicked.
+- **Expected Benefit:** Closes a silent, unbounded multiplicative error on the exported velocity — a fine-tune with a 30% narrower speed distribution alone produces a **43% over-report on $v_x$** with no visible symptom, on the number the CBF and speed scaler treat as ground truth — and makes the currently-invisible half-swap on a failed model switch an explicit, operator-visible failure. The embedded `window`/`infer_hz`/`translation_normalised` fields turn three assumptions that Ideas A-09, A-22 and A-24 each had to *infer* from scaler statistics into declared, asserted metadata, so the next fine-tune cannot silently break them.
 
 ### Idea A-30: Blob Depth Median Decimated by a Size-Dependent Stride — a Discontinuous Subsample That Steps `Z` and Buys ~10 µs
 - **Date Logged:** 2026-08-01 (Hourly Routine Iteration 7)
@@ -369,6 +449,43 @@ This document serves as the active improvement ideas log and architectural roadm
 
 ## 3. Performance & Execution Efficiency
 
+### Idea A-34: The Feature Window Round-Trips Through Python Objects Twice Between Two NumPy Arrays — 90 Scalar `np.clip` Dispatches per Cycle to Fill a Pre-Allocated Tensor
+- **Date Logged:** 2026-08-01 (Hourly Routine Iteration 8)
+- **ROI Tier:** **High ROI** (Rewrite one 50-line function as batched array code; removes ~95% of the feature stage's cost and turns three already-logged ideas from cross-cutting edits into one-liners)
+- **Problem:** The window arrives as a NumPy array and leaves as a NumPy array, and in between it is disassembled into Python floats and reassembled — twice.
+
+  Trace one track through one cycle of `src/velocity_estimator.py`:
+  1. **Line 526** — `hist_g_arr = np.array(list(track['history_global']), dtype=np.float32)`. The deque holds 10 Python tuples of Python floats (built as scalars at lines 89–93 and 118), so `list()` copies the deque and `np.array` parses **30 boxed floats** into a $(10,3)$ array.
+  2. **Lines 529–531** — the only genuinely vectorised step: `dxy`, a $2\times2$ rotation, `local_xy = dxy @ R.T`. Roughly $1\ \mu\text{s}$ of real work.
+  3. **Line 533** — `hist_local = [(-float(local_xy[i, 1]), 0.0, float(local_xy[i, 0])) for i in range(len(local_xy))]`. The $(10,2)$ result is **taken straight back apart** into 10 Python tuples via 20 NumPy-scalar `float()` unboxes, with a literal `0.0` in the middle slot that no consumer ever reads (`_build_window_features` uses only `hist[i][0]` and `hist[i][2]`).
+  4. **Line 373** — `hist = list(history_local)` copies the list a third time.
+  5. **Lines 388–393** — the `is_stopped` check: a Python loop over two frames with `math.hypot`, re-deriving displacements that step 7 is about to compute again.
+  6. **Lines 397–415** — a 10-iteration Python loop with tuple unpacking, and inside it the expensive part: **`np.clip(dx, -0.25, 0.25)` and `np.clip(dy, …)` called on Python scalars** (lines 413–414). Scalar `np.clip` is the slow path — ufunc dispatch, argument parsing, 0-d array construction, and a NumPy scalar back out, roughly $1.3\ \mu\text{s}$ against $\approx 40\ \text{ns}$ for `min(max(...))` or a single batched call. That is **18 dispatches per track**, and at the 5-track ceiling **90 per cycle, 900 per second**, purely to bound two numbers.
+  7. **Line 415** — `features.extend([...])`, building a 40-element Python list of boxed floats.
+  8. **Line 417** — `np.array(features, dtype=np.float32).reshape(1, -1)` parses those 40 boxed floats back into an array.
+  9. **Line 554** — `np.vstack(features_list)` copies all $N$ of the $(1,40)$ arrays into one $(N,40)$ buffer.
+
+  Cost at the 5-track ceiling, per cycle: $\approx 0.12\text{ ms}$ in `np.clip` dispatch alone, $\approx 0.05\text{ ms}$ in the five `np.array`-from-list parses, $\approx 0.08\text{ ms}$ in the line-533 comprehension and the line-397 loop, plus the deque copies and the `vstack` — call it $\mathbf{\approx 0.30\ ms}$ against $\approx 15\ \mu\text{s}$ for the equivalent batched array code. The $(5,40)$ MLP forward it feeds is $\approx 0.1\text{ ms}$, so **the marshalling costs about three times the inference it exists to serve**, and all of it is interpreted bytecode holding the GIL in a process whose asyncio loop must also encode and ship a JPEG inside the same window.
+
+  The irony is structural: `self.x_tensor_preallocated` exists (line 175, Idea 116) to avoid an $800$-byte tensor allocation, and the path that fills it allocates roughly 250 Python float objects and five intermediate arrays to get there. The last 1% was optimised and the first 99% was not.
+
+  This is not covered by anything logged. Idea A-16 is the *shape* the traced graph sees; Idea A-31 is what the graph *contains*; Idea A-20 is OpenCV contiguity in the extraction stage. None of them touch the feature builder.
+- **Proposed Solution:** Keep the window in arrays end to end and build all $N$ rows in one pass.
+  1. **Store the window as an array, not tuples.** Replace each track's `deque` of tuples with a fixed $(\texttt{WINDOW\_SIZE}, 2)$ `float32` ring buffer plus a write index, holding global $x, y$ only (the third slot is the EMA'd $z$, which Idea A-05 shows never reaches the features anyway). Steps 1 and 4 disappear; the tracker writes two floats instead of allocating a tuple.
+  2. **Gather once, transform once.** Build $G$ of shape $(N, T, 2)$ by stacking the live rings, then re-reference every track and every frame in a single matmul:
+     $$L = \big(G - p_{\text{rob}}\big)\,R^{\top}, \qquad R = \begin{bmatrix}\cos\theta & \sin\theta\\ -\sin\theta & \cos\theta\end{bmatrix}$$
+     replacing the per-track version at lines 529–531 with one $(N\cdot T, 2)$ operation.
+  3. **Difference and clamp in bulk.**
+     $$D = \operatorname{clip}\!\big(\operatorname{diff}(L,\ \text{axis}=1,\ \text{prepend}=L[:,:1,:]),\ -0.25,\ +0.25\big)$$
+     — **one** `np.clip` call on an $(N,T,2)$ array in place of 90 scalar dispatches. Apply it *after* Idea A-22's $\Delta t$ rescaling, per that idea's step 3.
+  4. **Interleave with strided writes.** Keep a preallocated `self._feat_buf` of shape $(\texttt{MAX\_OBSTACLES}, 40)$ and fill the four interleaved channels directly — `self._feat_buf[:N, 0::4] = rel[..., 0]`, `[..., 1::4] = rel[..., 1]`, `[..., 2::4] = D[..., 0]`, `[..., 3::4] = D[..., 1]`. Steps 7, 8 and the `vstack` at line 554 all vanish.
+  5. **Vectorise the stop gate.** `is_stopped` becomes a boolean vector over tracks, computed from $D$ that already exists:
+     $$\texttt{stopped} = \bigwedge_{k \in \{T-2,\,T-1\}} \sqrt{D_{:,k,0}^2 + D_{:,k,1}^2} < 0.01$$
+     one `np.hypot` and one `np.all(axis=1)`, replacing the loop at lines 388–393. (Idea A-08 replaces the *criterion*; this replaces the *loop* — they compose, and A-08 becomes a two-line change once the window is an array.)
+  6. **Scale in place and hand the buffer to Torch directly.** `np.subtract(buf, mean, out=buf); np.multiply(buf, inv_scale, out=buf)` removes the two temporaries at line 557, and `torch.from_numpy(self._feat_buf[:N])` then wraps the buffer with **zero copy** — so `self.x_tensor_preallocated` and the `copy_` at line 561 can be deleted outright rather than merely justified.
+  7. Retire `_build_window_features`'s tuple contract, or keep it as a thin shim over the array path for `src/ab_comparison_test.py`.
+- **Expected Benefit:** Cuts the feature stage from $\approx 0.30\text{ ms}$ to $\approx 15\ \mu\text{s}$ per cycle — a **~95% reduction, $\approx 3\text{ ms/s}$ of GIL-held interpreted bytecode removed** from the process that also runs the asyncio broadcast loop — and takes the 900 scalar `np.clip` dispatches per second down to 10. Removes roughly 250 Python object allocations and five array parses per cycle, and lets the `copy_` into the pre-allocated tensor be deleted rather than kept. The larger payoff is structural: once the window is an $(N, T, 2)$ array, **Idea A-18** (Savitzky–Golay) is one `savgol_filter(L, …, axis=1)`, **Idea A-22** (per-pair $\Delta t$ rescaling) is one broadcast divide, and **Idea A-24** (the eleventh history sample) is a ring one slot wider — each currently a change threaded through three separate Python loops.
+
 ### Idea A-31: Traced Graph Is Never Frozen — BatchNorm and Dropout Dispatched as Live Ops in a 40→256→128→64→2 MLP
 - **Date Logged:** 2026-08-01 (Hourly Routine Iteration 7)
 - **ROI Tier:** **High ROI** (One line replacing `torch.jit.trace`; deletes 6 of the graph's 13 dispatched ops, all of which do no inference-time work)
@@ -586,6 +703,34 @@ This document serves as the active improvement ideas log and architectural roadm
 ## 4. Sensor Fusion & Hardware Integration
 *Focus areas: OAK-D vs. Astra Pro depth calibration, YDLidar X3 mounting/scan-matching, IMU slip compensation, and motor driver telemetry.*
 
+### Idea A-35: `self.lidar` Is Assigned and Never Read — a 2 cm Planar Ranger Is Wired In While the Radial Channel Runs on 12 cm Stereo Quantisation Steps
+- **Date Logged:** 2026-08-01 (Hourly Routine Iteration 8)
+- **ROI Tier:** **High ROI** (One bearing-sorted linear scan per cycle over a sensor that is already spinning, already publishing, and already passed into the constructor — attacking the single noisiest input the MLP receives)
+- **Problem:** The module docstring promises it on line 6: *"`YDLidarDriver.get_points_xy()` for LiDAR cluster features."* The constructor takes it as the **second positional argument** (line 142), documents it (line 145), and stores it (line 154). `src/server_x3.py:1152` passes the live driver. Then a grep for `self.lidar` across the whole file returns **one hit — the assignment at line 154.** The sensor is never read. The only thing wearing the "fusion" name in the file is Idea 146's *visual* gate at lines 290–315, which uses YOLO boxes, not LiDAR, and which Idea A-13 shows is disabled by a `pass` at line 313 anyway.
+
+  Meanwhile the channel that fusion would fix is the worst input in the pipeline. The radial coordinate $r_x = Z$ (line 398) comes from passive stereo configured at `THE_400_P` with `stereo.setSubpixel(False)` (`src/oakd_driver.py:221–232`), so **disparity is integer-valued** and depth advances in steps of
+  $$\Delta Z = \frac{Z^2}{f\,B}$$
+  With the OAK-D's $B \approx 0.075\text{ m}$ baseline and $f \approx 442\text{ px}$ at $640\times400$ (a $71.9°$ horizontal FOV), that is:
+
+  | $Z$ | $1.0\text{ m}$ | $1.5\text{ m}$ | $2.0\text{ m}$ | $3.0\text{ m}$ |
+  | :--- | :---: | :---: | :---: | :---: |
+  | $\Delta Z$ | $0.030\text{ m}$ | $0.068\text{ m}$ | $\mathbf{0.121\ m}$ | $0.272\text{ m}$ |
+
+  And the median at line 280 does **not** average this away: a median is an order statistic, so it returns one of the actual samples — a value on the disparity grid. The blob's depth reference therefore *staircases*. At $2.0\text{ m}$ one step is $0.121\text{ m}$, which is **61% of the `dx` channel's entire training spread** of $0.198\text{ m}$ (`scaler_X.scale[2::4]`). A pedestrian walking at $1.4\text{ m/s}$ covers $0.14\text{ m}$ per frame, so the true displacement and the quantisation step are the *same size*: the observed `dx` sequence is not $[0.14, 0.14, 0.14, \ldots]$ but something like $[0.12, 0.00, 0.24, 0.12, 0.12, 0.24, 0.00, \ldots]$. That is broadband, sample-correlated, and structurally identical to the signal — no smoother separates it, which is exactly why Idea A-18's Savitzky–Golay operator is costed against a $0.042\text{ m}$ noise term it does not include.
+
+  The YDLidar X3 is running the whole time: $8\text{ Hz}$, full $360°$, $\pm 2\%$-of-range accuracy — $\approx 0.02\text{ m}$ at $1\text{ m}$, $\approx 0.04\text{ m}$ at $2\text{ m}$ — on a **direct time-of-flight measurement with no dependence on disparity, texture, or baseline**. At $2\text{ m}$ that is $3\text{–}6\times$ better than a single stereo quantisation step, on the axis carrying essentially all of the approach-speed signal. It is also uncorrelated with every stereo failure mode already logged: the floor merging into the blob (Idea A-17), the depth reference migrating between torso and legs (Idea A-33), the range-adaptive area gate inverting (Idea A-10).
+- **Proposed Solution:** Fuse the LiDAR range onto the camera's bearing, inverse-variance weighted, and take the free existence check that falls out.
+  1. **Poll and cluster.** After the centroid extraction at line 442, call `self.lidar.get_points_xy()` (already implemented in `src/drivers_x3.py`). Sort the $\approx 360$ returns by bearing once and split into clusters wherever consecutive ranges differ by more than $0.15\text{ m}$ — a single linear pass, no DBSCAN, well under $100\ \mu\text{s}$.
+  2. **Associate by bearing.** For a depth centroid at body-frame $(r_x, r_y)$ with $\theta_c = \operatorname{atan2}(r_y, r_x)$ and $\rho_C = \lVert(r_x, r_y)\rVert$, accept the LiDAR cluster whose mean bearing is within $\pm 3°$ of $\theta_c$ **and** whose mean range is within $\pm 0.4\text{ m}$ of $\rho_C$ — a window wide enough to survive the staircase being corrected and narrow enough to reject a wall behind the person.
+  3. **Fuse the radial term, keep the camera's bearing.** The camera's angular measurement is good ($\approx 1\text{ px}$ at $f_x = 277$ is $\approx 0.2°$); its range is not. Weight by variance rather than replacing outright:
+     $$\hat\rho = \frac{\sigma_L^{-2}\rho_L + \sigma_C^{-2}\rho_C}{\sigma_L^{-2} + \sigma_C^{-2}}, \qquad \sigma_L \approx 0.02\rho_L, \qquad \sigma_C(Z) = \max\!\left(0.03,\ \frac{Z^2}{fB\sqrt{12}}\right)$$
+     then $(\hat r_x, \hat r_y) = \hat\rho\,(\cos\theta_c,\ \sin\theta_c)$. The $\sqrt{12}$ is the standard-deviation of a uniform quantisation step; the $\max$ keeps the stereo floor honest. The crossover falls near $1.2\text{ m}$: below it the camera keeps most of the weight (where stereo is genuinely good and the LiDAR is close to its self-return band), above it the LiDAR dominates (where the staircase explodes as $Z^2$).
+  4. **Exclude the robot's own body.** `LIDAR_MOUNT_PLAN.md` §1 documents fixed self-returns at $+24°$ and $-18°$, spanning $\approx 0.25\text{–}0.43\text{ m}$ — reject clusters under $0.45\text{ m}$ until the bracket lands, at which point the whole exclusion drops out.
+  5. **Take the free existence check.** A depth blob that finds *no* LiDAR cluster at its bearing for $K = 3$ consecutive frames is almost certainly not a standing person — it is the floor (Idea A-17) or a wall fragment (Idea A-06). Demote it before the `MAX_OBSTACLES = 5` cut at line 319, which directly relieves the slot scarcity both of those ideas have to ration.
+- **Expected Benefit:** Replaces a $\pm 0.121\text{ m}$ quantisation staircase at $2\text{ m}$ — 61% of the `dx` channel's whole training spread, and the same magnitude as a walking pedestrian's true per-frame displacement — with a $\approx 0.04\text{ m}$ measurement, a $3\text{–}6\times$ improvement on the input that carries the approach-speed signal the safety case rests on. Just as important, it changes the *character* of the dominant error: stereo quantisation is broadband and correlated with the signal, so no filter removes it, whereas the residual after fusion is the LiDAR's gait ripple — narrowband at the $\approx 1\text{ Hz}$ step rate and exactly what Idea A-18's smoother is designed to take out.
+
+  **Stated caveat:** the X3 sits at `laser_joint` $z = 0.11\text{ m}$ (`LIDAR_MOUNT_PLAN.md` §1), so it returns shins and ankles, and a walking person's shin-cluster centroid oscillates by $\approx \pm 0.07\text{ m}$ at the step frequency. That ripple is real and must not be sold as zero — but it is periodic and band-limited, unlike the staircase it replaces, and it shrinks further once `LIDAR_MOUNT_PLAN.md` is executed and the beam clears the chassis. The fusion should therefore be gated on a config flag and A/B'd against the camera-only path using the harness already in `src/ab_comparison_test.py` before it becomes the default.
+
 ### Idea A-33: A 0.185 m Mount With a 24.8° Vertical Half-FOV Crops the Pedestrian at the Waist — the Depth Reference Migrates to the Legs and Picks Up Gait
 - **Date Logged:** 2026-08-01 (Hourly Routine Iteration 7)
 - **ROI Tier:** **High ROI** (Reuses the per-row height vector Idea A-17 already precomputes, applied as a selector instead of a rejector; removes a gait-coherent oscillation no smoother in this log can touch)
@@ -757,3 +902,15 @@ This document serves as the active improvement ideas log and architectural roadm
   3. **Fail closed, not silently:** if intrinsics are unavailable, leave the gate disabled and log once, instead of running a projection built from constants that do not describe the sensor.
   Combine with Idea 259 (hoist `detections_fn()` out of the per-contour loop) so the corrected gate costs one call per frame rather than one per contour.
 - **Expected Benefit:** Turns Idea 146 from permanently disabled code into a working person filter, which is the cheapest available route to suppressing the static clutter that currently consumes the $\texttt{MAX\_OBSTACLES} = 5$ budget (the failure Idea A-06 mitigates by ranking). Fixing (1) independently removes a $37\%$ systematic underestimate of every centroid's lateral coordinate $X$ — which propagates directly into the $r_y$ feature and therefore scales predicted lateral velocity $v_y$ by $0.63$, understating exactly the crossing-pedestrian motion the bypass-direction logic depends on.
+
+---
+
+## 5. Log & Prioritization Guidelines
+
+To maintain document readability and prevent log bloat:
+1. **Categorize Immediately**: Place new ideas under their respective domain section (Sections 2–4).
+2. **Assign an ROI Tier**: Grade each idea based on implementation effort vs. runtime impact:
+   - **High ROI**: Low investment (<2 hours), significant gains in CPU/RAM, safety, or accuracy.
+   - **Medium ROI**: Moderate effort (half-day to 1 day), solid architecture or navigation benefits.
+   - **Low ROI**: High effort or minor edge-case improvements.
+3. **Monthly Archiving**: At the end of each month, move completed or historical ideas to the `ideas/` archive folder.
