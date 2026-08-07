@@ -83,6 +83,7 @@ from drivers_x3 import (
 from nav2_client import Nav2Client
 from frontier_explorer import FrontierExplorer
 from velocity_estimator import VelocityEstimator
+from perf_monitor import get_monitor
 from pathlib import Path
 
 # =============================================================================
@@ -1712,6 +1713,19 @@ async def handle_client(websocket):
                         "enabled": enabled
                     }))
 
+                elif msg_type == "get_perf":
+                    # Full metrics breakdown (all latency series + percentiles,
+                    # detection quality proxies, velocity-MLP error stats).
+                    # Calling snapshot() also drives the periodic JSONL logging.
+                    await websocket.send(json.dumps({
+                        "type": "perf_snapshot",
+                        "perf": get_monitor().snapshot(),
+                    }))
+
+                elif msg_type == "reset_perf":
+                    get_monitor().reset()
+                    await websocket.send(json.dumps({"type": "perf_reset", "ok": True}))
+
                 elif msg_type == "set_velocity_model":
                     model_name = data.get("model")
                     if model_name in ("velocity_mlp", "velocity_mlp_finetuned"):
@@ -1724,6 +1738,9 @@ async def handle_client(websocket):
                                     velocity_estimator.model_path = new_path
                                     velocity_estimator._load_model()
                                     velocity_estimator.start()
+                                # Old model's error history would poison the new
+                                # model's live accuracy readout.
+                                get_monitor().reset()
                                 active_velocity_model_name = model_name
                                 await websocket.send(json.dumps({
                                     "type": "velocity_model_changed",
@@ -2080,6 +2097,10 @@ async def broadcast_loop():
                     "fps_oak_depth": (oak.get_depth_fps()
                                       if (oak is not None and getattr(oak, "available", False))
                                       else 0.0),
+                    # Live perception scorecard: detection latency/quality and
+                    # self-supervised velocity-MLP error. Compact dict; the full
+                    # breakdown is available on demand via the "get_perf" command.
+                    "perf": get_monitor().brief(),
                 }
                 websockets.broadcast(connected_clients, orjson_dumps(slow))
 

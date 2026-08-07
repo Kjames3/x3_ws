@@ -524,6 +524,40 @@
                 </div>
             </div>
         </div>
+
+        <!-- Perception scorecard: live latency + accuracy for the OAK detector
+             and the velocity MLP. Detection accuracy uses label-free proxies;
+             MLP error is self-supervised (prediction vs. future world motion). -->
+        <div class="card" id="perf-card" style="margin-top: 0.5rem;">
+            <div class="card-header">
+                <h2><span class="icon">📈</span> Perception Performance</h2>
+                <button id="perf-reset-btn" class="btn"
+                    style="padding: 0.3rem 0.6rem; font-size: 0.75rem; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); cursor: pointer; border-radius: 4px;"
+                    title="Clear accumulated metrics and start a fresh measurement window">
+                    Reset stats
+                </button>
+            </div>
+            <div class="card-body">
+                <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
+                    <div style="flex: 1; min-width: 15rem;">
+                        <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 0.4rem;">
+                            OAK-D Detection
+                        </div>
+                        <div id="perf-det" style="font-family: monospace; font-size: 0.8rem; line-height: 1.6;">
+                            <div class="no-detections">no detection frames yet</div>
+                        </div>
+                    </div>
+                    <div style="flex: 1; min-width: 15rem;">
+                        <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 0.4rem;">
+                            Velocity MLP
+                        </div>
+                        <div id="perf-vel" style="font-family: monospace; font-size: 0.8rem; line-height: 1.6;">
+                            <div class="no-detections">no scored predictions yet</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
         </details>
 
         <!-- Navigation Card -->

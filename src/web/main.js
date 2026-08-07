@@ -1360,6 +1360,63 @@ function sendMessage(data) {
 }
 
 // =================================================================
+// Perception performance scorecard (readout_slow -> data.perf)
+// =================================================================
+// Renders the compact metrics dict from perf_monitor.PerfMonitor.brief().
+// Colour thresholds flag the values that matter operationally: detection
+// falling behind its target rate, boxes losing their depth back-projection,
+// flicker (intermittent misses), and velocity-MLP error growing relative to
+// pedestrian speeds (~1.2 m/s walking).
+function updatePerfPanel(p) {
+    const detEl = document.getElementById('perf-det');
+    const velEl = document.getElementById('perf-vel');
+    if (!detEl || !velEl) return;
+
+    const n = (v, d = 2) => (v === null || v === undefined) ? '—' : Number(v).toFixed(d);
+    const row = (label, value, colour) =>
+        `<div><span style="color: var(--text-secondary);">${label}</span> ` +
+        `<span style="float: right; color: ${colour || 'var(--text-primary)'};">${value}</span></div>`;
+    const grade = (v, warn, bad, invert) => {
+        if (v === null || v === undefined) return 'var(--text-secondary)';
+        const isBad = invert ? v < bad : v > bad;
+        const isWarn = invert ? v < warn : v > warn;
+        return isBad ? '#ef4444' : (isWarn ? '#f59e0b' : '#4ade80');
+    };
+
+    detEl.innerHTML =
+        row('rate', `${n(p.det_hz, 1)} Hz`, grade(p.det_hz, 8, 4, true)) +
+        row('decode p95', `${n(p.det_nn_p95_ms, 1)} ms`, grade(p.det_nn_p95_ms, 30, 60)) +
+        row('end-to-end p95', `${n(p.det_e2e_p95_ms, 1)} ms`, grade(p.det_e2e_p95_ms, 80, 150)) +
+        row('mean confidence', n(p.det_conf_mean, 3), grade(p.det_conf_mean, 0.65, 0.55, true)) +
+        row('boxes / frame', n(p.det_per_frame, 2)) +
+        row('depth valid', `${n(p.det_depth_valid_pct, 1)} %`, grade(p.det_depth_valid_pct, 90, 70, true)) +
+        row('flicker', `${n(p.det_flicker_per_100f, 2)} /100f`, grade(p.det_flicker_per_100f, 2, 6)) +
+        (p.det_labeled
+            ? row('labelled mAP50', n(p.det_labeled.map50, 3), grade(p.det_labeled.map50, 0.5, 0.35, true))
+            : '');
+
+    if (!p.vel_n_scored) {
+        velEl.innerHTML =
+            row('rate', `${n(p.vel_hz, 1)} Hz`, grade(p.vel_hz, 8, 4, true)) +
+            row('cycle p95', `${n(p.vel_cycle_p95_ms, 1)} ms`, grade(p.vel_cycle_p95_ms, 70, 100)) +
+            row('inference p95', `${n(p.vel_infer_p95_ms, 2)} ms`, grade(p.vel_infer_p95_ms, 5, 15)) +
+            `<div class="no-detections" style="margin-top:0.3rem;">accuracy pending — needs a tracked obstacle</div>`;
+        return;
+    }
+
+    velEl.innerHTML =
+        row('rate', `${n(p.vel_hz, 1)} Hz`, grade(p.vel_hz, 8, 4, true)) +
+        row('cycle p95', `${n(p.vel_cycle_p95_ms, 1)} ms`, grade(p.vel_cycle_p95_ms, 70, 100)) +
+        row('inference p95', `${n(p.vel_infer_p95_ms, 2)} ms`, grade(p.vel_infer_p95_ms, 5, 15)) +
+        row('scored samples', p.vel_n_scored) +
+        row('RMSE', `${n(p.vel_rmse, 3)} m/s`, grade(p.vel_rmse, 0.25, 0.5)) +
+        row('MAE vx / vy', `${n(p.vel_mae_vx, 3)} / ${n(p.vel_mae_vy, 3)}`) +
+        row('speed bias', `${n(p.vel_speed_bias, 3)} m/s`) +
+        row('heading MAE', `${n(p.vel_heading_mae_deg, 1)}°`, grade(p.vel_heading_mae_deg, 20, 45)) +
+        row('R²', n(p.vel_r2, 3), grade(p.vel_r2, 0.5, 0.2, true));
+}
+
+// =================================================================
 // Binary Frame Handling (Steps 1, 3)
 // =================================================================
 function handleBinaryFrame(buf) {
@@ -1901,6 +1958,7 @@ function handleMessage(data) {
             }
         }
 
+        if (data.perf) updatePerfPanel(data.perf);
         if (data.nav) updateNavStatus(data.nav);
         if (data.slam_active !== undefined) updateSlamStatus(data.slam_active);
         if (data.frontier) updateFrontierStatus(data.frontier);
@@ -2700,6 +2758,13 @@ if (elements.velocityModelSelect) {
         if (state.ws && state.connected) {
             sendMessage({ type: 'set_velocity_model', model: e.target.value });
         }
+    });
+}
+
+const perfResetBtn = document.getElementById('perf-reset-btn');
+if (perfResetBtn) {
+    perfResetBtn.addEventListener('click', () => {
+        if (state.ws && state.connected) sendMessage({ type: 'reset_perf' });
     });
 }
 

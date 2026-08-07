@@ -41,6 +41,8 @@ import time
 import numpy as np
 import cv2
 
+from perf_monitor import get_monitor
+
 logger = logging.getLogger("x3_server")
 
 try:
@@ -140,7 +142,8 @@ class OakDCamera:
         self._last_depth_time = 0.0
         self._latest_imu = None
         self._latest_detections = []
-        self.depth_fps = 0.0              # live depth/stereo capture rate (~1s window)
+        self._nn_tensor_ok = True         # last NN packet's tensor was readable
+        self.depth_fps = 0.0            # live depth/stereo capture rate (~1s window)
 
         # CAM_A intrinsics at (nn_w, nn_h), filled once the device is up.
         self._fx = self._fy = self._cx = self._cy = None
@@ -463,13 +466,41 @@ class OakDCamera:
         return (in_range > 0.9 and 1 <= n_hits <= 300), n_hits
 
     def _process_nn(self, nndata):
-        """Host-side decode of the yolo26 [85, 6300] output + depth back-projection."""
+        """
+        Host-side decode of the yolo26 [85, 6300] output + depth back-projection.
+
+        Wrapper records perf metrics for every exit path (including the early
+        returns that publish an empty detection list — an empty frame is a data
+        point for the detector-quality proxies, not a gap).
+        """
+        perf = get_monitor()
+        # Device -> host transport latency, when depthai exposes the timestamp.
+        e2e_ms = None
+        try:
+            e2e_ms = (dai.Clock.now() - nndata.getTimestamp()).total_seconds() * 1000.0
+            if not (0.0 <= e2e_ms < 5000.0):
+                e2e_ms = None
+        except Exception:
+            e2e_ms = None
+        t0 = time.perf_counter()
+        self._nn_tensor_ok = True
+        try:
+            self._process_nn_impl(nndata)
+        finally:
+            perf.observe("oak.nn_decode_ms", (time.perf_counter() - t0) * 1000.0)
+            # Skip frames whose tensor could not be read at all — those are a
+            # transport fault, not a "the detector saw nothing" observation.
+            if self._nn_tensor_ok:
+                perf.record_detection_frame(self.get_spatial_detections(), e2e_ms=e2e_ms)
+
+    def _process_nn_impl(self, nndata):
         try:
             if self.nn_out_name:
                 raw = np.array(nndata.getLayerFp16(self.nn_out_name), dtype=np.float32)
             else:
                 raw = np.array(nndata.getFirstLayerFp16(), dtype=np.float32)
         except Exception:
+            self._nn_tensor_ok = False
             return
         if raw.size < 85 * 6300:
             with self._lock:

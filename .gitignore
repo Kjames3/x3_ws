@@ -28,3 +28,5 @@ archive/
 # Cache directories and cache files
 .cache/
 *.cache
+# Runtime perf snapshots (perf_monitor.py) — regenerated on every run
+src/logs/perf/

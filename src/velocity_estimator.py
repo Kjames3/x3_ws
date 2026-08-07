@@ -21,6 +21,8 @@ import math
 from pathlib import Path
 from collections import deque
 
+from perf_monitor import get_monitor
+
 logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -418,10 +420,12 @@ class VelocityEstimator:
 
     def _inference_loop(self):
         dt = 1.0 / INFER_HZ
+        perf = get_monitor()
         logger.info("VelocityEstimator: inference loop started")
 
         while self._running:
             t0 = time.monotonic()
+            perf.mark("vel.cycle", t0)
 
             try:
                 # 1. Get depth and raw depth frames
@@ -439,7 +443,8 @@ class VelocityEstimator:
                         continue
 
                 # 2. Extract local centroids (relative to camera/robot)
-                centroids_m = self._extract_depth_centroids(depth_frame, raw_depth_frame)
+                with perf.timer("vel.centroid_ms"):
+                    centroids_m = self._extract_depth_centroids(depth_frame, raw_depth_frame)
 
                 # 3. Query robot pose for global mapping & slip compensation (Idea 1 & 11)
                 robot_data = None
@@ -561,7 +566,7 @@ class VelocityEstimator:
                     self.x_tensor_preallocated[:num_tracks].copy_(torch.from_numpy(features_scaled))
                     x_tensor = self.x_tensor_preallocated[:num_tracks]
 
-                    with torch.no_grad():
+                    with torch.no_grad(), perf.timer("vel.infer_ms"):
                         pred_scaled = self._model(x_tensor).numpy()
 
                     # Inverse transform predictions: shape (N, 2)
@@ -603,6 +608,21 @@ class VelocityEstimator:
 
                 with self._lock:
                     self._estimates = estimates
+
+                # 5b. Feed the perf monitor. It stores each track's WORLD-frame
+                # position alongside the prediction made for that instant, and
+                # scores the prediction ~LABEL_HORIZON_S later against the
+                # central difference of the world positions on either side —
+                # self-supervised ground truth, no annotation needed. Zero-velocity
+                # outputs (gated / stopped tracks) are fed too, so false zeros
+                # show up in the error just like wrong magnitudes.
+                for est in estimates:
+                    track = tracks.get(est['id'])
+                    if track is None:
+                        continue
+                    gx, gy = track['centroid_global'][:2]
+                    perf.record_velocity_sample(est['id'], t0, gx, gy, rtheta_rob,
+                                                est['vx'], est['vy'])
 
                 # 6. Print calculated velocities (throttled to 2Hz)
                 if self.estimation_enabled and estimates:
@@ -664,6 +684,7 @@ class VelocityEstimator:
 
             # Sleep remainder of cycle
             elapsed = time.monotonic() - t0
+            perf.observe("vel.cycle_ms", elapsed * 1000.0)
             sleep_t = max(0.001, dt - elapsed)
             time.sleep(sleep_t)
 
