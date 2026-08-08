@@ -36,6 +36,48 @@ MIN_BLOB_AREA = 500         # pixels — ignore tiny depth blobs
 MAX_OBSTACLES = 5           # track at most N obstacles simultaneously
 MAX_RANGE_M   = 5.0         # ignore detections beyond this distance
 
+# Range within which velocity is actually estimated. Must cover the consumer's
+# time-to-collision horizon: ab_comparison_test uses TTC_THRESHOLD = 3.0 s, so at a
+# 1.4 m/s closing speed the estimator needs to report motion from ~4 m out. This was
+# previously 1.8 m, which force-zeroed the velocity of every approaching pedestrian
+# until they were ~1.3 s from contact and left the predictive/TTC lane permanently
+# starved (stationary obstacles still worked, since those use proximity, not TTC).
+# 4.0 m matches the depth segmentation range gate below.
+VELOCITY_MAX_RANGE_M = 4.0
+
+# Depth segmentation range gate (metres).
+DEPTH_NEAR_M  = 0.5
+DEPTH_FAR_M   = 4.0
+
+# Track confirmation: a track must be matched this many frames before it is reported.
+MIN_VISIBLE_FRAMES = 3
+
+# --- Ground / structure rejection -------------------------------------------------
+# Camera optical centre height above the floor, from yahboomcar_X3.urdf:
+#   base_footprint -> base_link  z = 0.0815
+#   base_link      -> oak-d-base-frame  z = 0.185   (rpy 0 0 0, i.e. no tilt)
+CAM_HEIGHT_M = 0.0815 + 0.185      # 0.2665 m
+# Keep only depth pixels whose height above the floor falls in this band. Removes the
+# floor (which otherwise merges into every obstacle contour and drags its centroid
+# toward a near-stationary average) and the ceiling/overhangs.
+HEIGHT_BAND_MIN_M = 0.15
+HEIGHT_BAND_MAX_M = 2.00
+# Reject a contour whose metric width exceeds this — walls and long furniture runs
+# span far wider than any person, and their centroid is meaningless as an obstacle.
+# Deliberately generous (a single person is ~0.5 m): two people walking abreast merge
+# into one contour at ~1.2 m, and dropping a group would be far worse than keeping the
+# occasional wall, which the LiDAR wall-detection handles independently anyway.
+MAX_BLOB_WIDTH_M  = 2.00
+# Reject a contour spanning more than this much depth — a compact obstacle is roughly
+# fronto-parallel, whereas a wall receding from the camera covers a large depth range.
+MAX_BLOB_DEPTH_SPAN_M = 1.50
+
+# Fallback depth intrinsics (Orbbec Astra Pro, 640x480, fx≈fy≈554) used only when the
+# active depth source cannot report its own calibration. The OAK-D Lite's real values
+# differ by ~1.6x, so these are a last resort, not a default.
+FALLBACK_FX = 554.0
+FALLBACK_FY = 554.0
+
 
 class ObstacleTracker:
     """
@@ -174,7 +216,60 @@ class VelocityEstimator:
         # Pre-allocate input tensor shape (Idea 116)
         self.x_tensor_preallocated = torch.zeros((MAX_OBSTACLES, 40), dtype=torch.float32)
 
+        # Depth intrinsics for the frame we actually process (post-downsample),
+        # resolved from the live source each cycle and cached by (source, shape).
+        self._intr_cache_key = None
+        self._intr = None            # (fx, fy, cx, cy) for the downsampled frame
+        self._intr_warned = False
+
         self._load_model()
+
+    def _resolve_intrinsics(self, cam_src, shape):
+        """Return (fx, fy, cx, cy) valid for a depth frame of `shape` (h, w).
+
+        Asks the active source for its own calibration (OakDCamera.get_depth_intrinsics)
+        and rescales it to `shape`, which is the 2x-downsampled frame this module works
+        on. Falls back to Astra constants only if the source cannot report calibration.
+        """
+        h, w = shape[:2]
+        key = (id(cam_src), w, h)
+        if key == self._intr_cache_key and self._intr is not None:
+            return self._intr
+
+        fx = fy = cx = cy = None
+        getter = getattr(cam_src, "get_depth_intrinsics", None)
+        if callable(getter):
+            try:
+                intr = getter()
+                if intr:
+                    i_fx, i_fy, i_cx, i_cy, i_w, i_h = intr
+                    # Rescale from the resolution calibration was read at to ours.
+                    sx = float(w) / float(i_w)
+                    sy = float(h) / float(i_h)
+                    fx, fy = i_fx * sx, i_fy * sy
+                    cx, cy = i_cx * sx, i_cy * sy
+            except Exception as e:
+                logger.warning(f"VelocityEstimator: get_depth_intrinsics failed: {e}")
+
+        if fx is None:
+            # No calibration available — scale the Astra defaults from 640x480.
+            fx = FALLBACK_FX * (w / 640.0)
+            fy = FALLBACK_FY * (h / 480.0)
+            cx, cy = w / 2.0, h / 2.0
+            if not self._intr_warned:
+                self._intr_warned = True
+                logger.warning(
+                    f"VelocityEstimator: depth source exposes no intrinsics; falling back "
+                    f"to Astra defaults scaled to {w}x{h} (fx={fx:.1f} fy={fy:.1f}). "
+                    f"Lateral velocity may be biased."
+                )
+        else:
+            logger.info(f"VelocityEstimator: depth intrinsics @ {w}x{h} "
+                        f"fx={fx:.1f} fy={fy:.1f} cx={cx:.1f} cy={cy:.1f}")
+
+        self._intr = (float(fx), float(fy), float(cx), float(cy))
+        self._intr_cache_key = key
+        return self._intr
 
     def _load_model(self):
         try:
@@ -203,7 +298,7 @@ class VelocityEstimator:
         except Exception as e:
             logger.error(f"VelocityEstimator: failed to load model {self.model_path}: {e}")
 
-    def _extract_depth_centroids(self, depth_frame, raw_depth_frame=None):
+    def _extract_depth_centroids(self, depth_frame, raw_depth_frame=None, intr=None):
         """
         Extract obstacle centroids. If raw_depth_frame is provided, we perform
         thresholding directly on the raw physical depth values in meters to avoid 
@@ -232,9 +327,25 @@ class VelocityEstimator:
             # zero out alternating rows/cols here — that leaves isolated, non-adjacent
             # set pixels that the 5x5 MORPH_OPEN erosion below erases completely,
             # making every obstacle beyond 1.5 m invisible. Keep the region contiguous.
-            far_mask_ds = (raw_depth_frame >= 1.5) & (raw_depth_frame <= 4.0)
+            far_mask_ds = (raw_depth_frame >= 1.5) & (raw_depth_frame <= DEPTH_FAR_M)
             mask[far_mask_ds] = 255
-            
+
+            # Ground-plane / ceiling rejection. Without this the mask is a pure range
+            # gate, so the floor in front of the robot is "obstacle" and merges into
+            # every contour — the resulting centroid is a floor+person average that
+            # barely moves when the person walks, suppressing the very motion we are
+            # trying to measure. Back-project each row to a metric height and keep only
+            # the band a person occupies. The camera has no tilt (URDF rpy 0 0 0), so
+            # height depends only on the row and the depth at that pixel.
+            if intr is not None:
+                _fx_i, _fy_i, _cx_i, _cy_i = intr
+                rows = np.arange(mask.shape[0], dtype=np.float32).reshape(-1, 1)
+                # Optical Y is +down, so height above floor = cam height - y_metric.
+                y_metric = (rows - _cy_i) * raw_depth_frame / _fy_i
+                height = CAM_HEIGHT_M - y_metric
+                in_band = (height >= HEIGHT_BAND_MIN_M) & (height <= HEIGHT_BAND_MAX_M)
+                mask[~in_band] = 0
+
             # Morphological cleanup
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel)
@@ -254,10 +365,18 @@ class VelocityEstimator:
                 cy_i = min(int(cy_tmp), raw_depth_frame.shape[0] - 1)
                 cx_i = min(int(cx_tmp), raw_depth_frame.shape[1] - 1)
                 z_ref = float(raw_depth_frame[cy_i, cx_i]) if not np.isnan(raw_depth_frame[cy_i, cx_i]) else 1.5
-                z_ref = max(0.5, min(4.0, z_ref))
+                z_ref = max(DEPTH_NEAR_M, min(DEPTH_FAR_M, z_ref))
                 adaptive_min_area = (MIN_BLOB_AREA / 4.0) * (1.5 / z_ref) ** 2
                 if area < adaptive_min_area:
                     continue
+
+                # Structure rejection: discard contours too wide to be a person-sized
+                # obstacle (walls, furniture runs). Metric width is scale-invariant, so
+                # one threshold works at every range.
+                if intr is not None:
+                    blob_width_m = w_b_tmp * z_ref / intr[0]
+                    if blob_width_m > MAX_BLOB_WIDTH_M:
+                        continue
                 M = cv2.moments(cnt)
                 if M['m00'] == 0:
                     continue
@@ -271,21 +390,38 @@ class VelocityEstimator:
                 
                 depth_slice = raw_depth_frame[y_b:y_b+h_b, x_b:x_b+w_b]
                 depth_vals = depth_slice[cnt_mask == 255]
-                valid_depths = depth_vals[(depth_vals >= 0.5) & (depth_vals <= 4.0) & (~np.isnan(depth_vals))]
-                
+                valid_depths = depth_vals[(depth_vals >= DEPTH_NEAR_M) & (depth_vals <= DEPTH_FAR_M)
+                                          & (~np.isnan(depth_vals))]
+
                 if len(valid_depths) > 0:
                     # Decimate large depth arrays to speed up sorting (Idea 52)
                     if len(valid_depths) > 200:
                         valid_depths = valid_depths[::len(valid_depths) // 200]
-                    Z = float(np.median(valid_depths))
+                    # Reject contours spanning a large depth range — a compact obstacle
+                    # is roughly fronto-parallel, a wall receding from the camera is not.
+                    if len(valid_depths) >= 8:
+                        d_lo, d_hi = np.percentile(valid_depths, [5, 95])
+                        if float(d_hi - d_lo) > MAX_BLOB_DEPTH_SPAN_M:
+                            continue
+                    # 25th percentile, not median: bias to the nearer surface so any
+                    # background still inside the contour does not push Z (and the X/Y
+                    # that scale with it) too far out. Matches OakDCamera._locate.
+                    Z = float(np.percentile(valid_depths, 25))
                 else:
-                    Z = 1.0  # fallback if no valid depth
-                
-                # Convert pixel centroid to physical metres using camera model
-                # Astra Pro SC: 640x480, fx ≈ 554. Halved due to downsampling (Idea 81 & 136).
-                fx = 277.0
-                x_m = (cx - w / 2.0) * Z / fx
-                y_m = (cy - h / 2.0) * Z / fx
+                    continue  # no usable depth — drop rather than invent Z = 1.0
+
+                # Convert pixel centroid to metres using the real depth intrinsics for
+                # this frame (already rescaled for the 2x downsample). fx and fy differ
+                # substantially on the OAK-D Lite because its preview is squeezed
+                # anisotropically, so they must not be shared.
+                if intr is not None:
+                    fx_i, fy_i, cx_i_pp, cy_i_pp = intr
+                else:
+                    fx_i = FALLBACK_FX * (w / 640.0)
+                    fy_i = FALLBACK_FY * (h / 480.0)
+                    cx_i_pp, cy_i_pp = w / 2.0, h / 2.0
+                x_m = (cx - cx_i_pp) * Z / fx_i
+                y_m = (cy - cy_i_pp) * Z / fy_i
                 
                 # Visual-LiDAR Fusion Gating (Idea 146)
                 if self.detections_fn is not None:
@@ -438,8 +574,14 @@ class VelocityEstimator:
                         time.sleep(max(0.001, (1.0 / INFER_HZ) - elapsed))
                         continue
 
-                # 2. Extract local centroids (relative to camera/robot)
-                centroids_m = self._extract_depth_centroids(depth_frame, raw_depth_frame)
+                # 2. Extract local centroids (relative to camera/robot).
+                # Resolve intrinsics for the frame we will actually process — the raw
+                # frame is downsampled 2x inside _extract_depth_centroids.
+                intr = None
+                if raw_depth_frame is not None and raw_depth_frame.size > 0:
+                    ds_shape = (raw_depth_frame.shape[0] // 2, raw_depth_frame.shape[1] // 2)
+                    intr = self._resolve_intrinsics(cam_src, ds_shape)
+                centroids_m = self._extract_depth_centroids(depth_frame, raw_depth_frame, intr=intr)
 
                 # 3. Query robot pose for global mapping & slip compensation (Idea 1 & 11)
                 robot_data = None
@@ -478,11 +620,14 @@ class VelocityEstimator:
 
                 for tid, track in tracks.items():
                     # Filter out tracks that do not satisfy the track initiation gate (Idea 109)
-                    if track.get('visible_count', 1) < 3:
+                    if track.get('visible_count', 1) < MIN_VISIBLE_FRAMES:
                         continue
 
-                    # Skip tracks that are beyond the proximity threshold — they contribute zero to speed scaling
-                    if track['centroid'][2] > 1.8:
+                    # Beyond the estimation range there is no usable depth, so report
+                    # the track's position with zero velocity rather than guessing.
+                    # NOTE: this threshold must stay >= the consumer's TTC horizon —
+                    # see VELOCITY_MAX_RANGE_M.
+                    if track['centroid'][2] > VELOCITY_MAX_RANGE_M:
                         cx, cy, cz = track['centroid']
                         estimates.append({
                             'id':    tid,
@@ -492,6 +637,7 @@ class VelocityEstimator:
                             'vx':    0.0,
                             'vy':    0.0,
                             'speed': 0.0,
+                            'conf':  round(min(1.0, track.get('visible_count', 0) / WINDOW_SIZE), 3),
                         })
                         continue
 
@@ -505,6 +651,7 @@ class VelocityEstimator:
                             'vx':    0.0,
                             'vy':    0.0,
                             'speed': 0.0,
+                            'conf':  round(min(1.0, track.get('visible_count', 0) / WINDOW_SIZE), 3),
                         })
                         continue
 
@@ -519,6 +666,7 @@ class VelocityEstimator:
                             'vx':    0.0,
                             'vy':    0.0,
                             'speed': 0.0,
+                            'conf':  round(min(1.0, track.get('visible_count', 0) / WINDOW_SIZE), 3),
                         })
                         continue
 
@@ -543,6 +691,7 @@ class VelocityEstimator:
                             'vx':    0.0,
                             'vy':    0.0,
                             'speed': 0.0,
+                            'conf':  round(min(1.0, track.get('visible_count', 0) / WINDOW_SIZE), 3),
                         })
                         continue
 
@@ -576,14 +725,23 @@ class VelocityEstimator:
                         cx, cy, cz = tracks[tid]['centroid']
                         visible_count = tracks[tid].get('visible_count', WINDOW_SIZE)
                         conf = min(1.0, visible_count / WINDOW_SIZE)
+                        # Report the velocity as estimated. Previously it was multiplied
+                        # by conf, which attenuated exactly the case that matters most: a
+                        # pedestrian walking into view is by definition a NEW track, so
+                        # its first reported speed was scaled by 3/10 and only reached
+                        # full weight after ~1 s — by which time an approaching person
+                        # has already closed most of the reaction distance. Confidence is
+                        # now a separate field for consumers to gate on; the
+                        # MIN_VISIBLE_FRAMES check above remains the admission test.
                         estimates.append({
                             'id':    tid,
                             'x':     round(cx, 3),
                             'y':     round(cy, 3),
                             'z':     round(cz, 3),
-                            'vx':    round(vx * conf, 3),
-                            'vy':    round(vy * conf, 3),
-                            'speed': round(speed * conf, 3),
+                            'vx':    round(vx, 3),
+                            'vy':    round(vy, 3),
+                            'speed': round(speed, 3),
+                            'conf':  round(conf, 3),
                         })
 
                 # Idea 152: clamp velocity change between frames to max human acceleration (3 m/s²)

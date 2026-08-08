@@ -57,6 +57,10 @@ MIN_ANGULAR_SPEED = 0.12   # rad/s
 
 SEGMENT_TIMEOUT  = 35.0    # seconds (4m / 0.20 m/s = 20 s + buffer for driver init)
 ROTATION_TIMEOUT = 30.0    # seconds — 180° at 0.50 rad/s = ~6 s; 30 s gives ample margin
+# Wall-clock stall ceiling, as a multiple of the segment/rotation timeout. The normal
+# timeout is suspended while the robot is paused for an obstacle; this one is not, so a
+# permanently-blocked run still terminates instead of hanging until a manual cancel.
+STALL_TIMEOUT_FACTOR = 3.0
 SETTLE_DURATION  = 1.0     # seconds between segments
 LOG_HZ           = 10      # rows per second written to CSV
 
@@ -938,9 +942,18 @@ class ABComparisonTest(Node):
                 self.state_elapsed_time += dt_state
 
             timeout = ROTATION_TIMEOUT if self.state in (self.ROTATE_180, self.ROTATE_HOME) else SEGMENT_TIMEOUT
-            if self.state_elapsed_time > timeout:
+            # Hard wall-clock ceiling. state_elapsed_time above is paused while the
+            # robot is blocked, which is intentional (waiting for a pedestrian to
+            # clear should not burn the segment budget) — but it also means a robot
+            # that stays paused indefinitely (e.g. the operator standing on the start
+            # mark) could never time out at all. This ceiling always accrues.
+            wall_elapsed = now - self.state_start_time
+            if self.state_elapsed_time > timeout or wall_elapsed > timeout * STALL_TIMEOUT_FACTOR:
+                reason = ("stalled/blocked" if self.state_elapsed_time <= timeout
+                          else "active-motion")
                 self.get_logger().error(
-                    f"Timeout in state {self._STATE_NAMES[self.state]}! Stopping."
+                    f"Timeout ({reason}) in state {self._STATE_NAMES[self.state]} "
+                    f"after {wall_elapsed:.1f}s wall / {self.state_elapsed_time:.1f}s active! Stopping."
                 )
                 self._stop_robot()
                 self._csv_logger.save()
@@ -964,6 +977,13 @@ class ABComparisonTest(Node):
                 )
                 self.state = self.SETTLE_1
                 self.state_start_time = now
+                # Clear pause/bypass state on the way out. _update_bypass_offset is not
+                # called in the settle/rotate states, so a True is_paused left over from
+                # the drive leg would persist and suspend the next state's timeout.
+                self.is_paused = False
+                self.target_lateral_offset = 0.0
+                self.last_vy_cmd = 0.0
+                self.blocked_time = 0.0
                 return
 
             # Update holonomic bypass state
@@ -1171,6 +1191,12 @@ class ABComparisonTest(Node):
                 )
                 self.state = self.SETTLE_3
                 self.state_start_time = now
+                # Same as the WP-B arrival: don't carry a stale pause into SETTLE_3 /
+                # ROTATE_HOME, where nothing would ever clear it.
+                self.is_paused = False
+                self.target_lateral_offset = 0.0
+                self.last_vy_cmd = 0.0
+                self.blocked_time = 0.0
                 return
 
             # Update holonomic bypass state
@@ -1347,7 +1373,12 @@ class ABComparisonTest(Node):
                     )
                     self._csv_logger.save()
                     self.state = self.DONE
-                    rclpy.shutdown()
+                    # Do NOT call rclpy.shutdown() here — shutting the context down
+                    # from inside a timer callback under rclpy.spin() deadlocks: the
+                    # call never returns, sys.exit() below is never reached, and the
+                    # process survives even SIGTERM (only the GUI cancel's SIGKILL
+                    # fallback ends it). Raise SystemExit and let main() shut down
+                    # after spin() has unwound.
                     sys.exit(0)
 
             dt = now - self.last_time
@@ -1411,10 +1442,12 @@ def main():
         distance=args.distance,
         repeat=args.repeat,
     )
+    exit_code = 0
     try:
         rclpy.spin(node)
-    except SystemExit:
-        pass
+    except SystemExit as e:
+        # Raised by the state machine on run completion (0) or segment timeout (1).
+        exit_code = e.code if isinstance(e.code, int) else 0
     except KeyboardInterrupt:
         node._stop_robot()
         node._csv_logger.save()
@@ -1424,6 +1457,13 @@ def main():
             node.destroy_node()
         except Exception:
             pass
+        # Shut the context down here, outside the callback, where it is safe.
+        try:
+            if rclpy.ok():
+                rclpy.shutdown()
+        except Exception:
+            pass
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

@@ -54,6 +54,10 @@ except Exception as _exc:  # pragma: no cover - import guard
 DEPTH_MIN_M = 0.3
 DEPTH_MAX_M = 5.0
 
+# Mono camera resolution (MonoCameraProperties.SensorResolution.THE_400_P). Depth in
+# the stereo-only fallback is aligned to a mono socket and output at this size.
+MONO_W, MONO_H = 640, 400
+
 # Static transform oak_rgb_camera_optical_frame -> base_link (from the URDF):
 # OAK mounts at base_link x=0.0435, z=0.185; optical convention X right, Y down,
 # Z forward. So base_x = MOUNT_X + z, base_y = -x, base_z = MOUNT_Z - y.
@@ -144,6 +148,10 @@ class OakDCamera:
 
         # CAM_A intrinsics at (nn_w, nn_h), filled once the device is up.
         self._fx = self._fy = self._cx = self._cy = None
+        # Intrinsics of the depth frame itself (socket/size depend on the pipeline
+        # variant), exposed via get_depth_intrinsics() for metric back-projection.
+        self._depth_fx = self._depth_fy = self._depth_cx = self._depth_cy = None
+        self._depth_intr_size = None      # (w, h) the depth intrinsics were read at
         self._logged_nn = False
         self._decode_mode = None          # locked (reshape, has_obj) once identified
 
@@ -304,8 +312,7 @@ class OakDCamera:
                     self.available = True
                     self.spatial_active = with_spatial
                     backoff = 1.0
-                    if with_spatial:
-                        self._read_intrinsics(device)
+                    self._read_intrinsics(device, with_spatial)
                     logger.info(f"OakDCamera: connected (USB {self.usb_speed}) — depth + imu"
                                 + ("" if economy else " + stereo")
                                 + (" + host-decoded detections" if with_spatial else "")
@@ -377,16 +384,47 @@ class OakDCamera:
         self.available = False
         self.spatial_active = False
 
-    def _read_intrinsics(self, device):
+    def _read_intrinsics(self, device, with_spatial=True):
         try:
             calib = device.readCalibration()
-            M = calib.getCameraIntrinsics(dai.CameraBoardSocket.CAM_A, self.nn_w, self.nn_h)
-            self._fx, self._fy = float(M[0][0]), float(M[1][1])
-            self._cx, self._cy = float(M[0][2]), float(M[1][2])
-            logger.info(f"OakDCamera: CAM_A intrinsics @ {self.nn_w}x{self.nn_h} "
-                        f"fx={self._fx:.1f} fy={self._fy:.1f} cx={self._cx:.1f} cy={self._cy:.1f}")
+            if with_spatial:
+                M = calib.getCameraIntrinsics(dai.CameraBoardSocket.CAM_A, self.nn_w, self.nn_h)
+                self._fx, self._fy = float(M[0][0]), float(M[1][1])
+                self._cx, self._cy = float(M[0][2]), float(M[1][2])
+                logger.info(f"OakDCamera: CAM_A intrinsics @ {self.nn_w}x{self.nn_h} "
+                            f"fx={self._fx:.1f} fy={self._fy:.1f} cx={self._cx:.1f} cy={self._cy:.1f}")
+
+            # Intrinsics for the *depth* frame specifically. In spatial mode depth is
+            # aligned to CAM_A and output at the NN size, so it shares CAM_A's numbers.
+            # In the stereo-only fallback depth is aligned to a mono socket at the mono
+            # resolution, where CAM_A's intrinsics do NOT apply (different lens/FOV).
+            if with_spatial:
+                d_socket = dai.CameraBoardSocket.CAM_A
+                d_w, d_h = self.nn_w, self.nn_h
+            else:
+                d_socket = (dai.CameraBoardSocket.CAM_B if self.align_depth_to_left
+                            else dai.CameraBoardSocket.CAM_C)
+                d_w, d_h = MONO_W, MONO_H
+            Md = calib.getCameraIntrinsics(d_socket, d_w, d_h)
+            with self._lock:
+                self._depth_fx, self._depth_fy = float(Md[0][0]), float(Md[1][1])
+                self._depth_cx, self._depth_cy = float(Md[0][2]), float(Md[1][2])
+                self._depth_intr_size = (d_w, d_h)
+            logger.info(f"OakDCamera: depth intrinsics @ {d_w}x{d_h} "
+                        f"fx={self._depth_fx:.1f} fy={self._depth_fy:.1f} "
+                        f"cx={self._depth_cx:.1f} cy={self._depth_cy:.1f}")
         except Exception as e:
             logger.error(f"OakDCamera: readCalibration failed: {e}")
+
+    def get_depth_intrinsics(self):
+        """(fx, fy, cx, cy, w, h) for the frame returned by get_raw_depth_frame(),
+        or None if calibration has not been read yet. Consumers that downsample must
+        scale these by the same factor."""
+        with self._lock:
+            if self._depth_fx is None or self._depth_intr_size is None:
+                return None
+            return (self._depth_fx, self._depth_fy, self._depth_cx, self._depth_cy,
+                    self._depth_intr_size[0], self._depth_intr_size[1])
 
     # ------------------------------------------------------------------ processing
     def _process_depth(self, depth_mm):
