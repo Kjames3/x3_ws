@@ -678,11 +678,16 @@ class VelocityEstimator:
                 mean_dt = sum(self._cycle_times) / len(self._cycle_times)
                 if mean_dt > dt * 1.35 and (t0 - self._rate_warn_time) > 30.0:
                     self._rate_warn_time = t0
+                    upd = self._update_times
+                    mean_upd = (sum(upd) / len(upd)) if upd else mean_dt
                     logger.warning(
                         f"VelocityEstimator: loop running at {1.0/mean_dt:.1f} Hz vs "
-                        f"target {INFER_HZ} Hz — predicted speeds are inflated by "
-                        f"~{mean_dt/dt:.2f}x. Stale depth frames skipped so far: "
-                        f"{self._stale_frames}")
+                        f"target {INFER_HZ} Hz. Displacements are being rescaled by "
+                        f"{dt / mean_upd:.2f}x to keep predicted speed correct, but "
+                        f"the {WINDOW_SIZE}-frame window now spans "
+                        f"{WINDOW_SIZE * mean_upd:.1f} s, so reaction to a new "
+                        f"pedestrian is correspondingly delayed. Stale depth frames "
+                        f"skipped so far: {self._stale_frames}")
 
             try:
                 # 1. Get depth and raw depth frames
