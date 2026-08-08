@@ -134,9 +134,9 @@ class FrontierExplorer:
         with self._lock:
             return {
                 "frontier_state":     self._state,
-                "frontiers_found":    self._frontiers_found,
-                "frontiers_visited":  self._frontiers_visited,
-                "current_goal":       list(self._current_goal) if self._current_goal else None,
+                "frontiers_found":    int(self._frontiers_found),
+                "frontiers_visited":  int(self._frontiers_visited),
+                "current_goal":       [float(v) for v in self._current_goal] if self._current_goal is not None else None,
             }
 
     # ------------------------------------------------------------------
