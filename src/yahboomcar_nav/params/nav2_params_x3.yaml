@@ -58,6 +58,19 @@ amcl:
     save_pose_rate: 0.5
     sigma_hit: 0.2
     tf_broadcast: true
+    # Seed the filter at the map origin instead of waiting for an /initialpose
+    # message. slam_toolbox starts the map frame at the robot's pose when mapping
+    # began, so (0,0,0) means "where the robot stood at the start of the mapping
+    # run" — the natural place to park it before localizing. Without this AMCL
+    # stays silent and never publishes map->odom, which looks like a hang.
+    # Override at runtime with RViz's "2D Pose Estimate" (publishes /initialpose)
+    # or nav2_client.set_initial_pose() if the robot starts somewhere else.
+    set_initial_pose: true
+    initial_pose:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      yaw: 0.0
     transform_tolerance: 1.0
     update_min_a: 0.2
     update_min_d: 0.25
