@@ -295,6 +295,13 @@ const elements = {
     mapNameInput: document.getElementById('map-name-input'),
     slamStatusText: document.getElementById('slam-status-text'),
 
+    // AMCL localization map selector (Advanced / Research Tools)
+    amclMapSelect: document.getElementById('amcl-map-select'),
+    amclApplyMapBtn: document.getElementById('amcl-apply-map-btn'),
+    amclRefreshMapsBtn: document.getElementById('amcl-refresh-maps-btn'),
+    amclMapStatus: document.getElementById('amcl-map-status'),
+    amclCurrentMap: document.getElementById('amcl-current-map'),
+
     // Velocity Estimator (EE244 Project)
     velocityModelSelect: document.getElementById('velocity-model-select'),
     velocityEstimatesContainer: document.getElementById('velocity-estimates-container'),
@@ -801,6 +808,16 @@ function updateNavStatus(nav) {
     if (nav.nav2_running !== undefined) state.nav.nav2Running = nav.nav2_running;
     if (nav.goal) state.nav.goal = nav.goal;
 
+    // Map currently served to AMCL (Advanced / Research Tools card)
+    if (elements.amclCurrentMap) {
+        elements.amclCurrentMap.textContent = `in use: ${nav.map || '—'}`;
+    }
+    if (elements.amclApplyMapBtn && !elements.amclApplyMapBtn.disabled) {
+        elements.amclApplyMapBtn.title = state.nav.nav2Running
+            ? 'Load this map into the running map_server; AMCL re-localizes against it without stopping Nav2'
+            : 'Launch Nav2 (AMCL mode) first — map_server must be running';
+    }
+
     // Gate frontier button: needs both SLAM active and Nav2 running
     if (elements.frontierBtn) {
         const nav2Up = !!state.nav.nav2Running;
@@ -847,6 +864,42 @@ function updateNavStatus(nav) {
 
     drawNavMap();
     updateNavHint();
+}
+
+// -----------------------------------------------------------------
+// AMCL Localization Map (Advanced / Research Tools)
+//
+// Swaps the map AMCL matches scans against by calling nav2's
+// /map_server/load_map — Nav2 keeps running, so this works mid-drive.
+// -----------------------------------------------------------------
+
+function initAmclMapControls() {
+    const { amclApplyMapBtn, amclRefreshMapsBtn, amclMapSelect, amclMapStatus } = elements;
+    if (!amclApplyMapBtn) return;
+
+    amclApplyMapBtn.addEventListener('click', () => {
+        const name = amclMapSelect?.value;
+        if (!name) {
+            setAmclMapStatus('Pick a saved map first', false);
+            return;
+        }
+        amclApplyMapBtn.disabled = true;
+        amclApplyMapBtn.textContent = '⏳ Loading…';
+        if (amclMapStatus) {
+            amclMapStatus.textContent = `Loading "${name}" into map_server…`;
+            amclMapStatus.style.color = '';
+        }
+        sendMessage({ type: 'set_amcl_map', map: name });
+    });
+
+    amclRefreshMapsBtn?.addEventListener('click', () => sendMessage({ type: 'get_maps' }));
+}
+
+function setAmclMapStatus(text, ok) {
+    const el = elements.amclMapStatus;
+    if (!el) return;
+    el.textContent = text;
+    el.style.color = ok ? 'var(--accent-green)' : '#f87171';
 }
 
 // -----------------------------------------------------------------
@@ -1008,6 +1061,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Init SLAM Controls
     initSlamControls();
+    initAmclMapControls();
 
     // Init Visuals
     updateVisuals(0, elements.leftFill, elements.leftThumb);
@@ -1753,15 +1807,33 @@ function handleMessage(data) {
     }
 
     if (data.type === "map_list") {
-        const sel = elements.mapSelect;
-        if (sel && data.maps) {
-            sel.innerHTML = '<option value="">-- select map --</option>';
-            data.maps.forEach(name => {
-                const opt = document.createElement('option');
-                opt.value = name;
-                opt.textContent = name;
-                sel.appendChild(opt);
+        if (data.maps) {
+            // Both the Navigation card and the Advanced AMCL card list maps.
+            [elements.mapSelect, elements.amclMapSelect].forEach(sel => {
+                if (!sel) return;
+                const prev = sel.value;           // keep the user's pick across refreshes
+                sel.innerHTML = '<option value="">-- select map --</option>';
+                data.maps.forEach(name => {
+                    const opt = document.createElement('option');
+                    opt.value = name;
+                    opt.textContent = name;
+                    sel.appendChild(opt);
+                });
+                if (prev && data.maps.includes(prev)) sel.value = prev;
             });
+        }
+        return;
+    }
+
+    if (data.type === "amcl_map_result") {
+        const btn = elements.amclApplyMapBtn;
+        if (btn) { btn.disabled = false; btn.textContent = 'Apply to AMCL'; }
+        setAmclMapStatus(
+            data.success ? `${data.msg} — AMCL is now localizing against it.`
+                         : `Failed: ${data.msg}`,
+            data.success);
+        if (data.success && elements.amclCurrentMap) {
+            elements.amclCurrentMap.textContent = `in use: ${data.map}`;
         }
         return;
     }

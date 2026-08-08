@@ -524,6 +524,34 @@
                 </div>
             </div>
         </div>
+
+        <!-- AMCL Localization Map: hot-swap the map AMCL matches against -->
+        <div class="card" id="amcl-map-card" style="margin-top: 0.5rem;">
+            <div class="card-header">
+                <h2><span class="icon">🧭</span> AMCL Localization Map</h2>
+                <span id="amcl-current-map"
+                    style="font-size: 0.75rem; color: var(--text-muted); font-family: monospace;">in use: —</span>
+            </div>
+            <div class="card-body">
+                <div class="nav-map-row" style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+                    <label style="font-size:0.8rem; color:var(--text-secondary);">Map:</label>
+                    <select id="amcl-map-select" class="btn"
+                        style="padding:0.25rem 0.5rem; font-size:0.75rem; background:var(--bg-tertiary);
+                               color:var(--text-primary); border:1px solid var(--border-color); outline:none; flex:1; min-width:9rem;">
+                        <option value="">-- select map --</option>
+                    </select>
+                    <button id="amcl-refresh-maps-btn" class="btn-nav-sm" title="Re-scan the maps directory">⟳</button>
+                    <button id="amcl-apply-map-btn" class="btn-nav-sm"
+                        title="Load this map into the running map_server; AMCL re-localizes against it without stopping Nav2">
+                        Apply to AMCL
+                    </button>
+                </div>
+                <div id="amcl-map-status" class="nav-hint" style="margin-top: 0.4rem;">
+                    Requires Nav2 running in AMCL mode (SLAM Mode unchecked). Swaps the map live —
+                    set an initial pose afterwards if the new map has a different origin.
+                </div>
+            </div>
+        </div>
         </details>
 
         <!-- Navigation Card -->

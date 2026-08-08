@@ -1336,6 +1336,24 @@ def _list_maps() -> list:
     return [f for f in os.listdir(d) if f.endswith('.yaml')]
 
 
+def _resolve_map_path(yaml_name: str) -> str | None:
+    """
+    Turn a map name from the GUI into an absolute YAML path inside the maps
+    directory. Returns None if empty or if the file does not exist.
+
+    Only the basename is honoured, so a crafted name can't escape maps/.
+    Nav2's map_server and x3_nav2.launch.py both need a full path — a bare
+    filename would be resolved against the launcher's cwd and silently fail.
+    """
+    if not yaml_name:
+        return None
+    name = os.path.basename(yaml_name)
+    if not name.endswith('.yaml'):
+        name += '.yaml'
+    path = os.path.join(_maps_dir(), name)
+    return path if os.path.isfile(path) else None
+
+
 def _load_map_data(yaml_name: str) -> dict | None:
     """
     Read a ROS map YAML + PGM and return a dict suitable for the GUI:
@@ -1500,7 +1518,9 @@ async def handle_client(websocket):
                 elif msg_type == "launch_nav2":
                     if nav2_client:
                         use_st = data.get("use_sim_time", SIM_MODE)
-                        map_f  = data.get("map")
+                        # Resolve to an absolute path: the launch file's map:=
+                        # argument is interpreted relative to the launcher cwd.
+                        map_f  = _resolve_map_path(data.get("map") or "")
                         slam   = data.get("slam", False)
                         ok = nav2_client.launch_nav2(
                             use_sim_time=use_st, map_path=map_f, slam=slam)
@@ -1540,6 +1560,31 @@ async def handle_client(websocket):
                             float(data.get("y", 0.0)),
                             float(data.get("theta", 0.0)),
                         )
+
+                # Hot-swap the map AMCL localises against, mid-drive.
+                elif msg_type == "set_amcl_map":
+                    map_name = data.get("map") or ""
+                    map_path = _resolve_map_path(map_name)
+                    if nav2_client is None:
+                        ok, msg_text = False, "Requires --ros2 or --sim mode"
+                    elif map_path is None:
+                        ok, msg_text = False, f'Map "{map_name}" not found'
+                    else:
+                        # Service round-trip: keep it off the event loop.
+                        ok, msg_text = await asyncio.get_running_loop().run_in_executor(
+                            None, nav2_client.load_map, map_path)
+                    await websocket.send(json.dumps({
+                        "type": "amcl_map_result",
+                        "success": ok,
+                        "map": os.path.basename(map_path) if map_path else map_name,
+                        "msg": msg_text,
+                    }))
+                    if ok:
+                        # Redraw the nav canvas with the map now in use
+                        map_data = _load_map_data(os.path.basename(map_path))
+                        if map_data:
+                            await websocket.send(json.dumps(
+                                {"type": "map_data", **map_data}))
 
                 elif msg_type == "get_maps":
                     maps = _list_maps()

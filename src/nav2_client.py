@@ -8,6 +8,7 @@ Provides:
   - set_initial_pose(x, y, theta) – publish AMCL initial pose
   - launch_nav2(...)           – spawn x3_nav2.launch.py subprocess
   - stop_nav2()                – kill that subprocess
+  - load_map(path)             – hot-swap the AMCL/map_server map while running
   - get_status()               – snapshot dict for the broadcast loop
 
 Designed to be injected into server_x3.py's ROS2Bridge node so both
@@ -30,6 +31,7 @@ from rclpy.node import Node
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseWithCovarianceStamped, PoseStamped
 from nav2_msgs.action import NavigateToPose
+from nav2_msgs.srv import LoadMap
 from nav_msgs.msg import Path
 
 logger = logging.getLogger(__name__)
@@ -75,6 +77,8 @@ class Nav2Client:
         self._path: List[List[float]] = []           # [[x, y], ...]
         self._dist_remaining: Optional[float] = None
         self._nav2_proc: Optional[subprocess.Popen] = None
+        # Map YAML currently served to AMCL (basename, GUI display only)
+        self._current_map: Optional[str] = None
 
         # ── Action client ───────────────────────────────────────────────────
         self._action_client = ActionClient(
@@ -86,6 +90,9 @@ class Nav2Client:
 
         # ── Global plan subscriber ──────────────────────────────────────────
         node.create_subscription(Path, '/plan', self._plan_cb, 10)
+
+        # ── map_server hot-swap client (created lazily on first load_map) ───
+        self._load_map_cli = None
 
         logger.info("[Nav2Client] Initialised (action: navigate_to_pose)")
 
@@ -206,8 +213,75 @@ class Nav2Client:
         with self._lock:
             self._nav2_proc = proc
             self._state = STATE_IDLE
+            self._current_map = (os.path.basename(map_path) if map_path
+                                 else (None if slam else 'yahboomcar.yaml'))
 
         return True
+
+    def load_map(self, map_path: str, timeout: float = 10.0) -> tuple[bool, str]:
+        """
+        Hot-swap the map AMCL localises against, without restarting Nav2.
+
+        Calls nav2's /map_server/load_map service. map_server republishes the
+        new OccupancyGrid on /map (transient-local), and because `first_map_only`
+        is not enabled in nav2_params_x3.yaml, AMCL rebuilds its likelihood
+        field from it — so this works while the robot is driving.
+
+        Note: the robot's current pose is kept. If the new map has a different
+        origin/frame the estimate will be wrong; call set_initial_pose() (or the
+        GUI's "Set Initial Pose") afterwards.
+
+        Returns (success, message).
+        """
+        if not os.path.isfile(map_path):
+            return False, f"Map file not found: {map_path}"
+
+        with self._lock:
+            running = (self._nav2_proc is not None
+                       and self._nav2_proc.poll() is None)
+        if self._load_map_cli is None:
+            self._load_map_cli = self._node.create_client(
+                LoadMap, '/map_server/load_map')
+
+        if not self._load_map_cli.wait_for_service(timeout_sec=3.0):
+            hint = ("Nav2 map_server not available — launch Nav2 first "
+                    "(AMCL mode, SLAM Mode unchecked)")
+            if running:
+                hint = "Nav2 map_server not available (still starting up?)"
+            return False, hint
+
+        req = LoadMap.Request()
+        req.map_url = map_path
+        future = self._load_map_cli.call_async(req)
+
+        # The node spins on its own thread, so poll the future instead of
+        # calling rclpy.spin_until_future_complete (which would deadlock).
+        deadline = time.time() + timeout
+        while not future.done() and time.time() < deadline:
+            time.sleep(0.05)
+        if not future.done():
+            future.cancel()
+            return False, "Timed out waiting for /map_server/load_map"
+
+        try:
+            result = future.result()
+        except Exception as exc:                       # service raised
+            return False, f"load_map call failed: {exc}"
+
+        if result.result == LoadMap.Response.RESULT_SUCCESS:
+            with self._lock:
+                self._current_map = os.path.basename(map_path)
+            logger.info(f"[Nav2Client] AMCL map switched to {map_path}")
+            return True, f'Map "{os.path.basename(map_path)}" loaded'
+
+        codes = {
+            LoadMap.Response.RESULT_MAP_DOES_NOT_EXIST: "map file does not exist",
+            LoadMap.Response.RESULT_INVALID_MAP_DATA: "invalid map image data",
+            LoadMap.Response.RESULT_INVALID_MAP_METADATA: "invalid map YAML metadata",
+        }
+        reason = codes.get(result.result, f"undefined failure (code {result.result})")
+        logger.warning(f"[Nav2Client] load_map rejected: {reason}")
+        return False, f"map_server rejected the map: {reason}"
 
     def stop_nav2(self) -> None:
         """Terminate the Nav2 subprocess if running."""
@@ -229,6 +303,7 @@ class Nav2Client:
             self._path = []
             self._dist_remaining = None
             self._goal_handle = None
+            self._current_map = None
 
     def get_status(self) -> dict:
         """Return a snapshot dict safe to serialise to JSON."""
@@ -243,6 +318,7 @@ class Nav2Client:
                 "goal":      self._goal,
                 "path":      path,
                 "dist":      self._dist_remaining,
+                "map":       self._current_map,
                 "nav2_running": (
                     self._nav2_proc is not None
                     and self._nav2_proc.poll() is None
