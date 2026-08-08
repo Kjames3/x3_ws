@@ -145,14 +145,14 @@ controller_server:
       vx_std: 0.2
       vy_std: 0.2
       wz_std: 0.4
-      vx_max: 0.26
-      vx_min: -0.26      # holonomic: allow reversing
-      vy_max: 0.26       # holonomic: allow strafing
-      wz_max: 1.0
-      ax_max: 3.0
-      ax_min: -3.0
-      ay_max: 3.0
-      az_max: 3.5
+      vx_max: 0.15
+      vx_min: -0.15      # holonomic: allow reversing
+      vy_max: 0.15       # holonomic: allow strafing
+      wz_max: 0.6
+      ax_max: 1.0
+      ax_min: -1.0
+      ay_max: 1.0
+      az_max: 1.5
       iteration_count: 1
       prune_distance: 1.7
       transform_tolerance: 0.1
@@ -200,7 +200,7 @@ controller_server:
       CostCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 3.81
+        cost_weight: 6.0
         critical_cost: 300.0
         consider_footprint: false
         collision_cost: 1000000.0
