@@ -1,10 +1,96 @@
 #!/usr/bin/env python3
 # coding: utf-8
 
+import logging
 import struct
 import time
 import serial
 import threading
+from collections import namedtuple
+
+_LOG = logging.getLogger(__name__)
+
+# Longest legal frame is ext_len + 2; ext_len is one byte but real frames from
+# this firmware are <= 23 B. Anything larger is a corrupt length byte that
+# happened to follow a false 0xFF 0xFB header, not a frame.
+_RX_MAX_FRAME = 64
+
+# --- precompiled frame layouts -------------------------------------------
+# The '<' prefix is MANDATORY on every one of these. Without a byte-order
+# prefix struct uses *native alignment* and silently inserts padding:
+#   calcsize('Bh')   == 4  (pads!)   calcsize('<Bh')   == 3
+#   calcsize('Bhhh') == 8  (pads!)   calcsize('<Bhhh') == 7
+# A padded 'Bh' would read the servo value from the wrong offset, and a padded
+# 'Bhhh' shifts every PID gain by one byte. The firmware is little-endian, so
+# '<' is also correct on its own merits rather than relying on the host being
+# aarch64/x86.
+_S_SPEED = struct.Struct('<hhhB')   # vx, vy mm/s; vz mrad/s; battery 0.1 V  (7 B)
+_S_IMU9  = struct.Struct('<9h')     # gx gy gz ax ay az mx my mz            (18 B)
+_S_ATT   = struct.Struct('<3h')     # roll pitch yaw, 1e-4 rad               (6 B)
+_S_ENC   = struct.Struct('<4i')     # m1..m4 signed tick counts             (16 B)
+_S_SERVO = struct.Struct('<Bh')     # id, value                              (3 B)
+_S_ARM   = struct.Struct('<6h')     # 6 joint pulses                        (12 B)
+_S_PID   = struct.Struct('<Bhhh')   # index, kp, ki, kd                      (7 B)
+_S_2B    = struct.Struct('<2B')     # version / arm-offset / akm pairs       (2 B)
+_S_1B    = struct.Struct('<B')      # car type                               (1 B)
+
+# --- telemetry snapshots --------------------------------------------------
+# Every auto-report packet is published as ONE immutable namedtuple stored with
+# a single STORE_ATTR. A consumer that takes one reference sees a single, self
+# consistent instant; the previous per-field attributes let a reader mix the
+# accelerometer from packet N with the gyroscope from packet N+1 (measured at
+# ~0.125% of publish cycles at 20 Hz, which is exactly the kind of correlated
+# glitch a Madgwick filter feeding an EKF integrates rather than rejects).
+# `t` is a time.monotonic() stamp, which is what makes staleness detectable.
+ImuSample = namedtuple('ImuSample', 'gx gy gz ax ay az mx my mz t seq')
+AttSample = namedtuple('AttSample', 'roll pitch yaw t seq')
+MotionSample = namedtuple('MotionSample', 'vx vy vz battery t seq')
+EncSample = namedtuple('EncSample', 'm1 m2 m3 m4 t seq')
+
+_ZERO_IMU = ImuSample(0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0, 0)
+_ZERO_ATT = AttSample(0, 0, 0, 0.0, 0)
+_ZERO_MOTION = MotionSample(0, 0, 0, 0, 0.0, 0)
+_ZERO_ENC = EncSample(0, 0, 0, 0, 0.0, 0)
+
+# --- IMU frame convention -------------------------------------------------
+# The stock library applied a *partial* axis flip in the MPU9250 branch (gyro y
+# and z negated; accelerometer and magnetometer untouched) and no flip at all in
+# the ICM20948 branch. That is not a coherent frame transform and the two
+# branches disagreed with each other, so the same physical rotation produced a
+# different sign depending on which sensor the board carried.
+#
+# This board is an MPU9250: it emits ext_type 0x0B only (732 frames vs 0 of 0x0E
+# measured over 30 s on firmware V2.4), so the ICM branch is dead code here.
+# We therefore adopt the MPU branch's convention as the single documented one
+# and apply it uniformly in both branches. Published gyro/accel values are
+# BIT-FOR-BIT UNCHANGED on this hardware - this is a de-duplication, not a
+# recalibration.
+#
+# KNOWN-UNRESOLVED: Mcnamu_driver_X3.pub_data negates gz a *second* time, so the
+# two negations cancel and published angular_velocity.z carries the raw sensor
+# sign. Deciding which of the two negations is the redundant one requires
+# physically rotating the chassis and checking /imu/data_raw.angular_velocity.z
+# against REP-103 (CCW seen from above = positive). Until someone does that,
+# both negations stay so that net behaviour is preserved.
+_GYRO_SIGNS = (1.0, -1.0, -1.0)
+_ACCEL_SIGNS = (1.0, 1.0, 1.0)
+_MAG_SIGNS = (1.0, 1.0, 1.0)
+
+# Gyro: +-500 dps full scale -> 32768 / (500*pi/180) = 3754.7 LSB per rad/s.
+_GYRO_RATIO_MPU = 1 / 3754.9
+# Accel: +-2 g -> 32768 / (2*9.8) = 1671.8 LSB per m/s^2.
+_ACCEL_RATIO_MPU = 1 / 1671.84
+# Mag: the MPU branch used a ratio of 1, i.e. it published raw AK8963 counts
+# into a sensor_msgs/MagneticField field that ROS defines as TESLA - roughly
+# 6.7e6x too large. The AK8963 is ~0.15 uT/LSB in 16-bit mode, which reproduces
+# the measured ~61.2 uT ambient field from the observed counts.
+_MAG_RATIO_MPU = 0.15e-6
+# ICM20948 branch: never observed on this hardware, kept for other boards. Its
+# firmware scales gyro/accel by 1/1000 (mrad/s, mm/s^2); the magnetometer is
+# assumed to arrive in uT by the same logic and is converted to tesla. UNVERIFIED.
+_GYRO_RATIO_ICM = 1 / 1000.0
+_ACCEL_RATIO_ICM = 1 / 1000.0
+_MAG_RATIO_ICM = 1e-6
 
 
 # V3.3.1
@@ -17,7 +103,10 @@ class Rosmaster(object):
         # com="/dev/ttyUSB0"
         # com="/dev/ttyAMA0"
 
-        self.ser = serial.Serial(com, 115200)
+        # A read timeout is REQUIRED, not cosmetic: it is what lets the receive
+        # thread observe the stop flag, and what turns a dead/unplugged port
+        # into a timeout instead of a permanent block.
+        self.ser = serial.Serial(com, 115200, timeout=0.1)
 
         self.__delay_time = delay
         self.__debug = debug
@@ -70,27 +159,28 @@ class Rosmaster(object):
         self.CARTYPE_X1 = 0x04
         self.CARTYPE_R2 = 0x05
 
-        self.__ax = 0
-        self.__ay = 0
-        self.__az = 0
-        self.__gx = 0
-        self.__gy = 0
-        self.__gz = 0
-        self.__mx = 0
-        self.__my = 0
-        self.__mz = 0
-        self.__vx = 0
-        self.__vy = 0
-        self.__vz = 0
+        # Receive-thread lifecycle and health. Without these the RX thread dies
+        # silently on the first port error and every getter keeps returning its
+        # last value forever - the driver then republishes frozen IMU data with
+        # a fresh timestamp, which an EKF fuses as "the robot is perfectly
+        # still". A detectable failure is worth more than a fast one.
+        self.__rx_thread = None
+        self.__rx_stop = threading.Event()
+        self.__rx_error = None
+        self.__rx_last_frame_t = 0.0
+        self.__rx_stats = {'frames': 0, 'checksum_err': 0, 'malformed': 0, 'errors': 0}
 
-        self.__yaw = 0
-        self.__roll = 0
-        self.__pitch = 0
-
-        self.__encoder_m1 = 0
-        self.__encoder_m2 = 0
-        self.__encoder_m3 = 0
-        self.__encoder_m4 = 0
+        # Atomic telemetry snapshots (see the module-level note).
+        self.__imu = _ZERO_IMU
+        self.__att = _ZERO_ATT
+        self.__motion = _ZERO_MOTION
+        self.__enc = _ZERO_ENC
+        self.__seq_imu = 0
+        self.__seq_att = 0
+        self.__seq_motion = 0
+        self.__seq_enc = 0
+        # 'mpu9250' | 'icm20948' | None, latched from the first raw IMU packet.
+        self.__imu_kind = None
 
         self.__read_id = 0
         self.__read_val = 0
@@ -101,6 +191,7 @@ class Rosmaster(object):
         self.__version_H = 0
         self.__version_L = 0
         self.__version = 0
+        self.__version_last_req = -1e9
 
         self.__pid_index = 0
         self.__kp1 = 0
@@ -110,8 +201,6 @@ class Rosmaster(object):
         self.__arm_offset_state = 0
         self.__arm_offset_id = 0
         self.__arm_ctrl_enable = True
-
-        self.__battery_voltage = 0
 
         self.__akm_def_angle = 100
         self.__akm_readed_angle = False
@@ -131,154 +220,220 @@ class Rosmaster(object):
         time.sleep(.002)
 
     def __del__(self):
-        if hasattr(self, 'ser'):
-            self.ser.close()
-        self.__uart_state = 0
-        print("serial Close!")
+        # The stock version closed the fd while the receive thread was blocked
+        # in select() on it, which is undefined at the POSIX level and on Linux
+        # yields EBADF -> a traceback (or a hang) during interpreter shutdown.
+        # stop() wakes the reader first, then closes.
+        try:
+            if hasattr(self, 'ser'):
+                self.stop()
+        except Exception:
+            pass
 
     # 根据数据帧的类型来做出对应的解析
     # According to the type of data frame to make the corresponding parsing
     def __parse_data(self, ext_type, ext_data):
         # print("parse_data:", ext_data, ext_type)
         if ext_type == self.FUNC_REPORT_SPEED:
-            # print(ext_data)
-            self.__vx = int(struct.unpack('h', bytearray(ext_data[0:2]))[0]) / 1000.0
-            self.__vy = int(struct.unpack('h', bytearray(ext_data[2:4]))[0]) / 1000.0
-            self.__vz = int(struct.unpack('h', bytearray(ext_data[4:6]))[0]) / 1000.0
-            self.__battery_voltage = struct.unpack('B', bytearray(ext_data[6:7]))[0]
+            vx, vy, vz, battery = _S_SPEED.unpack_from(ext_data, 0)
+            self.__seq_motion += 1
+            self.__motion = MotionSample(vx / 1000.0, vy / 1000.0, vz / 1000.0,
+                                         battery, time.monotonic(), self.__seq_motion)
         # 解析MPU9250原始陀螺仪、加速度计、磁力计数据
         # (MPU9250)the original gyroscope, accelerometer, magnetometer data
         elif ext_type == self.FUNC_REPORT_MPU_RAW:
-            # 陀螺仪传感器:±500dps=±500°/s ±32768 (gyro/32768*500)*PI/180(rad/s)=gyro/3754.9(rad/s)
-            gyro_ratio = 1 / 3754.9 # ±500dps
-            self.__gx = struct.unpack('h', bytearray(ext_data[0:2]))[0]*gyro_ratio
-            self.__gy = struct.unpack('h', bytearray(ext_data[2:4]))[0]*-gyro_ratio
-            self.__gz = struct.unpack('h', bytearray(ext_data[4:6]))[0]*-gyro_ratio
-            # 加速度传感器:±2g=±2*9.8m/s^2 ±32768 accel/32768*19.6=accel/1671.84
-            accel_ratio = 1 / 1671.84
-            self.__ax = struct.unpack('h', bytearray(ext_data[6:8]))[0]*accel_ratio
-            self.__ay = struct.unpack('h', bytearray(ext_data[8:10]))[0]*accel_ratio
-            self.__az = struct.unpack('h', bytearray(ext_data[10:12]))[0]*accel_ratio
-            # 磁力计传感器
-            mag_ratio = 1
-            self.__mx = struct.unpack('h', bytearray(ext_data[12:14]))[0]*mag_ratio
-            self.__my = struct.unpack('h', bytearray(ext_data[14:16]))[0]*mag_ratio
-            self.__mz = struct.unpack('h', bytearray(ext_data[16:18]))[0]*mag_ratio
+            self.__imu_kind = 'mpu9250'
+            self.__store_imu(ext_data, _GYRO_RATIO_MPU, _ACCEL_RATIO_MPU, _MAG_RATIO_MPU)
         # 解析ICM20948原始陀螺仪、加速度计、磁力计数据
         # (ICM20948)the original gyroscope, accelerometer, magnetometer data
         elif ext_type == self.FUNC_REPORT_ICM_RAW:
-            gyro_ratio = 1 / 1000.0
-            self.__gx = struct.unpack('h', bytearray(ext_data[0:2]))[0]*gyro_ratio
-            self.__gy = struct.unpack('h', bytearray(ext_data[2:4]))[0]*gyro_ratio
-            self.__gz = struct.unpack('h', bytearray(ext_data[4:6]))[0]*gyro_ratio
-
-            accel_ratio = 1 / 1000.0
-            self.__ax = struct.unpack('h', bytearray(ext_data[6:8]))[0]*accel_ratio
-            self.__ay = struct.unpack('h', bytearray(ext_data[8:10]))[0]*accel_ratio
-            self.__az = struct.unpack('h', bytearray(ext_data[10:12]))[0]*accel_ratio
-
-            mag_ratio = 1 / 1000.0
-            self.__mx = struct.unpack('h', bytearray(ext_data[12:14]))[0]*mag_ratio
-            self.__my = struct.unpack('h', bytearray(ext_data[14:16]))[0]*mag_ratio
-            self.__mz = struct.unpack('h', bytearray(ext_data[16:18]))[0]*mag_ratio
+            self.__imu_kind = 'icm20948'
+            self.__store_imu(ext_data, _GYRO_RATIO_ICM, _ACCEL_RATIO_ICM, _MAG_RATIO_ICM)
         # 解析板子的姿态角
         # the attitude Angle of the board
         elif ext_type == self.FUNC_REPORT_IMU_ATT:
-            self.__roll = struct.unpack('h', bytearray(ext_data[0:2]))[0] / 10000.0
-            self.__pitch = struct.unpack('h', bytearray(ext_data[2:4]))[0] / 10000.0
-            self.__yaw = struct.unpack('h', bytearray(ext_data[4:6]))[0] / 10000.0
+            roll, pitch, yaw = _S_ATT.unpack_from(ext_data, 0)
+            self.__seq_att += 1
+            self.__att = AttSample(roll / 10000.0, pitch / 10000.0, yaw / 10000.0,
+                                   time.monotonic(), self.__seq_att)
         # 解析四个轮子的编码器数据
         # Encoder data on all four wheels
         elif ext_type == self.FUNC_REPORT_ENCODER:
-            self.__encoder_m1 = struct.unpack('i', bytearray(ext_data[0:4]))[0]
-            self.__encoder_m2 = struct.unpack('i', bytearray(ext_data[4:8]))[0]
-            self.__encoder_m3 = struct.unpack('i', bytearray(ext_data[8:12]))[0]
-            self.__encoder_m4 = struct.unpack('i', bytearray(ext_data[12:16]))[0]
+            m1, m2, m3, m4 = _S_ENC.unpack_from(ext_data, 0)
+            self.__seq_enc += 1
+            self.__enc = EncSample(m1, m2, m3, m4, time.monotonic(), self.__seq_enc)
 
         else:
             if ext_type == self.FUNC_UART_SERVO:
-                self.__read_id = struct.unpack('B', bytearray(ext_data[0:1]))[0]
-                self.__read_val = struct.unpack('h', bytearray(ext_data[1:3]))[0]
+                self.__read_id, self.__read_val = _S_SERVO.unpack_from(ext_data, 0)
                 if self.__debug:
                     print("FUNC_UART_SERVO:", self.__read_id, self.__read_val)
 
             elif ext_type == self.FUNC_ARM_CTRL:
-                self.__read_arm[0] = struct.unpack('h', bytearray(ext_data[0:2]))[0]
-                self.__read_arm[1] = struct.unpack('h', bytearray(ext_data[2:4]))[0]
-                self.__read_arm[2] = struct.unpack('h', bytearray(ext_data[4:6]))[0]
-                self.__read_arm[3] = struct.unpack('h', bytearray(ext_data[6:8]))[0]
-                self.__read_arm[4] = struct.unpack('h', bytearray(ext_data[8:10]))[0]
-                self.__read_arm[5] = struct.unpack('h', bytearray(ext_data[10:12]))[0]
+                self.__read_arm = list(_S_ARM.unpack_from(ext_data, 0))
                 self.__read_arm_ok = 1
                 if self.__debug:
                     print("FUNC_ARM_CTRL:", self.__read_arm)
 
             elif ext_type == self.FUNC_VERSION:
-                self.__version_H = struct.unpack('B', bytearray(ext_data[0:1]))[0]
-                self.__version_L = struct.unpack('B', bytearray(ext_data[1:2]))[0]
+                self.__version_H, self.__version_L = _S_2B.unpack_from(ext_data, 0)
                 if self.__debug:
                     print("FUNC_VERSION:", self.__version_H, self.__version_L)
 
             elif ext_type == self.FUNC_SET_MOTOR_PID:
-                self.__pid_index = struct.unpack('B', bytearray(ext_data[0:1]))[0]
-                self.__kp1 = struct.unpack('h', bytearray(ext_data[1:3]))[0]
-                self.__ki1 = struct.unpack('h', bytearray(ext_data[3:5]))[0]
-                self.__kd1 = struct.unpack('h', bytearray(ext_data[5:7]))[0]
+                (self.__pid_index, self.__kp1,
+                 self.__ki1, self.__kd1) = _S_PID.unpack_from(ext_data, 0)
                 if self.__debug:
                     print("FUNC_SET_MOTOR_PID:", self.__pid_index, [self.__kp1, self.__ki1, self.__kd1])
 
             elif ext_type == self.FUNC_SET_YAW_PID:
-                self.__pid_index = struct.unpack('B', bytearray(ext_data[0:1]))[0]
-                self.__kp1 = struct.unpack('h', bytearray(ext_data[1:3]))[0]
-                self.__ki1 = struct.unpack('h', bytearray(ext_data[3:5]))[0]
-                self.__kd1 = struct.unpack('h', bytearray(ext_data[5:7]))[0]
+                (self.__pid_index, self.__kp1,
+                 self.__ki1, self.__kd1) = _S_PID.unpack_from(ext_data, 0)
                 if self.__debug:
                     print("FUNC_SET_YAW_PID:", self.__pid_index, [self.__kp1, self.__ki1, self.__kd1])
 
             elif ext_type == self.FUNC_ARM_OFFSET:
-                self.__arm_offset_id = struct.unpack('B', bytearray(ext_data[0:1]))[0]
-                self.__arm_offset_state = struct.unpack('B', bytearray(ext_data[1:2]))[0]
+                self.__arm_offset_id, self.__arm_offset_state = _S_2B.unpack_from(ext_data, 0)
                 if self.__debug:
                     print("FUNC_ARM_OFFSET:", self.__arm_offset_id, self.__arm_offset_state)
 
             elif ext_type == self.FUNC_AKM_DEF_ANGLE:
-                id = struct.unpack('B', bytearray(ext_data[0:1]))[0]
-                self.__akm_def_angle = struct.unpack('B', bytearray(ext_data[1:2]))[0]
+                id, self.__akm_def_angle = _S_2B.unpack_from(ext_data, 0)
                 self.__akm_readed_angle = True
                 if self.__debug:
                     print("FUNC_AKM_DEF_ANGLE:", id, self.__akm_def_angle)
-            
+
             elif ext_type == self.FUNC_SET_CAR_TYPE:
-                car_type = struct.unpack('B', bytearray(ext_data[0:1]))[0]
-                self.__read_car_type = car_type
-            
+                self.__read_car_type = _S_1B.unpack_from(ext_data, 0)[0]
+
+    # 解析9轴IMU原始数据，两个分支共用同一套符号约定
+    # Decode a 9-axis raw IMU packet. Both the MPU9250 and ICM20948 branches
+    # route through here so they cannot drift apart in sign or units again.
+    def __store_imu(self, ext_data, gyro_ratio, accel_ratio, mag_ratio):
+        v = _S_IMU9.unpack_from(ext_data, 0)
+        gsx, gsy, gsz = _GYRO_SIGNS
+        asx, asy, asz = _ACCEL_SIGNS
+        msx, msy, msz = _MAG_SIGNS
+        self.__seq_imu += 1
+        self.__imu = ImuSample(
+            v[0] * gyro_ratio * gsx,      # gyro, rad/s
+            v[1] * gyro_ratio * gsy,
+            v[2] * gyro_ratio * gsz,
+            v[3] * accel_ratio * asx,     # accel, m/s^2
+            v[4] * accel_ratio * asy,
+            v[5] * accel_ratio * asz,
+            v[6] * mag_ratio * msx,       # magnetic field, tesla
+            v[7] * mag_ratio * msy,
+            v[8] * mag_ratio * msz,
+            time.monotonic(), self.__seq_imu)
+
 
     # 接收数据 receive data
     def __receive_data(self):
+        """Read bytes in bursts and hand complete frames to the parser.
+
+        Replaces a byte-at-a-time reader that (a) had no exception handling at
+        all, so any port error killed the thread and froze every getter at its
+        last value forever, and (b) resynchronised by discarding TWO bytes, so a
+        0xFF that was itself the start of the next frame was thrown away along
+        with the false header.
+        """
+        buf = bytearray()
+        backoff = 0.0
+        while not self.__rx_stop.is_set():
+            try:
+                # in_waiting is a cheap ioctl. When it reports nothing pending we
+                # fall back to a 1-byte read that blocks up to the port timeout,
+                # so the loop both sleeps efficiently and wakes often enough to
+                # re-check the stop flag.
+                pending = self.ser.in_waiting
+                chunk = self.ser.read(pending if pending else 1)
+                backoff = 0.0
+            except Exception as e:   # SerialException, OSError, ...
+                if self.__rx_stop.is_set():
+                    break
+                self.__rx_error = e
+                self.__rx_stats['errors'] += 1
+                # Bounded backoff matters: read() on a disconnected fd returns
+                # immediately, so a bare retry would spin a core at 100%.
+                backoff = 0.05 if backoff == 0.0 else min(backoff * 2.0, 1.0)
+                _LOG.warning("Rosmaster RX error: %s (retry in %.2fs)", e, backoff)
+                self.__rx_stop.wait(backoff)   # interruptible sleep
+                continue
+
+            if not chunk:
+                continue                       # read timeout, no data
+            buf += chunk
+            self.__consume_frames(buf)
+
+            # Pure noise must never grow the buffer without bound.
+            if len(buf) > 4 * _RX_MAX_FRAME:
+                del buf[:-_RX_MAX_FRAME]
+
+    def __consume_frames(self, buf):
+        """Pull every complete, checksum-valid frame out of `buf`, in place."""
+        HEAD = self.__HEAD
+        DEV = self.__DEVICE_ID - 1
         while True:
-            head1 = bytearray(self.ser.read())[0]
-            if head1 == self.__HEAD:
-                head2 = bytearray(self.ser.read())[0]
-                check_sum = 0
-                rx_check_num = 0
-                if head2 == self.__DEVICE_ID - 1:
-                    ext_len = bytearray(self.ser.read())[0]
-                    ext_type = bytearray(self.ser.read())[0]
-                    ext_data = []
-                    check_sum = ext_len + ext_type
-                    data_len = ext_len - 2
-                    while len(ext_data) < data_len:
-                        value = bytearray(self.ser.read())[0]
-                        ext_data.append(value)
-                        if len(ext_data) == data_len:
-                            rx_check_num = value
-                        else:
-                            check_sum = check_sum + value
-                    if check_sum % 256 == rx_check_num:
-                        self.__parse_data(ext_type, ext_data)
-                    else:
-                        if self.__debug:
-                            print("check sum error:", ext_len, ext_type, ext_data)
+            i = buf.find(HEAD)
+            if i < 0:
+                del buf[:]                     # no candidate header at all
+                return
+            if i:
+                del buf[:i]                    # drop leading garbage
+            if len(buf) < 4:
+                return                         # need HEAD, DEV, len, type
+            if buf[1] != DEV:
+                del buf[:1]                    # resync by ONE byte, not two
+                continue
+            ext_len = buf[2]
+            # ext_len < 3 would make the payload length negative; the stock
+            # parser accepted it, produced an empty payload whose checksum
+            # matched ~1 frame in 256, and then died in struct.unpack.
+            if ext_len < 3 or ext_len > _RX_MAX_FRAME:
+                del buf[:1]                    # implausible length -> false header
+                continue
+            total = ext_len + 2                # HEAD DEV len type payload... ck
+            if len(buf) < total:
+                return                         # incomplete: wait for more bytes
+            ext_type = buf[3]
+            payload = bytes(buf[4:total - 1])  # ext_len-3 bytes, checksum excluded
+            rx_check = buf[total - 1]
+            if (ext_len + ext_type + sum(payload)) & 0xFF == rx_check:
+                del buf[:total]
+                self.__rx_stats['frames'] += 1
+                self.__rx_last_frame_t = time.monotonic()
+                try:
+                    self.__parse_data(ext_type, payload)
+                except (struct.error, IndexError, ValueError) as e:
+                    self.__rx_stats['malformed'] += 1
+                    if self.__debug:
+                        print("parse error:", ext_type, payload, e)
+            else:
+                self.__rx_stats['checksum_err'] += 1
+                if self.__debug:
+                    print("check sum error:", ext_len, ext_type, payload)
+                # Resync by one byte. Dropping the whole candidate frame (what
+                # the stock parser did) can eat a real header that was sitting
+                # inside the bytes a desync had misread as payload.
+                del buf[:1]
+
+    # 接收线程健康状态 receive-thread health
+    def rx_healthy(self, max_age=0.5):
+        """True if a well-formed frame was parsed within `max_age` seconds.
+
+        Consumers should gate publishing on this: a frozen sensor that keeps
+        being republished with a fresh timestamp is far more damaging to an EKF
+        than a gap in the data.
+        """
+        return (time.monotonic() - self.__rx_last_frame_t) < max_age
+
+    def rx_stats(self):
+        """Snapshot of RX counters: frames, checksum_err, malformed, errors."""
+        stats = dict(self.__rx_stats)
+        stats['last_frame_age'] = time.monotonic() - self.__rx_last_frame_t
+        stats['last_error'] = repr(self.__rx_error) if self.__rx_error else None
+        return stats
 
     # 请求数据， function：对应要返回数据的功能字，parm：传入的参数。
     # Request data, function: corresponding function word to return data, parm: parameter passed in
@@ -342,18 +497,56 @@ class Rosmaster(object):
     # 开启接收和处理数据的线程
     # Start the thread that receives and processes data
     def create_receive_threading(self):
+        if self.__uart_state != 0:
+            return True
+        self.__rx_stop.clear()
         try:
-            if self.__uart_state == 0:
-                name1 = "task_serial_receive"
-                task_receive = threading.Thread(target=self.__receive_data, name=name1)
-                task_receive.setDaemon(True)
-                task_receive.start()
-                print("----------------create receive threading--------------")
-                self.__uart_state = 1
-        except:
-            print('---create_receive_threading error!---')
+            self.__rx_thread = threading.Thread(
+                target=self.__receive_data,
+                name="rosmaster_rx",
+                daemon=True)          # setDaemon() is deprecated since 3.10
+            self.__rx_thread.start()
+        except RuntimeError as e:
+            # The stock version swallowed this and left __uart_state at 0, so a
+            # failed start was indistinguishable from a successful one.
+            _LOG.error("Rosmaster: failed to start receive thread: %s", e)
+            self.__rx_thread = None
+            return False
+        self.__uart_state = 1
+        _LOG.info("Rosmaster receive thread started")
+        return True
+
+    # 停止接收线程并关闭串口 stop the receive thread and close the port
+    def stop(self, timeout=1.0):
+        """Stop the receive thread and close the port. Idempotent."""
+        self.__rx_stop.set()
+        try:
+            # pyserial >=3.1: writes to the abort pipe that read()'s select()
+            # also waits on, which is the only clean way to wake a blocked read.
+            self.ser.cancel_read()
+        except Exception:
             pass
-    
+        t = self.__rx_thread
+        if t is not None and t.is_alive():
+            t.join(timeout)
+            if t.is_alive():
+                _LOG.warning("Rosmaster receive thread did not exit in %.1fs", timeout)
+        self.__rx_thread = None
+        self.__uart_state = 0
+        try:
+            if self.ser.is_open:
+                self.ser.close()
+        except Exception as e:
+            _LOG.warning("Rosmaster: error closing serial port: %s", e)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.stop()
+        return False
+
+
     # 单片机自动返回数据状态位，默认为开启，如果设置关闭会影响部分读取数据功能。
     # enable=True,底层扩展板会每隔10毫秒发送一包数据，总共四包不同数据，所以每包数据每40毫秒刷新一次。enable=False，则不发送。
     # forever=True永久保存，=False临时作用。
@@ -962,12 +1155,10 @@ class Rosmaster(object):
     # 清除单片机自动发送过来的缓存数据
     # Clear the cache data automatically sent by the MCU
     def clear_auto_report_data(self):
-        self.__battery_voltage = 0
-        self.__vx, self.__vy, self.__vz = 0, 0, 0
-        self.__ax, self.__ay, self.__az = 0, 0, 0
-        self.__gx, self.__gy, self.__gz = 0, 0, 0
-        self.__mx, self.__my, self.__mz = 0, 0, 0
-        self.__yaw, self.__roll, self.__pitch = 0, 0, 0
+        # Matches the original, which deliberately does NOT clear the encoders.
+        self.__imu = _ZERO_IMU
+        self.__att = _ZERO_ATT
+        self.__motion = _ZERO_MOTION
 
     # 读取阿克曼类型(R2)小车前轮舵机默认角度。
     def get_akm_default_angle(self):
@@ -1094,58 +1285,73 @@ class Rosmaster(object):
     # 获取加速度计三轴数据，返回a_x, a_y, a_z
     # Get accelerometer triaxial data, return a_x, a_y, a_z
     def get_accelerometer_data(self):
-        a_x, a_y, a_z = self.__ax, self.__ay, self.__az
-        # self.__ax, self.__ay, self.__az = 0, 0, 0
-        return a_x, a_y, a_z
+        s = self.__imu
+        return s.ax, s.ay, s.az
 
     # 获取陀螺仪三轴数据，返回g_x, g_y, g_z
     # Get the gyro triaxial data, return g_x, g_y, g_z
     def get_gyroscope_data(self):
-        g_x, g_y, g_z = self.__gx, self.__gy, self.__gz
-        # self.__gx, self.__gy, self.__gz = 0, 0, 0
-        return g_x, g_y, g_z
+        s = self.__imu
+        return s.gx, s.gy, s.gz
 
-    # 获取磁力计三轴数据，返回m_x, m_y, m_z
+    # 获取磁力计三轴数据，返回m_x, m_y, m_z (tesla)
     def get_magnetometer_data(self):
-        m_x, m_y, m_z = self.__mx, self.__my, self.__mz
-        # self.__mx, self.__my, self.__mz = 0, 0, 0
-        return m_x, m_y, m_z
+        s = self.__imu
+        return s.mx, s.my, s.mz
 
     # 获取板子姿态角，返回yaw, roll, pitch
     # ToAngle=True返回角度，ToAngle=False返回弧度。
+    # NOTE: firmware V2.4 never emits FUNC_REPORT_IMU_ATT (0x0C), so on this
+    # board this getter returns zeros forever. Check get_attitude_sample().seq
+    # before trusting it.
     def get_imu_attitude_data(self, ToAngle=True):
+        s = self.__att
         if ToAngle:
             RtA = 57.2957795
-            roll = self.__roll * RtA
-            pitch = self.__pitch * RtA
-            yaw = self.__yaw * RtA
-        else:
-            roll, pitch, yaw = self.__roll, self.__pitch, self.__yaw
-        # self.__roll, self.__pitch, self.__yaw = 0, 0, 0
-        return roll, pitch, yaw
+            return s.roll * RtA, s.pitch * RtA, s.yaw * RtA
+        return s.roll, s.pitch, s.yaw
 
     # 获取小车速度，val_vx, val_vy, val_vz
     # Get the car speed, val_vx, val_vy, val_vz
     def get_motion_data(self):
-        val_vx = self.__vx
-        val_vy = self.__vy
-        val_vz = self.__vz
-        # self.__vx, self.__vy, self.__vz = 0, 0, 0
-        return val_vx, val_vy, val_vz
+        s = self.__motion
+        return s.vx, s.vy, s.vz
 
     # 获取电池电压值
     # Get the battery voltage
     def get_battery_voltage(self):
-        vol = self.__battery_voltage / 10.0
-        # self.__battery_voltage = 0
-        return vol
+        return self.__motion.battery / 10.0
 
     # 获取四路电机编码器数据
     # Obtain data of four-channel motor encoder
     def get_motor_encoder(self):
-        m1, m2, m3, m4 = self.__encoder_m1, self.__encoder_m2, self.__encoder_m3, self.__encoder_m4
-        # self.__encoder_m1, self.__encoder_m2, self.__encoder_m3, self.__encoder_m4 = 0, 0, 0, 0
-        return m1, m2, m3, m4
+        s = self.__enc
+        return s.m1, s.m2, s.m3, s.m4
+
+    # --- consistent, timestamped snapshots -------------------------------
+    # Prefer these over the individual getters above: each returns one packet's
+    # worth of fields captured at a single instant, plus a monotonic stamp `t`
+    # and a `seq` counter. Calling get_accelerometer_data() and then
+    # get_gyroscope_data() can straddle two packets; this cannot.
+    def get_imu_sample(self):
+        """Latest ImuSample(gx gy gz ax ay az mx my mz t seq)."""
+        return self.__imu
+
+    def get_attitude_sample(self):
+        """Latest AttSample(roll pitch yaw t seq), radians."""
+        return self.__att
+
+    def get_motion_sample(self):
+        """Latest MotionSample(vx vy vz battery t seq); battery is 0.1 V units."""
+        return self.__motion
+
+    def get_encoder_sample(self):
+        """Latest EncSample(m1 m2 m3 m4 t seq)."""
+        return self.__enc
+
+    def get_imu_kind(self):
+        """'mpu9250', 'icm20948', or None if no raw IMU packet has arrived."""
+        return self.__imu_kind
 
     # 获取小车的运动PID参数, 返回[kp, ki, kd]
     # Get the motion PID parameters of the dolly and return [kp, ki, kd]
@@ -1201,18 +1407,26 @@ class Rosmaster(object):
     # 获取底层单片机版本号，如1.1
     # Get the underlying microcontroller version number, such as 1.1
     def get_version(self):
-        if self.__version_H == 0:
-            self.__request_data(self.FUNC_VERSION)
-            for i in range(0, 20):
-                if self.__version_H != 0:
-                    val = self.__version_H * 1.0
-                    self.__version = val + self.__version_L / 10.0
-                    if self.__debug:
-                        print("get_version:V{0}, i:{1}".format(self.__version, i))
-                    return self.__version
-                time.sleep(.001)
-        else:
+        # Mcnamu_driver_X3.pub_data calls this every publish cycle (20 Hz). The
+        # stock version re-requested and then busy-polled for 20 ms on EVERY
+        # call whenever the version had not arrived yet - 20 spurious request
+        # frames/s onto the shared UART plus ~44% of the driver's wall clock
+        # burnt in a sleep loop, which is precisely the state you are in after
+        # the receive thread has died. Rate-limit the retry instead.
+        if self.__version_H != 0:
             return self.__version
+        now = time.monotonic()
+        if now - self.__version_last_req < 5.0:
+            return -1
+        self.__version_last_req = now
+        self.__request_data(self.FUNC_VERSION)
+        for i in range(0, 20):
+            if self.__version_H != 0:
+                self.__version = self.__version_H * 1.0 + self.__version_L / 10.0
+                if self.__debug:
+                    print("get_version:V{0}, i:{1}".format(self.__version, i))
+                return self.__version
+            time.sleep(.001)
         return -1
 
 

@@ -104,9 +104,21 @@ class Rosmaster:
         """Return (gx, gy, gz, ax, ay, az) in rad/s and m/s²."""
         if self.sim_mode or not self._bot:
             return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
-        gx, gy, gz = self._bot.get_gyroscope_data()
-        ax, ay, az = self._bot.get_accelerometer_data()
-        return gx, gy, gz, ax, ay, az
+        # One snapshot, so the gyro and accelerometer describe the same instant.
+        s = self._bot.get_imu_sample()
+        return s.gx, s.gy, s.gz, s.ax, s.ay, s.az
+
+    def telemetry_healthy(self, max_age=0.5):
+        """False if the board has not delivered a valid frame recently."""
+        if self.sim_mode or not self._bot:
+            return True
+        return self._bot.rx_healthy(max_age)
+
+    def telemetry_stats(self):
+        """RX counters: frames, checksum_err, malformed, errors, last_frame_age."""
+        if self.sim_mode or not self._bot:
+            return {}
+        return self._bot.rx_stats()
 
     def get_imu_attitude(self):
         """Return (roll, pitch, yaw) in radians from the board's onboard fusion filter."""
@@ -126,7 +138,13 @@ class Rosmaster:
     def cleanup(self):
         self.stop()
         if self._bot:
-            del self._bot
+            # Shut the receive thread down before dropping the reference, so the
+            # port is closed by stop() rather than out from under a blocked
+            # read() during garbage collection.
+            try:
+                self._bot.stop()
+            except Exception as e:
+                logger.warning("Rosmaster shutdown error: %s", e)
             self._bot = None
 
 

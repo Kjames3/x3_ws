@@ -6,6 +6,7 @@ import sys
 import math
 import random
 import threading
+import time
 from math import pi
 from time import sleep
 from .Rosmaster_Lib import Rosmaster
@@ -84,9 +85,12 @@ class yahboomcar_driver(Node):
 		#create and init variable
 		self.edition = Float32()
 		self.edition.data = 1.0
-		self.car.create_receive_threading()
+		if not self.car.create_receive_threading():
+			self.get_logger().error("Rosmaster receive thread failed to start - no telemetry")
 		self.last_cmd_time = self.get_clock().now()
 		self.watchdog_timeout = 0.5
+		self._rx_stale = False      # edge-trigger for the staleness warning
+		self._edition = -1          # cached firmware version
 	#callback function
 	def cmd_vel_callback(self, msg):
 		# Compute mecanum kinematics here and send per-wheel PWM via set_motor().
@@ -155,6 +159,23 @@ class yahboomcar_driver(Node):
 		if dt > self.watchdog_timeout:
 			self.car.set_motor(0, 0, 0, 0)
 
+		# Telemetry staleness gate. If the serial receive thread has stopped
+		# delivering frames, every getter keeps returning its last value.
+		# Republishing that frozen reading with a fresh timestamp is worse than
+		# publishing nothing: the Madgwick filter and the robot_localization EKF
+		# fuse a constant IMU reading as "the robot is perfectly still", which is
+		# exactly the input that makes an EKF confidently wrong about /odom.
+		if not self.car.rx_healthy(0.5):
+			if not self._rx_stale:
+				self._rx_stale = True
+				self.get_logger().warn(
+					"Rosmaster telemetry stale (%s) - suspending /imu, /vel_raw, /mag"
+					% (self.car.rx_stats(),))
+			return
+		if self._rx_stale:
+			self._rx_stale = False
+			self.get_logger().info("Rosmaster telemetry recovered")
+
 		time_stamp = Clock().now()
 		imu = Imu()
 		twist = Twist()
@@ -172,15 +193,22 @@ class yahboomcar_driver(Node):
 							self.Prefix+"front_right_steer_joint", self.Prefix+"front_right_wheel_joint"]
 		
 		#print ("mag: ",self.car.get_magnetometer_data())		
-		edition.data = self.car.get_version()*1.0
-		battery.data = self.car.get_battery_voltage()*1.0
-		ax, ay, az = self.car.get_accelerometer_data()
-		gx, gy, gz = self.car.get_gyroscope_data()
-		mx, my, mz = self.car.get_magnetometer_data()
-		mx = mx * 1.0
-		my = my * 1.0
-		mz = mz * 1.0
-		vx, vy, angular = self.car.get_motion_data()
+		# Cache the firmware version instead of asking on every 20 Hz cycle.
+		if self._edition <= 0:
+			self._edition = self.car.get_version()
+		edition.data = self._edition*1.0
+		# ONE snapshot per packet, not five independent getters. Each getter call
+		# is an eval-breaker checkpoint, so the receive thread could land a new
+		# packet between them and produce an Imu message whose accelerometer and
+		# gyroscope describe different instants (~0.125% of messages at 20 Hz,
+		# roughly one bad message every 40 s).
+		imu_s = self.car.get_imu_sample()
+		mot_s = self.car.get_motion_sample()
+		battery.data = mot_s.battery / 10.0
+		ax, ay, az = imu_s.ax, imu_s.ay, imu_s.az
+		gx, gy, gz = imu_s.gx, imu_s.gy, imu_s.gz
+		mx, my, mz = imu_s.mx*1.0, imu_s.my*1.0, imu_s.mz*1.0
+		vx, vy, angular = mot_s.vx, mot_s.vy, mot_s.vz
 		'''print("vx: ",vx)
 		print("vy: ",vy)
 		print("angular: ",angular)'''
@@ -193,7 +221,13 @@ class yahboomcar_driver(Node):
 		imu.linear_acceleration.z = az*1.0
 		imu.angular_velocity.x = gx*1.0
 		imu.angular_velocity.y = gy*1.0
-		# We negate gz to align with the ROS CCW positive convention because the physical IMU sensor is inverted.
+		# KNOWN-UNRESOLVED double negation: Rosmaster_Lib already negates gz for
+		# the MPU9250 (see _GYRO_SIGNS there), so this second negation cancels it
+		# and the published value carries the RAW sensor sign. The two negations
+		# are kept as a matched pair because removing either one flips /odom.
+		# To settle it: rotate the chassis by hand and check that
+		# /imu/data_raw.angular_velocity.z is positive for CCW-from-above
+		# (REP-103), then delete exactly one negation.
 		imu.angular_velocity.z = -gz*1.0
 
 		mag.header.stamp = time_stamp.to_msg()
@@ -209,7 +243,7 @@ class yahboomcar_driver(Node):
 		# (which reads the physical sensor directly) as the angular velocity source.
 		twist.linear.x = vx *1.0
 		twist.linear.y = vy *1.0
-		# We negate gz to align with the ROS CCW positive convention because the physical IMU sensor is inverted.
+		# Same matched double negation as imu.angular_velocity.z above.
 		twist.angular.z = -gz   # Use IMU gyro instead of firmware's wrong vz
 		self.velPublisher.publish(twist)
 		# print("ax: %.5f, ay: %.5f, az: %.5f" % (ax, ay, az))
