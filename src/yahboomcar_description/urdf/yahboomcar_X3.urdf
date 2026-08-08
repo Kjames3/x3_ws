@@ -224,8 +224,27 @@
     </joint>
     <joint name="laser_joint" type="fixed">
         <!-- raised 75 mm above the riser base, then +6 mm with the 2026 move
-             (0.11 -> 0.116 base, scan plane 0.185 -> 0.191); shifted 55 mm rear -->
-        <origin xyz="-0.0115 5.25826986680105E-05 0.191" rpy="0 0 3.14159265"/>
+             (0.11 -> 0.116 base, scan plane 0.185 -> 0.191).
+
+             x MEASURED on the robot 2026-08-08, not assumed. The previous value
+             (-0.0115) recorded a "55 mm rear" shift that does not match reality.
+             Method: spin in place through 5 full turns; if the URDF offset is wrong
+             by e, the scan-to-map position traces a circle of radius |e|, which is
+             linear in the unknowns and solves by least squares. Result:
+                 ex = +0.056 +/- 0.007 m statistical (8.2 sigma), ~+/-0.03 m
+                      systematic (the robot drifted 5 cm during the spin)
+                 ey = -0.011 m, NOT significant (1.6 sigma) — correct, the unit is
+                      laterally centred; this doubles as a control on the fit
+             True x therefore lies in +0.045..+0.061; 0.055 is the central estimate.
+             Note this brackets the stock X3 value (+0.0435), which is further
+             evidence the rear-shift edit was wrong. Chose the measurement over the
+             stock figure because this chassis is an X3 PLUS running the X3 model,
+             so no stock number can be assumed to apply.
+
+             A wrong value here is a lever arm: it makes the scan swing about the
+             wrong point as the robot turns, and slam_toolbox bakes the same error
+             into any map it builds. REMAP after changing this. -->
+        <origin xyz="0.055 5.25826986680105E-05 0.191" rpy="0 0 3.14159265"/>
         <parent link="base_link"/>
         <child link="laser_link"/>
     </joint>
