@@ -249,6 +249,7 @@ class VelocityEstimator:
         self._last_cycle_start = None
         self._rate_warn_time = 0.0
         self._incoherent_log_time = 0.0
+        self._legacy_path_warned = False
 
         self._load_model()
 
@@ -533,47 +534,22 @@ class VelocityEstimator:
                 
             return centroids[:MAX_OBSTACLES]
 
-        if depth_frame is None:
-            return []
+        # ── Legacy colourised-depth fallback ──────────────────────────────────
+        # Reached only when the source has no get_raw_depth_frame() — i.e. the old
+        # AstraCamera. This path CANNOT recover metric depth: it thresholds a
+        # colourised image and previously assigned every centroid a hardcoded
+        # Z = 1.0 m. That is not a degraded estimate, it is a fabricated one, and it
+        # propagates into the tracker and the MLP as though it were measured, which
+        # then feeds the consumer's TTC braking. Refuse instead of inventing depth.
+        if not self._legacy_path_warned:
+            self._legacy_path_warned = True
+            logger.error(
+                "VelocityEstimator: depth source exposes no get_raw_depth_frame(); "
+                "the legacy colourised-depth path cannot produce metric depth, so no "
+                "obstacles will be reported. Use the OAK-D (or a source providing raw "
+                "metric depth) for velocity estimation.")
+        return []
 
-        # Downsample depth_frame (Idea 81 & 136)
-        depth_frame = depth_frame[::2, ::2]
-
-        # Convert to grayscale — bright pixels are near objects
-        gray = cv2.cvtColor(depth_frame, cv2.COLOR_BGR2GRAY)
-
-        # Threshold: keep pixels brighter than 120 (near objects)
-        _, thresh = cv2.threshold(gray, 120, 255, cv2.THRESH_BINARY)
-
-        # Morphological cleanup
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN,  kernel)
-        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-
-        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL,
-                                        cv2.CHAIN_APPROX_SIMPLE)
-        centroids = []
-        h, w = depth_frame.shape[:2]
-
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
-            if area < (MIN_BLOB_AREA / 4.0):
-                continue
-            M  = cv2.moments(cnt)
-            if M['m00'] == 0:
-                continue
-            cx = M['m10'] / M['m00']
-            cy = M['m01'] / M['m00']
-
-            # Calculate actual Z (depth) in meters using the raw depth frame
-            Z = 1.0
-            fx = 277.0
-            x_m = (cx - w / 2.0) * Z / fx
-            y_m = (cy - h / 2.0) * Z / fx
-
-            centroids.append((x_m, y_m, Z))
-
-        return centroids[:MAX_OBSTACLES]
 
     @staticmethod
     def _track_straightness(history_local):
