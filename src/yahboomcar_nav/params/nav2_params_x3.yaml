@@ -27,8 +27,16 @@ amcl:
     global_frame_id: "map"
     lambda_short: 0.1
     laser_likelihood_max_dist: 2.0
-    laser_max_range: 100.0
-    laser_min_range: -1.0
+    # Match the YDLidar X3's real usable range rather than the 100 m default, so the
+    # likelihood field is not built over ranges the sensor cannot produce.
+    laser_max_range: 8.0
+    # Reject the lidar's self-returns off the robot body / mount posts (~0.26-0.35 m at
+    # +24 deg / -18 deg; the unit is mounted low at laser_joint z=0.11 m). Left at the
+    # -1.0 default these are fed to the likelihood field as if they were real structure,
+    # and because they sit at a fixed bearing in the robot frame they pull the particle
+    # filter toward whatever pose keeps them consistent. Same rationale and same value as
+    # slam_toolbox's min_laser_range. Revert once the lidar is raised.
+    laser_min_range: 0.40
     laser_model_type: "likelihood_field"
     max_beams: 60
     max_particles: 2000

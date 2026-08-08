@@ -15,6 +15,15 @@ slam_toolbox:
     # Resolution and range
     resolution: 0.05
     max_laser_range: 8.0
+    # The YDLidar sits low (laser_joint z=0.11 m) and its rear/side beams strike the
+    # robot's own body and the two mount posts at +24 deg / -18 deg, ~0.26-0.35 m.
+    # Those returns are fixed in the ROBOT frame, so while mapping they smear a ring of
+    # phantom obstacles along the driven path AND bias scan matching toward "no motion"
+    # (the self-returns never move between scans). Nothing structural in an indoor room
+    # is closer than 0.4 m, so drop everything below that when building the map. This is
+    # scoped to slam_toolbox only — the raw /scan and the manual-drive CBF filter are
+    # untouched. Revert to 0.0 once the lidar is raised (see LIDAR_MOUNT_PLAN.md).
+    min_laser_range: 0.40
 
     # Minimum movement before updating the map (reduces CPU during drift)
     minimum_travel_distance: 0.1
