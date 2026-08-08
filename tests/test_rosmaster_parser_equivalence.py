@@ -146,9 +146,19 @@ def load_module(path, name):
 
 
 def load_baseline():
-    """Materialise the pre-fix Rosmaster_Lib from git and import it."""
-    src = subprocess.check_output(
-        ['git', '-C', REPO, 'show', '%s:%s' % (BASELINE_REF, BASELINE_PATH)])
+    """Materialise the pre-fix Rosmaster_Lib and import it.
+
+    Normally read out of git, but ROSMASTER_BASELINE_FILE lets the suite run
+    somewhere the pre-fix revision is not in local history -- e.g. on the robot,
+    whose checkout has a diverged history.
+    """
+    explicit = os.environ.get('ROSMASTER_BASELINE_FILE')
+    if explicit:
+        with open(explicit, 'rb') as f:
+            src = f.read()
+    else:
+        src = subprocess.check_output(
+            ['git', '-C', REPO, 'show', '%s:%s' % (BASELINE_REF, BASELINE_PATH)])
     fd, tmp = tempfile.mkstemp(suffix='_baseline.py', prefix='rosmaster_')
     with os.fdopen(fd, 'wb') as f:
         f.write(src)
