@@ -43,12 +43,55 @@ def procs(pattern):
         return 0
 
 
+def _ros(cmd, timeout=180):
+    full = (f'source /opt/ros/humble/setup.bash && '
+            f'source {os.path.expanduser("~")}/x3_ws/install/setup.bash && '
+            f'export ROS_DOMAIN_ID=${{ROS_DOMAIN_ID:-42}} && {cmd}')
+    r = subprocess.run(["bash", "-c", full], capture_output=True, text=True,
+                       timeout=timeout)
+    return r.returncode, (r.stdout or "") + (r.stderr or "")
+
+
 def call_service(srv, srv_type, payload):
-    cmd = (f'source /opt/ros/humble/setup.bash && '
-           f'source {os.path.expanduser("~")}/x3_ws/install/setup.bash && '
-           f'ros2 service call {srv} {srv_type} "{payload}"')
-    r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=60)
-    return r.returncode == 0 and "result=0" in (r.stdout or ""), (r.stdout or r.stderr)
+    rc, out = _ros(f'ros2 service call {srv} {srv_type} "{payload}"', timeout=120)
+    return rc == 0 and "result=0" in out, out
+
+
+def save_grid(base):
+    """Save the occupancy grid with nav2's map_saver_cli.
+
+    NOT slam_toolbox's /slam_toolbox/save_map service: that spins up an internal
+    map_saver with a VOLATILE subscription and a ~2 s window, so it only catches
+    a map if slam_toolbox happens to publish during those two seconds. In
+    practice it fails with "Failed to spin map subscription" and returns 255.
+    slam_toolbox latches /map, so a transient_local subscription gets the
+    retained message immediately and deterministically.
+    """
+    out_dir, name = os.path.dirname(base), os.path.basename(base)
+    rc, out = _ros(
+        f'cd "{out_dir}" && ros2 run nav2_map_server map_saver_cli -f "{name}" '
+        f'--ros-args -p map_subscribe_transient_local:=true '
+        f'-p save_map_timeout:=20.0')
+    return ("Map saved successfully" in out), out
+
+
+def map_publishers():
+    """Who is publishing /map, by node name.
+
+    A process check is not enough. A map_server killed with SIGKILL — or one on
+    another machine on the same ROS_DOMAIN_ID — leaves a live publisher on the
+    topic that `pgrep` on this host cannot see. Since the save reads the /map
+    TOPIC, any second publisher can win the race.
+    """
+    rc, out = _ros("ros2 topic info /map --verbose", timeout=60)
+    nodes, current = [], None
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith("Node name:"):
+            current = line.split(":", 1)[1].strip()
+        elif line.startswith("Endpoint type: PUBLISHER") and current:
+            nodes.append(current)
+    return nodes
 
 
 def verify(pgm_path):
@@ -109,14 +152,23 @@ def main():
         print("\nslam_toolbox is not running — nothing to save.")
         sys.exit(1)
 
+    pubs = map_publishers()
+    print(f"/map publishers: {pubs or '(none seen)'}")
+    others = [p for p in pubs if p != "slam_toolbox"]
+    if others:
+        print(f"\nREFUSING TO SAVE: /map also published by {others}.\n"
+              "The save reads the /map topic, so this is a coin flip. Note these\n"
+              "may be on ANOTHER MACHINE on the same ROS_DOMAIN_ID, or a stale DDS\n"
+              "endpoint left by a SIGKILLed node — a local `ps` will look clean.")
+        sys.exit(1)
+
     os.makedirs(MAPS_DIR, exist_ok=True)
     base = os.path.join(MAPS_DIR, name)
 
     print(f"\nsaving occupancy grid -> {base}.pgm/.yaml")
-    ok, out = call_service("/slam_toolbox/save_map", "slam_toolbox/srv/SaveMap",
-                           f'{{name: {{data: {base}}}}}')
+    ok, out = save_grid(base)
     if not ok:
-        print("save_map FAILED:\n" + out)
+        print("map_saver_cli FAILED:\n" + out)
         sys.exit(1)
 
     print(f"saving pose graph    -> {base}.posegraph/.data")
