@@ -42,7 +42,11 @@ from launch_ros.actions import Node
 def generate_launch_description():
     nav_pkg = get_package_share_directory('yahboomcar_nav')
 
-    default_map = os.path.join(nav_pkg, 'maps', 'apartment.yaml')
+    # apartment2 is the map driven AFTER the lidar X-offset was corrected in the
+    # URDF, so its geometry is not skewed by the old -0.0115 m guess. It also
+    # covers more of the flat (9.00 x 8.40 m vs 8.40 x 7.25 m). Prefer it over
+    # `apartment`, which is kept only for comparison.
+    default_map = os.path.join(nav_pkg, 'maps', 'apartment2.yaml')
     default_params = os.path.join(nav_pkg, 'params', 'nav2_params_x3.yaml')
 
     use_sim_time = LaunchConfiguration('use_sim_time')
