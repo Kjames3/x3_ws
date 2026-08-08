@@ -222,6 +222,17 @@ class VelocityEstimator:
         self._intr = None            # (fx, fy, cx, cy) for the downsampled frame
         self._intr_warned = False
 
+        # Depth-frame freshness and real loop-rate tracking. The MLP consumes
+        # PER-FRAME displacements and implicitly assumes they arrive at INFER_HZ, so
+        # both a stalled camera and a slipping loop corrupt the velocity scale — and
+        # neither was measured or even detectable before.
+        self._last_raw_depth = None
+        self._last_depth_age = None
+        self._stale_frames = 0
+        self._cycle_times = deque(maxlen=50)
+        self._last_cycle_start = None
+        self._rate_warn_time = 0.0
+
         self._load_model()
 
     def _resolve_intrinsics(self, cam_src, shape):
@@ -280,14 +291,29 @@ class VelocityEstimator:
         return self._intr
 
     def _load_model(self):
+        """Load the TorchScript model and its scaler as an ALL-OR-NOTHING pair.
+
+        Previously both loads shared one try/except that only logged. If the scaler
+        load failed, self._model was already assigned, so start() — which checks only
+        `self._model is None` — happily started the thread. Every iteration then raised
+        on `features_batch - self.scaler_X_mean` inside the loop's outer handler, so
+        `self._estimates` was never assigned and get_estimates() returned a frozen
+        empty list forever. Predictive mode silently degraded to reactive with nothing
+        but one error line per loop to show for it.
+
+        Now the model is only published to self._model once the scaler is known good,
+        so a partial failure leaves the estimator cleanly disabled rather than
+        half-alive.
+        """
+        model = None
         try:
-            self._model    = torch.jit.load(self.model_path, map_location='cpu')
-            self._model.eval()
+            model = torch.jit.load(self.model_path, map_location='cpu')
+            model.eval()
             
             # JIT Trace optimization (Idea 137)
             dummy_input = torch.zeros((MAX_OBSTACLES, 40), dtype=torch.float32)
             try:
-                self._model = torch.jit.trace(self._model, dummy_input)
+                model = torch.jit.trace(model, dummy_input)
                 logger.info("VelocityEstimator: model JIT traced successfully")
             except Exception as trace_err:
                 logger.warning(f"VelocityEstimator: JIT tracing failed (falling back to untraced): {trace_err}")
@@ -295,16 +321,44 @@ class VelocityEstimator:
             # Load scaler parameters directly from JSON (Idea 72)
             with open(SCALER_PARAMS_PATH, "r") as f:
                 params = json.load(f)
-            
-            self.scaler_X_mean = np.array(params["scaler_X"]["mean"], dtype=np.float32)
-            self.scaler_X_scale = np.array(params["scaler_X"]["scale"], dtype=np.float32)
-            self.scaler_X_inv_scale = (1.0 / self.scaler_X_scale).astype(np.float32)
-            self.scaler_y_mean = np.array(params["scaler_y"]["mean"], dtype=np.float32)
-            self.scaler_y_scale = np.array(params["scaler_y"]["scale"], dtype=np.float32)
-            
+
+            x_mean = np.array(params["scaler_X"]["mean"], dtype=np.float32)
+            x_scale = np.array(params["scaler_X"]["scale"], dtype=np.float32)
+            y_mean = np.array(params["scaler_y"]["mean"], dtype=np.float32)
+            y_scale = np.array(params["scaler_y"]["scale"], dtype=np.float32)
+
+            # Validate before publishing anything. A silently wrong-shaped or
+            # zero-scale scaler would otherwise produce inf/NaN velocities that look
+            # like real obstacle motion to the consumer.
+            n_feat = WINDOW_SIZE * 4
+            if x_mean.shape != (n_feat,) or x_scale.shape != (n_feat,):
+                raise ValueError(
+                    f"scaler_X shape {x_mean.shape}/{x_scale.shape} != ({n_feat},)")
+            if y_mean.shape != (2,) or y_scale.shape != (2,):
+                raise ValueError(
+                    f"scaler_y shape {y_mean.shape}/{y_scale.shape} != (2,)")
+            if not np.all(np.isfinite(x_scale)) or np.any(np.abs(x_scale) < 1e-9):
+                raise ValueError("scaler_X.scale contains zero or non-finite entries")
+            if not np.all(np.isfinite(y_scale)):
+                raise ValueError("scaler_y.scale contains non-finite entries")
+
+            self.scaler_X_mean = x_mean
+            self.scaler_X_scale = x_scale
+            self.scaler_X_inv_scale = (1.0 / x_scale).astype(np.float32)
+            self.scaler_y_mean = y_mean
+            self.scaler_y_scale = y_scale
+            # Publish the model LAST: until this line the estimator stays disabled,
+            # so a scaler failure can never leave it half-initialised.
+            self._model = model
+
             logger.info(f"VelocityEstimator: model {self.model_path} and scaler parameters loaded")
         except Exception as e:
-            logger.error(f"VelocityEstimator: failed to load model {self.model_path}: {e}")
+            self._model = None
+            self.scaler_X_mean = self.scaler_X_scale = self.scaler_X_inv_scale = None
+            self.scaler_y_mean = self.scaler_y_scale = None
+            logger.error(
+                f"VelocityEstimator: failed to load model/scaler ({self.model_path}): {e} "
+                f"— velocity estimation DISABLED (estimates will report zero velocity)")
 
     def _extract_depth_centroids(self, depth_frame, raw_depth_frame=None, intr=None):
         """
@@ -567,11 +621,56 @@ class VelocityEstimator:
         while self._running:
             t0 = time.monotonic()
 
+            # Measure the ACTUAL cycle interval. The features are per-frame
+            # displacements, so predicted speed scales with the real rate: at 5 Hz a
+            # 1.2 m/s walker's displacements look like 2.4 m/s until the +-0.25 m clamp
+            # truncates them. Nothing measured this before, so a loop slipping under
+            # CPU load silently corrupted every velocity with no symptom to see.
+            if self._last_cycle_start is not None:
+                self._cycle_times.append(t0 - self._last_cycle_start)
+            self._last_cycle_start = t0
+            if len(self._cycle_times) == self._cycle_times.maxlen:
+                mean_dt = sum(self._cycle_times) / len(self._cycle_times)
+                if mean_dt > dt * 1.35 and (t0 - self._rate_warn_time) > 30.0:
+                    self._rate_warn_time = t0
+                    logger.warning(
+                        f"VelocityEstimator: loop running at {1.0/mean_dt:.1f} Hz vs "
+                        f"target {INFER_HZ} Hz — predicted speeds are inflated by "
+                        f"~{mean_dt/dt:.2f}x. Stale depth frames skipped so far: "
+                        f"{self._stale_frames}")
+
             try:
                 # 1. Get depth and raw depth frames
                 cam_src = self.camera() if callable(self.camera) else self.camera
                 depth_frame = cam_src.get_depth_frame() if (cam_src is not None and hasattr(cam_src, 'get_depth_frame')) else None
                 raw_depth_frame = cam_src.get_raw_depth_frame() if (cam_src is not None and hasattr(cam_src, 'get_raw_depth_frame')) else None
+
+                # Skip frames we have already processed. The loop polls at INFER_HZ but
+                # the OAK delivers depth at its own rate; re-processing an identical
+                # array yields dx=0 for every track, which trips the is_stopped gate and
+                # force-zeros the velocity of a genuinely moving pedestrian. The driver
+                # exposes a frame age for exactly this — use it when available, and fall
+                # back to array identity otherwise.
+                if raw_depth_frame is not None:
+                    age_fn = getattr(cam_src, "get_depth_frame_age", None)
+                    stale = False
+                    if callable(age_fn):
+                        try:
+                            age = float(age_fn())
+                            stale = (self._last_depth_age is not None
+                                     and age >= self._last_depth_age
+                                     and raw_depth_frame is self._last_raw_depth)
+                            self._last_depth_age = age
+                        except Exception:
+                            stale = raw_depth_frame is self._last_raw_depth
+                    else:
+                        stale = raw_depth_frame is self._last_raw_depth
+                    self._last_raw_depth = raw_depth_frame
+                    if stale:
+                        self._stale_frames += 1
+                        elapsed = time.monotonic() - t0
+                        time.sleep(max(0.001, dt - elapsed))
+                        continue
 
                 # Fast-path: skip all processing when no valid depth data exists
                 if raw_depth_frame is not None and raw_depth_frame.size > 0:
