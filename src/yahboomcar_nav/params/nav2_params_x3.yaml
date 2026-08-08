@@ -66,7 +66,13 @@ amcl:
     # built from avoids any systematic difference between mapping and localisation.
     scan_topic: /scan_fixed
     save_pose_rate: 0.5
-    sigma_hit: 0.2
+    # Width of the Gaussian around a map obstacle in the likelihood field. 0.2 m on a
+    # 0.05 m map is very smooth: a 20 cm mismatch still scores as a good hit, so many
+    # wrong poses score nearly as well as the right one and the filter cannot sharpen
+    # past roughly that scale. Observed live: global relocalization plateaued at a
+    # 1-sigma of 0.38 m / 18.6 deg and stopped improving. 0.1 m still tolerates the
+    # X3's ranging noise while actually discriminating.
+    sigma_hit: 0.1
     tf_broadcast: true
     # Seed the filter so it publishes map->odom immediately rather than waiting
     # silently for an /initialpose message (which presents as a hang).
@@ -89,9 +95,16 @@ amcl:
     transform_tolerance: 1.0
     update_min_a: 0.2
     update_min_d: 0.25
-    z_hit: 0.5
+    # Beam-model mixture weights. These must sum to 1.0; the previous values summed to
+    # 1.1, and more importantly z_hit=0.5 / z_rand=0.5 told AMCL that HALF of every
+    # scan is uniform random noise. That flattens the likelihood field and is a direct
+    # cause of the filter refusing to converge below ~0.38 m. The YDLidar against a
+    # clean 5 cm map is far better than that: most beams really do hit mapped
+    # structure, so weight z_hit accordingly and leave a small z_rand for the genuine
+    # outliers (people, moved furniture, specular dropouts).
+    z_hit: 0.85
     z_max: 0.05
-    z_rand: 0.5
+    z_rand: 0.05
     z_short: 0.05
 
 bt_navigator:
