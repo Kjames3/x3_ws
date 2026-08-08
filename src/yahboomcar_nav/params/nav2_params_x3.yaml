@@ -14,11 +14,20 @@
 amcl:
   ros__parameters:
     use_sim_time: False
-    alpha1: 0.2
-    alpha2: 0.2
-    alpha3: 0.2
-    alpha4: 0.2
-    alpha5: 0.2
+    # Motion-model noise: how much AMCL distrusts odometry between updates. All five
+    # at 0.2 is a lot, and it does not match this robot — the odometry was measured
+    # accurate to 1% in rotation (wheel and gyro agreeing over a 354 deg sweep) and
+    # ~0.22 m over a 50 s drive. With noise that large the particle cloud spreads
+    # aggressively every update and the measurement step then picks whichever particle
+    # scores best; in a repetitive rectilinear apartment that is a random walk, which
+    # showed up as the map->odom correction sliding ~80 deg over a single 60 s run
+    # while the true heading error cannot have exceeded a few degrees.
+    # Lowered to match the measured odometry quality.
+    alpha1: 0.05   # rotation noise from rotation
+    alpha2: 0.05   # rotation noise from translation
+    alpha3: 0.05   # translation noise from translation
+    alpha4: 0.05   # translation noise from rotation
+    alpha5: 0.05   # strafe noise (omni model only)
     base_frame_id: "base_footprint"
     beam_skip_distance: 0.5
     beam_skip_error_threshold: 0.9
