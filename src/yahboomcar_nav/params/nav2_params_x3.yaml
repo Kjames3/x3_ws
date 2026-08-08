@@ -37,14 +37,24 @@ amcl:
     # away real close-range structure that AMCL could otherwise localise against.
     laser_min_range: -1.0
     laser_model_type: "likelihood_field"
-    max_beams: 60
+    # 60 (the Nav2 default) is thin for a small, feature-rich apartment: it left the
+    # filter under-constrained enough to hop between hypotheses. /scan_fixed carries
+    # 720 beams, so 180 is still only a quarter of them and costs little on the Orin.
+    max_beams: 180
     max_particles: 2000
     min_particles: 500
     odom_frame_id: "odom"
     pf_err: 0.05
     pf_z: 0.99
-    recovery_alpha_fast: 0.0
-    recovery_alpha_slow: 0.0
+    # Both zero DISABLES AMCL's recovery behaviour. With an imperfect initial pose the
+    # filter then has no mechanism to redistribute particles toward the true pose — it
+    # wanders among bad local optima instead. Observed live: the map->odom correction
+    # swinging from -17 deg to +89 deg over one 50 s drive, ending 3.6 m out while raw
+    # odometry was within 0.22 m. These are the standard nav2 recovery values: the fast
+    # and slow exponential averages of measurement likelihood, whose divergence triggers
+    # injection of random particles.
+    recovery_alpha_fast: 0.1
+    recovery_alpha_slow: 0.001
     resample_interval: 1
     # OmniMotionModel is correct for holonomic (mecanum) robots.
     # DifferentialMotionModel (the DWA default) would produce bad localisation
@@ -58,13 +68,18 @@ amcl:
     save_pose_rate: 0.5
     sigma_hit: 0.2
     tf_broadcast: true
-    # Seed the filter at the map origin instead of waiting for an /initialpose
-    # message. slam_toolbox starts the map frame at the robot's pose when mapping
-    # began, so (0,0,0) means "where the robot stood at the start of the mapping
-    # run" — the natural place to park it before localizing. Without this AMCL
-    # stays silent and never publishes map->odom, which looks like a hang.
-    # Override at runtime with RViz's "2D Pose Estimate" (publishes /initialpose)
-    # or nav2_client.set_initial_pose() if the robot starts somewhere else.
+    # Seed the filter so it publishes map->odom immediately rather than waiting
+    # silently for an /initialpose message (which presents as a hang).
+    #
+    # (0,0,0) is "where the robot stood when the mapping run began", since
+    # slam_toolbox anchors the map frame there. That is ONLY correct if the robot
+    # is actually parked at that spot. It is not a safe default otherwise: seeding
+    # a wrong pose sent the filter into permanent divergence in testing.
+    #
+    # ALWAYS establish the pose properly before trusting localization — either
+    # park at the mapping start point, set it with RViz's "2D Pose Estimate",
+    # or call /reinitialize_global_localization and drive until the covariance
+    # collapses (see scripts/relocalize.py).
     set_initial_pose: true
     initial_pose:
       x: 0.0
