@@ -248,6 +248,12 @@ class VelocityEstimator:
         self._cycle_times = deque(maxlen=50)
         self._last_cycle_start = None
         self._rate_warn_time = 0.0
+        # Spacing between TRACKER UPDATES — the true interval between history
+        # samples, and therefore the interval the displacement features encode.
+        # Measured separately from _cycle_times because stale frames skip the
+        # tracker entirely.
+        self._update_times = deque(maxlen=30)
+        self._last_update_time = None
         self._incoherent_log_time = 0.0
         self._legacy_path_warned = False
 
@@ -585,6 +591,22 @@ class VelocityEstimator:
           rel_y = -x (camera horizontal offset inverted / Robot Y left)
         Returns: tuple (features_numpy_array, is_stopped_boolean)
         """
+        # Rescale per-frame displacements to the interval the model was TRAINED on.
+        # The network was fitted on windows sampled every 1/INFER_HZ s, but the loop
+        # actually runs slower under load (measured 6.9-7.3 Hz on the Jetson with the
+        # OAK driver and YOLO resident). A walker then covers ~1.4x more ground
+        # between samples and reads ~1.4x too fast, with nothing in the output to
+        # show it. Scaling by nominal/measured puts the features back on the training
+        # distribution, so the prediction stays in true m/s at whatever rate the loop
+        # happens to achieve.
+        dt_scale = 1.0
+        if self._update_times:
+            mean_upd = sum(self._update_times) / len(self._update_times)
+            if mean_upd > 1e-3:
+                # Bound it: a wild ratio means something else is wrong (camera stall,
+                # first frames after a resume) and rescaling would amplify garbage.
+                dt_scale = min(3.0, max(0.33, (1.0 / INFER_HZ) / mean_upd))
+
         hist = list(history_local)
         # Pad with first entry if history shorter than window
         while len(hist) < WINDOW_SIZE:
@@ -602,8 +624,11 @@ class VelocityEstimator:
             last_3 = hist[-3:]
             disps = []
             for j in range(1, len(last_3)):
-                dx_j = last_3[j][2] - last_3[j-1][2]
-                dy_j = -last_3[j][0] - (-last_3[j-1][0])
+                # Same dt rescale as the features below: 0.01 m per sample is a
+                # speed threshold in disguise, so without this the "stopped" cutoff
+                # tightens whenever the loop slows down.
+                dx_j = (last_3[j][2] - last_3[j-1][2]) * dt_scale
+                dy_j = (-last_3[j][0] - (-last_3[j-1][0])) * dt_scale
                 disps.append(math.hypot(dx_j, dy_j))
             if all(d < 0.01 for d in disps):
                 is_stopped = True
@@ -622,9 +647,12 @@ class VelocityEstimator:
             else:
                 rx_prev = hist[i-1][2]
                 ry_prev = -hist[i-1][0]
-                dx = rx - rx_prev
-                dy = ry - ry_prev
-                # Clamp displacements to prevent noise spikes from causing extreme predictions (Idea 63)
+                dx = (rx - rx_prev) * dt_scale
+                dy = (ry - ry_prev) * dt_scale
+                # Clamp AFTER the dt rescale. The clamp is a speed ceiling
+                # (0.25 m per training frame = 2.5 m/s); clamping the raw
+                # displacement instead would make that ceiling drift with the loop
+                # rate — 2.5 m/s at 10 Hz but 1.8 m/s at 7 Hz.
                 dx = np.clip(dx, -0.25, 0.25)
                 dy = np.clip(dy, -0.25, 0.25)
             features.extend([rx_norm, ry_norm, dx, dy])
@@ -735,6 +763,19 @@ class VelocityEstimator:
                         centroids_g.append((float(global_xy[idx, 0]), float(global_xy[idx, 1]), cz))
 
                 # 4. Update tracker using global coordinate matching
+                #
+                # Measure the interval between TRACKER UPDATES, not between loop
+                # iterations. Stale frames `continue` above without touching the
+                # tracker, so history samples are spaced by this interval, and it is
+                # this spacing that the per-frame displacement features encode.
+                t_upd = time.monotonic()
+                if self._last_update_time is not None:
+                    gap = t_upd - self._last_update_time
+                    # Ignore absurd gaps (first frames after a pause / model swap).
+                    if 0.0 < gap < 1.0:
+                        self._update_times.append(gap)
+                self._last_update_time = t_upd
+
                 tracks = self._tracker.update(centroids_m, centroids_g)
 
                 # 5. Run MLP inference on active tracks (batched) (Idea 46)
