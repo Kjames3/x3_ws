@@ -156,6 +156,26 @@ def generate_launch_description():
         name='orbbec_depth_node',
     )
 
+    # ── Scan resampler ────────────────────────────────────────────────
+    # /scan (variable beam count) → /scan_fixed (constant beam count)
+    # slam_toolbox's Karto backend rejects any scan whose beam count differs from
+    # the first one it saw, and the X3's count varies every revolution. The driver's
+    # own fixed_resolution option would solve that but throws away ~a third of the
+    # scan (measured: 96.4% → 63.8% coverage, with a 110-130 deg dead arc), so the
+    # resampling is done here instead, without data loss. SLAM and AMCL consume
+    # /scan_fixed; everything else keeps using the full-fidelity /scan.
+    scan_resampler_node = Node(
+        package='yahboomcar_nav',
+        executable='scan_resampler',
+        name='scan_resampler',
+        output='screen',
+        parameters=[{
+            'input_topic':  '/scan',
+            'output_topic': '/scan_fixed',
+            'output_beams': 720,
+        }],
+    )
+
     return LaunchDescription([
         gui_arg,
         robot_state_publisher,
@@ -166,5 +186,6 @@ def generate_launch_description():
         imu_filter_node,
         ekf_node,
         ydlidar_node,
+        scan_resampler_node,
         # camera_node,
     ])

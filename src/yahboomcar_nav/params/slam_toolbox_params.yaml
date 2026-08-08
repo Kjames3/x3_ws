@@ -5,8 +5,10 @@ slam_toolbox:
     map_frame: map
     base_frame: base_footprint    # matches Yahboom X3 URDF convention
 
-    # Input
-    scan_topic: /scan
+    # Input — the RESAMPLED scan, not raw /scan. Karto registers the laser once from
+    # the first scan and rejects every later one whose beam count differs; the X3's
+    # count varies each revolution. scan_resampler republishes /scan on a fixed grid.
+    scan_topic: /scan_fixed
     use_scan_barycenter: true
 
     # Mode: online async mapping

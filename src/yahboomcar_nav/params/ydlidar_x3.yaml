@@ -10,16 +10,16 @@ ydlidar_ros2_driver_node:
     intensity: false
     sample_rate: 20               # kHz — from drivers_x3.py SAMPLE_RATE
     abnormal_check_count: 4
-    # MUST be true for SLAM. The X3 spins at a slightly variable rate, so with a free
-    # resolution each revolution yields a different number of samples (observed 2802-2871
-    # against a 2791 nominal). slam_toolbox's Karto backend registers the LaserRangeFinder
-    # once, from the first scan, and then REJECTS every scan whose beam count differs —
-    # so the map builds from the first scan or two and then silently stops updating
-    # forever ("LaserRangeScan contains N range readings, expected M" in the SLAM log).
-    # Fixing the resolution pads each scan to a constant size, which every consumer here
-    # already tolerates: the padding is 0.0 (invalid_range_is_inf is false) and all the
-    # scan loops skip r below their minimum gate.
-    fixed_resolution: true
+    # MUST stay false. Setting this true does give a constant beam count (which
+    # slam_toolbox's Karto backend requires), but the driver's re-binning silently
+    # DISCARDS about a third of the scan. Measured on the robot, back to back:
+    #   fixed_resolution: false -> 96.4% valid across all 36 bearing bins, no blind arcs
+    #   fixed_resolution: true  -> 63.8% valid, with a contiguous 110-130 degree DEAD ARC
+    #                              centred on the sensor's own 0 degree mark
+    # The constant beam count Karto needs is produced instead by the scan_resampler
+    # node (yahboomcar_nav/scan_resampler.py), which resamples this full-fidelity scan
+    # onto a fixed grid and publishes /scan_fixed. SLAM and AMCL consume that topic.
+    fixed_resolution: false
     reversion: false
     inverted: true                # FLIP_HORIZONTAL=True in our driver
     auto_reconnect: true

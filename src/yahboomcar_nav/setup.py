@@ -29,7 +29,8 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'scan_filter = yahboomcar_nav.scan_filter:main'
+            'scan_filter = yahboomcar_nav.scan_filter:main',
+            'scan_resampler = yahboomcar_nav.scan_resampler:main',
         ],
     },
 )

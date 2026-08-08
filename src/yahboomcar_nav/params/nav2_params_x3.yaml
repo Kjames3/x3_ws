@@ -50,6 +50,11 @@ amcl:
     # DifferentialMotionModel (the DWA default) would produce bad localisation
     # because it assumes the robot can only move forward/backward.
     robot_model_type: "nav2_amcl::OmniMotionModel"
+    # Consume the resampled scan for consistency with the map, which is built from
+    # /scan_fixed by slam_toolbox. Raw /scan carries a variable beam count; AMCL
+    # tolerates that, but localising against the same representation the map was
+    # built from avoids any systematic difference between mapping and localisation.
+    scan_topic: /scan_fixed
     save_pose_rate: 0.5
     sigma_hit: 0.2
     tf_broadcast: true
