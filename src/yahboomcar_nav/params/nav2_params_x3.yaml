@@ -62,8 +62,21 @@ amcl:
     # odometry was within 0.22 m. These are the standard nav2 recovery values: the fast
     # and slow exponential averages of measurement likelihood, whose divergence triggers
     # injection of random particles.
-    recovery_alpha_fast: 0.1
-    recovery_alpha_slow: 0.001
+    # Back to disabled (the nav2 default), deliberately.
+    #
+    # These were enabled to escape a wrong initial pose. That is no longer the failure
+    # mode: with scripts/set_amcl_pose.py seeding from a verified pose, AMCL locks to
+    # within ~3 cm. Recovery then does more harm than good — it injects random
+    # particles whenever short-term match likelihood dips below long-term, and a dip is
+    # routine (someone walks past, a chair moved since mapping, a specular dropout off
+    # the fridge). Measured: with alphas at 0.05 the filter tracked stably for 16 s
+    # (correction steady to 0.4 m / 6 deg), then recovery fired and teleported the pose
+    # 6 m in one update.
+    #
+    # Trade-off accepted: AMCL can no longer self-recover from being kidnapped or badly
+    # mislocalised. Re-seed manually instead — scripts/set_amcl_pose.py.
+    recovery_alpha_fast: 0.0
+    recovery_alpha_slow: 0.0
     resample_interval: 1
     # OmniMotionModel is correct for holonomic (mecanum) robots.
     # DifferentialMotionModel (the DWA default) would produce bad localisation
