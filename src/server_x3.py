@@ -90,6 +90,11 @@ from pathlib import Path
 # =============================================================================
 parser = argparse.ArgumentParser(description='Yahboom X3 Control Server (ROS2 hardware mode by default)')
 parser.add_argument('--sim', action='store_true', help='Run in simulation mode (laptop, Gazebo on demand)')
+parser.add_argument('--replay', action='store_true',
+                    help='Offline mode: replay recorded fixtures from fixtures/ instead of talking '
+                         'to ROS2 or hardware. Needs no robot, no ROS install and no DDS — build '
+                         'the fixtures once with "python3 scripts/make_fixtures.py". Motion '
+                         'commands are recorded but nothing moves; use --sim for a closed loop.')
 parser.add_argument('--domain-id', type=int, default=42, dest='domain_id',
                     help='ROS_DOMAIN_ID for multi-machine ROS2 (must match laptop). '
                          'Overrides the ROS_DOMAIN_ID environment variable.')
@@ -122,8 +127,10 @@ parser.add_argument('--webrtc-camera', action='store_true', dest='webrtc_camera'
                          'base64/WebSocket. Releases the Astra so ffmpeg can capture it at '
                          'full framerate; launches mediamtx. GUI shows the WebRTC <video>.')
 args = parser.parse_args()
-SIM_MODE  = args.sim
-ROS2_MODE = not args.sim  # ROS2 hardware bridge is the default; only --sim disables it
+REPLAY_MODE = args.replay
+SIM_MODE  = args.sim and not REPLAY_MODE
+# ROS2 hardware bridge is the default; --sim and --replay each disable it
+ROS2_MODE = not args.sim and not REPLAY_MODE
 OAK_ENABLED = not args.no_oak  # OAK-D Lite supplies stereo/depth/imu unless --no-oak
 OAK_SPATIAL = not args.no_oak_spatial  # on-device YOLO spatial detection (if blob present)
 OAK_ROS_PUBLISH = args.oak_ros_publish      # republish OAK streams as ROS2 topics (bagging/RViz)
@@ -996,7 +1003,21 @@ def initialize_hardware():
     except Exception as e:
         logger.warning(f"Shared Memory: Depth allocation failed: {e}")
 
-    if SIM_MODE:
+    if REPLAY_MODE:
+        # Offline replay: no hardware, no ROS graph, no DDS. Everything the GUI shows
+        # comes from fixtures/. Nav2 and the frontier explorer need a live rclpy node
+        # to send goals, so they stay disabled — the grid is still served, so map
+        # rendering and _find_frontier_centroids() are exercisable.
+        from replay_bridge import ReplayBridge
+        bridge = ReplayBridge()
+        bridge.start()
+        ros_bridge = bridge
+        drive = bridge
+        lidar = bridge
+        camera = bridge
+        logger.info("REPLAY mode: serving recorded fixtures — no robot, no ROS, no DDS. "
+                    "Nav2 and autonomous exploration are disabled.")
+    elif SIM_MODE:
         # Simulation mode: create the ROS2Bridge now so topics are ready to receive
         # data as soon as Gazebo starts.  Gazebo itself is launched on-demand when
         # the user clicks "🚀 Gazebo" in the GUI (launch_gazebo WS message).
@@ -1044,7 +1065,7 @@ def initialize_hardware():
     #    Only --sim uses ROS2Bridge.get_frame() (Gazebo publishes /camera/image_raw).
     #    With --webrtc-camera we DON'T open the Astra here — mediamtx's ffmpeg owns it
     #    and serves it over WebRTC (full framerate); the base64 path stays empty.
-    if not SIM_MODE and not WEBRTC_CAMERA:
+    if not SIM_MODE and not REPLAY_MODE and not WEBRTC_CAMERA:
         logger.info("Initializing Camera...")
         # In ROS2 mode the depth stream is owned by the orbbec_depth service,
         # so direct USB depth stream initialization is disabled to prevent conflicts.
@@ -1059,7 +1080,7 @@ def initialize_hardware():
     #     broadcast loop and VelocityEstimator, superseding the Astra/orbbec depth.
     #     The driver degrades gracefully (getters return None, worker retries) if
     #     the device is unplugged, so the server still runs without it.
-    if not SIM_MODE and OAK_ENABLED:
+    if not SIM_MODE and not REPLAY_MODE and OAK_ENABLED:
         try:
             from oakd_driver import OakDCamera
             # Auto-enable on-device YOLO spatial detection if the plain blob exists
@@ -1223,7 +1244,7 @@ def cleanup():
             logger.error(f"Failed to stop VelocityEstimator: {e}")
     if nav2_client is not None:
         nav2_client.stop_nav2()
-    if (SIM_MODE or ROS2_MODE) and drive is not None:
+    if (SIM_MODE or ROS2_MODE or REPLAY_MODE) and drive is not None:
         drive.cleanup()  # ROS2Bridge.cleanup() shuts down rclpy
     if _gazebo_proc is not None:
         logger.info("Shutting down Gazebo...")
@@ -1262,7 +1283,7 @@ def cleanup():
             pass
     if ros_board: ros_board.cleanup()
     if camera: camera.cleanup()
-    if not (SIM_MODE or ROS2_MODE) and lidar: lidar.cleanup()
+    if not (SIM_MODE or ROS2_MODE or REPLAY_MODE) and lidar: lidar.cleanup()
     if oled: oled.cleanup()
 
 
@@ -1388,7 +1409,7 @@ async def handle_client(websocket):
         camera._has_clients = True  # P7: allow capture loop to store frames
 
     # Tell the client what mode the server is running in
-    _mode = "sim" if SIM_MODE else "ros2"
+    _mode = "replay" if REPLAY_MODE else ("sim" if SIM_MODE else "ros2")
     await websocket.send(json.dumps({
         "type": "hello",
         "mode": _mode,
@@ -1464,7 +1485,7 @@ async def handle_client(websocket):
 
                 elif msg_type == "toggle_lidar":
                     lidar_enabled = data.get("enabled", False)
-                    if lidar and not (SIM_MODE or ROS2_MODE):
+                    if lidar and not (SIM_MODE or ROS2_MODE or REPLAY_MODE):
                         if lidar_enabled:
                             lidar.start()
                         else:
@@ -1942,7 +1963,8 @@ async def broadcast_loop():
             # Prefer the OAK-D only while its link is live; otherwise fall back so the
             # GUI depth view keeps working if the OAK is unplugged.
             _oak_up = oak is not None and getattr(oak, "available", False)
-            depth_source = oak if _oak_up else (ros_bridge if (ROS2_MODE or SIM_MODE) else camera)
+            depth_source = oak if _oak_up else (
+                ros_bridge if (ROS2_MODE or SIM_MODE or REPLAY_MODE) else camera)
             if depth_enabled and (_depth_cycle % 2 == 0):
                 if depth_source is not None:
                     def _get_depth():

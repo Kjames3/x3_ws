@@ -47,6 +47,18 @@ python3 src/server_x3.py --domain-id 42             # on Jetson
 python3 src/server_x3.py --sim
 ```
 
+### Option D — Offline replay (no robot, no ROS, no DDS)
+```bash
+python3 scripts/make_fixtures.py     # once — carves ~1 MB out of a recorded bag
+python3 src/server_x3.py --replay
+```
+Replays `fixtures/` through `src/replay_bridge.py`, a drop-in for `ROS2Bridge`. Use this to
+work on the server, the GUI, the velocity estimator or the frontier explorer with the robot
+powered off. Fixtures are decoded numpy, so this runs on a machine that has never had ROS
+installed. `move()` is recorded but **nothing moves** — the pose comes from the bag, so there
+is no closed loop; use `--sim` when you need one. Nav2 and autonomous exploration are disabled
+(they need a live rclpy node). Verify with `python3 src/test_replay_bridge.py`.
+
 ### Auto-start via systemd
 ```bash
 # Service file: src/x3_server.service (runs with --domain-id 42 by default)
@@ -77,6 +89,17 @@ Browser (HTTP :8080 for GUI files, WebSocket :8081 for control)
 - **[src/frontier_explorer.py](src/frontier_explorer.py)** — Autonomous frontier-based exploration: finds free/unknown boundaries on the SLAM OccupancyGrid, clusters them, and sends nearest centroid to Nav2.
 - **[src/trt_detector.py](src/trt_detector.py)** — TensorRT YOLO wrapper loading `.engine` files, mimics Ultralytics API.
 - **[src/Rosmaster_Lib.py](src/Rosmaster_Lib.py)** — Yahboom official low-level serial protocol library (motors, IMU, battery).
+- **[src/replay_bridge.py](src/replay_bridge.py)** — Offline `ROS2Bridge` stand-in that replays `fixtures/` (see Option D). Imports no rclpy.
+
+### Offline fixtures
+`fixtures/` holds a ~1 MB decoded slice of one real bag (`scan.npz`, `odom.npz`, `depth.npz`,
+`manifest.json`), built by `scripts/make_fixtures.py` from the corpus in
+`~/EE_244_Final_Project/bags` (8.8 GB, deliberately **not** in git). Two gotchas the extractor
+documents: the YDLidar X3 emits a **variable beam count** per scan (2782–2794 observed), so
+scans are NaN-padded with a `counts` array; and `map_saver` writes unknown cells as grey 205,
+whose implied occupancy (0.196) falls below these maps' `free_thresh` of 0.25 — thresholding
+alone would relabel every unknown cell as free and leave the frontier explorer with nothing
+to find, so `replay_bridge.py` honours the 205 sentinel explicitly.
 
 YOLO models live under `src/yolo_models/` in subdirectories (`cans_models/`, `default/`). The active model is resolved by `find_model_path()` which recursively searches for `<name>.pt`.
 
