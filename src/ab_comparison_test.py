@@ -66,6 +66,96 @@ LOG_HZ           = 10      # rows per second written to CSV
 
 WALL_STOP_DIST   = 0.30    # metres — stop this far from a confirmed static wall and turn back
 
+# ---------------------------------------------------------------------------
+# Dynamic-pedestrian gate (time-to-contact)
+# ---------------------------------------------------------------------------
+# The old gate asked only "is someone moving within 1.8 m and 0.5 m to the side".
+# That is a proximity test wearing a motion test's clothes: the velocity estimator
+# reports moving people out to 4 m, but anyone beyond 1.8 m was handled with the
+# STATIC profile (BYPASS_OFFSET 0.15 m) until they were already close. At a 1.2 m/s
+# closing speed, 1.8 m is under 1.5 s of warning — and the robot only began to
+# widen its corridor at the moment it most needed to have finished doing so. That
+# is the "changes path late, or not at all" behaviour.
+#
+# Time-to-contact asks the question that actually matters: given where this person
+# is and where they are going, when do they enter the space in front of me? A
+# runner at 4 m gets flagged; someone strolling away at 1 m does not.
+PED_MIN_SPEED      = 0.15  # m/s — below this it is standing still or centroid noise
+PED_TTC_S          = 2.5   # s   — react this far ahead of contact
+PED_GUARD_DEPTH    = 1.0   # m   — depth of the protected box ahead of the robot
+PED_LATERAL_MARGIN = 0.6   # m   — half-width of that box (robot half-width + margin)
+PED_TTC_STEP       = 0.1   # s   — projection granularity
+# Legacy near-field trigger, kept as an unconditional floor: if someone is moving
+# this close and this centred, they are a pedestrian regardless of heading.
+PED_NEAR_RANGE     = 1.8   # m
+PED_NEAR_LATERAL   = 0.5   # m
+
+
+def pedestrian_time_to_contact(rx, ry, vx, vy,
+                               horizon=PED_TTC_S, step=PED_TTC_STEP):
+    """Seconds until this obstacle's projected path enters the box ahead of the
+    robot, or None if it does not within `horizon`.
+
+    rx/ry are metres in the robot frame (x forward, y left) and vx/vy are m/s in
+    that same frame. Crucially the estimator's velocities are already RELATIVE to
+    the robot — its history is differenced in the robot frame, so the robot's own
+    motion is baked in — which is exactly the quantity a time-to-contact needs.
+
+    The straight-line projection is sampled rather than solved analytically. It
+    costs ~25 iterations, and it handles head-on, diagonal and crossing approaches
+    with one piece of logic instead of three special cases.
+    """
+    if math.hypot(vx, vy) < PED_MIN_SPEED:
+        return None                      # standing still: a static obstacle
+    t = 0.0
+    while t <= horizon:
+        x = rx + vx * t
+        y = ry + vy * t
+        # -0.1 rather than 0.0: someone drawing level with the front bumper is
+        # still a pedestrian, and depth noise should not flip the classification.
+        if -0.1 <= x <= PED_GUARD_DEPTH and abs(y) <= PED_LATERAL_MARGIN:
+            return t
+        t += step
+    return None
+
+
+def classify_dynamic_pedestrian(estimates):
+    """Is any tracked obstacle a pedestrian we must widen the corridor for?
+
+    Returns (is_pedestrian, detail, threat) where `detail` describes the
+    triggering track for logging and `threat` is its (rx, ry) in the robot frame,
+    or None. The most urgent track wins — lowest time-to-contact.
+
+    Pure function of the estimate list, so it can be tested without a robot, a
+    camera or ROS.
+    """
+    best = None
+    for est in estimates or []:
+        # Estimator frame: x is the camera-horizontal offset, z is depth.
+        ox = float(est.get("x", 0.0) or 0.0)
+        oz = float(est.get("z", est.get("y", 0.0)) or 0.0)
+        rx, ry = oz, -ox
+        vx = float(est.get("vx", 0.0) or 0.0)
+        vy = float(est.get("vy", 0.0) or 0.0)
+        speed = float(est.get("speed", 0.0) or 0.0)
+
+        ttc = pedestrian_time_to_contact(rx, ry, vx, vy)
+        if ttc is not None:
+            if best is None or ttc < best[0]:
+                best = (ttc, f"track {est.get('id')} at {rx:.1f} m, "
+                             f"{speed:.2f} m/s -> contact in {ttc:.1f} s",
+                        (rx, ry))
+            continue
+        # Near-field floor: close, centred and moving, whatever the heading.
+        if 0.0 < rx < PED_NEAR_RANGE and abs(ry) < PED_NEAR_LATERAL and speed > PED_MIN_SPEED:
+            if best is None or best[0] > PED_TTC_S:
+                best = (PED_TTC_S, f"track {est.get('id')} at {rx:.1f} m, "
+                                   f"{speed:.2f} m/s (near-field)",
+                        (rx, ry))
+    if best is None:
+        return False, "", None
+    return True, best[1], best[2]
+
 
 def normalize_angle(angle: float) -> float:
     while angle > math.pi:
@@ -185,6 +275,7 @@ class ABComparisonTest(Node):
         self.last_scan_angle_increment = 0.0
 
         # Holonomic bypass & Pause variables
+        self._was_dynamic_pedestrian = False
         self.target_lateral_offset = 0.0
         self.is_paused = False
         self.state_elapsed_time = 0.0
@@ -463,20 +554,18 @@ class ABComparisonTest(Node):
         self.wall_left_clearance  = self._ema_wall_left
         self.wall_right_clearance = self._ema_wall_right
 
-        # 2. Asynchronous dynamic pedestrian identification
-        # Check if the camera estimates show a moving human (speed > 0.15 m/s) in our forward path
+        # 2. Asynchronous dynamic pedestrian identification (time-to-contact)
         is_dynamic_pedestrian = False
+        ped_threat = None
         if self._mode == "predictive":
-            for est in estimates:
-                ox = est.get("x", 0.0)
-                oz = est.get("z", est.get("y", 0.0))
-                rx = float(oz)
-                ry = -float(ox)
-                speed = est.get("speed", 0.0)
-                # If they are within 1.8m forward and 0.5m lateral and moving
-                if 0.0 < rx < 1.8 and abs(ry) < 0.5 and speed > 0.15:
-                    is_dynamic_pedestrian = True
-                    break
+            is_dynamic_pedestrian, ped_detail, ped_threat = classify_dynamic_pedestrian(estimates)
+            # Log the transition only, not every cycle at 10 Hz.
+            if is_dynamic_pedestrian != self._was_dynamic_pedestrian:
+                if is_dynamic_pedestrian:
+                    self.get_logger().info(f"PEDESTRIAN: {ped_detail} — widening corridor")
+                else:
+                    self.get_logger().info("PEDESTRIAN: clear — back to static corridor")
+                self._was_dynamic_pedestrian = is_dynamic_pedestrian
 
         # 3. Choose adaptive corridors based on target type
         if is_dynamic_pedestrian:
@@ -615,16 +704,25 @@ class ABComparisonTest(Node):
         blocking_obstacle = None
         # Only run camera-based bypass if we are not facing a continuous wall (Idea 94)
         if not is_continuous_wall:
-            for est in estimates:
-                ox = est.get("x", 0.0)
-                oz = est.get("z", est.get("y", 0.0))
-                rx = float(oz)
-                ry = -float(ox)
+            # A pedestrian flagged by time-to-contact blocks the path NOW, even
+            # while still beyond AVOIDANCE_FORWARD. Widening the corridor without
+            # this does almost nothing: the sidestep would still not begin until
+            # they were 0.9 m away, which at a 1.2 m/s closing speed leaves under
+            # a second to complete a 0.4 m shift. This is the half of the change
+            # that actually moves the robot earlier.
+            if ped_threat is not None:
+                blocking_obstacle = ped_threat
+            else:
+                for est in estimates:
+                    ox = est.get("x", 0.0)
+                    oz = est.get("z", est.get("y", 0.0))
+                    rx = float(oz)
+                    ry = -float(ox)
 
-                # Check if obstacle is in front and blocking the path
-                if 0.0 < rx < AVOIDANCE_FORWARD and abs(ry) < AVOIDANCE_LATERAL:
-                    blocking_obstacle = (rx, ry)
-                    break
+                    # Check if obstacle is in front and blocking the path
+                    if 0.0 < rx < AVOIDANCE_FORWARD and abs(ry) < AVOIDANCE_LATERAL:
+                        blocking_obstacle = (rx, ry)
+                        break
 
         if blocking_obstacle is not None:
             self.is_paused = True
@@ -1050,8 +1148,14 @@ class ABComparisonTest(Node):
                 forward_scale = 1.0 - max(0.0, min(0.8, lateral_error / 0.5))
                 speed = base_forward_speed * forward_scale
 
-            # Active recovery timeout logic (Idea 31)
-            if self.is_paused or speed == 0.0:
+            # Active recovery timeout logic (Idea 31).
+            # Count time as "blocked" only when the robot is genuinely not making
+            # progress. is_paused alone is no longer a usable proxy: with the
+            # time-to-contact gate the robot enters the avoiding state while a
+            # pedestrian is still ~3 m away and keeps driving forward the whole
+            # time, so counting that would march the 8 s timer toward a
+            # recovery-backing manoeuvre during entirely normal avoidance.
+            if speed <= 0.02:
                 self.blocked_time += dt_state
             else:
                 self.blocked_time = 0.0
@@ -1256,8 +1360,14 @@ class ABComparisonTest(Node):
                 forward_scale = 1.0 - max(0.0, min(0.8, lateral_error / 0.5))
                 speed = base_forward_speed * forward_scale
 
-            # Active recovery timeout logic (Idea 31)
-            if self.is_paused or speed == 0.0:
+            # Active recovery timeout logic (Idea 31).
+            # Count time as "blocked" only when the robot is genuinely not making
+            # progress. is_paused alone is no longer a usable proxy: with the
+            # time-to-contact gate the robot enters the avoiding state while a
+            # pedestrian is still ~3 m away and keeps driving forward the whole
+            # time, so counting that would march the 8 s timer toward a
+            # recovery-backing manoeuvre during entirely normal avoidance.
+            if speed <= 0.02:
                 self.blocked_time += dt_state
             else:
                 self.blocked_time = 0.0
