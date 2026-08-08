@@ -115,6 +115,25 @@ Default domain is 0. Scripts use domain ID 42 for Jetson/laptop isolation. Serve
 - **[src/web/main.js](src/web/main.js)** — WebSocket client; camera frames received as **binary** WebSocket messages (not JSON).
 - **[src/web/lidar-worker.js](src/web/lidar-worker.js)** — Web Worker that decodes and transforms lidar point arrays off the main thread.
 
+## Idea Logs
+Four monolithic logs hold 546 ideas (~86k words): `ideas/June_architectural_ideas.md` (1–340),
+`ideas/June_performance_ideas.md` (1–120), `July_improvement_ideas.md` (J-01–J-28),
+`august_improvement_ideas.md` (A-01–A-58). They remain the **source of truth**.
+
+`scripts/split_ideas.py` derives one note per idea into `ideas/notes/`, indexed by
+`ideas/INDEX.md`. Regenerate after editing a log; `--check` exits 1 when stale. **Never edit
+the generated notes** — edit the log and re-run.
+
+Two things to know before citing an idea number:
+- **Bare "Idea N" is ambiguous.** The two June logs number *different* ideas 1–120. Use the
+  namespaced ids (`JA-081` vs `JP-081`) which are unique corpus-wide. The ROI analysis and the
+  `Idea N` comments in source both use the **architectural** numbering (`JA-`).
+- **No log marks anything as done.** Status is reconstructed: an idea counts as `Implemented`
+  only if it appears in `ideas/June_roi_analysis.md` → *Already Implemented Ideas* or its number
+  appears in a source comment. That evidence exists only for `JA-`, so `Logged` on a
+  `JP-`/`J-`/`A-` note means *no evidence was available*, not that it was rejected. Currently
+  54 implemented, 492 candidates.
+
 ## Maps
 Saved maps are stored as `.pgm`/`.yaml` pairs in `src/yahboomcar_nav/maps/`. New maps are created via the "Start SLAM" button in the GUI and saved through the server's map-save handler.
 
