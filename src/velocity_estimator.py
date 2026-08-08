@@ -252,7 +252,8 @@ class VelocityEstimator:
                 logger.warning(f"VelocityEstimator: get_depth_intrinsics failed: {e}")
 
         if fx is None:
-            # No calibration available — scale the Astra defaults from 640x480.
+            # No calibration available — scale the Astra defaults from 640x480. These
+            # are correct for an actual Astra, and merely approximate for anything else.
             fx = FALLBACK_FX * (w / 640.0)
             fy = FALLBACK_FY * (h / 480.0)
             cx, cy = w / 2.0, h / 2.0
@@ -263,12 +264,19 @@ class VelocityEstimator:
                     f"to Astra defaults scaled to {w}x{h} (fx={fx:.1f} fy={fy:.1f}). "
                     f"Lateral velocity may be biased."
                 )
-        else:
-            logger.info(f"VelocityEstimator: depth intrinsics @ {w}x{h} "
-                        f"fx={fx:.1f} fy={fy:.1f} cx={cx:.1f} cy={cy:.1f}")
+            # Deliberately do NOT cache the fallback. The OAK reads its calibration
+            # asynchronously after the device opens, so an early frame can arrive before
+            # it is available; caching here would pin the wrong intrinsics for the life
+            # of the process and feed a wrong fy into the height-band ground rejection,
+            # which can mask out real people. Retry every cycle until the real values
+            # show up (a dict lookup on the driver — negligible).
+            return (float(fx), float(fy), float(cx), float(cy))
 
+        logger.info(f"VelocityEstimator: depth intrinsics @ {w}x{h} "
+                    f"fx={fx:.1f} fy={fy:.1f} cx={cx:.1f} cy={cy:.1f}")
         self._intr = (float(fx), float(fy), float(cx), float(cy))
         self._intr_cache_key = key
+        self._intr_warned = False   # re-arm, so a later loss of calibration warns again
         return self._intr
 
     def _load_model(self):
