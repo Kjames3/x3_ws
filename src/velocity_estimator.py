@@ -52,6 +52,22 @@ DEPTH_FAR_M   = 4.0
 # Track confirmation: a track must be matched this many frames before it is reported.
 MIN_VISIBLE_FRAMES = 3
 
+# --- Track-motion coherence -------------------------------------------------------
+# Raising VELOCITY_MAX_RANGE_M to 4 m exposed something the old 1.8 m gate had been
+# hiding: far-range blobs have noisy centroids, and the MLP faithfully turns that
+# jitter into ~1 m/s of phantom velocity. Observed live on a stationary object at
+# 3.9 m: vy swinging +0.80, +1.09, -0.43, +0.98 on consecutive frames.
+#
+# The discriminator is that a real walker's motion is COHERENT — its net displacement
+# over the window is a large fraction of the total path it traced. A jittering blob
+# oscillates about a fixed point, so it accumulates path length with almost no net
+# displacement. straightness = |net| / path separates the two cleanly and needs no
+# tuning against speed, since both terms scale together.
+MIN_TRACK_STRAIGHTNESS = 0.45
+# Below this total path there is not enough motion to judge coherence either way, so
+# the gate abstains rather than guessing (a genuinely slow walker must not be culled).
+STRAIGHTNESS_MIN_PATH_M = 0.12
+
 # --- Ground / structure rejection -------------------------------------------------
 # Camera optical centre height above the floor, from yahboomcar_X3.urdf:
 #   base_footprint -> base_link  z = 0.0815
@@ -232,6 +248,7 @@ class VelocityEstimator:
         self._cycle_times = deque(maxlen=50)
         self._last_cycle_start = None
         self._rate_warn_time = 0.0
+        self._incoherent_log_time = 0.0
 
         self._load_model()
 
@@ -558,6 +575,30 @@ class VelocityEstimator:
 
         return centroids[:MAX_OBSTACLES]
 
+    @staticmethod
+    def _track_straightness(history_local):
+        """Ratio of net displacement to total path traced over the window.
+
+        ~1.0  = coherent motion (a walker heading somewhere)
+        ~0.0  = jitter about a fixed point (a noisy centroid on a static object)
+
+        Returns (straightness, path_length). straightness is None when the path is
+        too short to judge, so the caller can abstain instead of culling a genuinely
+        slow-moving obstacle.
+        """
+        hist = list(history_local)
+        if len(hist) < 3:
+            return None, 0.0
+        # Same convention as the features: rel_x = cz (forward), rel_y = -cx (left).
+        pts = [(cz, -cx) for cx, _cy, cz in hist]
+        path = 0.0
+        for a, b in zip(pts, pts[1:]):
+            path += math.hypot(b[0] - a[0], b[1] - a[1])
+        if path < STRAIGHTNESS_MIN_PATH_M:
+            return None, path
+        net = math.hypot(pts[-1][0] - pts[0][0], pts[-1][1] - pts[0][1])
+        return (net / path), path
+
     def _build_window_features(self, history_local):
         """
         Build a (1, 40) feature vector from a list of T (x,y,z) local coordinates.
@@ -787,8 +828,28 @@ class VelocityEstimator:
                     # cx_l = -ry_l, cy_l = 0.0, cz = rx_l
                     hist_local = [(-float(local_xy[i, 1]), 0.0, float(local_xy[i, 0])) for i in range(len(local_xy))]
 
+                    # Motion-coherence gate. A noisy centroid on a static object
+                    # accumulates plenty of frame-to-frame displacement — which the MLP
+                    # faithfully converts into ~1 m/s — while going nowhere. A real
+                    # walker's net displacement is most of the path it traced. Abstain
+                    # (straightness is None) when the path is too short to judge, so a
+                    # genuinely slow obstacle is never culled by this test.
+                    straightness, path_len = self._track_straightness(hist_local)
+                    incoherent = (straightness is not None
+                                  and straightness < MIN_TRACK_STRAIGHTNESS)
+
                     feats, is_stopped = self._build_window_features(hist_local)
-                    if is_stopped:  # Kinematic Stop-Trigger Gating (Idea 108)
+                    if is_stopped or incoherent:  # Idea 108 + motion-coherence gate
+                        if incoherent and not is_stopped:
+                            now_i = time.monotonic()
+                            if now_i - self._incoherent_log_time > 5.0:
+                                self._incoherent_log_time = now_i
+                                logger.info(
+                                    f"VelocityEstimator: track {tid} at "
+                                    f"{tracks[tid]['centroid'][2]:.1f} m suppressed — "
+                                    f"straightness {straightness:.2f} < "
+                                    f"{MIN_TRACK_STRAIGHTNESS} over {path_len:.2f} m of "
+                                    f"path (jitter, not travel)")
                         cx, cy, cz = tracks[tid]['centroid']
                         estimates.append({
                             'id':    tid,
