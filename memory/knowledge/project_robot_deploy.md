@@ -5,9 +5,10 @@ metadata:
   node_type: memory
   type: project
   originSessionId: da5759ba-ef9c-4534-8989-4c6f963e7011
+  modified: 2026-08-08T05:34:55.760Z
 ---
 
-The physical robot host is `jetson`, IP is DHCP/variable (seen: 10.13.245.176; 10.13.197.88 on 2026-07-10; 10.13.245.150 on 2026-07-11 — always confirm the current IP with the user). Key-based SSH works directly: `ssh jetson@<ip>` (no password needed for SSH; sudo needs a password the user can supply).
+The physical robot host is `jetson`, IP is DHCP/variable (seen: 10.13.245.176; 10.13.197.88 on 2026-07-10; 10.13.245.150 on 2026-07-11; 10.13.247.131 on 2026-07-26 — always confirm the current IP with the user). Key-based SSH works directly: `ssh jetson@<ip>` (no password needed for SSH; sudo needs a password the user can supply).
 
 The `jetson-mcp` `sync_code` tool runs `rsync <local_path> <remote_path>` WITHOUT a trailing slash on local_path, so it copies the local DIR *into* remote_path (nests it). To update a package in place, pass `remote_path` = the PARENT dir, e.g. local_path=`/home/kamren/x3_ws/src/yahboomcar_description`, remote_path=`/home/jetson/x3_ws/src` (NOT `.../src/yahboomcar_description`, which creates `.../yahboomcar_description/yahboomcar_description/` and leaves the real package stale so colcon builds the old files). rsync uses `--delete`, scoped to the transferred dir only (sibling packages untouched). After sync, `colcon_build` with `packages=<pkg>` and verify the install/share copy actually changed.
 

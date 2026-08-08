@@ -23,6 +23,10 @@ Low-level serial protocol lives in `src/Rosmaster_Lib.py` (Yahboom official).
 Hardware abstraction — motors, lidar, camera, OLED, mecanum kinematics — is
 `src/drivers_x3.py`.
 
+Before touching `Rosmaster_Lib.py`, read [[project_rosmaster_lib]]: the 2 ms inter-write
+gap is load-bearing, the IMU is an MPU9250 (not an ICM) with a cancelling double negation
+and a wrong magnetometer scale, and the baud rate cannot be raised.
+
 ## Known hardware issues
 
 - **Lidar mounted too low.** At `laser_joint` z = 0.11 m the beam clips the chassis,

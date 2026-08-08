@@ -36,21 +36,32 @@ This `memory/` folder is the **organizing layer** on top of them.
 
 Atomic, durable facts — one per note, in `memory/knowledge/`.
 
-- [[project_robot_deploy]] — SSH, systemd, git divergence, FastDDS quirks
-- [[project_rviz_debugging]] — cross-machine RViz: topics visible, data never flows
-- [[project_lidar_mount]] — lidar too low, sees chassis; CBF filter workaround
-- [[project_oakd_lite]] — OAK-D Lite viewer config, USB3 vs USB2 fallback
-- [[project_trt_engine]] — working FP16 yolo26n engine + detector fixes
-- [[project_oak_rosbag_recording]] — publishing `/oak/*` into bags
-- [[project_rosbag_corpus]] — where bags live, which are empty, repair trick
-- [[project_bag_viewer]] — `src/bag_viewer.py` scrubber
-- [[project_bag_transfer]] — push/pull bags between robot and laptop
-- [[project_jetson_cpu_profile]] — py-spy profile, no HW encoder on Orin Nano
+This list is generated — run `python3 scripts/import_auto_memory.py` to refresh it
+along with the notes themselves. Don't hand-edit between the markers.
+
+<!-- knowledge-index:start -->
+- [[feedback_verify_before_long_runs]] — Kamren validates a recording pipeline with a short trial bag and a payload-level check before committing to a long capture session
+- [[project_august_ideas]] — august_improvement_ideas.md / august_roi_analysis.md — dual authorship by a scheduled cloud routine and local sessions, and the A-NN numbering hazard
+- [[project_bag_transfer]] — Bag auto-transfer robot↔laptop — push in record_bag.sh, pull via fetch_bag.sh; laptop sshd + non-interactive ROS gotchas
+- [[project_bag_viewer]] — src/bag_viewer.py — GUI/CLI for browsing and scrubbing the robot's rosbags
+- [[project_dream_skill]] — The /dream memory-curation skill — where it is installed from, where its report and backups live, how apply is guarded, and why overnight runs are not happening
+- [[project_jetson_cpu_profile]] — X3 server CPU profile on the Jetson Orin Nano — top consumers, the psutil fix, and where CPU actually goes
+- [[project_lidar_mount]] — Lidar is mounted low and sees the chassis; temporary CBF filter workarounds are in place pending a bracket to raise it
+- [[project_oak_rosbag_recording]] — How to record OAK-D Lite data to rosbags — requires --oak-ros-publish systemd drop-in; env-var and rclpy gotchas; /oak/detections is fabricated
+- [[project_oakd_lite]] — OAK-D Lite on the X3 — how it is driven, the USB-C cable trap, measured hardware ceilings, and the custom yolo26 host-decode path
+- [[project_obsidian_vault]] — x3_ws repo root doubles as an Obsidian vault with a memory/ layer — why nothing was moved, and why RAG was rejected at this scale
+- [[project_robot_deploy]] — How to reach/inspect the live X3 robot (jetson) and how its deploy diverges from local git
+- [[project_rosbag_corpus]] — State of the EE_244_Final_Project rosbag corpus + how to read/repair these zstd bags
+- [[project_rosmaster_lib]] — Rosmaster_Lib.py hardware-measured facts — 2ms gap is load-bearing, MPU9250 not ICM, mag scale wrong, baud can't be raised
+- [[project_rviz_debugging]] — Ongoing investigation into why RViz on the laptop cannot receive ROS2 topic data from the Jetson despite discovery working
+- [[project_trt_engine]] — Working TensorRT engine for yolo26n on the robot — how it was built, the trt_detector.py fixes, and when it actually runs
+<!-- knowledge-index:end -->
 
 ## Session log
 
 Dated entries in `memory/log/`. Newest first.
 
+- [[2026-08-08]] — scripted auto-memory import; vault refreshed
 - [[2026-08-07]] — vault created
 
 ## Conventions

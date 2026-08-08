@@ -26,6 +26,16 @@ cross-references rewritten. Overlapping pairs are called out in [[august_roi_ana
 
 **Convention:** at the end of each month, completed or historical ideas move into `ideas/`.
 
+**Two authors.** A scheduled cloud routine and local sessions both append `A-NN` ideas to the
+August docs and have already collided. Fetch `origin/main` before allocating new numbers.
+→ [[project_august_ideas]]
+
+## Memory curation
+
+The `/dream` skill reviews recent transcripts against Claude's auto-memory buffer and proposes
+updates. → [[project_dream_skill]]. The buffer is imported into `memory/knowledge/` by
+`scripts/import_auto_memory.py`; the vault's own design rationale is [[project_obsidian_vault]].
+
 ## Plan documents
 
 - [[VELOCITY_SELF_TRAINING_PLAN]] — the retrain recipe; §2 data, §3 scoring/ground truth

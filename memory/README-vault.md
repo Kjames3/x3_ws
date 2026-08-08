@@ -53,12 +53,26 @@ that stays correct when the code moves, and a paste silently rots.
 ## Relationship to Claude's auto-memory
 
 `~/.claude/projects/-home-kamren-x3-ws/memory/` is the **capture buffer**: Claude writes there
-automatically mid-session. This vault is the **durable store**. The notes in `knowledge/` were
-imported from that buffer on 2026-08-07 (wikilink slugs normalized from mixed `-`/`_` forms so
-they actually resolve).
+automatically mid-session. This vault is the **durable store**.
 
-The two can drift. Treat the vault as authoritative and re-import periodically rather than
-editing both. This is a curation step, not a sync — the buffer is noisy by design.
+The two drift — within a day of the first import, five notes had changed and five new ones
+existed only in the buffer. So the import is a script rather than a hand merge:
+
+```bash
+python3 scripts/import_auto_memory.py            # import + regenerate the Home.md index
+python3 scripts/import_auto_memory.py --check    # report drift, change nothing (exit 1 if stale)
+```
+
+It copies each buffer note near-verbatim — the buffer's frontmatter already *is* the
+knowledge-note format — normalizes `[[some-note]]` to `[[some_note]]` so links resolve, and
+rewrites the knowledge list in [[Home]] between the `knowledge-index` markers. Notes that
+exist only in the vault are reported and **never deleted**, so hand-written notes are safe.
+
+Because the buffer is the thing Claude actually reads at session start, **it stays the write
+target**. Write a fact there (or let `/dream` propose it), then re-import. Don't edit
+`memory/knowledge/` directly — the next import overwrites it.
+
+Corollary: keep buffer `name:` fields underscore-cased, since filenames become link targets.
 
 ## Why there is no RAG here (and when to reconsider)
 

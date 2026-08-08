@@ -1,18 +1,18 @@
 ---
 name: project_oak_rosbag_recording
-description: How to record OAK-D Lite data to rosbags — requires --oak-ros-publish systemd drop-in; env-var and rclpy gotchas
-metadata: 
+description: How to record OAK-D Lite data to rosbags — requires --oak-ros-publish systemd drop-in; env-var and rclpy gotchas; /oak/detections is fabricated
+metadata:
   node_type: memory
   type: project
   originSessionId: f3e32cca-245e-4a1d-831e-794e6034c5c5
-  modified: 2026-07-26T22:23:52.290Z
+  modified: 2026-08-08T06:24:51.168Z
 ---
 
 Added 2026-07-26. The OAK-D Lite is driven in-process by `src/oakd_driver.py` inside
 `server_x3.py`, and DepthAI opens the device **exclusively** — so no separate node can
 ever grab it, and by default the OAK streams are invisible to `ros2 bag record`.
 
-`src/oakd_ros_publisher.py` (new) republishes them as sensor_msgs under `/oak/*`
+`src/oakd_ros_publisher.py` republishes them as sensor_msgs under `/oak/*`
 (depth 16UC1 mm, `depth/camera_info`, left/right mono8, imu, detections as
 vision_msgs/Detection3DArray). It is **off unless `server_x3.py` is started with
 `--oak-ros-publish`** (also `--oak-ros-rate`, default 10 Hz, and `--oak-ros-no-stereo`).
@@ -44,6 +44,21 @@ Measured rates on the Jetson: ~8.9 Hz achieved at 25 ms/publish, ~211 MB/min wit
 (~6.3 GB per 30 min), roughly half that depth-only. See [[project_oakd_lite]],
 [[project_robot_deploy]].
 
-OAK NN spatial detections DO work (verified: `person` at 2.8-4.2 m), but fire on only
-~12% of frames at conf 0.37-0.43 vs the 0.35 threshold — usable as a bonus label track,
-not as reliable training ground truth.
+**`/oak/detections` in recorded bags is FABRICATED — do not use it as ground truth.** Two
+compounding faults, both unfixed as of 2026-08-07:
+1. **The on-device NN is frozen, not just sparse.** In the 2026-07-31 bags every detection
+   message is bit-identical (`person`, score 0.4443, xyz `(-0.311, -0.442, 1.397)`) — the same
+   tuple across three bags recorded 13 minutes apart. Even a static scene would jitter z from
+   depth noise, so `OakDCamera._latest_detections` is stuck on a stale cache and the NN is not
+   running. Diagnose on the robot with
+   `journalctl -u x3_server | grep -iE "OAK NN|spatial"` — the driver logs `spatial pipeline
+   failed twice` when it disables itself, and logs the locked decode mode when it works.
+2. **The publisher has no de-dup guard.** `oakd_ros_publisher.py:190` publishes
+   `get_spatial_detections()` every tick with a fresh header stamp, unlike the depth/mono/IMU
+   publishers directly above it — so a stale cache is re-emitted forever. A 2026-07-31 bag showed
+   1859 unique timestamps and a 100% detection rate, which reads as flawless tracking in
+   `bag_viewer.py` and is entirely fictional.
+
+Fix options: drop the topic from `record_bag.sh` (costs ~1 MB, removes a plausible-looking fake
+label track from a domain-adaptation set), or add the same identity de-dup the other topics use so
+the topic goes silent instead of inventing data.
