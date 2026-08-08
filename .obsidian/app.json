@@ -1,0 +1,20 @@
+{
+  "attachmentFolderPath": "memory/attachments",
+  "alwaysUpdateLinks": true,
+  "newLinkFormat": "shortest",
+  "useMarkdownLinks": false,
+  "showUnsupportedFiles": false,
+  "defaultViewMode": "preview",
+  "livePreview": true,
+  "readableLineLength": true,
+  "strictLineBreaks": false,
+  "userIgnoreFilters": [
+    "build/",
+    "install/",
+    "log/",
+    "models/",
+    "src/yolo_models/",
+    ".claude/",
+    "src/web/node_modules/"
+  ]
+}

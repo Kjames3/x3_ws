@@ -115,6 +115,19 @@ Default domain is 0. Scripts use domain ID 42 for Jetson/laptop isolation. Serve
 - **[src/web/main.js](src/web/main.js)** — WebSocket client; camera frames received as **binary** WebSocket messages (not JSON).
 - **[src/web/lidar-worker.js](src/web/lidar-worker.js)** — Web Worker that decodes and transforms lidar point arrays off the main thread.
 
+## Project Memory Vault
+The repository root is an **Obsidian vault**. `memory/` holds the organizing layer: start at
+[memory/Home.md](memory/Home.md), conventions in [memory/README-vault.md](memory/README-vault.md).
+
+- `memory/maps/` — maps of content per subsystem (hardware, architecture, navigation, perception, data, planning)
+- `memory/knowledge/` — atomic durable facts, one per note
+- `memory/runbooks/` — build/deploy, bringup, bag handling, **DDS troubleshooting** (read this before debugging cross-machine ROS2)
+- `memory/log/` — dated session entries
+
+When you learn something durable, add a note there rather than only reporting it. There is
+deliberately no RAG/vector index — grep and Obsidian search are the retrieval path; the
+reasoning is in `memory/README-vault.md`.
+
 ## Maps
 Saved maps are stored as `.pgm`/`.yaml` pairs in `src/yahboomcar_nav/maps/`. New maps are created via the "Start SLAM" button in the GUI and saved through the server's map-save handler.
 
