@@ -10,9 +10,17 @@ into a percentage well needs three things the old one-line linear map lacked:
      the gauge plummet at the top and stall at the bottom.
   2. A realistic empty point.  0% must land where the robot stops working
      (~3.2 V/cell = 9.6 V), not at the cell's absolute floor.
-  3. Filtering + load compensation.  0.1 V of quantisation is ~2% of SoC, and
-     motor draw sags the terminal voltage by several tenths of a volt, so an
-     unfiltered reading both jitters and dives whenever the robot drives.
+  3. Filtering + load compensation.  One 0.1 V code is ~2-5 points of SoC, so
+     the gauge stepped between codes, and motor draw sags the terminal voltage
+     by several tenths of a volt, making the reading dive whenever the robot
+     drives and bounce back when it stops.
+
+     Measured on the robot 2026-08-09: at rest the reported code is *perfectly*
+     stable (13.0 V held across 4561 samples / 5 min, zero dither).  So the EMA
+     does not recover resolution below the 0.1 V step the way oversampling a
+     dithering ADC would -- there is nothing to average at rest.  What it does
+     buy is a smooth ramp across a code transition instead of a 2-5 point jump,
+     and rejection of the genuine fluctuation seen under motor load.
 
 No new hardware or dependencies: the only inputs are the voltage already on
 /voltage and the commanded-motor-power current estimate already computed by the
@@ -25,23 +33,39 @@ import math
 import time
 
 # --- Pack model ------------------------------------------------------------
-# 3S Li-ion (3 x 4.2 V nominal full).  The table is per-pack volts -> SoC %,
-# derived from a typical 18650 NMC rest-voltage curve.  Must stay sorted
-# ascending by voltage.
-_OCV_TABLE = (
-    ( 9.60,   0.0),
-    ( 9.90,   3.0),
-    (10.20,   6.0),
-    (10.50,  11.0),
-    (10.80,  18.0),
-    (11.04,  26.0),
-    (11.19,  34.0),
-    (11.40,  45.0),
-    (11.61,  55.0),
-    (11.85,  67.0),
-    (12.00,  76.0),
-    (12.30,  90.0),
-    (12.60, 100.0),
+CELLS = 3
+
+# Pack voltage that corresponds to a full charge (4.20 V/cell).
+#
+# CALIBRATE THIS.  It is the single knob that positions the whole curve, and it
+# is the one number that cannot be derived from the code.  The robot reports
+# 13.0 V (4.33 V/cell) when idle, which is above the Li-ion ceiling -- that is
+# either charger float voltage or a gain error in the Rosmaster's ADC, and the
+# two call for different values here.  To measure it: unplug the charger, let
+# the pack rest ~30 min, and read the idle voltage off the GUI.
+#
+# 12.6 V is the nameplate value and keeps the previous behaviour; if the true
+# resting full voltage is higher, raise this rather than editing the table, so
+# the whole curve shifts together.
+PACK_FULL_V = 12.6
+
+# Per-cell rest-voltage -> SoC for a typical 18650 NMC cell.  Sorted ascending.
+# Kept per-cell so PACK_FULL_V (and CELLS) reposition the curve without anyone
+# having to re-derive thirteen pack voltages by hand.
+_OCV_TABLE_CELL = (
+    (3.20,   0.0),
+    (3.30,   3.0),
+    (3.40,   6.0),
+    (3.50,  11.0),
+    (3.60,  18.0),
+    (3.68,  26.0),
+    (3.73,  34.0),
+    (3.80,  45.0),
+    (3.87,  55.0),
+    (3.95,  67.0),
+    (4.00,  76.0),
+    (4.10,  90.0),
+    (4.20, 100.0),
 )
 
 # Internal resistance of the pack plus wiring and the Rosmaster's shunt path.
@@ -64,15 +88,25 @@ CHARGE_DETECT_PCT = 5.0
 CHARGE_DETECT_SAMPLES = 30
 
 
+def _pack_to_cell(volts: float) -> float:
+    """Scale a reported pack voltage onto the per-cell curve.
+
+    PACK_FULL_V is defined to sit at 4.20 V/cell, so a pack that reads high by a
+    constant gain still lands on the right part of the curve.
+    """
+    return volts * (4.20 * CELLS / PACK_FULL_V) / CELLS
+
+
 def voltage_to_soc(volts: float) -> float:
     """Interpolate an open-circuit pack voltage onto the SoC curve."""
-    if volts <= _OCV_TABLE[0][0]:
+    v = _pack_to_cell(volts)
+    if v <= _OCV_TABLE_CELL[0][0]:
         return 0.0
-    if volts >= _OCV_TABLE[-1][0]:
+    if v >= _OCV_TABLE_CELL[-1][0]:
         return 100.0
-    for (v_lo, s_lo), (v_hi, s_hi) in zip(_OCV_TABLE, _OCV_TABLE[1:]):
-        if volts <= v_hi:
-            frac = (volts - v_lo) / (v_hi - v_lo)
+    for (v_lo, s_lo), (v_hi, s_hi) in zip(_OCV_TABLE_CELL, _OCV_TABLE_CELL[1:]):
+        if v <= v_hi:
+            frac = (v - v_lo) / (v_hi - v_lo)
             return s_lo + frac * (s_hi - s_lo)
     return 100.0
 

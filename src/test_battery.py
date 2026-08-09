@@ -11,6 +11,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from battery import BatteryEstimator, voltage_to_soc
 
 
+def approx(a, b, tol=1e-6):
+    """The pack->cell scaling makes exact endpoint equality float-brittle."""
+    return abs(a - b) <= tol
+
+
 def _soak(est, volts, amps, seconds, t0=0.0, step=1.0):
     """Feed a constant condition for `seconds`, returning (last_t, samples)."""
     t = t0
@@ -22,10 +27,10 @@ def _soak(est, volts, amps, seconds, t0=0.0, step=1.0):
 
 
 def test_curve_endpoints():
-    assert voltage_to_soc(12.6) == 100.0
-    assert voltage_to_soc(13.5) == 100.0
-    assert voltage_to_soc(9.6) == 0.0
-    assert voltage_to_soc(8.0) == 0.0
+    assert approx(voltage_to_soc(12.6), 100.0)
+    assert approx(voltage_to_soc(13.5), 100.0)
+    assert approx(voltage_to_soc(9.6), 0.0)
+    assert approx(voltage_to_soc(8.0), 0.0)
 
 
 def test_curve_is_monotonic():
@@ -38,6 +43,33 @@ def test_curve_is_monotonic():
         v += 0.01
 
 
+def test_calibration_constant_shifts_whole_curve():
+    """PACK_FULL_V must reposition the curve coherently, not just its top.
+
+    This is the knob to turn once the pack's true resting full voltage is known,
+    so it needs to keep 'full reads 100%, empty reads 0%' true at any setting.
+    """
+    import battery
+
+    original = battery.PACK_FULL_V
+    try:
+        for full in (12.6, 13.0):
+            battery.PACK_FULL_V = full
+            assert approx(battery.voltage_to_soc(full), 100.0)
+            empty = full * (3.20 / 4.20)
+            assert approx(battery.voltage_to_soc(empty), 0.0)
+            mid = battery.voltage_to_soc(full * (3.80 / 4.20))
+            assert 40.0 < mid < 50.0, f"midpoint off at PACK_FULL_V={full}: {mid}"
+    finally:
+        battery.PACK_FULL_V = original
+
+
+def test_reported_13v_is_not_silently_pinned():
+    """The live robot reads 13.0 V; that must clamp to 100%, never overflow."""
+    assert approx(voltage_to_soc(13.0), 100.0)
+    assert approx(voltage_to_soc(20.0), 100.0)
+
+
 def test_dead_pack_reads_zero():
     """The old linear map called 9.4 V ~29%; the pack is actually flat there."""
     est = BatteryEstimator()
@@ -45,8 +77,14 @@ def test_dead_pack_reads_zero():
     assert est.percent == 0.0
 
 
-def test_quantisation_is_filtered():
-    """Alternating 0.1 V codes must not swing the gauge by ~5 points."""
+def test_code_transition_is_smoothed():
+    """Alternating 0.1 V codes must not swing the gauge by ~5 points.
+
+    At rest the robot's ADC does not dither (measured 2026-08-09: one code held
+    across 4561 samples), so this is not about recovering sub-LSB resolution.
+    It models a reading sitting on a code boundary or fluctuating under load,
+    where the unfiltered gauge would visibly flip back and forth.
+    """
     est = BatteryEstimator()
     t = 0.0
     out = []
