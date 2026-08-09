@@ -2340,13 +2340,14 @@ function updatePowerUI() {
     }
 
     // Estimate Time / low-voltage critical countdown.
-    // Below LOW_VOLTAGE_THRESHOLD, show the red time-to-critical countdown (re-homed
-    // here from the removed header readout); otherwise show the runtime estimate.
-    const LOW_VOLTAGE_THRESHOLD = 12.2;
-    const CRITICAL_VOLTAGE = 11.8;
-    if (elements.powerTimeRemaining && pwr.voltage <= LOW_VOLTAGE_THRESHOLD) {
-        const pct = Math.max(0, pwr.voltage - CRITICAL_VOLTAGE) / (LOW_VOLTAGE_THRESHOLD - CRITICAL_VOLTAGE);
-        const secs = Math.floor(pct * 150); // ~2.5 min linear map to critical
+    // Below LOW_SOC_PCT, show the red time-to-critical countdown (re-homed here
+    // from the removed header readout); otherwise show the runtime estimate.
+    // Driven by battery_pct, which the server derives from the Li-ion OCV curve —
+    // raw voltage thresholds were meaningless on a curve this flat.
+    const LOW_SOC_PCT = 15.0;
+    if (elements.powerTimeRemaining && pwr.battery_pct <= LOW_SOC_PCT) {
+        const pct = Math.max(0, pwr.battery_pct) / LOW_SOC_PCT;
+        const secs = Math.floor(pct * 300); // ~5 min of usable charge below 15%
         const m = Math.floor(secs / 60);
         const s = secs % 60;
         elements.powerTimeRemaining.textContent = `⚠ ${m}:${s.toString().padStart(2, '0')}`;

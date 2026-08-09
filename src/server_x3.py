@@ -83,6 +83,7 @@ from drivers_x3 import (
 from nav2_client import Nav2Client
 from frontier_explorer import FrontierExplorer
 from velocity_estimator import VelocityEstimator
+from battery import BatteryEstimator
 from pathlib import Path
 
 # =============================================================================
@@ -245,6 +246,10 @@ fps_detection = 0.0
 # Battery voltage cache (refreshed at 1 Hz, not every frame)
 _batt_cache_v    = 12.0
 _batt_cache_time = 0.0
+
+# SoC estimator: OCV curve + EMA filter + load-sag compensation (see battery.py)
+_batt_est = BatteryEstimator()
+_batt_est_time = 0.0
 
 connected_clients = set()
 
@@ -1878,7 +1883,7 @@ async def handle_client(websocket):
 async def broadcast_loop():
     global _cam_frame_count, _yolo_frame_count, _fps_last_time
     global fps_camera, fps_detection, last_detections, depth_enabled, lidar_enabled
-    global _batt_cache_v, _batt_cache_time  # P9
+    global _batt_cache_v, _batt_cache_time, _batt_est_time  # P9
     global _ab_test_mode, stereo_enabled
 
     loop = asyncio.get_event_loop()
@@ -2002,10 +2007,16 @@ async def broadcast_loop():
                 m1_enc = m2_enc = m3_enc = m4_enc = 0
                 batt_v = 12.0
 
-            batt_pct    = max(0.0, min(100.0, (batt_v - 8.1) / (12.6 - 8.1) * 100.0))
             avg_pwr     = (abs(current_left_power) + abs(current_right_power)) / 2.0
             est_current = 0.5 + (avg_pwr * 6.0)
             est_watts   = batt_v * est_current
+
+            # SoC from the Li-ion OCV curve rather than a linear voltage map, with
+            # the sample filtered (0.1 V quantisation) and load sag backed out.
+            if now - _batt_est_time >= 1.0:
+                _batt_est.update(batt_v, est_current, now)
+                _batt_est_time = now
+            batt_pct = _batt_est.percent
 
             # Get velocity estimator predictions (EE244 Project)
             velocity_estimates = []
