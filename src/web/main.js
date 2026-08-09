@@ -2353,7 +2353,10 @@ function updatePowerUI() {
         elements.powerTimeRemaining.textContent = `⚠ ${m}:${s.toString().padStart(2, '0')}`;
         elements.powerTimeRemaining.style.color = 'var(--accent-red)';
     } else if (elements.powerTimeRemaining && pwr.current > 0.1) {
-        const BATTERY_CAPACITY_AH = 6.0;
+        // Pack is 10 Ah (confirmed 2026-08-09); the previous 6.0 under-reported
+        // remaining runtime by ~40%. Capacity affects only this time estimate --
+        // battery_pct itself comes from the voltage curve and is capacity-independent.
+        const BATTERY_CAPACITY_AH = 10.0;
         const remainingCapacity = (pwr.battery_pct / 100.0) * BATTERY_CAPACITY_AH;
         const hoursRemaining = remainingCapacity / pwr.current;
         const totalMinutes = Math.floor(hoursRemaining * 60);

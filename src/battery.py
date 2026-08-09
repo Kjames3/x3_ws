@@ -37,17 +37,15 @@ CELLS = 3
 
 # Pack voltage that corresponds to a full charge (4.20 V/cell).
 #
-# CALIBRATE THIS.  It is the single knob that positions the whole curve, and it
-# is the one number that cannot be derived from the code.  The robot reports
-# 13.0 V (4.33 V/cell) when idle, which is above the Li-ion ceiling -- that is
-# either charger float voltage or a gain error in the Rosmaster's ADC, and the
-# two call for different values here.  To measure it: unplug the charger, let
-# the pack rest ~30 min, and read the idle voltage off the GUI.
+# Measured 2026-08-09 on the robot: a rested, charger-disconnected pack reports
+# 13.0 V.  That is 4.33 V/cell, above the Li-ion ceiling, so the Rosmaster's ADC
+# reads roughly 3% high; 13.0 is used here rather than the 12.6 V nameplate so
+# the curve sits where this robot's readings actually land.  Everything scales
+# from this one number -- 0% correspondingly moves to 9.9 V reported, which is
+# the same true 9.6 V pack voltage seen through the same gain error.
 #
-# 12.6 V is the nameplate value and keeps the previous behaviour; if the true
-# resting full voltage is higher, raise this rather than editing the table, so
-# the whole curve shifts together.
-PACK_FULL_V = 12.6
+# Recalibrate by resting the pack off-charger ~30 min and reading idle voltage.
+PACK_FULL_V = 13.0
 
 # Per-cell rest-voltage -> SoC for a typical 18650 NMC cell.  Sorted ascending.
 # Kept per-cell so PACK_FULL_V (and CELLS) reposition the curve without anyone
@@ -70,10 +68,26 @@ _OCV_TABLE_CELL = (
 
 # Internal resistance of the pack plus wiring and the Rosmaster's shunt path.
 # Used only to undo load sag: V_oc ~= V_terminal + I * R_INT.
-R_INT_OHMS = 0.12
+#
+# Measured 2026-08-09 via scripts/calibrate_battery.py: spinning in place pulled
+# the reported voltage from 13.0 to 12.9 while the server estimated 6.5 A, i.e.
+# 0.10 V / 6.5 A.  A generic 0.12 was badly wrong here -- it would have invented
+# ~0.7 V of compensation against a real 0.1 V sag, inflating SoC by tens of
+# points whenever the robot moved.
+#
+# Two caveats.  The 6.5 A is the server's *estimate* from commanded motor power,
+# not a measurement; but since the compensation term is I_est * R_INT and R_INT
+# was fitted using that same I_est, the product is right at this operating point
+# even though neither factor is individually trustworthy.  And 0.10 V is a
+# single ADC code, so the true sag is somewhere in 0.05-0.15 V -- treat this as
+# "small", not as three significant figures.  It was also measured on a full
+# pack, which is the stiffest a pack ever is; a depleted one will sag more.
+R_INT_OHMS = 0.015
 
 # Sag correction is clamped so a bad current estimate cannot invent charge.
-MAX_SAG_COMP_V = 0.80
+# Sized against the measurement above (~0.1 V at full tilt) with headroom for a
+# more depleted pack, rather than the arbitrary 0.8 V this started at.
+MAX_SAG_COMP_V = 0.30
 
 # EMA time constant for the voltage filter, seconds.  Long enough to average
 # away the 0.1 V quantisation step across many 10 Hz samples, short enough to

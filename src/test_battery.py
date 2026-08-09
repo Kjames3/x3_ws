@@ -27,10 +27,13 @@ def _soak(est, volts, amps, seconds, t0=0.0, step=1.0):
 
 
 def test_curve_endpoints():
-    assert approx(voltage_to_soc(12.6), 100.0)
-    assert approx(voltage_to_soc(13.5), 100.0)
-    assert approx(voltage_to_soc(9.6), 0.0)
-    assert approx(voltage_to_soc(8.0), 0.0)
+    import battery
+
+    full = battery.PACK_FULL_V
+    assert approx(voltage_to_soc(full), 100.0)
+    assert approx(voltage_to_soc(full + 1.0), 100.0)
+    assert approx(voltage_to_soc(full * 3.20 / 4.20), 0.0)
+    assert approx(voltage_to_soc(full * 0.6), 0.0)
 
 
 def test_curve_is_monotonic():
@@ -109,24 +112,44 @@ def test_never_rises_on_load_transient():
         prev = p
 
 
-def test_sag_compensation_reduces_driving_dip():
-    """Driving should not look like a sudden loss of a third of the pack."""
+def test_sag_compensation_matches_measured_hardware():
+    """Replay the real load profile measured on the robot 2026-08-09.
+
+    Spinning in place moved the reported voltage 13.0 -> 12.9 at an estimated
+    6.5 A; stopping returned it to 13.0.  The compensation should very nearly
+    cancel that dip, since R_INT_OHMS was fitted to exactly this point.
+    """
     est = BatteryEstimator()
-    t, _ = _soak(est, 11.8, 0.5, 200)
+    t, _ = _soak(est, 13.0, 0.5, 200)
     idle = est.percent
-    _soak(est, 11.2, 5.5, 200, t0=t)
+    _soak(est, 12.9, 6.5, 200, t0=t)
     driving = est.percent
-    uncompensated = voltage_to_soc(11.2)
-    assert idle - driving < 10.0, f"still dips {idle - driving:.1f} points"
-    assert driving > uncompensated + 15.0
+    assert idle - driving < 2.0, f"driving dip is {idle - driving:.1f} points"
+
+
+def test_sag_compensation_cannot_invent_charge():
+    """A wildly wrong current estimate must not inflate SoC without bound."""
+    est = BatteryEstimator()
+    t, _ = _soak(est, 11.0, 0.0, 200)
+    honest = est.percent
+    est2 = BatteryEstimator()
+    _soak(est2, 11.0, 500.0, 200)          # absurd current
+    inflated = est2.percent
+    headroom = voltage_to_soc(11.0 + 0.30) - voltage_to_soc(11.0)
+    assert inflated - honest <= headroom + 1e-6, "sag clamp not holding"
 
 
 def test_monotonic_no_bounce_on_rest():
-    """Voltage recovery after stopping must not push the gauge back up."""
+    """Voltage recovery after stopping must not push the gauge back up.
+
+    Uses the recovery actually measured on the robot (12.9 -> 13.0 when the
+    motors stop), not a large synthetic swing -- a swing that big really would
+    mean a charger, and the estimator is right to re-home on it.
+    """
     est = BatteryEstimator()
-    t, _ = _soak(est, 11.2, 5.5, 200)
+    t, _ = _soak(est, 12.9, 6.5, 200)
     driving = est.percent
-    _soak(est, 11.75, 0.5, 200, t0=t)         # pack relaxes at rest
+    _soak(est, 13.0, 0.5, 200, t0=t)          # pack relaxes at rest
     assert est.percent <= driving + 1e-9
 
 
@@ -136,8 +159,8 @@ def test_charge_is_eventually_detected():
     t, _ = _soak(est, 10.6, 0.5, 200)
     low = est.percent
     assert low < 25.0
-    _soak(est, 12.6, 0.0, 600, t0=t)
-    assert est.percent > 90.0, f"charger not picked up (still {est.percent:.1f}%)"
+    _soak(est, 13.0, 0.0, 600, t0=t)
+    assert est.percent > 95.0, f"charger not picked up (still {est.percent:.1f}%)"
 
 
 def test_ignores_empty_packets():
