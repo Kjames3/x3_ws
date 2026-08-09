@@ -14,11 +14,20 @@
 amcl:
   ros__parameters:
     use_sim_time: False
-    alpha1: 0.2
-    alpha2: 0.2
-    alpha3: 0.2
-    alpha4: 0.2
-    alpha5: 0.2
+    # Motion-model noise: how much AMCL distrusts odometry between updates. All five
+    # at 0.2 is a lot, and it does not match this robot — the odometry was measured
+    # accurate to 1% in rotation (wheel and gyro agreeing over a 354 deg sweep) and
+    # ~0.22 m over a 50 s drive. With noise that large the particle cloud spreads
+    # aggressively every update and the measurement step then picks whichever particle
+    # scores best; in a repetitive rectilinear apartment that is a random walk, which
+    # showed up as the map->odom correction sliding ~80 deg over a single 60 s run
+    # while the true heading error cannot have exceeded a few degrees.
+    # Lowered to match the measured odometry quality.
+    alpha1: 0.05   # rotation noise from rotation
+    alpha2: 0.05   # rotation noise from translation
+    alpha3: 0.05   # translation noise from translation
+    alpha4: 0.05   # translation noise from rotation
+    alpha5: 0.05   # strafe noise (omni model only)
     base_frame_id: "base_footprint"
     beam_skip_distance: 0.5
     beam_skip_error_threshold: 0.9
@@ -27,15 +36,45 @@ amcl:
     global_frame_id: "map"
     lambda_short: 0.1
     laser_likelihood_max_dist: 2.0
-    laser_max_range: 100.0
+    # Match the YDLidar X3's real usable range rather than the 100 m default, so the
+    # likelihood field is not built over ranges the sensor cannot produce.
+    laser_max_range: 8.0
+    # Left at the -1.0 default (use the scan's own range_min). An earlier revision set
+    # this to 0.40 to reject chassis self-returns, but a 360-degree coverage sweep on
+    # 2026-08-08 found ZERO returns below 0.40 m at any bearing — the raised mount
+    # (laser_joint z=0.191 m) already eliminated them. Filtering here would only throw
+    # away real close-range structure that AMCL could otherwise localise against.
     laser_min_range: -1.0
     laser_model_type: "likelihood_field"
-    max_beams: 60
+    # 60 (the Nav2 default) is thin for a small, feature-rich apartment: it left the
+    # filter under-constrained enough to hop between hypotheses. /scan_fixed carries
+    # 720 beams, so 180 is still only a quarter of them and costs little on the Orin.
+    max_beams: 180
     max_particles: 2000
     min_particles: 500
     odom_frame_id: "odom"
     pf_err: 0.05
     pf_z: 0.99
+    # Both zero DISABLES AMCL's recovery behaviour. With an imperfect initial pose the
+    # filter then has no mechanism to redistribute particles toward the true pose — it
+    # wanders among bad local optima instead. Observed live: the map->odom correction
+    # swinging from -17 deg to +89 deg over one 50 s drive, ending 3.6 m out while raw
+    # odometry was within 0.22 m. These are the standard nav2 recovery values: the fast
+    # and slow exponential averages of measurement likelihood, whose divergence triggers
+    # injection of random particles.
+    # Back to disabled (the nav2 default), deliberately.
+    #
+    # These were enabled to escape a wrong initial pose. That is no longer the failure
+    # mode: with scripts/set_amcl_pose.py seeding from a verified pose, AMCL locks to
+    # within ~3 cm. Recovery then does more harm than good — it injects random
+    # particles whenever short-term match likelihood dips below long-term, and a dip is
+    # routine (someone walks past, a chair moved since mapping, a specular dropout off
+    # the fridge). Measured: with alphas at 0.05 the filter tracked stably for 16 s
+    # (correction steady to 0.4 m / 6 deg), then recovery fired and teleported the pose
+    # 6 m in one update.
+    #
+    # Trade-off accepted: AMCL can no longer self-recover from being kidnapped or badly
+    # mislocalised. Re-seed manually instead — scripts/set_amcl_pose.py.
     recovery_alpha_fast: 0.0
     recovery_alpha_slow: 0.0
     resample_interval: 1
@@ -43,15 +82,51 @@ amcl:
     # DifferentialMotionModel (the DWA default) would produce bad localisation
     # because it assumes the robot can only move forward/backward.
     robot_model_type: "nav2_amcl::OmniMotionModel"
+    # Consume the resampled scan for consistency with the map, which is built from
+    # /scan_fixed by slam_toolbox. Raw /scan carries a variable beam count; AMCL
+    # tolerates that, but localising against the same representation the map was
+    # built from avoids any systematic difference between mapping and localisation.
+    scan_topic: /scan_fixed
     save_pose_rate: 0.5
-    sigma_hit: 0.2
+    # Width of the Gaussian around a map obstacle in the likelihood field. 0.2 m on a
+    # 0.05 m map is very smooth: a 20 cm mismatch still scores as a good hit, so many
+    # wrong poses score nearly as well as the right one and the filter cannot sharpen
+    # past roughly that scale. Observed live: global relocalization plateaued at a
+    # 1-sigma of 0.38 m / 18.6 deg and stopped improving. 0.1 m still tolerates the
+    # X3's ranging noise while actually discriminating.
+    sigma_hit: 0.1
     tf_broadcast: true
+    # Seed the filter so it publishes map->odom immediately rather than waiting
+    # silently for an /initialpose message (which presents as a hang).
+    #
+    # (0,0,0) is "where the robot stood when the mapping run began", since
+    # slam_toolbox anchors the map frame there. That is ONLY correct if the robot
+    # is actually parked at that spot. It is not a safe default otherwise: seeding
+    # a wrong pose sent the filter into permanent divergence in testing.
+    #
+    # ALWAYS establish the pose properly before trusting localization — either
+    # park at the mapping start point, set it with RViz's "2D Pose Estimate",
+    # or call /reinitialize_global_localization and drive until the covariance
+    # collapses (see scripts/relocalize.py).
+    set_initial_pose: true
+    initial_pose:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      yaw: 0.0
     transform_tolerance: 1.0
     update_min_a: 0.2
     update_min_d: 0.25
-    z_hit: 0.5
+    # Beam-model mixture weights. These must sum to 1.0; the previous values summed to
+    # 1.1, and more importantly z_hit=0.5 / z_rand=0.5 told AMCL that HALF of every
+    # scan is uniform random noise. That flattens the likelihood field and is a direct
+    # cause of the filter refusing to converge below ~0.38 m. The YDLidar against a
+    # clean 5 cm map is far better than that: most beams really do hit mapped
+    # structure, so weight z_hit accordingly and leave a small z_rand for the genuine
+    # outliers (people, moved furniture, specular dropouts).
+    z_hit: 0.85
     z_max: 0.05
-    z_rand: 0.5
+    z_rand: 0.05
     z_short: 0.05
 
 bt_navigator:
@@ -140,19 +215,19 @@ controller_server:
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"
       time_steps: 56
-      model_dt: 0.05
+      model_dt: 0.1
       batch_size: 2000
       vx_std: 0.2
       vy_std: 0.2
       wz_std: 0.4
-      vx_max: 0.26
-      vx_min: -0.26      # holonomic: allow reversing
-      vy_max: 0.26       # holonomic: allow strafing
-      wz_max: 1.0
-      ax_max: 3.0
-      ax_min: -3.0
-      ay_max: 3.0
-      az_max: 3.5
+      vx_max: 0.15
+      vx_min: -0.15      # holonomic: allow reversing
+      vy_max: 0.15       # holonomic: allow strafing
+      wz_max: 0.6
+      ax_max: 1.0
+      ax_min: -1.0
+      ay_max: 1.0
+      az_max: 1.5
       iteration_count: 1
       prune_distance: 1.7
       transform_tolerance: 0.1
@@ -200,9 +275,9 @@ controller_server:
       CostCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 3.81
+        cost_weight: 6.0
         critical_cost: 300.0
-        consider_footprint: true
+        consider_footprint: false
         collision_cost: 1000000.0
         near_goal_distance: 1.0
       PathAlignCritic:
@@ -231,7 +306,7 @@ smoother_server:
     use_sim_time: False
     smoother_plugins: ["simple_smoother"]
     simple_smoother:
-      plugin: "nav2_smoother::SavitzkyGolayFilterSmoother"
+      plugin: "nav2_smoother::SavitzkyGolaySmoother"
       num_iterations: 2
       do_refinement: true
       refinement_num: 2
@@ -278,7 +353,7 @@ local_costmap:
       plugins: ["obstacle_layer", "oak_voxel_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.15
+        inflation_radius: 0.25
         cost_scaling_factor: 5.0
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -295,12 +370,12 @@ local_costmap:
       # scan plane is horizontal at z = 0.191 m (urdf laser_joint rpy "0 0 pi"),
       # so tabletops, counters, chair seats and open drawers are invisible to
       # obstacle_layer above — it sees the table legs and plans into the top.
+      # Needs the server started with --oak-cloud (publishes /oak/points).
       #
       # Ordered AFTER obstacle_layer so the lidar (accurate, 360 deg) is the
       # base truth and the camera (noisier, ~70 deg FOV) only adds to it.
-      # If /oak/points is absent — server started without --oak-cloud, or no
-      # OAK-D — this layer simply contributes nothing and lidar avoidance is
-      # unchanged. It degrades safe.
+      # If /oak/points is absent — no --oak-cloud, or no OAK-D — this layer
+      # contributes nothing and lidar avoidance is unchanged. Degrades safe.
       oak_voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
         enabled: True
@@ -372,7 +447,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0
-        inflation_radius: 0.15
+        inflation_radius: 0.25
       always_send_full_costmap: True
 
 # ── Map Server ───────────────────────────────────────────────────────────────
