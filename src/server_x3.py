@@ -117,6 +117,19 @@ parser.add_argument('--oak-ros-rate', type=_valid_oak_ros_rate, default=10.0, de
 parser.add_argument('--oak-ros-no-stereo', action='store_true', dest='oak_ros_no_stereo',
                     help='With --oak-ros-publish, skip the mono left/right images '
                          '(roughly halves the bag size; keeps depth + IMU + detections).')
+parser.add_argument('--oak-cloud', action='store_true', dest='oak_cloud',
+                    help='Publish OAK-D depth as /oak/points (sensor_msgs/PointCloud2) for the '
+                         'Nav2 voxel layer, so the costmaps see obstacles the horizontal lidar '
+                         'plane misses (tabletops, counters, chair seats). Independent of '
+                         '--oak-ros-publish: this alone adds the cloud without the image topics.')
+parser.add_argument('--oak-cloud-rate', type=_valid_oak_ros_rate, default=5.0, dest='oak_cloud_rate',
+                    help='Publish rate (Hz) for --oak-cloud. Default 5 — each cloud costs a '
+                         'voxel-layer raytrace, and the costmap gains nothing from the full '
+                         'depth rate.')
+parser.add_argument('--oak-cloud-max-range', type=float, default=4.0, dest='oak_cloud_max_range',
+                    help='Max range (m) for --oak-cloud points. Default 4.0. OAK-D Lite stereo '
+                         'error grows ~0.006*z^2, so beyond this the points smear obstacles '
+                         'across the costmap.')
 parser.add_argument('--webrtc-camera', action='store_true', dest='webrtc_camera',
                     help='Serve the color camera over WebRTC (via mediamtx) instead of '
                          'base64/WebSocket. Releases the Astra so ffmpeg can capture it at '
@@ -129,6 +142,9 @@ OAK_SPATIAL = not args.no_oak_spatial  # on-device YOLO spatial detection (if bl
 OAK_ROS_PUBLISH = args.oak_ros_publish      # republish OAK streams as ROS2 topics (bagging/RViz)
 OAK_ROS_RATE = args.oak_ros_rate
 OAK_ROS_STEREO = not args.oak_ros_no_stereo
+OAK_CLOUD = args.oak_cloud                  # publish /oak/points for the Nav2 voxel layer
+OAK_CLOUD_RATE = args.oak_cloud_rate
+OAK_CLOUD_MAX_RANGE = args.oak_cloud_max_range
 WEBRTC_CAMERA = args.webrtc_camera  # color via WebRTC/mediamtx instead of base64 (releases Astra)
 
 # Apply ROS_DOMAIN_ID early — must be set before rclpy.init() inside ROS2Bridge
@@ -1083,18 +1099,26 @@ def initialize_hardware():
         # DepthAI opens the device exclusively, so nothing outside this process can
         # see the OAK streams. --oak-ros-publish republishes them as sensor_msgs so
         # they can be bagged (record_bag.sh) or viewed in RViz/Foxglove.
-        if oak is not None and OAK_ROS_PUBLISH and ros_bridge is not None:
+        # --oak-cloud rides the same publisher but is independent of the image
+        # topics: navigation wants /oak/points and nothing else, so running it
+        # alone skips the CPU/bandwidth cost of republishing depth + mono.
+        if oak is not None and (OAK_ROS_PUBLISH or OAK_CLOUD) and ros_bridge is not None:
             try:
                 from oakd_ros_publisher import OakRosPublisher
                 oak_ros_pub = OakRosPublisher(ros_bridge._node, oak,
                                               rate_hz=OAK_ROS_RATE,
-                                              publish_stereo=OAK_ROS_STEREO)
+                                              publish_stereo=OAK_ROS_STEREO,
+                                              publish_images=OAK_ROS_PUBLISH,
+                                              publish_detections=OAK_ROS_PUBLISH,
+                                              publish_cloud=OAK_CLOUD,
+                                              cloud_rate_hz=OAK_CLOUD_RATE,
+                                              cloud_z_max=OAK_CLOUD_MAX_RANGE)
                 oak_ros_pub.start()
             except Exception as e:
                 logger.error(f"OAK-D ROS publisher: init failed: {e}")
                 oak_ros_pub = None
-        elif OAK_ROS_PUBLISH and ros_bridge is None:
-            logger.warning("--oak-ros-publish ignored: no ROS2 bridge in this mode")
+        elif (OAK_ROS_PUBLISH or OAK_CLOUD) and ros_bridge is None:
+            logger.warning("--oak-ros-publish/--oak-cloud ignored: no ROS2 bridge in this mode")
 
     # 4. YOLO Model — prefer TRT engine (.engine), fall back to .pt on CPU
     try:

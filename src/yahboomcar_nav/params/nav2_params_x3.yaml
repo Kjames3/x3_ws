@@ -275,7 +275,7 @@ local_costmap:
       height: 3
       resolution: 0.05
       robot_radius: 0.15   # slightly larger than DWA (0.1) for mecanum footprint
-      plugins: ["obstacle_layer", "inflation_layer"]
+      plugins: ["obstacle_layer", "oak_voxel_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         inflation_radius: 0.15
@@ -291,6 +291,48 @@ local_costmap:
           clearing: True
           marking: True
           data_type: "LaserScan"
+      # OAK-D Lite depth -> obstacles the lidar physically cannot see. The 4ROS
+      # scan plane is horizontal at z = 0.191 m (urdf laser_joint rpy "0 0 pi"),
+      # so tabletops, counters, chair seats and open drawers are invisible to
+      # obstacle_layer above — it sees the table legs and plans into the top.
+      #
+      # Ordered AFTER obstacle_layer so the lidar (accurate, 360 deg) is the
+      # base truth and the camera (noisier, ~70 deg FOV) only adds to it.
+      # If /oak/points is absent — server started without --oak-cloud, or no
+      # OAK-D — this layer simply contributes nothing and lidar avoidance is
+      # unchanged. It degrades safe.
+      oak_voxel_layer:
+        plugin: "nav2_costmap_2d::VoxelLayer"
+        enabled: True
+        publish_voxel_map: True    # /local_costmap/voxel_grid, for RViz debugging
+        origin_z: 0.0
+        z_resolution: 0.10
+        z_voxels: 16               # VoxelLayer hard cap; 16 * 0.10 = 1.6 m tall
+        # Column must hold >1 marked voxel to become a lethal cell. Single-voxel
+        # marking turns isolated stereo speckle into phantom obstacles.
+        mark_threshold: 1
+        unknown_threshold: 15
+        combination_method: 1      # max() with the layers below
+        observation_sources: oak_points
+        oak_points:
+          topic: /oak/points
+          data_type: "PointCloud2"
+          marking: True
+          clearing: True
+          # 0.05 m floor deadband: below this, stereo noise on a flat floor
+          # marks the ground itself and the robot refuses to move.
+          min_obstacle_height: 0.05
+          max_obstacle_height: 1.60
+          # Depth error grows ~0.006*z^2 (about 8 cm at 3.5 m). Mark closer than
+          # we raytrace, so far points still clear stale cells without being
+          # trusted enough to create new ones.
+          obstacle_min_range: 0.30
+          obstacle_max_range: 3.00
+          raytrace_min_range: 0.0
+          raytrace_max_range: 4.00
+          # 0.0 disables the staleness warning: the OAK-D is optional hardware
+          # and Nav2 would otherwise log continuously whenever it is absent.
+          expected_update_rate: 0.0
       always_send_full_costmap: True
 
 global_costmap:
@@ -303,6 +345,14 @@ global_costmap:
       use_sim_time: False
       robot_radius: 0.15
       resolution: 0.05
+      # NOTE: the OAK-D voxel layer is deliberately local-costmap-only. The
+      # camera's ~70 deg FOV can only raytrace-clear what it is currently
+      # looking at, so on this (non-rolling) costmap a mis-measured obstacle
+      # persists after the robot turns away and can permanently block a doorway
+      # for the planner. The local costmap is rolling, so bad marks age out.
+      # Consequence: the planner may still route through a table and the
+      # controller deviates around it locally. If that proves too disruptive,
+      # add oak_voxel_layer here too — but re-test doorway traversal first.
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"

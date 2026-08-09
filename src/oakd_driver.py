@@ -142,8 +142,14 @@ class OakDCamera:
         self._latest_detections = []
         self.depth_fps = 0.0              # live depth/stereo capture rate (~1s window)
 
-        # CAM_A intrinsics at (nn_w, nn_h), filled once the device is up.
+        # Intrinsics of the socket the depth map is aligned to, at the size the
+        # stereo node actually outputs. Both depend on whether the spatial NN
+        # branch is built (CAM_A @ nn_w x nn_h) or not (CAM_B/CAM_C @ mono res),
+        # so _build_pipeline records them and _read_intrinsics reads that pair.
+        # Getting this wrong silently skews every back-projected point.
         self._fx = self._fy = self._cx = self._cy = None
+        self._intr_socket = None
+        self._intr_size = None      # (w, h) the intrinsics above are valid for
         self._logged_nn = False
         self._decode_mode = None          # locked (reshape, has_obj) once identified
 
@@ -259,6 +265,8 @@ class OakDCamera:
 
             stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
             stereo.setOutputSize(self.nn_w, self.nn_h)
+            self._intr_socket = dai.CameraBoardSocket.CAM_A
+            self._intr_size = (self.nn_w, self.nn_h)
 
             nn = pipeline.create(dai.node.NeuralNetwork)
             nn.setBlobPath(self.spatial_blob)
@@ -274,6 +282,9 @@ class OakDCamera:
                             else dai.CameraBoardSocket.CAM_C)
             stereo.setDepthAlign(align_socket)
             stereo.setOutputSize(monoLeft.getResolutionWidth(), monoLeft.getResolutionHeight())
+            self._intr_socket = align_socket
+            self._intr_size = (monoLeft.getResolutionWidth(),
+                               monoLeft.getResolutionHeight())
 
         return pipeline
 
@@ -378,15 +389,37 @@ class OakDCamera:
         self.spatial_active = False
 
     def _read_intrinsics(self, device):
+        socket = self._intr_socket or dai.CameraBoardSocket.CAM_A
+        w, h = self._intr_size or (self.nn_w, self.nn_h)
         try:
             calib = device.readCalibration()
-            M = calib.getCameraIntrinsics(dai.CameraBoardSocket.CAM_A, self.nn_w, self.nn_h)
+            M = calib.getCameraIntrinsics(socket, w, h)
             self._fx, self._fy = float(M[0][0]), float(M[1][1])
             self._cx, self._cy = float(M[0][2]), float(M[1][2])
-            logger.info(f"OakDCamera: CAM_A intrinsics @ {self.nn_w}x{self.nn_h} "
+            logger.info(f"OakDCamera: {socket.name} intrinsics @ {w}x{h} "
                         f"fx={self._fx:.1f} fy={self._fy:.1f} cx={self._cx:.1f} cy={self._cy:.1f}")
         except Exception as e:
             logger.error(f"OakDCamera: readCalibration failed: {e}")
+
+    def get_intrinsics(self, shape=None):
+        """(fx, fy, cx, cy) for the depth map, or None if the device isn't up.
+
+        `shape` is an optional (h, w) of the frame being back-projected. The
+        intrinsics are rescaled to it, so a depth map that arrives at a size
+        other than the one the pipeline requested still projects correctly
+        instead of producing a quietly stretched cloud.
+        """
+        if None in (self._fx, self._fy, self._cx, self._cy):
+            return None
+        fx, fy, cx, cy = self._fx, self._fy, self._cx, self._cy
+        if shape is not None and self._intr_size is not None:
+            iw, ih = self._intr_size
+            h, w = shape[:2]
+            if (w, h) != (iw, ih) and iw > 0 and ih > 0:
+                sx, sy = w / float(iw), h / float(ih)
+                fx, cx = fx * sx, cx * sx
+                fy, cy = fy * sy, cy * sy
+        return fx, fy, cx, cy
 
     # ------------------------------------------------------------------ processing
     def _process_depth(self, depth_mm):

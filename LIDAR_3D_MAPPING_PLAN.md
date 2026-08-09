@@ -6,7 +6,14 @@ Feasibility study and implementation plan for adapting:
 > ISPRS Open Journal of Photogrammetry and Remote Sensing, 2025.
 > DOI: [10.1016/j.ophoto.2025.100109](https://doi.org/10.1016/j.ophoto.2025.100109) (gold OA)
 
-Status: **design only, nothing implemented.** Written 2026-08-08.
+Status: **Phase 0 implemented (§7), Phases 1–4 design only.** Written 2026-08-08.
+
+Phases 1–3 need a tilt bracket, which is deferred — there is a spare **STS3215**
+serial bus servo in storage earmarked for it. Note that an STS3215 is a bus
+servo, not PWM, so it would use `Rosmaster_Lib.set_uart_servo_angle()`
+(`src/Rosmaster_Lib.py:709`) rather than the `set_pwm_servo()` path assumed in
+§3.3 — and its position feedback would make the α-estimation caveat in §3.5
+much less of a worry.
 
 ---
 
@@ -258,13 +265,9 @@ the existing velocity-estimator backlog rather than bolted onto this.
 
 ## 5. Phasing
 
-**Phase 0 — OAK-D-only 3D map (software only, no hardware).**
-Accumulate `get_raw_depth_frame()` clouds along the existing 2D SLAM
-trajectory into a voxel grid; publish a 3D costmap layer. No servo, no tilt,
-no risk to the nav stack. This alone delivers mechanism 3 (overhangs), and it
-builds ~80% of the plumbing Phase 3 needs — cloud accumulation, pose
-association, voxel map, costmap output. **Do this first regardless of whether
-the rest proceeds.**
+**Phase 0 — OAK-D depth into the Nav2 costmap. ✅ IMPLEMENTED (2026-08-08).**
+See §7 below. No servo, no tilt, no risk to the nav stack; delivers mechanism 3
+(overhangs), which is the standalone win.
 
 **Phase 1 — tilt bracket.** Print/mount, wire to a free Rosmaster PWM channel,
 add NAV/SCAN mode API with the Nav2 interlock. Verify NAV mode reproduces
@@ -310,7 +313,91 @@ estimator's centroid extraction.
 
 ---
 
-## 7. Honest bottom line
+## 7. Phase 0 as built
+
+Goal: let Nav2 avoid the things the horizontal scan plane cannot see. Not a
+persistent 3D map — a live camera obstacle source. That is the whole of the
+navigation benefit (mechanism 3) without any hardware change.
+
+### Running it
+
+```bash
+python3 src/server_x3.py --domain-id 42 --oak-cloud
+```
+
+`--oak-cloud` is independent of `--oak-ros-publish`: it adds `/oak/points` only,
+skipping the image topics, which exist for bagging and cost real CPU and USB
+bandwidth. Tunable with `--oak-cloud-rate` (default 5 Hz) and
+`--oak-cloud-max-range` (default 4.0 m).
+
+### What changed
+
+| File | Change |
+|---|---|
+| `src/oakd_cloud.py` | **new** — depth → `(N,3)` back-projection + `PointCloud2` builder. ROS-free math so it tests off-robot. |
+| `src/test_oakd_cloud.py` | **new** — 9 offline tests: projection round-trip, stride indexing, range gating, cap, intrinsics rescaling. |
+| `src/oakd_driver.py` | intrinsics bug fix (below) + public `get_intrinsics(shape)`. |
+| `src/oakd_ros_publisher.py` | publishes `/oak/points`; `publish_images` now separable so cloud-only is cheap. |
+| `src/server_x3.py` | `--oak-cloud`, `--oak-cloud-rate`, `--oak-cloud-max-range`. |
+| `nav2_params_x3.yaml` | `oak_voxel_layer` (`VoxelLayer`) on the **local** costmap. |
+
+### The intrinsics bug this depended on
+
+`_read_intrinsics()` unconditionally read **CAM_A at 480×640**. That is only
+correct when the spatial-NN branch is built. Without it, the stereo node aligns
+depth to CAM_B/CAM_C and outputs at mono resolution **640×400** — so the
+intrinsics belonged to the wrong camera at the wrong resolution. It was
+invisible because `/oak/depth/camera_info` is rarely consumed, but every
+back-projected point would have been skewed. Now the pipeline records the socket
+and output size it actually configured, and `get_intrinsics(shape)` additionally
+rescales to the frame it is handed. This also fixes `/oak/depth/camera_info`.
+
+### Design decisions worth knowing
+
+- **Points are published in the optical frame**, not pre-transformed. The URDF
+  already defines `base_link → oak-d-base-frame → oak_rgb_camera_optical_frame`
+  (camera at z = 0.185, level, facing forward), so TF places the cloud and the
+  costmap's `min/max_obstacle_height` do the height filtering *after* that
+  transform. No new static publisher, no duplicated extrinsics.
+- **Local costmap only.** The camera's ~70° FOV can only raytrace-clear what it
+  currently sees, so on the non-rolling global costmap a bad mark persists after
+  the robot turns away and can permanently block a doorway. The local costmap is
+  rolling, so bad marks age out. Cost: the planner may still route through a
+  table and the controller deviates locally. Revisit only with a doorway test.
+- **`mark_threshold: 1`** — a column needs >1 marked voxel to become lethal, so
+  isolated stereo speckle does not invent obstacles.
+- **`min_obstacle_height: 0.05`** — floor deadband. Without it, stereo noise on
+  a flat floor marks the ground and the robot refuses to move.
+- **Mark to 3.0 m, raytrace to 4.0 m.** Far points are trusted to *clear* stale
+  cells but not to *create* obstacles, because `0.006·z²` is ~8 cm at 3.5 m.
+- **Degrades safe.** No OAK-D, or server started without `--oak-cloud`, and the
+  layer contributes nothing; lidar avoidance is exactly as before.
+
+### Verified
+
+Offline: 9/9 tests pass; `PointCloud2` round-trips byte-exact through
+serialization (19200 pts → 230400 B data, `point_step` 12, `array('B')` fast
+path); Nav2 YAML parses with the layer and source resolving; conversion costs
+**0.26 ms/frame** at defaults (~0.13% of one core at 5 Hz), so it stays clear of
+the OAK driver and velocity estimator already topping the Jetson CPU profile.
+
+**Not yet verified on hardware.** Everything above is off-robot. On the Jetson,
+check in this order — each step's failure mode is silent:
+
+1. `ros2 topic hz /oak/points` → expect ~5 Hz. Nothing means the OAK-D never
+   came up or `--oak-cloud` was not passed.
+2. `ros2 run tf2_ros tf2_echo base_link oak_rgb_camera_optical_frame` → must
+   resolve. If it does not, `robot_state_publisher` is not running the X3 URDF
+   and **the costmap will silently drop every cloud**.
+3. RViz: add `/oak/points` and `/local_costmap/voxel_grid`. Point the robot at a
+   table. The tabletop should appear as marked voxels with no floor plane
+   lighting up.
+4. Drive at a table edge-on. It should now stop; before this change it would
+   plan into the top and only see the legs.
+5. Watch for the floor marking itself at range — if so, raise
+   `min_obstacle_height` to 0.08–0.10 before touching anything else.
+
+## 8. Honest bottom line
 
 The paper is a good match *in structure* — coarse-3D-anchor plus
 dense-2D-lidar is exactly our OAK-D plus 4ROS situation, and its targetless

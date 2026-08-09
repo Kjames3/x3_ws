@@ -10,7 +10,8 @@ alongside /scan, /odom and the Astra depth.
 
 Topics (all under /oak):
     /oak/depth/image_raw    sensor_msgs/Image        16UC1, millimetres
-    /oak/depth/camera_info  sensor_msgs/CameraInfo   CAM_A intrinsics
+    /oak/depth/camera_info  sensor_msgs/CameraInfo   depth-aligned intrinsics
+    /oak/points             sensor_msgs/PointCloud2  xyz, optical frame (optional)
     /oak/left/image_raw     sensor_msgs/Image        mono8  (optional)
     /oak/right/image_raw    sensor_msgs/Image        mono8  (optional)
     /oak/imu                sensor_msgs/Imu          6-axis, no orientation
@@ -33,6 +34,8 @@ import threading
 import time
 
 import numpy as np
+
+import oakd_cloud
 
 logger = logging.getLogger(__name__)
 
@@ -65,12 +68,29 @@ def _as_uint8_array(arr):
 
 class OakRosPublisher:
     def __init__(self, node, oak, rate_hz=10.0, publish_stereo=True,
-                 publish_detections=True):
+                 publish_detections=True, publish_images=True,
+                 publish_cloud=False, cloud_rate_hz=5.0,
+                 cloud_stride=oakd_cloud.DEFAULT_STRIDE,
+                 cloud_z_min=oakd_cloud.DEFAULT_Z_MIN,
+                 cloud_z_max=oakd_cloud.DEFAULT_Z_MAX,
+                 cloud_max_points=oakd_cloud.DEFAULT_MAX_POINTS):
         self._node = node
         self._oak = oak
         self._period = 1.0 / max(rate_hz, 0.1)
-        self._publish_stereo = publish_stereo
+        self._publish_stereo = publish_stereo and publish_images
         self._publish_detections = publish_detections
+        self._publish_images = publish_images
+
+        # The costmap needs a few Hz, not the full depth rate — each cloud costs
+        # a raytrace pass through the voxel layer, so publishing at 30 Hz would
+        # burn CPU in Nav2 for no extra obstacle information.
+        self._publish_cloud = publish_cloud
+        self._cloud_period = 1.0 / max(cloud_rate_hz, 0.1)
+        self._cloud_stride = cloud_stride
+        self._cloud_z_min = cloud_z_min
+        self._cloud_z_max = cloud_z_max
+        self._cloud_max_points = cloud_max_points
+        self._last_cloud_t = 0.0
 
         self._running = False
         self._thread = None
@@ -89,13 +109,20 @@ class OakRosPublisher:
         self._Imu = Imu
         self._CameraInfo = CameraInfo
 
-        self._depth_pub = node.create_publisher(Image, "/oak/depth/image_raw",
-                                                qos_profile_sensor_data)
-        self._info_pub = node.create_publisher(CameraInfo, "/oak/depth/camera_info",
-                                               qos_profile_sensor_data)
+        self._depth_pub = self._info_pub = None
+        if publish_images:
+            self._depth_pub = node.create_publisher(Image, "/oak/depth/image_raw",
+                                                    qos_profile_sensor_data)
+            self._info_pub = node.create_publisher(CameraInfo, "/oak/depth/camera_info",
+                                                   qos_profile_sensor_data)
+        self._cloud_pub = None
+        if publish_cloud:
+            from sensor_msgs.msg import PointCloud2
+            self._cloud_pub = node.create_publisher(PointCloud2, "/oak/points",
+                                                    qos_profile_sensor_data)
         self._imu_pub = node.create_publisher(Imu, "/oak/imu", qos_profile_sensor_data)
         self._left_pub = self._right_pub = None
-        if publish_stereo:
+        if self._publish_stereo:
             self._left_pub = node.create_publisher(Image, "/oak/left/image_raw",
                                                    qos_profile_sensor_data)
             self._right_pub = node.create_publisher(Image, "/oak/right/image_raw",
@@ -127,8 +154,10 @@ class OakRosPublisher:
                                         daemon=True)
         self._thread.start()
         logger.info(f"OakRosPublisher: publishing /oak/* at {1.0 / self._period:.0f} Hz "
-                    f"(stereo {'on' if self._publish_stereo else 'off'}, "
-                    f"detections {'on' if self._det_pub is not None else 'off'})")
+                    f"(images {'on' if self._publish_images else 'off'}, "
+                    f"stereo {'on' if self._publish_stereo else 'off'}, "
+                    f"detections {'on' if self._det_pub is not None else 'off'}, "
+                    f"cloud {f'on @ {1.0 / self._cloud_period:.0f} Hz' if self._cloud_pub is not None else 'off'})")
 
     def stop(self):
         self._running = False
@@ -170,8 +199,11 @@ class OakRosPublisher:
         raw = self._oak.get_raw_depth_frame()
         if raw is not None and raw is not self._last_depth_obj:
             self._last_depth_obj = raw
-            self._depth_pub.publish(self._depth_msg(raw, stamp))
-            self._publish_camera_info(raw.shape, stamp)
+            if self._depth_pub is not None:
+                self._depth_pub.publish(self._depth_msg(raw, stamp))
+                self._publish_camera_info(raw.shape, stamp)
+            if self._cloud_pub is not None:
+                self._publish_cloud_once(raw, stamp)
 
         if self._publish_stereo:
             left, right = self._oak.get_stereo_frames()
@@ -250,14 +282,36 @@ class OakRosPublisher:
         msg.orientation_covariance[0] = -1.0
         return msg
 
+    def _publish_cloud_once(self, raw_m, stamp):
+        now = time.monotonic()
+        if now - self._last_cloud_t < self._cloud_period:
+            return
+        self._last_cloud_t = now
+
+        intr = self._oak.get_intrinsics(raw_m.shape)
+        if intr is None:
+            return      # device not up yet / readCalibration failed
+        fx, fy, cx, cy = intr
+
+        pts = oakd_cloud.depth_to_points(
+            raw_m, fx, fy, cx, cy,
+            stride=self._cloud_stride,
+            z_min=self._cloud_z_min,
+            z_max=self._cloud_z_max,
+            max_points=self._cloud_max_points)
+        # An empty cloud is still worth publishing: the voxel layer needs an
+        # observation to raytrace-clear stale obstacles with. Suppressing it
+        # would leave phantom furniture in the costmap after the robot turns
+        # away.
+        self._cloud_pub.publish(
+            oakd_cloud.make_cloud_msg(pts, stamp, DEPTH_FRAME))
+
     def _publish_camera_info(self, shape, stamp):
         h, w = shape[:2]
-        fx = getattr(self._oak, "_fx", None)
-        fy = getattr(self._oak, "_fy", None)
-        cx = getattr(self._oak, "_cx", None)
-        cy = getattr(self._oak, "_cy", None)
-        if None in (fx, fy, cx, cy):
+        intr = self._oak.get_intrinsics(shape)
+        if intr is None:
             return      # device not up yet / readCalibration failed
+        fx, fy, cx, cy = intr
 
         if self._last_info_shape != (h, w):
             self._last_info_shape = (h, w)
