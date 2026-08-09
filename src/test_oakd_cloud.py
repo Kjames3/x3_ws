@@ -119,35 +119,57 @@ def test_ray_grid_cache_is_bounded():
     assert len(oakd_cloud._grid_cache) <= 9, len(oakd_cloud._grid_cache)
 
 
-class _FakeOak:
-    """Minimal stand-in exercising OakDCamera.get_intrinsics' rescaling."""
-
-    from oakd_driver import OakDCamera
-    get_intrinsics = OakDCamera.get_intrinsics
-
-    def __init__(self, size):
-        self._fx, self._fy, self._cx, self._cy = FX, FY, CX, CY
-        self._intr_size = size
+def test_scale_intrinsics_matching_size_is_noop():
+    """The normal case: depth arrives at exactly the size intrinsics were read at."""
+    intr = (FX, FY, CX, CY, W, H)
+    assert oakd_cloud.scale_intrinsics(intr, (H, W)) == (FX, FY, CX, CY)
 
 
-def test_get_intrinsics_rescales_to_actual_frame():
-    oak = _FakeOak((W, H))                      # intrinsics valid at 480x640
-    assert oak.get_intrinsics((H, W)) == (FX, FY, CX, CY)
+def test_scale_intrinsics_rescales_to_actual_frame():
+    intr = (FX, FY, CX, CY, W, H)               # valid at 480x640
 
     # Half-size depth map -> every intrinsic halves.
-    fx, fy, cx, cy = oak.get_intrinsics((H // 2, W // 2))
-    assert (fx, fy, cx, cy) == (FX / 2, FY / 2, CX / 2, CY / 2)
+    assert oakd_cloud.scale_intrinsics(intr, (H // 2, W // 2)) == \
+        (FX / 2, FY / 2, CX / 2, CY / 2)
 
     # Non-uniform rescale must scale x and y independently.
-    fx, fy, cx, cy = oak.get_intrinsics((H, W // 2))
+    fx, fy, cx, cy = oakd_cloud.scale_intrinsics(intr, (H, W // 2))
     assert (fx, cx) == (FX / 2, CX / 2)
     assert (fy, cy) == (FY, CY)
 
 
-def test_get_intrinsics_none_before_device_up():
-    oak = _FakeOak((W, H))
-    oak._fx = None
-    assert oak.get_intrinsics((H, W)) is None
+def test_scale_intrinsics_none_before_device_up():
+    """get_depth_intrinsics() returns None until calibration is read."""
+    assert oakd_cloud.scale_intrinsics(None, (H, W)) is None
+
+
+def test_driver_exposes_get_depth_intrinsics():
+    """Guard the contract this module depends on."""
+    from oakd_driver import OakDCamera
+    assert callable(getattr(OakDCamera, "get_depth_intrinsics", None))
+
+
+def test_scaled_intrinsics_project_consistently():
+    """Scaling then projecting a half-res frame must land on the same 3D point.
+
+    A point at the same *relative* image position in a half-resolution depth map
+    must back-project to the same metric coordinates — this is the property that
+    makes the rescale safe rather than merely plausible.
+    """
+    intr = (FX, FY, CX, CY, W, H)
+    z = 2.0
+
+    full = _blank()
+    full[300, 200] = z
+    p_full = oakd_cloud.depth_to_points(
+        full, *oakd_cloud.scale_intrinsics(intr, (H, W)), stride=1)
+
+    half = np.zeros((H // 2, W // 2), dtype=np.float32)
+    half[150, 100] = z
+    p_half = oakd_cloud.depth_to_points(
+        half, *oakd_cloud.scale_intrinsics(intr, (H // 2, W // 2)), stride=1)
+
+    assert np.allclose(p_full[0], p_half[0], atol=1e-5), (p_full[0], p_half[0])
 
 
 if __name__ == "__main__":

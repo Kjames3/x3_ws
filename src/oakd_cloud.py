@@ -48,6 +48,28 @@ _grid_cache = {}
 _grid_lock = threading.Lock()
 
 
+def scale_intrinsics(intr, shape):
+    """Rescale `OakDCamera.get_depth_intrinsics()` output to an actual frame.
+
+    That getter returns `(fx, fy, cx, cy, w, h)` valid at the size the pipeline
+    configured, and its docstring makes rescaling the consumer's job. Normally
+    the depth frame arrives at exactly that size and this is a no-op; if it ever
+    does not, projecting with unscaled intrinsics yields a cloud that looks
+    plausible but is stretched, so scale rather than assume.
+
+    Returns `(fx, fy, cx, cy)` for `shape` = (h, w), or None if `intr` is None.
+    """
+    if intr is None:
+        return None
+    fx, fy, cx, cy, iw, ih = intr
+    h, w = shape[:2]
+    if iw and ih and (w, h) != (iw, ih):
+        sx, sy = w / float(iw), h / float(ih)
+        fx, cx = fx * sx, cx * sx
+        fy, cy = fy * sy, cy * sy
+    return fx, fy, cx, cy
+
+
 def _ray_grid(h, w, stride, fx, fy, cx, cy):
     """Cached per-pixel unit rays: kx[u] = (u-cx)/fx, ky[v] = (v-cy)/fy.
 

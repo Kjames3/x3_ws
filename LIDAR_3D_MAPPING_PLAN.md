@@ -334,23 +334,40 @@ bandwidth. Tunable with `--oak-cloud-rate` (default 5 Hz) and
 
 | File | Change |
 |---|---|
-| `src/oakd_cloud.py` | **new** — depth → `(N,3)` back-projection + `PointCloud2` builder. ROS-free math so it tests off-robot. |
-| `src/test_oakd_cloud.py` | **new** — 9 offline tests: projection round-trip, stride indexing, range gating, cap, intrinsics rescaling. |
-| `src/oakd_driver.py` | intrinsics bug fix (below) + public `get_intrinsics(shape)`. |
+| `src/oakd_cloud.py` | **new** — depth → `(N,3)` back-projection + `PointCloud2` builder + `scale_intrinsics()`. ROS-free math so it tests off-robot. |
+| `src/test_oakd_cloud.py` | **new** — 12 offline tests: projection round-trip, stride indexing, range gating, cap, intrinsics rescaling. |
+| `src/oakd_driver.py` | adopts the robot's untracked depth-intrinsics version (below) — a rescue, not a rewrite. |
 | `src/oakd_ros_publisher.py` | publishes `/oak/points`; `publish_images` now separable so cloud-only is cheap. |
 | `src/server_x3.py` | `--oak-cloud`, `--oak-cloud-rate`, `--oak-cloud-max-range`. |
 | `nav2_params_x3.yaml` | `oak_voxel_layer` (`VoxelLayer`) on the **local** costmap. |
 
-### The intrinsics bug this depended on
+### The intrinsics question — already solved on the robot
 
-`_read_intrinsics()` unconditionally read **CAM_A at 480×640**. That is only
-correct when the spatial-NN branch is built. Without it, the stereo node aligns
-depth to CAM_B/CAM_C and outputs at mono resolution **640×400** — so the
-intrinsics belonged to the wrong camera at the wrong resolution. It was
-invisible because `/oak/depth/camera_info` is rarely consumed, but every
-back-projected point would have been skewed. Now the pipeline records the socket
-and output size it actually configured, and `get_intrinsics(shape)` additionally
-rescales to the frame it is handed. This also fixes `/oak/depth/camera_info`.
+The committed `oakd_driver.py` read **CAM_A at 480×640** unconditionally, which
+is only correct when the spatial-NN branch is built; without it the stereo node
+aligns depth to CAM_B/CAM_C at mono **640×400**, so the intrinsics belonged to
+the wrong camera at the wrong resolution and every back-projected point would
+have been skewed.
+
+That was **already fixed in the robot's working copy** — more thoroughly than
+the fix originally written here. `_read_intrinsics(device, with_spatial)` now
+reads a separate set of depth intrinsics for whichever socket and size the
+pipeline actually configured, and exposes them via `get_depth_intrinsics()`
+returning `(fx, fy, cx, cy, w, h)`.
+
+Two things follow:
+
+1. That version is now committed here. It had been living **untracked** on the
+   robot (`git status` showed `?? src/oakd_driver.py`), so it existed in exactly
+   one place and would have been lost with the SD card. Adopted wholesale rather
+   than reconciled — it is the better implementation.
+2. Per its docstring ("consumers that downsample must scale these"), the
+   rescaling lives in the consumer: `oakd_cloud.scale_intrinsics(intr, shape)`.
+   Normally a no-op; it exists so a depth frame arriving at an unexpected size
+   produces a correct cloud rather than a plausible-looking stretched one.
+
+`/oak/depth/camera_info` now advertises the depth intrinsics too, instead of
+CAM_A's.
 
 ### Design decisions worth knowing
 
@@ -375,7 +392,7 @@ rescales to the frame it is handed. This also fixes `/oak/depth/camera_info`.
 
 ### Verified
 
-Offline: 9/9 tests pass; `PointCloud2` round-trips byte-exact through
+Offline: 12/12 tests pass; `PointCloud2` round-trips byte-exact through
 serialization (19200 pts → 230400 B data, `point_step` 12, `array('B')` fast
 path); Nav2 YAML parses with the layer and source resolving; conversion costs
 **0.26 ms/frame** at defaults (~0.13% of one core at 5 Hz), so it stays clear of

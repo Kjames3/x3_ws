@@ -288,10 +288,11 @@ class OakRosPublisher:
             return
         self._last_cloud_t = now
 
-        intr = self._oak.get_intrinsics(raw_m.shape)
-        if intr is None:
+        scaled = oakd_cloud.scale_intrinsics(
+            self._oak.get_depth_intrinsics(), raw_m.shape)
+        if scaled is None:
             return      # device not up yet / readCalibration failed
-        fx, fy, cx, cy = intr
+        fx, fy, cx, cy = scaled
 
         pts = oakd_cloud.depth_to_points(
             raw_m, fx, fy, cx, cy,
@@ -308,10 +309,14 @@ class OakRosPublisher:
 
     def _publish_camera_info(self, shape, stamp):
         h, w = shape[:2]
-        intr = self._oak.get_intrinsics(shape)
-        if intr is None:
+        # Depth-frame intrinsics, not CAM_A's: in the stereo-only fallback depth
+        # is aligned to a mono socket at mono resolution, where CAM_A's numbers
+        # do not apply.
+        scaled = oakd_cloud.scale_intrinsics(
+            self._oak.get_depth_intrinsics(), shape)
+        if scaled is None:
             return      # device not up yet / readCalibration failed
-        fx, fy, cx, cy = intr
+        fx, fy, cx, cy = scaled
 
         if self._last_info_shape != (h, w):
             self._last_info_shape = (h, w)
