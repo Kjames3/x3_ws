@@ -26,6 +26,35 @@ colcon test --packages-select <package_name>
 colcon test-result --verbose
 ```
 
+## Connecting to the Robot
+
+**Never ask for the robot's IP address, and never hardcode one.** The robot is on
+campus wifi for the duration of the deployment and its lease moves between subnets,
+so any address written down goes stale within days.
+
+Use the alias, which resolves the address at connect time:
+
+```bash
+ssh x3                         # ~/.ssh/config resolves via scripts/x3-ip
+scp file x3:~/                 # scp/rsync work through the same alias
+"$(x3-ip)"                     # the bare address, when a command needs one
+```
+
+Diagnose or correct the address with:
+
+```bash
+x3-ip status                   # cached address, age, how it resolved, reachability
+x3-ip set <IP>                 # run this instead of pasting an IP into a prompt
+```
+
+Resolution order is Tailscale → cache → `x3.lan` (bench LAN only) → mDNS; see
+[scripts/robot_env.sh](scripts/robot_env.sh) for the details and env knobs.
+`ROBOT_IP=<addr>` overrides everything for one command. Scripts should
+`source scripts/robot_env.sh` rather than defining their own default.
+
+Tailscale is the path that survives the robot changing buildings; set it up on
+both machines with [scripts/setup_tailscale.sh](scripts/setup_tailscale.sh).
+
 ## Running the System
 
 ROS2 hardware bridge mode is the **default**. The `--sim` flag disables it for simulation.
