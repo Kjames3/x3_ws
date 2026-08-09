@@ -394,9 +394,18 @@ local_costmap:
           data_type: "PointCloud2"
           marking: True
           clearing: True
-          # 0.05 m floor deadband: below this, stereo noise on a flat floor
-          # marks the ground itself and the robot refuses to move.
-          min_obstacle_height: 0.05
+          # Floor deadband. Measured on the robot 2026-08-09: of an 8000-point
+          # cloud, 3123 points (39%) landed in the 0.05-0.10 m band at 0.78 m
+          # median range — the floor, lifted above 0.05 m by stereo noise. At
+          # 0.05 this layer carpets the area ahead with phantom obstacles in
+          # open space. Above ~0.10 m the floor population collapses (386 pts
+          # in 0.10-0.15, 293 in 0.15-0.20), so 0.12 clears it with margin.
+          #
+          # Cost: obstacles below 0.12 m are not marked from the camera. The
+          # lidar cannot see them either (its plane is at 0.191 m), so cables,
+          # door thresholds and low clutter stay invisible — and stereo cannot
+          # reliably tell them from floor noise at this height anyway.
+          min_obstacle_height: 0.12
           max_obstacle_height: 1.60
           # Depth error grows ~0.006*z^2 (about 8 cm at 3.5 m). Mark closer than
           # we raytrace, so far points still clear stale cells without being

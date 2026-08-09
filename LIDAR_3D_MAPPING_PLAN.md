@@ -398,21 +398,38 @@ path); Nav2 YAML parses with the layer and source resolving; conversion costs
 **0.26 ms/frame** at defaults (~0.13% of one core at 5 Hz), so it stays clear of
 the OAK driver and velocity estimator already topping the Jetson CPU profile.
 
-**Not yet verified on hardware.** Everything above is off-robot. On the Jetson,
-check in this order — each step's failure mode is silent:
+**Verified on hardware 2026-08-09** (jetson @ 10.13.245.167, Nav2 running
+against `apartment3_test`, robot stationary):
 
-1. `ros2 topic hz /oak/points` → expect ~5 Hz. Nothing means the OAK-D never
-   came up or `--oak-cloud` was not passed.
-2. `ros2 run tf2_ros tf2_echo base_link oak_rgb_camera_optical_frame` → must
-   resolve. If it does not, `robot_state_publisher` is not running the X3 URDF
-   and **the costmap will silently drop every cloud**.
-3. RViz: add `/oak/points` and `/local_costmap/voxel_grid`. Point the robot at a
-   table. The tabletop should appear as marked voxels with no floor plane
-   lighting up.
-4. Drive at a table edge-on. It should now stop; before this change it would
-   plan into the top and only see the legs.
-5. Watch for the floor marking itself at range — if so, raise
-   `min_obstacle_height` to 0.08–0.10 before touching anything else.
+- `/oak/points` — 57 msgs / 15 s (~3.8 Hz), frame `oak_rgb_camera_optical_frame`,
+  8000 pts/msg (the cap), `point_step` 12, z spanning 0.50–3.96 m.
+- TF `base_link → oak_rgb_camera_optical_frame` = (0.0435, 0.0001, 0.1850),
+  exactly the URDF value.
+- `local_costmap` **subscribes to `/oak/points`**; `/local_costmap/voxel_grid`
+  publishes; `/scan` unaffected (57 msgs / 8 s).
+- Depth intrinsics read as CAM_A @ 480×640 fx=615.6 fy=615.5 cx=242.7 cy=324.6.
+- **Camera-only obstacles confirmed**: 570 of 700 marked voxels sit above the
+  0.191 m lidar plane, i.e. structure the lidar physically cannot see.
+- **No regression**: A/B via `ros2 param set … oak_voxel_layer.enabled` gave
+  77.2% lethal without the layer vs 77.5% with it — +0.3%.
+
+Two things the hardware run changed:
+
+1. **`min_obstacle_height` 0.05 → 0.12.** The original default marked the floor:
+   3123 of 8000 points (39%) landed in the 0.05–0.10 m band at 0.78 m median
+   range. It was masked in a cluttered room whose cells were already lethal from
+   the lidar, but in open space it would carpet the area ahead with phantom
+   obstacles. After the change the 0.00–0.10 m bin is empty and the camera-only
+   marks above the lidar plane remain.
+2. **Decoding `/local_costmap/voxel_grid` is easy to get backwards.** nav2 packs
+   a column into one `uint32`: **upper 16 bits = MARKED, lower 16 = UNKNOWN**
+   (`voxel_grid.hpp`, `getVoxel`). Reading it the other way makes every column
+   look marked, because nearly every column has *unknown* voxels.
+
+Operational gotcha: `stop_nav2` leaves the composed `nav2_container` running,
+and a relaunch on top of the stale one comes up with **zero publishers** and no
+error. Kill the container by PID before relaunching. Consistent with the
+existing note that `use_composition` hides failures.
 
 ## 8. Honest bottom line
 
