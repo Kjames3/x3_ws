@@ -305,8 +305,10 @@ class ROS2Bridge:
         self._latest_frame = None          # cv2 BGR ndarray from Gazebo RGB camera
         self._latest_depth = None          # cv2 BGR ndarray from Gazebo depth camera
         self._latest_raw_depth = None      # np.ndarray containing raw depth values in meters
-        self._pose_m = {"x": 0.0, "y": 0.0, "theta": 0.0}  # metres + radians
+        self._pose_m = {"x": 0.0, "y": 0.0, "theta": 0.0}  # metres + radians, ODOM frame
         self._twist = {"vx": 0.0, "vy": 0.0, "wz": 0.0}   # body velocity m/s, rad/s
+        # Localisation quality from AMCL, or None when AMCL has never reported.
+        self._amcl_cov: dict | None = None
         self._voltage = 12.0               # volts, updated by /voltage subscriber
         self._occupancy_grid: dict | None = None  # latest OccupancyGrid info dict for frontier explorer
         # safe_distance MUST stay ABOVE the _scan_cb min-range gate (0.12 m). The CBF
@@ -338,6 +340,27 @@ class ROS2Bridge:
         from rclpy.qos import qos_profile_sensor_data
         self._node.create_subscription(LaserScan,      '/scan',             self._scan_cb,   qos_profile_sensor_data)
         self._cmd_vel_pub = self._node.create_publisher(Twist, '/cmd_vel', 10)
+
+        # AMCL publishes its pose estimate (map frame) with a covariance that
+        # tells us how well localised we actually are. Latched TRANSIENT_LOCAL.
+        try:
+            from geometry_msgs.msg import PoseWithCovarianceStamped
+            self._node.create_subscription(
+                PoseWithCovarianceStamped, '/amcl_pose', self._amcl_pose_cb, _map_qos)
+        except Exception as exc:
+            logger.warning(f"ROS2Bridge: /amcl_pose subscription unavailable: {exc}")
+
+        # TF listener so we can report the robot's pose in the MAP frame.
+        # /odom alone is odom-frame; the GUI's nav map is drawn in map frame, so
+        # plotting odom there misplaces the robot by the whole map->odom offset
+        # (which is exactly the AMCL correction, and can be ~1 m and ~90 deg).
+        try:
+            import tf2_ros
+            self._tf_buffer = tf2_ros.Buffer()
+            self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self._node)
+        except Exception as exc:
+            self._tf_buffer = None
+            logger.warning(f"ROS2Bridge: TF listener unavailable: {exc}")
 
         # Publishers for pedestrian tracking (EE244 Project)
         from geometry_msgs.msg import PoseArray
@@ -528,8 +551,48 @@ class ROS2Bridge:
         with self._lock:
             return dict(self._occupancy_grid) if self._occupancy_grid else None
 
+    def _amcl_pose_cb(self, msg):
+        """Record AMCL's positional/heading spread so the GUI can flag poor localisation."""
+        cov = msg.pose.covariance
+        import math
+        with self._lock:
+            self._amcl_cov = {
+                # Standard deviations are far easier to reason about than variances.
+                "std_x":   math.sqrt(max(cov[0], 0.0)),
+                "std_y":   math.sqrt(max(cov[7], 0.0)),
+                "std_yaw": math.sqrt(max(cov[35], 0.0)),
+            }
+
+    def get_map_pose(self) -> dict | None:
+        """
+        Robot pose in the MAP frame via TF (map -> base_footprint), metres/radians.
+
+        Returns None when no map->odom transform exists yet — i.e. AMCL/SLAM is
+        not running or has not localised. Callers should fall back to odom only
+        for display, never for sending goals.
+        """
+        buf = getattr(self, "_tf_buffer", None)
+        if buf is None:
+            return None
+        try:
+            import math
+            from rclpy.time import Time
+            # Time() = "latest available", which avoids extrapolation errors when
+            # AMCL updates far slower than odom.
+            tf = buf.lookup_transform('map', 'base_footprint', Time())
+            t, q = tf.transform.translation, tf.transform.rotation
+            yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                             1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+            return {"x": t.x, "y": t.y, "theta": yaw}
+        except Exception:
+            return None
+
+    def get_amcl_cov(self) -> dict | None:
+        with self._lock:
+            return dict(self._amcl_cov) if self._amcl_cov else None
+
     def get_pose_m(self) -> dict:
-        """Return the robot pose in metres: {x, y, theta}."""
+        """Return the robot pose in metres: {x, y, theta}. ODOM frame."""
         with self._lock:
             return dict(self._pose_m)
 
@@ -2028,6 +2091,15 @@ async def broadcast_loop():
             else:
                 pose = {"x": 0.0, "y": 0.0, "theta": 0.0}
 
+            # 6b. Map-frame pose (metres) + AMCL spread. The nav map canvas is
+            #     drawn in the map frame, so it must plot this — not `pose`,
+            #     which is odom-frame and off by the whole AMCL correction.
+            map_pose = None
+            amcl_cov = None
+            if ros_bridge is not None:
+                map_pose = ros_bridge.get_map_pose()
+                amcl_cov = ros_bridge.get_amcl_cov()
+
             # 7. Encoders + battery
             if drive is not None and (ROS2_MODE or SIM_MODE) and hasattr(drive, 'get_battery_voltage'):
                 # Voltage comes from the /voltage topic published by Mcnamu_driver_X3
@@ -2075,6 +2147,8 @@ async def broadcast_loop():
                 "oak_imu": oak_imu,
                 "oak_detections": oak_detections,
                 "robot_pose": pose,
+                "map_pose": map_pose,
+                "amcl_cov": amcl_cov,
                 "m1_pos": m1_enc,
                 "m2_pos": m2_enc,
                 "m3_pos": m3_enc,

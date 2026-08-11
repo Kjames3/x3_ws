@@ -79,6 +79,13 @@ class Nav2Client:
         self._nav2_proc: Optional[subprocess.Popen] = None
         # Map YAML currently served to AMCL (basename, GUI display only)
         self._current_map: Optional[str] = None
+        # Monotonic id of the most recently requested goal. Sending a new goal
+        # preempts the previous one, and Nav2 reports the preempted goal as
+        # ABORTED — that result lands *after* the new goal is already executing.
+        # Callbacks carry the id they were created for and only touch shared
+        # state while it is still the current one, so a dead goal can no longer
+        # overwrite the live goal's state with FAILED.
+        self._goal_seq: int = 0
 
         # ── Action client ───────────────────────────────────────────────────
         self._action_client = ActionClient(
@@ -119,6 +126,8 @@ class Nav2Client:
         goal_msg.pose.pose.orientation.w = qw
 
         with self._lock:
+            self._goal_seq += 1
+            seq = self._goal_seq
             self._state = STATE_PLANNING
             self._goal = {"x": x, "y": y, "theta": theta}
             self._path = []
@@ -126,15 +135,19 @@ class Nav2Client:
 
         send_future = self._action_client.send_goal_async(
             goal_msg,
-            feedback_callback=self._feedback_cb,
+            feedback_callback=lambda fb, _seq=seq: self._feedback_cb(fb, _seq),
         )
-        send_future.add_done_callback(self._goal_response_cb)
+        send_future.add_done_callback(
+            lambda fut, _seq=seq: self._goal_response_cb(fut, _seq))
         logger.info(f"[Nav2Client] Goal sent → ({x:.2f}, {y:.2f}, θ={math.degrees(theta):.1f}°)")
 
     def cancel(self) -> None:
         """Cancel the currently active navigation goal."""
         with self._lock:
             handle = self._goal_handle
+            # Retire the current id so the cancelled goal's own result callback
+            # cannot re-report it as FAILED after _cancel_done_cb settles.
+            self._goal_seq += 1
             if handle is None:
                 self._state = STATE_IDLE
                 return
@@ -145,7 +158,19 @@ class Nav2Client:
         logger.info("[Nav2Client] Cancel requested")
 
     def set_initial_pose(self, x: float, y: float, theta: float = 0.0) -> None:
-        """Publish an initial pose estimate to /initialpose (used by AMCL)."""
+        """
+        Publish an initial pose estimate to /initialpose (used by AMCL).
+
+        Any in-flight goal is cancelled first: its plan and the controller's
+        progress were computed against the old estimate, so letting it keep
+        driving while the pose jumps sends the robot off along a stale path.
+        """
+        with self._lock:
+            active = self._goal_handle is not None
+        if active:
+            logger.info("[Nav2Client] Cancelling active goal before relocalising")
+            self.cancel()
+
         msg = PoseWithCovarianceStamped()
         msg.header.frame_id = "map"
         msg.header.stamp = self._node.get_clock().now().to_msg()
@@ -298,6 +323,7 @@ class Nav2Client:
             logger.info("[Nav2Client] Nav2 subprocess stopped")
 
         with self._lock:
+            self._goal_seq += 1
             self._state = STATE_IDLE
             self._goal = None
             self._path = []
@@ -327,32 +353,57 @@ class Nav2Client:
 
     # ── Internal callbacks ──────────────────────────────────────────────────
 
-    def _goal_response_cb(self, future) -> None:
+    def _goal_response_cb(self, future, seq: int) -> None:
         handle = future.result()
         if not handle.accepted:
             logger.warning("[Nav2Client] Goal rejected by Nav2")
             with self._lock:
-                self._state = STATE_FAILED
-                self._goal_handle = None
+                if seq == self._goal_seq:
+                    self._state = STATE_FAILED
+                    self._goal_handle = None
             return
 
         with self._lock:
-            self._goal_handle = handle
-            self._state = STATE_EXECUTING
+            superseded = seq != self._goal_seq
+            if not superseded:
+                self._goal_handle = handle
+                self._state = STATE_EXECUTING
+
+        if superseded:
+            # Replaced or cancelled while Nav2 was still deciding. We must not
+            # just drop the handle: Nav2 has accepted this goal and will drive
+            # the robot, and it is the only handle that can stop it. Cancel it.
+            logger.info(f"[Nav2Client] Goal #{seq} accepted after being superseded — cancelling it")
+            try:
+                handle.cancel_goal_async()
+            except Exception as exc:
+                logger.warning(f"[Nav2Client] Could not cancel superseded goal #{seq}: {exc}")
+            return
 
         result_future = handle.get_result_async()
-        result_future.add_done_callback(self._result_cb)
+        result_future.add_done_callback(
+            lambda fut, _seq=seq: self._result_cb(fut, _seq))
         logger.info("[Nav2Client] Goal accepted, executing")
 
-    def _feedback_cb(self, feedback_msg) -> None:
+    def _feedback_cb(self, feedback_msg, seq: int) -> None:
         fb = feedback_msg.feedback
         with self._lock:
+            if seq != self._goal_seq:
+                return
             self._dist_remaining = fb.distance_remaining
 
-    def _result_cb(self, future) -> None:
+    def _result_cb(self, future, seq: int) -> None:
         result = future.result()
         status = result.status
         with self._lock:
+            if seq != self._goal_seq:
+                # Result of a goal we already replaced. Nav2 reports preempted
+                # goals as ABORTED, so reporting it would flip the GUI badge to
+                # FAILED while the *current* goal is running perfectly well.
+                logger.info(
+                    f"[Nav2Client] Ignoring stale result for goal #{seq} "
+                    f"(status={status}); goal #{self._goal_seq} is current")
+                return
             self._goal_handle = None
             if status == GoalStatus.STATUS_SUCCEEDED:
                 self._state = STATE_SUCCEEDED

@@ -92,6 +92,7 @@ const state = {
         path: [],            // [[x, y], ...] in metres
         distRemaining: null,
         mapMode: 'navigate', // 'navigate' | 'set_pose'
+        drag: null,          // in-progress heading drag: {startPx, curPx, world, active}
         mapMeta: null,       // {resolution, origin:[x,y], originYaw, width, height}
         mapImage: null,      // HTMLImageElement of the loaded map PNG (legacy JSON path)
         mapBitmap: null,     // ImageBitmap from binary MAPU frame (Step 3)
@@ -288,6 +289,7 @@ const elements = {
     slamModeCheck: document.getElementById('slam-mode-check'),
     navDistRemaining: document.getElementById('nav-dist-remaining'),
     navGoalDisplay: document.getElementById('nav-goal-display'),
+    navLocalization: document.getElementById('nav-localization'),
     // SLAM controls
     startSlamBtn: document.getElementById('start-slam-btn'),
     stopSlamBtn: document.getElementById('stop-slam-btn'),
@@ -535,7 +537,11 @@ function initNavPanel() {
         elements.navMapWebGLCanvas.height = size;
     }
 
-    canvas.addEventListener('click', handleNavMapClick);
+    // RViz-style interaction: press to place, drag to aim, release to send.
+    canvas.addEventListener('pointerdown', handleNavPointerDown);
+    canvas.addEventListener('pointermove', handleNavPointerMove);
+    canvas.addEventListener('pointerup', handleNavPointerUp);
+    canvas.addEventListener('pointercancel', handleNavPointerCancel);
 
     if (elements.launchNav2Btn) {
         elements.launchNav2Btn.addEventListener('click', () => {
@@ -583,9 +589,9 @@ function updateNavHint() {
     if (state.nav.status === 'UNAVAILABLE') {
         hint.textContent = 'Connect in --ros2 or --sim mode to enable navigation';
     } else if (state.nav.mapMode === 'set_pose') {
-        hint.textContent = '📌 Click on map to set initial pose for AMCL';
+        hint.textContent = '📌 Press where the robot is, drag the way it faces, release';
     } else if (state.nav.mapImage) {
-        hint.textContent = 'Click on map to set navigation goal  |  Shift-click = pose only';
+        hint.textContent = 'Click to set a goal  |  drag to also aim its final heading';
     } else {
         hint.textContent = 'Load a map, then click to set a navigation goal';
     }
@@ -632,33 +638,100 @@ function worldToCanvasPx(wx, wy) {
     };
 }
 
-function handleNavMapClick(e) {
-    if (state.nav.status === 'UNAVAILABLE') return;
+/** Canvas pixel coords of a pointer event, scaled to the canvas backing store. */
+function navEventPx(e) {
     const canvas = elements.navMapCanvas;
     const rect = canvas.getBoundingClientRect();
-    const cx = (e.clientX - rect.left) * (canvas.width / rect.width);
-    const cy = (e.clientY - rect.top) * (canvas.height / rect.height);
+    return {
+        cx: (e.clientX - rect.left) * (canvas.width / rect.width),
+        cy: (e.clientY - rect.top) * (canvas.height / rect.height),
+    };
+}
 
+// A drag shorter than this many canvas pixels counts as a plain click, since no
+// one can aim a heading reliably from a 3-pixel drag.
+const NAV_DRAG_MIN_PX = 12;
+
+function handleNavPointerDown(e) {
+    if (state.nav.status === 'UNAVAILABLE') return;
     if (!state.nav.mapMeta) {
         if (elements.navHint) elements.navHint.textContent = 'Load a map first to set goals';
         return;
     }
-
+    const { cx, cy } = navEventPx(e);
     const world = canvasPxToWorld(cx, cy);
     if (!world) return;
 
+    state.nav.drag = { startPx: { cx, cy }, curPx: { cx, cy }, world, active: true };
+    try { elements.navMapCanvas.setPointerCapture(e.pointerId); } catch (_) { }
+    e.preventDefault();
+}
+
+function handleNavPointerMove(e) {
+    const drag = state.nav.drag;
+    if (!drag || !drag.active) return;
+    drag.curPx = navEventPx(e);
+    drawNavMap();   // live heading arrow preview
+}
+
+function handleNavPointerUp(e) {
+    const drag = state.nav.drag;
+    if (!drag || !drag.active) return;
+    state.nav.drag = null;
+    try { elements.navMapCanvas.releasePointerCapture(e.pointerId); } catch (_) { }
+
+    const end = navEventPx(e);
+    const dx = end.cx - drag.startPx.cx;
+    const dy = end.cy - drag.startPx.cy;
+    const dragged = Math.hypot(dx, dy) >= NAV_DRAG_MIN_PX;
+
+    // Canvas Y points down and the map image is rotated by -originYaw, so undo
+    // both to recover a world-frame CCW yaw from the on-screen drag vector.
+    const originYaw = (state.nav.mapMeta && state.nav.mapMeta.originYaw) || 0;
+    const dragTheta = Math.atan2(-dy, dx) - originYaw;
+
+    const world = drag.world;
+
     if (state.nav.mapMode === 'set_pose') {
-        sendMessage({ type: 'set_initial_pose', x: world.x, y: world.y, theta: 0 });
-        console.log(`📌 Initial pose → (${world.x.toFixed(2)}, ${world.y.toFixed(2)})`);
+        if (!dragged) {
+            // Refuse to guess. A wrong-but-confident yaw is the worst thing you
+            // can hand AMCL: the covariance we publish claims ~15 deg accuracy,
+            // so a 90 deg error leaves it unable to recover.
+            if (elements.navHint) {
+                elements.navHint.textContent =
+                    '⚠️ Drag to aim the robot\'s heading — a click alone cannot set orientation';
+            }
+            drawNavMap();
+            return;
+        }
+        sendMessage({ type: 'set_initial_pose', x: world.x, y: world.y, theta: dragTheta });
+        console.log(`📌 Initial pose → (${world.x.toFixed(2)}, ${world.y.toFixed(2)}, ` +
+            `θ=${(dragTheta * 180 / Math.PI).toFixed(1)}°)`);
         state.nav.mapMode = 'navigate';
         if (elements.setPoseBtn) elements.setPoseBtn.classList.remove('active');
         updateNavHint();
-    } else {
-        state.nav.goal = { x: world.x, y: world.y, theta: 0 };
-        sendMessage({ type: 'set_nav_goal', x: world.x, y: world.y, theta: 0 });
-        console.log(`🎯 Nav goal → (${world.x.toFixed(2)}, ${world.y.toFixed(2)})`);
         drawNavMap();
+        return;
     }
+
+    // Goal. A plain click means "go there, heading doesn't matter to me" — but
+    // SimpleGoalChecker always enforces yaw_goal_tolerance, so send the heading
+    // the robot would naturally arrive on rather than forcing it to face map +X.
+    let theta = dragTheta;
+    if (!dragged) {
+        const mp = state.latestData.mapPose;
+        theta = mp ? Math.atan2(world.y - mp.y, world.x - mp.x) : 0;
+    }
+    state.nav.goal = { x: world.x, y: world.y, theta };
+    sendMessage({ type: 'set_nav_goal', x: world.x, y: world.y, theta });
+    console.log(`🎯 Nav goal → (${world.x.toFixed(2)}, ${world.y.toFixed(2)}, ` +
+        `θ=${(theta * 180 / Math.PI).toFixed(1)}°)${dragged ? '' : ' [heading inferred]'}`);
+    drawNavMap();
+}
+
+function handleNavPointerCancel() {
+    state.nav.drag = null;
+    drawNavMap();
 }
 
 function drawNavMap() {
@@ -763,19 +836,29 @@ function drawNavMap() {
     }
 
     // 4. Robot pose (cyan arrow)
-    const rp = state.latestData.robotPose;
+    // This canvas is the map frame, so prefer the TF map->base_footprint pose.
+    // robot_pose is odom-frame and sits off by the whole AMCL correction, which
+    // made the robot look permanently mislocalised on the map.
+    const mp = state.latestData.mapPose;
+    const rp = mp || state.latestData.robotPose;
     if (rp && state.nav.mapMeta) {
-        // Pose arrives in cm (from get_pose_cm) — convert to metres for map coords
-        const wx = rp.x / 100.0;
-        const wy = rp.y / 100.0;
+        // map_pose is already metres; robot_pose arrives in cm (get_pose_cm).
+        const scale = mp ? 1.0 : 100.0;
+        const wx = rp.x / scale;
+        const wy = rp.y / scale;
         const rcanvas = worldToCanvasPx(wx, wy);
         if (rcanvas) {
             const theta = rp.theta;
             const len = 14;
             ctx.save();
             ctx.translate(rcanvas.x, rcanvas.y);
-            ctx.rotate(theta + Math.PI);  // +π: Yahboom CW-positive yaw, arrow tip points forward
-            ctx.fillStyle = '#1c27a5ff';
+            // map_pose is standard CCW-positive ROS yaw; canvas Y points down, so
+            // a world yaw θ draws as -θ, plus the same -originYaw the map image
+            // is rotated by. The odom fallback is Yahboom CW-positive yaw.
+            ctx.rotate(mp ? (-theta - _yaw) : theta + Math.PI);
+            // Dim the marker while we are falling back to odom — its position on
+            // the map is not trustworthy.
+            ctx.fillStyle = mp ? '#1c27a5ff' : 'rgba(28, 39, 165, 0.35)';
             ctx.beginPath();
             ctx.moveTo(len, 0);
             ctx.lineTo(-len * 0.5, -len * 0.5);
@@ -784,6 +867,50 @@ function drawNavMap() {
             ctx.fill();
             ctx.restore();
         }
+    }
+
+    // 5. Live heading-drag preview (RViz-style arrow from press point to cursor)
+    const drag = state.nav.drag;
+    if (drag && drag.active) {
+        const { cx: sx, cy: sy } = drag.startPx;
+        const { cx: ex, cy: ey } = drag.curPx;
+        const settingPose = state.nav.mapMode === 'set_pose';
+        const colour = settingPose ? '#22d3ee' : '#facc15';
+        const len = Math.hypot(ex - sx, ey - sy);
+
+        ctx.save();
+        ctx.strokeStyle = colour;
+        ctx.fillStyle = colour;
+        ctx.lineWidth = 2;
+
+        // Origin marker always shows where the pose will land
+        ctx.beginPath();
+        ctx.arc(sx, sy, 4, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (len >= NAV_DRAG_MIN_PX) {
+            const ang = Math.atan2(ey - sy, ex - sx);
+            ctx.beginPath();
+            ctx.moveTo(sx, sy);
+            ctx.lineTo(ex, ey);
+            ctx.stroke();
+            // Arrowhead
+            ctx.translate(ex, ey);
+            ctx.rotate(ang);
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(-10, -5);
+            ctx.lineTo(-10, 5);
+            ctx.closePath();
+            ctx.fill();
+        } else {
+            // Not far enough yet to read as a heading — say so.
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            ctx.arc(sx, sy, NAV_DRAG_MIN_PX, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+        ctx.restore();
     }
 
     if (state.mapEnabled && elements.miniMapCanvas) {
@@ -827,6 +954,29 @@ function updateNavStatus(nav) {
             : !nav2Up
                 ? 'Launch Nav2 first to enable Auto-Explore'
                 : 'Autonomously explore unmapped areas using frontier-based navigation';
+    }
+
+    // Localisation quality — AMCL's own 1σ spread, so a bad "Set Initial Pose"
+    // is visible immediately instead of only showing up as goals that abort.
+    if (elements.navLocalization) {
+        const cov = state.latestData.amclCov;
+        if (!cov) {
+            elements.navLocalization.textContent = '';
+        } else {
+            const posStd = Math.hypot(cov.std_x, cov.std_y);
+            const yawDeg = cov.std_yaw * 180 / Math.PI;
+            const bad = posStd > 0.5 || yawDeg > 25;
+            const warn = posStd > 0.25 || yawDeg > 12;
+            elements.navLocalization.textContent =
+                `${bad ? '⚠ ' : ''}±${posStd.toFixed(2)}m ±${yawDeg.toFixed(0)}°`;
+            elements.navLocalization.style.color =
+                bad ? 'var(--danger, #ef4444)'
+                    : warn ? 'var(--warning, #f59e0b)'
+                        : 'var(--text-muted)';
+            elements.navLocalization.title = bad
+                ? 'AMCL is poorly localized — use Set Initial Pose (press, drag to aim, release)'
+                : 'AMCL pose spread (1σ)';
+        }
     }
 
     // Badge
@@ -1885,6 +2035,9 @@ function handleMessage(data) {
         state.latestData.readout = data;
         state.needsUIUpdate = true;
         state.latestData.robotPose = data.robot_pose;
+        // Map-frame pose (metres) from TF; null until AMCL/SLAM provides map->odom.
+        if (data.map_pose !== undefined) state.latestData.mapPose = data.map_pose;
+        if (data.amcl_cov !== undefined) state.latestData.amclCov = data.amcl_cov;
         state.latestData.targetPose = data.target_pose;
         state.latestData.trajectory = data.trajectory; // 3D Trajectory
 
