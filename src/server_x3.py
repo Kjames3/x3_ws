@@ -15,8 +15,20 @@ import time
 import json
 try:
     import orjson
+    def _orjson_default(o):
+        # numpy scalars (np.float64/np.int64) reach here; orjson has no
+        # native handling for them and raises TypeError, which would kill
+        # the broadcast loop and take the whole server down.
+        try:
+            return o.item()
+        except AttributeError:
+            raise TypeError(f'Type is not JSON serializable: {type(o).__name__}')
     def orjson_dumps(msg):
-        return orjson.dumps(msg).decode('utf-8')
+        return orjson.dumps(
+            msg,
+            default=_orjson_default,
+            option=orjson.OPT_SERIALIZE_NUMPY,
+        ).decode('utf-8')
     def orjson_loads(raw):
         return orjson.loads(raw)          # accepts str or bytes
 except ImportError:
