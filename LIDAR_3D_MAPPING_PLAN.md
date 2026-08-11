@@ -431,6 +431,72 @@ and a relaunch on top of the stale one comes up with **zero publishers** and no
 error. Kill the container by PID before relaunching. Consistent with the
 existing note that `use_composition` hides failures.
 
+## 7b. How to test Phase 0
+
+First, a framing correction that saves wasted effort: **Phase 0 builds no 3D
+map.** There is no accumulated structure anywhere. What exists is `/oak/points`,
+a per-frame cloud that is discarded on the next frame, and a 16-bin x 0.10 m
+voxel *local* costmap that rolls with the robot. So the thing to measure is
+obstacle detection and clearing quality, not map quality. Anything phrased as
+"how good is the 3D map" has no answer yet.
+
+Two tools do the measuring:
+
+- `scripts/oak_obstacle_check.py` — for one angular sector, reports the nearest
+  lidar return, the nearest OAK return, the nearest OAK return *inside the
+  voxel layer's height gate*, and the nearest lethal costmap cell. The
+  in-gate number is the one that predicts marking; the raw nearest return is
+  almost always the floor and is meaningless on its own.
+- `scripts/oak_floor_check.py` — bins the forward cone by range and reports the
+  reconstructed floor height per bin, then fits a line. This catches the failure
+  mode that would quietly wreck everything: a floor that tilts up with range
+  crosses `min_obstacle_height` and turns into a phantom wall.
+
+**Trap, learned the hard way.** The 4ROS is mounted `rpy="0 0 pi"`, so
+laser-frame 0 deg points *backwards* in `base_link`. Any script that compares a
+lidar bearing against a camera bearing must put both through TF first.
+Skipping that produces confident, coherent, completely wrong numbers.
+
+**Second trap.** Estimate the floor with a low percentile (p25), not the median.
+Furniture standing on the floor drags the median up and fabricates a pitch
+error — a first pass here reported a 3.12 deg tilt that did not exist. The p25
+fit on the same data gave 0.03 deg.
+
+Baseline measured 2026-08-10, robot stationary in the apartment:
+
+| range bin | floor p25 |
+|---|---|
+| 0.4-0.8 m | +0.048 m |
+| 1.2-1.6 m | +0.037 m |
+| 2.4-2.8 m | +0.041 m |
+| 3.2-3.6 m | +0.024 m |
+
+Fit `z = +0.0006 * range + 0.0439`, i.e. **0.03 deg of tilt — flat**. The depth
+extrinsics are sound and there is no phantom-floor risk inside the 3.0 m
+`obstacle_max_range`.
+
+One real defect remains: the floor reconstructs **~4.5 cm above ground** where it
+should read 0. That constant bias eats about 37% of the margin between the floor
+and the 0.12 m gate. It is safe today but it is the reason the gate could not be
+lowered to catch genuinely low obstacles. Worth chasing to the camera's `z` in
+the URDF before ever lowering `min_obstacle_height`.
+
+A/B with `ros2 param set /local_costmap/local_costmap oak_voxel_layer.enabled
+<bool>` confirmed the layer contributes: 21 lethal cells in the forward sector
+with it on, 7 with it off. Always restore `true` afterwards.
+
+Still untested, and the tests that matter most next:
+
+1. **Camera-only obstacle.** Put a real overhang — a table edge, a shelf, a
+   chair seat — where the lidar plane passes under it. Success is
+   `oak_obstacle_check.py` printing `CAMERA-ONLY OBSTACLE` with the costmap
+   marking at the tape-measured range.
+2. **Clearing.** Remove that obstacle and time how long the marks survive. This
+   is the likeliest failure mode for camera marking, and the reason the layer
+   was deliberately kept off the global costmap.
+3. **Behaviour.** Send a Nav2 goal past the overhang with the layer on and off.
+   The whole point is that the robot routes around something it used to hit.
+
 ## 8. Honest bottom line
 
 The paper is a good match *in structure* — coarse-3D-anchor plus
