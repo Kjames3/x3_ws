@@ -1095,6 +1095,10 @@ function connect() {
         if (elements.controlArea) elements.controlArea.classList.add('disabled-overlay');
         state.ws = null;
         disconnectFoxglove();
+        // The video must not outlive the control channel. Without this the WebRTC
+        // session kept streaming after the GUI showed "disconnected" — confusing, and
+        // it kept loading the very link whose congestion caused the disconnect.
+        stopWebRTCCamera('WebSocket closed');
     };
 
     state.ws.onerror = () => {
@@ -1103,6 +1107,7 @@ function connect() {
         if (elements.controlArea) elements.controlArea.classList.add('disabled-overlay');
         state.ws = null;
         disconnectFoxglove();
+        stopWebRTCCamera('WebSocket error');
     };
 
     state.ws.onmessage = (event) => {
@@ -2838,7 +2843,8 @@ setInterval(() => {
     //
     // Presented-frame count is the only signal that actually tracks what the user
     // sees, so drive recovery from it.
-    if (state.webrtcCamStarted && state.webrtcCamPc && !state.webrtcCamRetryTimer) {
+    if (state.webrtcCamStarted && state.webrtcCamPc && !state.webrtcCamRetryTimer
+        && state.connected) {
         if (f.video < 0.5) {
             state.webrtcCamStallSecs = (state.webrtcCamStallSecs || 0) + 1;
             if (elements.cameraPlaceholder && state.webrtcCamStallSecs === 3) {
@@ -2846,11 +2852,14 @@ setInterval(() => {
                 elements.cameraPlaceholder.style.display = 'block';
             }
             if (state.webrtcCamStallSecs >= WEBRTC_STALL_LIMIT_S) {
-                console.warn(`[webrtc-cam] no presented frames for ` +
-                             `${state.webrtcCamStallSecs}s (connectionState=` +
-                             `${state.webrtcCamPc.connectionState}) — forcing reconnect`);
+                const st = state.webrtcCamPc.connectionState;
                 state.webrtcCamStallSecs = 0;
-                startWebRTCCamera(state.webrtcCamConfig);
+                // Route through the shared scheduler rather than restarting directly.
+                // Calling startWebRTCCamera() here bypassed the backoff entirely, so a
+                // link too congested to carry video produced a fresh peer connection
+                // and mediamtx session every 6 s — load that helped take the control
+                // WebSocket down with it.
+                scheduleWebRTCRetry(`no frames for ${WEBRTC_STALL_LIMIT_S}s (${st})`);
             }
         } else {
             state.webrtcCamStallSecs = 0;
@@ -2859,6 +2868,69 @@ setInterval(() => {
         state.webrtcCamStallSecs = 0;
     }
 }, 1000);
+
+// Give up after this many consecutive failed attempts and wait for the user. Retrying
+// forever is actively harmful here: every attempt builds a new peer connection and a
+// new mediamtx session, and on a saturated link that added load is what takes the
+// CONTROL WebSocket down with it.
+const WEBRTC_MAX_RETRIES = 8;
+
+// Stop the camera completely and forget it. Called on WebSocket close (the video must
+// not outlive the control channel), and when retries are exhausted.
+function stopWebRTCCamera(reason) {
+    if (state.webrtcCamRetryTimer) {
+        clearTimeout(state.webrtcCamRetryTimer);
+        state.webrtcCamRetryTimer = null;
+    }
+    // Drop the reference BEFORE closing: close() can fire onconnectionstatechange
+    // with 'closed', and that handler bails out when it no longer owns the current
+    // connection. Closing first would let it re-enter this function.
+    const pc = state.webrtcCamPc;
+    state.webrtcCamPc = null;
+    if (pc) {
+        try { pc.close(); } catch (_) {}
+    }
+    if (elements.webrtcCam) {
+        try { elements.webrtcCam.srcObject = null; } catch (_) {}
+        elements.webrtcCam.style.display = 'none';
+    }
+    state.webrtcCamStallSecs = 0;
+    state.webrtcCamRetries = 0;
+    state.webrtcCamStarted = false;
+    if (reason) console.warn('[webrtc-cam] stopped:', reason);
+}
+
+// Single place that decides when to try again, so the stall watchdog and the
+// connection-state handler cannot race or bypass each other's backoff.
+function scheduleWebRTCRetry(why) {
+    if (state.webrtcCamRetryTimer) return;          // an attempt is already queued
+    if (!state.connected) {                         // control channel is down
+        stopWebRTCCamera('WebSocket disconnected');
+        return;
+    }
+    state.webrtcCamRetries = (state.webrtcCamRetries || 0) + 1;
+    if (state.webrtcCamRetries > WEBRTC_MAX_RETRIES) {
+        stopWebRTCCamera(`gave up after ${WEBRTC_MAX_RETRIES} attempts (${why})`);
+        if (elements.cameraPlaceholder) {
+            elements.cameraPlaceholder.textContent =
+                'Camera unavailable — link too degraded. Reload to retry.';
+            elements.cameraPlaceholder.style.display = 'block';
+        }
+        return;
+    }
+    const delay = Math.min(1000 * Math.pow(2, state.webrtcCamRetries - 1), 15000);
+    console.warn(`[webrtc-cam] ${why} — reconnecting in ${delay} ms ` +
+                 `(attempt ${state.webrtcCamRetries}/${WEBRTC_MAX_RETRIES})`);
+    if (elements.cameraPlaceholder) {
+        elements.cameraPlaceholder.textContent = `Camera link lost (${why}) — reconnecting…`;
+        elements.cameraPlaceholder.style.display = 'block';
+    }
+    state.webrtcCamRetryTimer = setTimeout(() => {
+        state.webrtcCamRetryTimer = null;
+        if (!state.connected) { stopWebRTCCamera('WebSocket disconnected'); return; }
+        startWebRTCCamera(state.webrtcCamConfig);
+    }, delay);
+}
 
 async function startWebRTCCamera(webrtcCamConfig) {
     const v = elements.webrtcCam;
@@ -2899,32 +2971,13 @@ async function startWebRTCCamera(webrtcCamConfig) {
     // the Astra — mediamtx's ffmpeg owns it). So "falling back" showed an empty canvas
     // that nothing ever drew to: the black screen, with the WebSocket still healthy so
     // steering and telemetry kept working.
+    // Close just this attempt's peer connection, without deciding what happens next.
     const teardown = (pc) => {
         if (pc) {
             try { pc.close(); } catch (_) {}
         }
         if (state.webrtcCamPc === pc) state.webrtcCamPc = null;
         if (elements.webrtcCam) elements.webrtcCam.style.display = 'none';
-    };
-
-    // mediamtx runs the encoder on demand and stops it 10 s after the last viewer
-    // (runOnDemandCloseAfter), so a brief drop is expected and recoverable. Retry with
-    // capped backoff instead of giving up permanently.
-    const scheduleRetry = (why) => {
-        if (state.webrtcCamRetryTimer) return;
-        state.webrtcCamRetries = (state.webrtcCamRetries || 0) + 1;
-        const delay = Math.min(1000 * Math.pow(2, state.webrtcCamRetries - 1), 15000);
-        console.warn(`[webrtc-cam] ${why} — reconnecting in ${delay} ms ` +
-                     `(attempt ${state.webrtcCamRetries})`);
-        if (elements.cameraPlaceholder) {
-            elements.cameraPlaceholder.textContent =
-                `Camera link lost (${why}) — reconnecting…`;
-            elements.cameraPlaceholder.style.display = 'block';
-        }
-        state.webrtcCamRetryTimer = setTimeout(() => {
-            state.webrtcCamRetryTimer = null;
-            startWebRTCCamera(state.webrtcCamConfig);
-        }, delay);
     };
 
     let pc = null;
@@ -2941,14 +2994,14 @@ async function startWebRTCCamera(webrtcCamConfig) {
             }
             if (s === 'failed' || s === 'closed') {
                 teardown(pc);
-                scheduleRetry(s);
+                scheduleWebRTCRetry(s);
             } else if (s === 'disconnected') {
                 // Usually transient — ICE often recovers on its own. Only act if it
                 // is still down after a grace period.
                 setTimeout(() => {
                     if (state.webrtcCamPc === pc && pc.connectionState === 'disconnected') {
                         teardown(pc);
-                        scheduleRetry('disconnected');
+                        scheduleWebRTCRetry('disconnected');
                     }
                 }, 4000);
             }
@@ -2976,7 +3029,7 @@ async function startWebRTCCamera(webrtcCamConfig) {
             // 404 here usually just means mediamtx has not spawned the encoder yet
             // (runOnDemandStartTimeout is 10 s) — retrying is the right response.
             teardown(pc);
-            scheduleRetry(`WHEP HTTP ${r.status}`);
+            scheduleWebRTCRetry(`WHEP HTTP ${r.status}`);
             return;
         }
         await pc.setRemoteDescription({ type: 'answer', sdp: await r.text() });
@@ -2984,7 +3037,7 @@ async function startWebRTCCamera(webrtcCamConfig) {
         console.log('[webrtc-cam] connected to', WHEP);
     } catch (err) {
         teardown(pc);
-        scheduleRetry(err && err.message ? err.message : 'connection error');
+        scheduleWebRTCRetry(err && err.message ? err.message : 'connection error');
     }
 }
 
