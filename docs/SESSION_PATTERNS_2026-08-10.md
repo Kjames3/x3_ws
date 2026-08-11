@@ -203,11 +203,19 @@ The `/fewer-permission-prompts` skill regenerates this properly.
 
 ## Recommended order
 
-1. **Merge `ea5abbd` into `main`** — zero conflicts, retires the single most repeated
-   friction. Sweep the other unmerged branches at the same time (finding #6).
-2. Build `rjet` (item 2 of the existing plan).
+1. ~~**Merge `ea5abbd`**~~ — **done** on this branch (`worktree-session-patterns-aug10`).
+   Still needs to reach `main`; sweep the other unmerged branches at the same
+   time (finding #6).
+2. ~~Build `rjet`~~ — **done**, verified against the live robot (71 topics returned,
+   `--raw` confirmed ROS-free, exit codes propagate, `--sudo` runs as root).
 3. Build `/robot-status` (item 3), with the Foxglove runbook folded in.
 4. Build `/x3-deploy`, and record the sudo password somewhere the agent reads.
 5. Run `/fewer-permission-prompts` to rebuild the allowlist.
 6. Adopt as working habits: split sessions at task boundaries; fan out investigation
    to subagents; grep before reading whole files.
+
+### Known follow-up
+
+`fetch_bag.sh:30` still defaults to `jetson@10.13.196.218` — the stale IP the Aug 8
+analysis flagged. It is untracked in the main checkout, so it could not be fixed from
+an isolated worktree. It should become `source scripts/robot_env.sh`.

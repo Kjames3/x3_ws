@@ -55,6 +55,28 @@ Resolution order is Tailscale → cache → `x3.lan` (bench LAN only) → mDNS; 
 Tailscale is the path that survives the robot changing buildings; set it up on
 both machines with [scripts/setup_tailscale.sh](scripts/setup_tailscale.sh).
 
+### Running ROS commands on the robot — use `rjet`
+
+**Never hand-roll `ssh x3 'source ... && export ROS_DOMAIN_ID=42 && ros2 ...'`.**
+A non-interactive ssh session on the robot has no ROS on PATH, and it still has the
+FastDDS discovery-server variables exported from earlier experiments. Miss the
+`unset` and **`ros2 topic list` returns empty with no error** — indistinguishable
+from a dead robot, and the usual cause of a session spent debugging nothing.
+
+[scripts/rjet](scripts/rjet) owns that preamble:
+
+```bash
+rjet 'ros2 topic list'                     # preamble + run on the robot
+rjet -- ros2 topic hz /scan                # argv form, no quoting puzzles
+rjet --raw 'ls ~/bags'                     # plain ssh, no ROS
+rjet --sudo 'systemctl restart x3_server'  # sudo (password via ~/.x3_sudo, mode 600)
+rjet --print 'ros2 node list'              # show the remote script, run nothing
+```
+
+The remote exit code propagates. `--domain N` overrides `ROS_DOMAIN_ID` (default 42).
+`--sudo` sends the password on stdin, so it never reaches the robot's process list;
+it is read from `$X3_SUDO_PASS` or `~/.x3_sudo` and is **never committed**.
+
 ## Running the System
 
 ROS2 hardware bridge mode is the **default**. The `--sim` flag disables it for simulation.

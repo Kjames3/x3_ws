@@ -137,6 +137,10 @@ _x3_resolve() {
 
 if _x3_resolve; then
     ROBOT_SSH="${ROBOT_USER}@${ROBOT_IP}"
+    # Consumed by whoever sources this file (see scripts/rjet). It stays an array
+    # so the options survive word-splitting, which is also why it cannot be
+    # exported like the scalars below — shellcheck cannot see that use.
+    # shellcheck disable=SC2034
     ROBOT_SSH_OPTS=(-o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
     export ROBOT_IP ROBOT_USER ROBOT_SSH ROBOT_VIA
     return 0 2>/dev/null || exit 0

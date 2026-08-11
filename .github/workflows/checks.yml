@@ -24,10 +24,19 @@ jobs:
       # install/ holds colcon-GENERATED setup scripts (install/setup.sh,
       # install/local_setup.sh). They are build output, not source, and they do
       # not pass lint — exclude them rather than editing generated files.
+      # Extension-less scripts (scripts/rjet, scripts/x3-ip) are commands meant to
+      # sit on PATH, so they carry no '.sh'. Match on the shebang as well, or they
+      # silently skip the gate below.
       - name: Collect scripts
         id: collect
         run: |
-          mapfile -t files < <(git ls-files '*.sh' | grep -v '^install/')
+          mapfile -t files < <(
+            { git ls-files '*.sh'
+              git ls-files 'scripts/*' | while read -r f; do
+                  [ -f "$f" ] && head -c 32 "$f" | head -n1 | grep -qE '^#!.*\b(ba)?sh\b' && printf '%s\n' "$f"
+                done
+            } | grep -v '^install/' | sort -u
+          )
           printf '  %s\n' "${files[@]}"
           echo "count=${#files[@]}" >> "$GITHUB_OUTPUT"
           printf '%s\n' "${files[@]}" > /tmp/sh_files.txt

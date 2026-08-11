@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# rjet — Run a command on the robot, with the ROS environment already correct.
+#
+# Usage:
+#   rjet 'ros2 topic list'                    ROS preamble, then run on the robot
+#   rjet -- ros2 topic hz /scan               argv form; no shell quoting needed
+#   rjet --raw 'ls ~/bags'                    plain ssh, no ROS preamble
+#   rjet --sudo 'systemctl restart x3_server' run under sudo (see PASSWORD below)
+#   rjet --print 'ros2 node list'             show the remote script, run nothing
+#
+# Options:
+#   --raw            skip the ROS preamble entirely
+#   --sudo           run the command under sudo on the robot
+#   --domain N       ROS_DOMAIN_ID for this call (default: $ROS_DOMAIN_ID, or 42)
+#   --print, -n      print the remote script and exit; nothing is executed
+#   --              everything after this is the command, taken as argv
+#
+# The remote exit code is this script's exit code.
+#
+# THE PREAMBLE — why this script exists
+#
+# A non-interactive ssh session on the robot has no ROS at all: no `ros2` on
+# PATH, no workspace overlay, and — the part that actually costs time — the
+# discovery-server variables from the FastDDS experiments are still exported.
+# Leave `ROS_DISCOVERY_SERVER` set and `ros2 topic list` returns *empty with no
+# error*, which reads exactly like a dead robot. That `unset` is load-bearing.
+#
+# PASSWORD (--sudo)
+#
+# The password is read from $X3_SUDO_PASS, else from ~/.x3_sudo (mode 600), and
+# is sent over ssh's stdin — never on the command line, so it stays out of the
+# robot's process list. It is never stored in this repo. Installing a sudoers
+# NOPASSWD drop-in retires this path; `--sudo` then just works via `sudo -n`.
+#
+# The robot's address comes from robot_env.sh — see its header for the
+# resolution order and env knobs. Never hardcode an IP here.
+# =============================================================================
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SUDO_FILE="${X3_SUDO_FILE:-$HOME/.x3_sudo}"
+
+usage() { sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+
+die() { echo "rjet: $*" >&2; exit 2; }
+
+# Single-quote a string for safe transport through the remote shell.
+shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
+RAW=0
+USE_SUDO=0
+PRINT_ONLY=0
+DOMAIN="${ROS_DOMAIN_ID:-42}"
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --raw)        RAW=1; shift ;;
+        --sudo)       USE_SUDO=1; shift ;;
+        --domain)     DOMAIN="${2:-}"; [ -n "$DOMAIN" ] || die "--domain needs a value"; shift 2 ;;
+        --print|-n)   PRINT_ONLY=1; shift ;;
+        -h|--help)    usage; exit 0 ;;
+        --)           shift; break ;;
+        -*)           die "unknown option '$1' (see --help)" ;;
+        *)            break ;;
+    esac
+done
+
+[ $# -gt 0 ] || { usage >&2; exit 2; }
+
+# One quoted string, or an argv list after `--`. The argv form exists so that
+# commands with their own quoting (topic names, YAML fragments) survive.
+if [ $# -eq 1 ]; then
+    USER_CMD="$1"
+else
+    USER_CMD="$(printf '%q ' "$@")"
+fi
+
+# --- build the remote script ------------------------------------------------
+if [ "$RAW" -eq 1 ]; then
+    REMOTE_SCRIPT="$USER_CMD"
+else
+    # `set +u` around the ROS setup files: they reference unset variables and
+    # would abort under `set -u` before exporting anything.
+    REMOTE_SCRIPT="set +u
+unset ROS_DISCOVERY_SERVER FASTDDS_DEFAULT_PROFILES_FILE
+source /opt/ros/humble/setup.bash
+[ -f \"\$HOME/x3_ws/install/setup.bash\" ] && source \"\$HOME/x3_ws/install/setup.bash\"
+export ROS_DOMAIN_ID=$DOMAIN
+set -u
+$USER_CMD"
+fi
+
+if [ "$USE_SUDO" -eq 1 ]; then
+    # Read the password from stdin on the robot, so it never appears in argv.
+    REMOTE_SCRIPT="read -r -s _X3_PW
+printf '%s\\n' \"\$_X3_PW\" | sudo -S -p '' bash -c $(shq "$REMOTE_SCRIPT")"
+fi
+
+if [ "$PRINT_ONLY" -eq 1 ]; then
+    printf '%s\n' "$REMOTE_SCRIPT"
+    exit 0
+fi
+
+# --- resolve the robot ------------------------------------------------------
+# shellcheck source=scripts/robot_env.sh
+source "$SCRIPT_DIR/robot_env.sh" || exit 1
+
+REMOTE_CMD="bash -c $(shq "$REMOTE_SCRIPT")"
+
+if [ "$USE_SUDO" -eq 1 ]; then
+    PW="${X3_SUDO_PASS:-}"
+    if [ -z "$PW" ]; then
+        [ -r "$SUDO_FILE" ] || die "--sudo needs a password.
+       Put it in $SUDO_FILE (then: chmod 600 $SUDO_FILE),
+       or set X3_SUDO_PASS for one command.
+       Better: install a sudoers NOPASSWD drop-in and stop needing this."
+        PW="$(head -n1 "$SUDO_FILE")"
+    fi
+    # -T: no tty, so `sudo -S` takes the password from stdin as intended.
+    printf '%s\n' "$PW" | ssh -T "${ROBOT_SSH_OPTS[@]}" "$ROBOT_SSH" "$REMOTE_CMD"
+else
+    ssh "${ROBOT_SSH_OPTS[@]}" "$ROBOT_SSH" "$REMOTE_CMD"
+fi
+exit $?
