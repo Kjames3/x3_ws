@@ -145,7 +145,7 @@ class OakDCamera:
         # CAM_A intrinsics at (nn_w, nn_h), filled once the device is up.
         self._fx = self._fy = self._cx = self._cy = None
         self._logged_nn = False
-        self._decode_mode = None          # locked (reshape, has_obj) once identified
+        self._nn_fast_path = True         # zero-copy getData() path; falls back on failure
 
         self.available = False
         self.spatial_active = False
@@ -422,80 +422,104 @@ class OakDCamera:
         with self._lock:
             self._latest_imu = sample
 
-    # Candidate interpretations of the yolo26 [85, 6300] tensor. The RVC2 compiler's
-    # memory order (channel- vs anchor-major) and whether the head carries an
-    # objectness channel aren't documented for this model, so we auto-pick the one
-    # that yields sane, SPARSE detections (a real scene has few boxes; a wrong layout
-    # scrambles into thousands). The pick is logged once, then locked.
-    _DECODE_MODES = [("cm", False), ("cm", True), ("am", False), ("am", True)]
+    # The yolo26 output layout, determined by dumping a real tensor off the device
+    # and inspecting it (not guessed):
+    #
+    #   reshape(6300, 85) — anchor-major. Confirmed because exactly channels 0..3
+    #   carry values outside [0,1] (max 478/636/490/783 against a 480x640 input),
+    #   while all 81 remaining channels stay inside [0,1]. Channel-major produces
+    #   no probability-like channels at all.
+    #
+    #   [0:4]  = cx, cy, w, h  in input pixels
+    #   [4]    = a DUPLICATE of max(channels 5:85). Verified byte-exact on all 6300
+    #            anchors (max |ch4 - max(cls)| == 0.0, correlation 1.000000).
+    #   [5:85] = the 80 COCO class scores
+    #
+    # Channel 4 is the reason every detection used to come back as "person": the old
+    # decode argmaxed over [4:84], i.e. [ch4, cls0..cls78]. ch4 TIES with the true
+    # maximum class, and argmax returns the first index on a tie — index 0, "person".
+    # Treating ch4 as an objectness factor is equally wrong: multiplying squares the
+    # confidence (0.50 -> 0.25) and drops real detections below the threshold.
+    #
+    # So: take classes from 5:85, score = max class, and ignore channel 4.
+    _NN_ANCHORS = 6300
+    _NN_CH = 85
 
-    def _decode(self, raw, mode):
-        reshape_mode, has_obj = mode
-        base = raw[:85 * 6300]
-        A = base.reshape(85, 6300).T if reshape_mode == "cm" else base.reshape(6300, 85)
-        box = np.ascontiguousarray(A[:, 0:4])
-        if has_obj:
-            obj = A[:, 4]
-            cls = A[:, 5:85]
-        else:
-            obj = None
-            cls = A[:, 4:84]
+    def _decode(self, raw):
+        A = raw[:self._NN_CH * self._NN_ANCHORS].reshape(self._NN_ANCHORS, self._NN_CH)
+        box = np.ascontiguousarray(A[:, 0:4])   # copied: scaled in place by the caller
+        cls = A[:, 5:85]
         if cls.max() > 1.0 or cls.min() < 0.0:
             cls = _sigmoid(cls)
         cls_id = cls.argmax(axis=1)
-        cls_sc = cls[np.arange(cls.shape[0]), cls_id]
-        if obj is not None:
-            if obj.max() > 1.0 or obj.min() < 0.0:
-                obj = _sigmoid(obj)
-            scores = obj * cls_sc
-        else:
-            scores = cls_sc
+        scores = cls[np.arange(cls.shape[0]), cls_id]
         return box, scores.astype(np.float32), cls_id
 
-    def _mode_plausible(self, box, scores):
-        """Plausible = boxes lie inside the frame and detections are sparse."""
-        cx, cy = box[:, 0], box[:, 1]
-        sx = self.nn_w if cx.max() > 2.0 else 1.0
-        sy = self.nn_h if cy.max() > 2.0 else 1.0
-        in_range = float(np.mean((cx >= -0.2 * sx) & (cx <= 1.2 * sx) &
-                                 (cy >= -0.2 * sy) & (cy <= 1.2 * sy)))
-        n_hits = int((scores >= self.nn_conf).sum())
-        return (in_range > 0.9 and 1 <= n_hits <= 300), n_hits
+    def _check_layout(self, raw):
+        """One-shot sanity check of the layout assumption above.
 
-    def _process_nn(self, nndata):
-        """Host-side decode of the yolo26 [85, 6300] output + depth back-projection."""
+        If a future model breaks the ch4 == max(classes) invariant, say so loudly
+        rather than silently decoding garbage.
+        """
+        try:
+            A = raw[:self._NN_CH * self._NN_ANCHORS].reshape(self._NN_ANCHORS, self._NN_CH)
+            dup = float(np.abs(A[:, 4] - A[:, 5:85].max(axis=1)).max())
+            box_hi = int(((A[:, 0:4].max(axis=0)) > 1.5).sum())
+            if dup < 1e-6 and box_hi == 4:
+                logger.info("OAK NN layout OK: anchor-major, box[0:4], ch4==max(cls), cls[5:85]")
+            else:
+                logger.warning(
+                    "OAK NN layout UNEXPECTED (max|ch4-max(cls)|=%.3g, box-like channels=%d). "
+                    "Detections may be mislabelled — re-derive the layout for this model.",
+                    dup, box_hi)
+        except Exception as exc:
+            logger.warning("OAK NN layout check failed: %s", exc)
+
+    def _nn_tensor(self, nndata):
+        """Fetch the NN output as a float32 array.
+
+        getLayerFp16() returns a Python LIST of 85*6300 = 535,500 floats, and
+        np.array() over it boxes/unboxes every element. On the Jetson that single
+        call measured 20.4 ms and accounted for 44.6% of the entire server process's
+        CPU. getData() hands back the raw fp16 buffer, so np.frombuffer is one
+        vectorized cast: 1.4 ms, a 15x speedup, bit-identical values.
+
+        The slow path stays as a fallback for models whose output is not a single
+        fp16 layer; it is selected once and then remembered.
+        """
+        if self._nn_fast_path:
+            try:
+                arr = np.frombuffer(nndata.getData(), dtype=np.float16)
+                if arr.size >= 85 * 6300:
+                    return arr[:85 * 6300].astype(np.float32)
+                # Unexpected size — fall back permanently rather than decode garbage.
+                logger.warning("OAK NN: getData() gave %d fp16 values (< %d); "
+                               "using the slow getLayerFp16 path", arr.size, 85 * 6300)
+                self._nn_fast_path = False
+            except Exception as exc:
+                logger.warning("OAK NN: getData() unavailable (%s); "
+                               "falling back to getLayerFp16", exc)
+                self._nn_fast_path = False
         try:
             if self.nn_out_name:
-                raw = np.array(nndata.getLayerFp16(self.nn_out_name), dtype=np.float32)
-            else:
-                raw = np.array(nndata.getFirstLayerFp16(), dtype=np.float32)
+                return np.array(nndata.getLayerFp16(self.nn_out_name), dtype=np.float32)
+            return np.array(nndata.getFirstLayerFp16(), dtype=np.float32)
         except Exception:
-            return
-        if raw.size < 85 * 6300:
+            return None
+
+    def _process_nn(self, nndata):
+        """Host-side decode of the yolo26 [6300, 85] output + depth back-projection."""
+        raw = self._nn_tensor(nndata)
+        if raw is None or raw.size < 85 * 6300:
             with self._lock:
                 self._latest_detections = []
             return
 
-        if self._decode_mode is None:
-            best, report = None, []
-            for mode in self._DECODE_MODES:
-                b, s, _ = self._decode(raw, mode)
-                ok, n_hits = self._mode_plausible(b, s)
-                report.append(f"{mode[0]}{'+obj' if mode[1] else ''}={n_hits}{'*' if ok else ''}")
-                if ok and (best is None or n_hits < best[1]):
-                    best = (mode, n_hits)
-            if not self._logged_nn:
-                self._logged_nn = True
-                logger.info("OAK NN decode candidates (hits@%.2f): %s"
-                            % (self.nn_conf, " ".join(report)))
-            if best is None:
-                with self._lock:
-                    self._latest_detections = []
-                return
-            self._decode_mode = best[0]
-            logger.info(f"OAK NN: locked decode mode {self._decode_mode}")
+        if not self._logged_nn:
+            self._logged_nn = True
+            self._check_layout(raw)
 
-        box, scores, cls_id = self._decode(raw, self._decode_mode)
+        box, scores, cls_id = self._decode(raw)
         keep = scores >= self.nn_conf
         if not keep.any():
             with self._lock:

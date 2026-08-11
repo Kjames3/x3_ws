@@ -2830,6 +2830,17 @@ async function startWebRTCCamera(webrtcCamConfig) {
     if (!v) return;
     trackWebRTCVideoFps();
 
+    // Remember the config so a reconnect can reuse it. startWebRTCCamera() is only
+    // called from the 'hello' message, which arrives once per WebSocket connect —
+    // so without this, a dropped video session could never be re-established and the
+    // feed stayed black until the page was reloaded.
+    if (webrtcCamConfig) state.webrtcCamConfig = webrtcCamConfig;
+
+    if (state.webrtcCamRetryTimer) {
+        clearTimeout(state.webrtcCamRetryTimer);
+        state.webrtcCamRetryTimer = null;
+    }
+
     if (state.webrtcCamPc) {
         try { state.webrtcCamPc.close(); } catch (_) {}
         state.webrtcCamPc = null;
@@ -2846,16 +2857,39 @@ async function startWebRTCCamera(webrtcCamConfig) {
         try { r.playoutDelayHint = 0; } catch (_) {}
     });
 
-    const cleanupAndFallback = (pc) => {
+    // Tear down the session WITHOUT deciding what happens next.
+    //
+    // The old cleanupAndFallback() switched to the base64 canvas, but in
+    // --webrtc-camera mode the server never sends base64 frames (it doesn't even open
+    // the Astra — mediamtx's ffmpeg owns it). So "falling back" showed an empty canvas
+    // that nothing ever drew to: the black screen, with the WebSocket still healthy so
+    // steering and telemetry kept working.
+    const teardown = (pc) => {
         if (pc) {
             try { pc.close(); } catch (_) {}
         }
-        if (state.webrtcCamPc === pc) {
-            state.webrtcCamPc = null;
-        }
-        state.webrtcCamStarted = false;
+        if (state.webrtcCamPc === pc) state.webrtcCamPc = null;
         if (elements.webrtcCam) elements.webrtcCam.style.display = 'none';
-        if (elements.cameraCanvas) elements.cameraCanvas.style.display = 'block';
+    };
+
+    // mediamtx runs the encoder on demand and stops it 10 s after the last viewer
+    // (runOnDemandCloseAfter), so a brief drop is expected and recoverable. Retry with
+    // capped backoff instead of giving up permanently.
+    const scheduleRetry = (why) => {
+        if (state.webrtcCamRetryTimer) return;
+        state.webrtcCamRetries = (state.webrtcCamRetries || 0) + 1;
+        const delay = Math.min(1000 * Math.pow(2, state.webrtcCamRetries - 1), 15000);
+        console.warn(`[webrtc-cam] ${why} — reconnecting in ${delay} ms ` +
+                     `(attempt ${state.webrtcCamRetries})`);
+        if (elements.cameraPlaceholder) {
+            elements.cameraPlaceholder.textContent =
+                `Camera link lost (${why}) — reconnecting…`;
+            elements.cameraPlaceholder.style.display = 'block';
+        }
+        state.webrtcCamRetryTimer = setTimeout(() => {
+            state.webrtcCamRetryTimer = null;
+            startWebRTCCamera(state.webrtcCamConfig);
+        }, delay);
     };
 
     let pc = null;
@@ -2864,9 +2898,24 @@ async function startWebRTCCamera(webrtcCamConfig) {
         state.webrtcCamPc = pc;
 
         pc.onconnectionstatechange = () => {
-            if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
-                console.warn('[webrtc-cam] connection state:', pc.connectionState);
-                cleanupAndFallback(pc);
+            if (state.webrtcCamPc !== pc) return;      // superseded by a newer attempt
+            const s = pc.connectionState;
+            if (s === 'connected') {
+                state.webrtcCamRetries = 0;            // healthy again
+                return;
+            }
+            if (s === 'failed' || s === 'closed') {
+                teardown(pc);
+                scheduleRetry(s);
+            } else if (s === 'disconnected') {
+                // Usually transient — ICE often recovers on its own. Only act if it
+                // is still down after a grace period.
+                setTimeout(() => {
+                    if (state.webrtcCamPc === pc && pc.connectionState === 'disconnected') {
+                        teardown(pc);
+                        scheduleRetry('disconnected');
+                    }
+                }, 4000);
             }
         };
 
@@ -2874,6 +2923,7 @@ async function startWebRTCCamera(webrtcCamConfig) {
         pc.ontrack = e => {
             v.srcObject = e.streams[0];
             v.style.display = 'block';
+            state.webrtcCamRetries = 0;
             if (elements.cameraCanvas) elements.cameraCanvas.style.display = 'none';
             if (elements.cameraPlaceholder) elements.cameraPlaceholder.style.display = 'none';
             lowLatency(pc);
@@ -2888,16 +2938,18 @@ async function startWebRTCCamera(webrtcCamConfig) {
         const r = await fetch(WHEP, { method: 'POST',
             headers: { 'Content-Type': 'application/sdp' }, body: pc.localDescription.sdp });
         if (!r.ok) {
-            console.warn('[webrtc-cam] WHEP HTTP', r.status);
-            cleanupAndFallback(pc);
+            // 404 here usually just means mediamtx has not spawned the encoder yet
+            // (runOnDemandStartTimeout is 10 s) — retrying is the right response.
+            teardown(pc);
+            scheduleRetry(`WHEP HTTP ${r.status}`);
             return;
         }
         await pc.setRemoteDescription({ type: 'answer', sdp: await r.text() });
         lowLatency(pc);
         console.log('[webrtc-cam] connected to', WHEP);
     } catch (err) {
-        console.warn('[webrtc-cam] failed (falling back to base64 canvas):', err);
-        cleanupAndFallback(pc);
+        teardown(pc);
+        scheduleRetry(err && err.message ? err.message : 'connection error');
     }
 }
 
