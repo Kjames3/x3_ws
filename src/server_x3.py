@@ -35,13 +35,6 @@ import signal
 import threading
 import socket
 import subprocess
-from multiprocessing import shared_memory
-
-# Shared Memory Buffers for zero-copy IPC (Idea 145)
-_shared_bgr_shm = None
-_shared_depth_shm = None
-_shared_bgr_array = None
-_shared_depth_array = None
 import yaml
 try:
     import torch
@@ -317,7 +310,7 @@ class ROS2Bridge:
         # doorways (at the cost of a thinner stop margin). This whole range-gate
         # workaround goes away once the Lidar is raised above the chassis.
         self.cbf = HolonomicCBFFilter(safe_distance=0.30, gamma=1.0)
-        self._latest_obstacles = []
+        self._latest_obstacles = np.empty((0, 2), dtype=np.float64)
 
         # SLAM Toolbox publishes /map as TRANSIENT_LOCAL; match so late-joining still gets the map
         _map_qos = QoSProfile(depth=1,
@@ -357,35 +350,41 @@ class ROS2Bridge:
         logger.info("ROS2Bridge: spinning — subscribed /camera/image_raw /odom /voltage /map /scan, publishing /cmd_vel")
 
     def _scan_cb(self, msg):
-        import math as _math
-        obstacles = []
-        angle = msg.angle_min
-        for r in msg.ranges:
-            if 0.12 < r < 1.0:
-                # Transform from laser_link (yaw=180 deg) to base_link
-                # x_base = -x_laser + x_offset, y_base = -y_laser
-                x_laser = r * _math.cos(angle)
-                y_laser = r * _math.sin(angle)
-                x = -x_laser + 0.0435
-                y = -y_laser
-                obstacles.append((x, y))
-            angle += msg.angle_increment
+        # Vectorized.  The YDLidar X3 emits ~2790 points per scan at 8 Hz, so the
+        # original per-point Python loop ran ~22k trig calls/s inside the rclpy spin
+        # thread, holding the GIL against the odom/map/voltage callbacks.
+        #
+        # NOTE: every in-range return is kept.  Thinning the scan by angular sector
+        # was tried and rejected — points a few degrees apart impose genuinely
+        # different CBF half-planes, so pruning changed the filtered velocity by up
+        # to 48 mm/s *in the unsafe direction*.  The solver cost is addressed in
+        # cbf_filter.py by vectorizing the constraint instead, which is exact.
+        #
+        # Stored as an (N, 2) array so the CBF never re-converts a list of tuples.
+        ranges = np.asarray(msg.ranges, dtype=np.float64)
+        angles = msg.angle_min + np.arange(ranges.size, dtype=np.float64) * msg.angle_increment
+        keep = (ranges > 0.12) & (ranges < 1.0)   # NaN/inf compare False, so they drop out
+        r = ranges[keep]
+        a = angles[keep]
+
+        # Transform from laser_link (yaw=180 deg) to base_link:
+        #   x_base = -x_laser + x_offset, y_base = -y_laser
+        obstacles = np.empty((r.size, 2), dtype=np.float64)
+        obstacles[:, 0] = -r * np.cos(a) + 0.0435
+        obstacles[:, 1] = -r * np.sin(a)
         with self._lock:
             self._latest_obstacles = obstacles
 
     def _image_cb(self, msg):
         """Convert sensor_msgs/Image (RGB_INT8 from Fortress) to cv2 BGR ndarray."""
-        import numpy as np, cv2
-        global _shared_bgr_array
-        arr = np.frombuffer(bytes(msg.data), dtype=np.uint8).reshape(msg.height, msg.width, 3)
+        # msg.data is an array.array supporting the buffer protocol, so np.frombuffer
+        # is zero-copy; the previous bytes(msg.data) copied ~900 kB per frame before
+        # doing any work.  cvtColor allocates a fresh buffer, so the frame handed to
+        # readers is never overwritten underneath them.
+        arr = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, 3)
         bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
-        if _shared_bgr_array is not None and msg.height == 480 and msg.width == 640:
-            np.copyto(_shared_bgr_array, bgr)
-            with self._lock:
-                self._latest_frame = _shared_bgr_array
-        else:
-            with self._lock:
-                self._latest_frame = bgr
+        with self._lock:
+            self._latest_frame = bgr
 
     def get_frame(self):
         """Return latest camera frame as BGR ndarray, or None. Matches AstraCamera API."""
@@ -397,19 +396,20 @@ class ROS2Bridge:
         """Convert depth image to colourised BGR uint8.
         Handles both 32FC1 (meters, Gazebo) and 16UC1/mono16 (millimeters, physical robot)."""
         self._last_depth_write_time = time.monotonic()  # Idea 230: record arrival time for staleness gate
-        import numpy as np, cv2
-        global _shared_depth_array
         try:
-            # Check if image is 16-bit (millimeters) or 32-bit (meters)
+            # Check if image is 16-bit (millimeters) or 32-bit (meters).
+            # np.frombuffer over msg.data is zero-copy and keeps a reference to the
+            # message buffer alive, so the stored array stays valid; consumers only
+            # ever read it (VelocityEstimator copies before touching it).
             is_16bit = "16" in msg.encoding or "mono16" in msg.encoding
             if is_16bit:
                 # 16UC1 / mono16 (millimeters)
-                arr = np.frombuffer(bytes(msg.data), dtype=np.uint16).reshape(msg.height, msg.width)
+                arr = np.frombuffer(msg.data, dtype=np.uint16).reshape(msg.height, msg.width)
                 # Convert millimeters to meters
                 arr_meters = arr.astype(np.float32) / 1000.0
             else:
                 # 32FC1 (meters)
-                arr_meters = np.frombuffer(bytes(msg.data), dtype=np.float32).reshape(msg.height, msg.width)
+                arr_meters = np.frombuffer(msg.data, dtype=np.float32).reshape(msg.height, msg.width)
 
             # Replace invalid/zero/nan values with a far distance (5.0m)
             # so they do not corrupt the minimum depth (near object) search.
@@ -426,15 +426,9 @@ class ROS2Bridge:
                 norm = np.zeros_like(arr_meters_clean, dtype=np.uint8)
 
             coloured = cv2.applyColorMap(norm, cv2.COLORMAP_BONE)
-            if _shared_depth_array is not None and msg.height == 480 and msg.width == 640:
-                np.copyto(_shared_depth_array, arr_meters)
-                with self._lock:
-                    self._latest_depth = coloured
-                    self._latest_raw_depth = _shared_depth_array
-            else:
-                with self._lock:
-                    self._latest_depth = coloured
-                    self._latest_raw_depth = arr_meters
+            with self._lock:
+                self._latest_depth = coloured
+                self._latest_raw_depth = arr_meters
         except Exception as exc:
             logger.error(f"ROS2Bridge: failed to decode depth frame: {exc}")
 
@@ -546,9 +540,11 @@ class ROS2Bridge:
     def move(self, vx: float, vy: float, omega: float):
         from geometry_msgs.msg import Twist
         
+        # _scan_cb always assigns a fresh array and never mutates in place, so taking
+        # the reference under the lock is safe and avoids copying ~1000 points at 30 Hz.
         with self._lock:
-            obstacles = list(self._latest_obstacles)
-        
+            obstacles = self._latest_obstacles
+
         # Apply CBF safety filter to translation (always active, even when vx, vy == 0, to enable proactive repulsion)
         # Assume robot is at (0,0) in its local frame to match local obstacle coordinates
         safe_vx, safe_vy = self.cbf.filter_velocity(vx, vy, (0.0, 0.0), obstacles)
@@ -965,36 +961,10 @@ def initialize_hardware():
     global ros_board, ros_bridge, drive, lidar, camera, oak, oak_ros_pub, model, oled, _gazebo_proc
     global nav2_client, _ros2_stack_proc, frontier_explorer
     global velocity_estimator, active_velocity_model_name
-    global _shared_bgr_shm, _shared_depth_shm, _shared_bgr_array, _shared_depth_array
 
     logger.info("="*50)
     logger.info("Initializing Yahboom X3 Hardware")
     logger.info("="*50)
-
-    # Allocate Shared Memory blocks for camera and depth frames (Idea 145)
-    try:
-        # 640x480 BGR frame = 921600 bytes
-        _shared_bgr_shm = shared_memory.SharedMemory(name="x3_bgr_frame", create=True, size=921600)
-        _shared_bgr_array = np.ndarray((480, 640, 3), dtype=np.uint8, buffer=_shared_bgr_shm.buf)
-        logger.info("Shared Memory: BGR frame buffer allocated")
-    except FileExistsError:
-        _shared_bgr_shm = shared_memory.SharedMemory(name="x3_bgr_frame", create=False)
-        _shared_bgr_array = np.ndarray((480, 640, 3), dtype=np.uint8, buffer=_shared_bgr_shm.buf)
-        logger.info("Shared Memory: BGR frame buffer reattached")
-    except Exception as e:
-        logger.warning(f"Shared Memory: BGR allocation failed: {e}")
-
-    try:
-        # 480x640 float32 depth frame = 1228800 bytes
-        _shared_depth_shm = shared_memory.SharedMemory(name="x3_depth_frame", create=True, size=1228800)
-        _shared_depth_array = np.ndarray((480, 640), dtype=np.float32, buffer=_shared_depth_shm.buf)
-        logger.info("Shared Memory: Depth frame buffer allocated")
-    except FileExistsError:
-        _shared_depth_shm = shared_memory.SharedMemory(name="x3_depth_frame", create=False)
-        _shared_depth_array = np.ndarray((480, 640), dtype=np.float32, buffer=_shared_depth_shm.buf)
-        logger.info("Shared Memory: Depth frame buffer reattached")
-    except Exception as e:
-        logger.warning(f"Shared Memory: Depth allocation failed: {e}")
 
     if SIM_MODE:
         # Simulation mode: create the ROS2Bridge now so topics are ready to receive
@@ -1160,27 +1130,9 @@ def initialize_hardware():
     logger.info("="*50)
 
 def cleanup():
-    global _p2p_proc, _ab_test_proc, _shared_bgr_shm, _shared_depth_shm, _shutting_down
+    global _p2p_proc, _ab_test_proc, _shutting_down
     _shutting_down = True   # stop motion_loop publishing before rclpy is torn down
     logger.info("Cleaning up...")
-    if _shared_bgr_shm is not None:
-        try:
-            _shared_bgr_shm.close()
-            _shared_bgr_shm.unlink()
-            logger.info("Shared Memory: BGR buffer released")
-        except Exception as e:
-            logger.warning(f"Error releasing BGR shared memory: {e}")
-        _shared_bgr_shm = None
-
-    if _shared_depth_shm is not None:
-        try:
-            _shared_depth_shm.close()
-            _shared_depth_shm.unlink()
-            logger.info("Shared Memory: Depth buffer released")
-        except Exception as e:
-            logger.warning(f"Error releasing Depth shared memory: {e}")
-        _shared_depth_shm = None
-
     if _p2p_proc is not None and _p2p_proc.poll() is None:
         logger.info("Stopping P2P Test subprocess...")
         try:
@@ -1547,7 +1499,9 @@ async def handle_client(websocket):
                         {"type": "map_list", "maps": maps}))
 
                 elif msg_type == "request_map":
-                    map_data = _load_map_data(data.get("map", ""))
+                    # cv2.imread + PNG encode + base64 of a multi-MB map — off the loop.
+                    map_data = await asyncio.get_running_loop().run_in_executor(
+                        None, _load_map_data, data.get("map", ""))
                     if map_data:
                         await websocket.send(json.dumps(
                             {"type": "map_data", **map_data}))
@@ -1651,7 +1605,12 @@ async def handle_client(websocket):
 
                 elif msg_type == "save_map":
                     map_name = data.get("name", "slam_map").strip() or "slam_map"
-                    ok, msg_text = _save_map(map_name)
+                    # _save_map shells out to `ros2 service call` with a 10 s timeout.
+                    # Running it inline froze the whole event loop, which stopped the
+                    # /cmd_vel heartbeat and let the 500 ms firmware watchdog cut the
+                    # motors mid-drive (and stalled the GUI, which cannot reconnect).
+                    ok, msg_text = await asyncio.get_running_loop().run_in_executor(
+                        None, _save_map, map_name)
                     await websocket.send(json.dumps({
                         "type": "save_map_result",
                         "success": ok,
