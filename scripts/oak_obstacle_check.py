@@ -57,6 +57,7 @@ class Checker(Node):
         self.z_min = z_min
         self.z_max = z_max
         self.gated_range = None
+        self.costmap_missing = False
         self.scan = None
         self.cloud = None
         self.grid = None
@@ -169,8 +170,12 @@ class Checker(Node):
     # -- costmap ----------------------------------------------------------
     def costmap_range(self):
         g = self.grid
+        # Absent topic and present-but-unmarked mean completely different
+        # things, so flag the difference for the verdict logic.
+        self.costmap_missing = g is None
         if g is None:
-            return None, "no /local_costmap/costmap"
+            return None, ("no /local_costmap/costmap -- is Nav2 running? "
+                          "without it only the lidar/oak rows are meaningful")
         try:
             tf = self.tf_buffer.lookup_transform(
                 g.header.frame_id, "base_link", rclpy.time.Time())
@@ -260,7 +265,7 @@ def main():
                           f"{gr:.2f} m, {gap:.2f} m nearer than the lidar")
                 else:
                     print(f"  -> both sensors agree within {abs(gap):.2f} m")
-            if gr and cr is None:
+            if gr and cr is None and not node.costmap_missing:
                 print("  -> REGRESSION: oak has in-gate points but the costmap "
                       "marks nothing (check obstacle_max_range / TF / layer enabled)")
             elif gr and cr and cr - gr > 0.40:
