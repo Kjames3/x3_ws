@@ -2812,6 +2812,11 @@ function trackWebRTCVideoFps() {
 
 // Convert the render/video frame counters into per-second rates (1 Hz, one
 // division each — negligible). Client-side only; no robot/network impact.
+// Seconds of zero presented frames before the watchdog rebuilds the session. Long
+// enough to ride out a normal hiccup, short enough that a black feed self-heals
+// well before anyone reaches for the reload button.
+const WEBRTC_STALL_LIMIT_S = 6;
+
 setInterval(() => {
     const now = performance.now();
     const f = state.latestData.fps;
@@ -2823,6 +2828,36 @@ setInterval(() => {
     f._renderFrames = 0;
     f._videoFrames = 0;
     f._lastCalc = now;
+
+    // ---- WebRTC frame watchdog -------------------------------------------------
+    // A WebRTC session can sit in connectionState 'connected' while the *source*
+    // stops producing frames: the encoder gets starved, mediamtx drops the
+    // publisher on its 10 s readTimeout, or the wireless link stalls. ICE stays up,
+    // so no state change ever fires and a purely state-based reconnect never runs —
+    // the picture just freezes and then goes black while steering keeps working.
+    //
+    // Presented-frame count is the only signal that actually tracks what the user
+    // sees, so drive recovery from it.
+    if (state.webrtcCamStarted && state.webrtcCamPc && !state.webrtcCamRetryTimer) {
+        if (f.video < 0.5) {
+            state.webrtcCamStallSecs = (state.webrtcCamStallSecs || 0) + 1;
+            if (elements.cameraPlaceholder && state.webrtcCamStallSecs === 3) {
+                elements.cameraPlaceholder.textContent = 'Camera stalled — recovering…';
+                elements.cameraPlaceholder.style.display = 'block';
+            }
+            if (state.webrtcCamStallSecs >= WEBRTC_STALL_LIMIT_S) {
+                console.warn(`[webrtc-cam] no presented frames for ` +
+                             `${state.webrtcCamStallSecs}s (connectionState=` +
+                             `${state.webrtcCamPc.connectionState}) — forcing reconnect`);
+                state.webrtcCamStallSecs = 0;
+                startWebRTCCamera(state.webrtcCamConfig);
+            }
+        } else {
+            state.webrtcCamStallSecs = 0;
+        }
+    } else if (!state.webrtcCamPc) {
+        state.webrtcCamStallSecs = 0;
+    }
 }, 1000);
 
 async function startWebRTCCamera(webrtcCamConfig) {

@@ -783,12 +783,18 @@ def _launch_mediamtx():
         logger.error(f"WebRTC: mediamtx binary not found at {binary} — color feed unavailable")
         return
     try:
+        # Log to a file rather than /dev/null.  When the colour feed drops, mediamtx's
+        # own log is the only place that says whether the encoder died, the publisher
+        # hit readTimeout, or the viewer went away — discarding it made the black-screen
+        # reports impossible to diagnose after the fact.
+        _mtx_log = open('/tmp/mediamtx.log', 'a')
         _mediamtx_proc = subprocess.Popen(
             [binary, config], cwd=poc_dir,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=_mtx_log, stderr=_mtx_log,
             preexec_fn=os.setsid,
         )
-        logger.info(f"WebRTC: mediamtx started (pid {_mediamtx_proc.pid}) — GUI camera on :8889/astra")
+        logger.info(f"WebRTC: mediamtx started (pid {_mediamtx_proc.pid}) — GUI camera on "
+                    f":8889/astra (log: /tmp/mediamtx.log)")
     except Exception as e:
         logger.error(f"WebRTC: failed to launch mediamtx: {e}")
 
