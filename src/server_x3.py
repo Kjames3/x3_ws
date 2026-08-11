@@ -17,9 +17,13 @@ try:
     import orjson
     def orjson_dumps(msg):
         return orjson.dumps(msg).decode('utf-8')
+    def orjson_loads(raw):
+        return orjson.loads(raw)          # accepts str or bytes
 except ImportError:
     def orjson_dumps(msg):
         return json.dumps(msg)
+    def orjson_loads(raw):
+        return json.loads(raw)
 import logging
 import argparse
 import base64
@@ -518,7 +522,13 @@ class ROS2Bridge:
                 "origin_yaw": origin_yaw,
             }
     def get_occupancy_grid(self) -> dict | None:
-        """Return the latest occupancy grid info dict, or None if not yet received."""
+        """Return the latest occupancy grid info dict, or None if not yet received.
+
+        The copy is shallow, so the caller shares the numpy 'data' array with the
+        callback.  That is safe because _map_cb always builds a fresh array and
+        never mutates in place, and every consumer treats it as read-only — a deep
+        copy here would cost a full grid memcpy for no benefit.
+        """
         with self._lock:
             return dict(self._occupancy_grid) if self._occupancy_grid else None
 
@@ -1351,7 +1361,9 @@ async def handle_client(websocket):
     try:
         async for message in websocket:
             try:
-                data = json.loads(message)
+                # orjson on the inbound path too — joystick/gamepad axes arrive at
+                # 20-50 Hz, and this was the one hot path still on stdlib json.
+                data = orjson_loads(message)
                 msg_type = data.get("type")
 
                 if msg_type == "set_power":
@@ -1850,40 +1862,10 @@ async def broadcast_loop():
         if connected_clients:
             now = time.time()
 
-            # 1. Camera frame — blocking capture in thread pool
-            frame = await loop.run_in_executor(None, camera.get_frame) if camera else None
-            if frame is not None:
-                _cam_frame_count += 1
-
-            # 2. YOLO + JPEG encode — all in executor (P1+P2: off event loop, draw on copy)
-            #    P3: return raw bytes — sent as binary WS frame, eliminating base64 entirely
-            img_bytes = b""
-            if detection_enabled and frame is not None and model:
-                def _run_yolo():
-                    _names = model.names or {}
-                    annotated = frame.copy()   # P2: never mutate the shared frame reference
-                    results = model(frame, verbose=False, conf=CONFIDENCE_THRESHOLD, imgsz=INFERENCE_SIZE)
-                    dets = []
-                    for r in results:
-                        for box in r.boxes:
-                            x1, y1, x2, y2 = map(int, box.xyxy[0])
-                            label = _names.get(int(box.cls[0]), str(int(box.cls[0])))
-                            conf  = float(box.conf[0])
-                            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                            dets.append({"label": label, "bbox": [x1, y1, x2, y2], "conf": conf})
-                    # Downscale visualization to 320x240 before compressing (Idea 106)
-                    annotated_downscaled = cv2.resize(annotated, (320, 240), interpolation=cv2.INTER_NEAREST)
-                    _, buf = cv2.imencode('.jpg', annotated_downscaled, [cv2.IMWRITE_JPEG_QUALITY, 70])
-                    return dets, bytes(buf)
-                last_detections, img_bytes = await loop.run_in_executor(None, _run_yolo)
-                _yolo_frame_count += 1
-            elif frame is not None:
-                def _encode_frame():
-                    # Downscale visualization to 320x240 before compressing (Idea 106)
-                    frame_downscaled = cv2.resize(frame, (320, 240), interpolation=cv2.INTER_NEAREST)
-                    _, buf = cv2.imencode('.jpg', frame_downscaled, [cv2.IMWRITE_JPEG_QUALITY, 70])
-                    return bytes(buf)
-                img_bytes = await loop.run_in_executor(None, _encode_frame)
+            # 1-2. Camera capture, YOLO and JPEG encode now live in video_loop(), which
+            #      runs as its own task.  They used to sit inline here, so this loop's
+            #      period was (capture + inference + encode) + 50 ms and turning on
+            #      detection dropped telemetry from 20 Hz to ~12 Hz.
 
             # 3. FPS update every second
             elapsed = now - _fps_last_time
@@ -1976,9 +1958,7 @@ async def broadcast_loop():
                 except Exception as e:
                     logger.error(f"Failed to get velocity estimates: {e}")
 
-            # P3: send camera frame as a binary WebSocket message (raw JPEG, no base64)
-            if img_bytes:
-                websockets.broadcast(connected_clients, img_bytes)
+            # (camera frames are broadcast from video_loop, not here)
 
             # 8. Fast readout lane (20 Hz): pose, motors, power, detections, depth.
             msg = {
@@ -2043,6 +2023,68 @@ async def broadcast_loop():
                 websockets.broadcast(connected_clients, orjson_dumps(slow))
 
         await asyncio.sleep(0.05)  # 20 FPS cap
+
+async def video_loop():
+    """Camera capture + YOLO + JPEG encode, decoupled from the telemetry lane.
+
+    This used to run inline in broadcast_loop(), which slept a fixed 50 ms *after*
+    doing the work — so the real telemetry period was (capture + inference + encode)
+    + 50 ms, and switching detection on dropped the readout rate from 20 Hz to about
+    12 Hz.  As its own task the two lanes proceed independently: telemetry keeps its
+    steady 20 Hz while video runs at whatever rate inference allows.
+
+    Frames go out as binary WebSocket messages (raw JPEG, no base64).  Detections are
+    published through the shared last_detections global, which the readout lane reads.
+    """
+    global _cam_frame_count, _yolo_frame_count, last_detections
+
+    loop = asyncio.get_event_loop()
+    while True:
+        if _shutting_down:
+            break
+        # camera is None under --webrtc-camera (mediamtx owns the Astra) and in --sim
+        # before Gazebo starts; idle cheaply rather than spinning.
+        if not connected_clients or camera is None:
+            await asyncio.sleep(0.05)
+            continue
+
+        frame = await loop.run_in_executor(None, camera.get_frame)
+        if frame is not None:
+            _cam_frame_count += 1
+
+        img_bytes = b""
+        if detection_enabled and frame is not None and model:
+            def _run_yolo():
+                _names = model.names or {}
+                annotated = frame.copy()   # P2: never mutate the shared frame reference
+                results = model(frame, verbose=False, conf=CONFIDENCE_THRESHOLD, imgsz=INFERENCE_SIZE)
+                dets = []
+                for r in results:
+                    for box in r.boxes:
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        label = _names.get(int(box.cls[0]), str(int(box.cls[0])))
+                        conf  = float(box.conf[0])
+                        cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        dets.append({"label": label, "bbox": [x1, y1, x2, y2], "conf": conf})
+                # Downscale visualization to 320x240 before compressing (Idea 106)
+                annotated_downscaled = cv2.resize(annotated, (320, 240), interpolation=cv2.INTER_NEAREST)
+                _, buf = cv2.imencode('.jpg', annotated_downscaled, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                return dets, bytes(buf)
+            last_detections, img_bytes = await loop.run_in_executor(None, _run_yolo)
+            _yolo_frame_count += 1
+        elif frame is not None:
+            def _encode_frame():
+                # Downscale visualization to 320x240 before compressing (Idea 106)
+                frame_downscaled = cv2.resize(frame, (320, 240), interpolation=cv2.INTER_NEAREST)
+                _, buf = cv2.imencode('.jpg', frame_downscaled, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                return bytes(buf)
+            img_bytes = await loop.run_in_executor(None, _encode_frame)
+
+        if img_bytes:
+            websockets.broadcast(connected_clients, img_bytes)
+
+        await asyncio.sleep(0.05)   # 20 FPS cap; inference may make the real rate lower
+
 
 def _step_toward(current: float, target: float, accel: float, decel: float) -> float:
     """Advance current toward target by at most accel or decel per step."""
@@ -2199,8 +2241,12 @@ async def map_push_loop():
         grid = ros_bridge.get_occupancy_grid()
         if grid is None:
             continue
-        # Use grid dimensions + data length as a cheap change fingerprint
-        grid_id = (grid["width"], grid["height"], len(grid["data"]))
+        # Fingerprint the CONTENT, not just the shape.  (width, height, len) could
+        # not see cell changes, so once SLAM stopped growing the grid bounds — i.e.
+        # as soon as you re-drove already-mapped space — the fingerprint went stable
+        # and the live map silently stopped updating in the GUI.  Hashing the whole
+        # buffer is trivial at this loop's 1 Hz.
+        grid_id = (grid["width"], grid["height"], hash(grid["data"].tobytes()))
         if grid_id == _last_grid_id:
             continue
         _last_grid_id = grid_id
@@ -2255,7 +2301,8 @@ async def main():
     # Disable websockets deflate compression to avoid blocking main thread zlib operations (Idea 117)
     async with websockets.serve(handle_client, "0.0.0.0", WS_PORT, compression=None):
         logger.info(f"Server started on ws://0.0.0.0:{WS_PORT}")
-        await asyncio.gather(broadcast_loop(), motion_loop(), oled_loop(), map_push_loop())
+        await asyncio.gather(broadcast_loop(), video_loop(), motion_loop(),
+                             oled_loop(), map_push_loop())
 
 if __name__ == "__main__":
     try:
