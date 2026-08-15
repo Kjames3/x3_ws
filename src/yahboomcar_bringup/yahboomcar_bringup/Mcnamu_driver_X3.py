@@ -66,6 +66,44 @@ class yahboomcar_driver(Node):
 		self.declare_parameter('gain_rl', 1.00)
 		self.declare_parameter('gain_rr', 0.95)
 
+		# ── Gyro Z zero-rate bias compensation ──────────────────────────────
+		# The MPU9250's gyro has a non-zero output when the chassis is perfectly
+		# still. Because twist.angular.z below is taken from the gyro (the
+		# firmware's encoder-derived vz is unusable — see pub_data), that bias is
+		# integrated into heading by base_node_X3 and becomes unbounded yaw drift:
+		# measured at -0.0034 rad/s, which spins /odom a full 360 deg every ~31 min
+		# while the robot sits still. AMCL only corrects every update_min_a (0.2 rad
+		# ~= once a minute at that rate), so the map-frame pose rotates, the lidar
+		# scan sweeps with it, and the global costmap fills with arcs of phantom
+		# obstacles that sit outside raytrace_max_range and can never be cleared.
+		#
+		# Fix: estimate the bias whenever the robot is known to be stationary and
+		# subtract it, then hard-gate the residual to exactly zero so a still robot
+		# integrates exactly zero heading change.
+		#
+		# Samples to average for the initial estimate. pub_data runs at 10 Hz, so
+		# 50 samples is a 5 s settle. Bias sample std is ~0.00058 rad/s, so the mean
+		# of 50 has a standard error near 8e-5 rad/s (~0.3 deg/min residual).
+		self.declare_parameter('gyro_bias_calib_samples', 50)
+		# Slow EMA that keeps tracking the bias after calibration, since MEMS
+		# zero-rate offset moves with temperature over a session. 0.002 is a time
+		# constant of ~500 samples (~50 s of stationary time).
+		self.declare_parameter('gyro_bias_ema_alpha', 0.002)
+		# Reject bias samples above this magnitude: the chassis is genuinely
+		# turning (someone is pushing it), so the reading is not bias.
+		self.declare_parameter('gyro_bias_max_rate', 0.05)
+		# While stationary, treat |rate| below this as sensor noise and publish a
+		# hard zero. 0.005 rad/s is 0.29 deg/s — far slower than any real motion,
+		# so a hand-turn of the robot still reads through.
+		self.declare_parameter('gyro_zero_deadband', 0.005)
+		# How long after the last non-zero cmd_vel before the robot counts as
+		# stationary, so the chassis has stopped coasting.
+		self.declare_parameter('stationary_settle_time', 0.5)
+		# Encoder speed below which the wheels count as not turning (m/s).
+		self.declare_parameter('encoder_still_threshold', 0.01)
+		# Set false to publish the bias-corrected rate without the hard zero gate.
+		self.declare_parameter('gyro_zero_gate_enabled', True)
+
 		#create subcriber
 		self.sub_cmd_vel = self.create_subscription(Twist,"cmd_vel",self.cmd_vel_callback,1)
 		self.sub_RGBLight = self.create_subscription(Int32,"RGBLight",self.RGBLightcallback,100)
@@ -91,6 +129,15 @@ class yahboomcar_driver(Node):
 		self.watchdog_timeout = 0.5
 		self._rx_stale = False      # edge-trigger for the staleness warning
 		self._edition = -1          # cached firmware version
+		# Gyro Z bias state. Starts at zero and un-calibrated; the zero gate below
+		# suppresses the raw bias during the calibration window, so the first few
+		# seconds after boot do not leak drift into /odom.
+		self._gyro_bias = 0.0
+		self._gyro_bias_sum = 0.0
+		self._gyro_bias_count = 0
+		self._gyro_bias_ready = False
+		# Assume stationary at boot: the robot is at rest until commanded to move.
+		self._last_nonzero_cmd_time = self.get_clock().now()
 	#callback function
 	def cmd_vel_callback(self, msg):
 		# Compute mecanum kinematics here and send per-wheel PWM via set_motor().
@@ -102,6 +149,12 @@ class yahboomcar_driver(Node):
 		vx    = msg.linear.x
 		vy    = msg.linear.y
 		omega = msg.angular.z
+
+		# Track the last command that actually asked for motion. A stream of zero
+		# Twists (Nav2 publishes these continuously while idle) must NOT keep
+		# resetting the stationary timer, or the bias estimator never runs.
+		if abs(vx) > 0.001 or abs(vy) > 0.001 or abs(omega) > 0.001:
+			self._last_nonzero_cmd_time = self.last_cmd_time
 
 		# Mecanum wheel mixing: M1=FL, M2=FR, M3=RL, M4=RR
 		L     = self.get_parameter('wheel_separation_factor').value
@@ -151,6 +204,52 @@ class yahboomcar_driver(Node):
 			for i in range(3): self.car.set_beep(1)
 		else:
 			for i in range(3): self.car.set_beep(0)
+
+	def _is_stationary(self, vx, vy):
+		"""True when nothing has commanded motion recently and the wheels agree.
+
+		Both halves matter. The cmd_vel timer alone would be fooled by the robot
+		coasting or being pushed; the encoders alone would be fooled by a pure
+		in-place rotation, during which vx and vy are both legitimately zero.
+		"""
+		idle_s = (self.get_clock().now() - self._last_nonzero_cmd_time).nanoseconds / 1e9
+		settle = self.get_parameter('stationary_settle_time').value
+		still = self.get_parameter('encoder_still_threshold').value
+		return idle_s > settle and abs(vx) < still and abs(vy) < still
+
+	def _gyro_z_compensated(self, gz_ros, vx, vy):
+		"""Bias-corrected yaw rate, hard-zeroed while the robot is stationary.
+
+		gz_ros is the yaw rate already in the ROS CCW-positive convention.
+		"""
+		stationary = self._is_stationary(vx, vy)
+
+		# Only learn the bias from samples taken while stationary, and only when
+		# the reading is small enough to be bias rather than real rotation.
+		if stationary and abs(gz_ros - self._gyro_bias) < self.get_parameter('gyro_bias_max_rate').value:
+			if not self._gyro_bias_ready:
+				self._gyro_bias_sum += gz_ros
+				self._gyro_bias_count += 1
+				if self._gyro_bias_count >= self.get_parameter('gyro_bias_calib_samples').value:
+					self._gyro_bias = self._gyro_bias_sum / self._gyro_bias_count
+					self._gyro_bias_ready = True
+					self.get_logger().info(
+						"Gyro Z bias calibrated: %.6f rad/s (%.2f deg/min) from %d stationary samples"
+						% (self._gyro_bias, math.degrees(self._gyro_bias) * 60.0,
+						   self._gyro_bias_count))
+			else:
+				a = self.get_parameter('gyro_bias_ema_alpha').value
+				self._gyro_bias = (1.0 - a) * self._gyro_bias + a * gz_ros
+
+		gz_out = gz_ros - self._gyro_bias
+
+		# Stop-motion gate: a stationary robot must integrate exactly zero heading.
+		# Subtracting the bias leaves a small residual that would still accumulate
+		# over the minutes the robot spends parked, so clamp it away entirely.
+		if (stationary and self.get_parameter('gyro_zero_gate_enabled').value
+				and abs(gz_out) < self.get_parameter('gyro_zero_deadband').value):
+			gz_out = 0.0
+		return gz_out
 
 	#pub data
 	def pub_data(self):
@@ -228,7 +327,13 @@ class yahboomcar_driver(Node):
 		# To settle it: rotate the chassis by hand and check that
 		# /imu/data_raw.angular_velocity.z is positive for CCW-from-above
 		# (REP-103), then delete exactly one negation.
-		imu.angular_velocity.z = -gz*1.0
+		#
+		# Bias-correct once and reuse for both /imu/data_raw and /vel_raw. The EKF
+		# fuses yaw rate from BOTH (imu0_config vyaw and odom0_config vyaw), so
+		# correcting only one would leave the other still injecting drift and make
+		# the two sources disagree about whether the robot is turning.
+		gz_corrected = self._gyro_z_compensated(-gz*1.0, vx, vy)
+		imu.angular_velocity.z = gz_corrected
 
 		mag.header.stamp = time_stamp.to_msg()
 		mag.header.frame_id = self.imu_link
@@ -243,8 +348,10 @@ class yahboomcar_driver(Node):
 		# (which reads the physical sensor directly) as the angular velocity source.
 		twist.linear.x = vx *1.0
 		twist.linear.y = vy *1.0
-		# Same matched double negation as imu.angular_velocity.z above.
-		twist.angular.z = -gz   # Use IMU gyro instead of firmware's wrong vz
+		# Same bias-corrected value published on /imu/data_raw above. This is the
+		# one that base_node_X3 integrates into heading, so the stop-motion gate
+		# here is what actually stops /odom rotating while the robot is parked.
+		twist.angular.z = gz_corrected   # Use IMU gyro instead of firmware's wrong vz
 		self.velPublisher.publish(twist)
 		# print("ax: %.5f, ay: %.5f, az: %.5f" % (ax, ay, az))
 		# print("gx: %.5f, gy: %.5f, gz: %.5f" % (gx, gy, gz))
