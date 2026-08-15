@@ -1522,8 +1522,14 @@ async def handle_client(websocket):
                         # argument is interpreted relative to the launcher cwd.
                         map_f  = _resolve_map_path(data.get("map") or "")
                         slam   = data.get("slam", False)
-                        ok = nav2_client.launch_nav2(
-                            use_sim_time=use_st, map_path=map_f, slam=slam)
+                        # Off the event loop: a map change tears the old stack
+                        # down first and waits for its container to exit, which
+                        # can take several seconds.
+                        ok = await asyncio.get_running_loop().run_in_executor(
+                            None,
+                            functools.partial(nav2_client.launch_nav2,
+                                              use_sim_time=use_st,
+                                              map_path=map_f, slam=slam))
                         await websocket.send(json.dumps({
                             "type": "nav2_launch_result",
                             "success": ok,
@@ -1537,7 +1543,8 @@ async def handle_client(websocket):
 
                 elif msg_type == "stop_nav2":
                     if nav2_client:
-                        nav2_client.stop_nav2()
+                        await asyncio.get_running_loop().run_in_executor(
+                            None, nav2_client.stop_nav2)
 
                 elif msg_type == "set_nav_goal":
                     if nav2_client:

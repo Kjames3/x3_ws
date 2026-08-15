@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 import os
+import signal
 import subprocess
 import threading
 import time
@@ -79,6 +80,8 @@ class Nav2Client:
         self._nav2_proc: Optional[subprocess.Popen] = None
         # Map YAML currently served to AMCL (basename, GUI display only)
         self._current_map: Optional[str] = None
+        # Whether the running stack was launched in slam (mapping) mode
+        self._slam: bool = False
 
         # ── Action client ───────────────────────────────────────────────────
         self._action_client = ActionClient(
@@ -175,12 +178,34 @@ class Nav2Client:
         """
         Spawn x3_nav2.launch.py as a subprocess.
 
-        Returns True if the process was started, False if already running.
+        If Nav2 is already running with a *different* map (or a different
+        slam/localisation mode), it is stopped and relaunched so the GUI's map
+        selection actually takes effect.  Asking for the map that is already
+        loaded is a no-op.
+
+        Returns True if the process was started, False if already running with
+        the requested map, or on failure.
         """
+        want_map = (os.path.basename(map_path) if map_path
+                    else (None if slam else 'yahboomcar.yaml'))
+
         with self._lock:
-            if self._nav2_proc is not None and self._nav2_proc.poll() is None:
-                logger.warning("[Nav2Client] Nav2 already running")
+            running = (self._nav2_proc is not None
+                       and self._nav2_proc.poll() is None)
+            same = (self._current_map == want_map and self._slam == slam)
+
+        if running:
+            if same:
+                logger.warning(
+                    f"[Nav2Client] Nav2 already running with {want_map}")
                 return False
+            # Map (or mode) changed — tear the old stack down first.  Nav2 has
+            # no way to swap a map_server's yaml in place from here, and two
+            # stacks would both publish map->odom.
+            logger.info(
+                f"[Nav2Client] Map change {self._current_map} -> {want_map}; "
+                "restarting Nav2")
+            self.stop_nav2()
 
         # Locate the launch file via ament
         try:
@@ -205,6 +230,11 @@ class Nav2Client:
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                # Own process group, so stop_nav2() can signal the whole tree.
+                # ros2 launch's composable-node container is a *child*; killing
+                # only the launcher orphans it and it keeps publishing /map and
+                # map->odom forever.
+                start_new_session=True,
             )
         except Exception as exc:
             logger.error(f"[Nav2Client] Failed to launch Nav2: {exc}")
@@ -213,8 +243,8 @@ class Nav2Client:
         with self._lock:
             self._nav2_proc = proc
             self._state = STATE_IDLE
-            self._current_map = (os.path.basename(map_path) if map_path
-                                 else (None if slam else 'yahboomcar.yaml'))
+            self._current_map = want_map
+            self._slam = slam
 
         return True
 
@@ -283,6 +313,37 @@ class Nav2Client:
         logger.warning(f"[Nav2Client] load_map rejected: {reason}")
         return False, f"map_server rejected the map: {reason}"
 
+    @staticmethod
+    def _await_container_exit(timeout: float = 15.0) -> bool:
+        """
+        Block until no nav2 composable-node container is left, or `timeout`.
+
+        Returns True if the container is gone.  A survivor is killed outright:
+        leaving one alive is worse than a hard kill, because it silently serves
+        a stale map and TF that make the next launch look broken.
+        """
+        deadline = time.time() + timeout
+        pattern = 'nav2_container'
+        while time.time() < deadline:
+            found = subprocess.run(
+                ['pgrep', '-f', pattern],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            ).returncode == 0
+            if not found:
+                return True
+            time.sleep(0.5)
+
+        logger.warning(
+            "[Nav2Client] nav2_container still alive after "
+            f"{timeout:.0f}s — killing it")
+        subprocess.run(['pkill', '-9', '-f', pattern],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(1.0)
+        return subprocess.run(
+            ['pgrep', '-f', pattern],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ).returncode != 0
+
     def stop_nav2(self) -> None:
         """Terminate the Nav2 subprocess if running."""
         with self._lock:
@@ -290,12 +351,44 @@ class Nav2Client:
             self._nav2_proc = None
 
         if proc is not None and proc.poll() is None:
-            proc.terminate()
+            # Signal the whole process group: `ros2 launch` forwards SIGTERM to
+            # its children only on a clean shutdown, and terminating the
+            # launcher alone leaves the composable-node container running as an
+            # orphan.  A stale container keeps serving the old /map and
+            # map->odom, so the next launch collides with it (two nodes named
+            # /nav2_container) and never finishes loading its components.
             try:
-                proc.wait(timeout=5.0)
+                pgid = os.getpgid(proc.pid)
+            except OSError:
+                pgid = None
+
+            try:
+                if pgid is not None:
+                    os.killpg(pgid, signal.SIGTERM)
+                else:
+                    proc.terminate()
+            except OSError:
+                pass
+
+            try:
+                proc.wait(timeout=10.0)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                try:
+                    if pgid is not None:
+                        os.killpg(pgid, signal.SIGKILL)
+                    else:
+                        proc.kill()
+                except OSError:
+                    pass
+                try:
+                    proc.wait(timeout=5.0)
+                except subprocess.TimeoutExpired:
+                    pass
             logger.info("[Nav2Client] Nav2 subprocess stopped")
+
+        # The launcher can exit before the container has finished unwinding, so
+        # wait for the container to actually disappear before anyone relaunches.
+        self._await_container_exit()
 
         with self._lock:
             self._state = STATE_IDLE
