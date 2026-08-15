@@ -630,6 +630,70 @@ body {
 }
 
 /* =================================================================
+   Motion Lock — hard motor freeze for battery swaps / handling
+   ================================================================= */
+.motion-lock-btn {
+    width: 100%;
+    padding: 0.5rem 0.6rem;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    border-radius: 4px;
+    cursor: pointer;
+    background: var(--bg-tertiary);
+    color: #fbbf24;
+    border: 1px solid #fbbf24;
+    transition: all var(--transition);
+}
+
+.motion-lock-btn:hover {
+    background: rgba(251, 191, 36, 0.15);
+}
+
+.motion-lock-btn.locked {
+    background: #fbbf24;
+    color: #1a1a1a;
+    border-color: #f59e0b;
+    box-shadow: 0 0 16px rgba(251, 191, 36, 0.6);
+    animation: motion-lock-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes motion-lock-pulse {
+    0%, 100% { box-shadow: 0 0 10px rgba(251, 191, 36, 0.45); }
+    50%      { box-shadow: 0 0 22px rgba(251, 191, 36, 0.85); }
+}
+
+.motion-lock-banner {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 9999;
+    padding: 0.6rem 1rem;
+    text-align: center;
+    font-weight: 700;
+    font-size: 0.95rem;
+    color: #1a1a1a;
+    background: #fbbf24;
+    border-bottom: 2px solid #f59e0b;
+}
+
+.motion-lock-banner.visible {
+    display: block;
+}
+
+/* Push the app down so the banner never covers the header */
+body.motion-locked .app-container {
+    padding-top: 2.6rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .motion-lock-btn.locked { animation: none; }
+}
+
+/* =================================================================
    Lidar
    ================================================================= */
 .lidar-container {

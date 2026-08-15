@@ -11,6 +11,7 @@ const state = {
     lidarEnabled: false,
     autoDriveEnabled: false, // Local toggle tracking
     isAutoDriving: false,    // Server state
+    motionLocked: false,     // Motion Lock (battery swap): motors hard-frozen, CBF bypassed
     isDemoMode: false,       // Demo cycling mode
     gamepadIndex: null,
     lastLeftPower: 0,
@@ -173,6 +174,8 @@ const elements = {
     detectionCount: document.getElementById('detection-count'),
     detectionList: document.getElementById('detection-list'),
     autoDriveBtn: document.getElementById('auto-drive-btn'),
+    motionLockBtn: document.getElementById('motion-lock-btn'),
+    motionLockBanner: document.getElementById('motion-lock-banner'),
     autoDriveWrapper: document.getElementById('auto-drive-wrapper'),
     demoModeBtn: document.getElementById('demo-mode-btn'),
     demoBanner: document.getElementById('demo-banner'),
@@ -1407,9 +1410,56 @@ function updateConnectionStatus(status) {
     }
 }
 
+// Message types that can put the robot in motion. While Motion Lock is engaged these
+// never leave the browser (the server enforces the lock too — this just stops the UI,
+// a held key, or a drifting gamepad stick from fighting it).
+const MOTION_MSG_TYPES = new Set([
+    'move', 'set_move', 'set_power', 'start_auto_drive',
+    'set_nav_goal', 'start_frontier_explore', 'toggle_frontier',
+    'start_p2p_test', 'start_ab_test',
+]);
+
+function isMotionCommand(data) {
+    if (!data || !MOTION_MSG_TYPES.has(data.type)) return false;
+    // Let explicit zeros through so the server's readouts settle at 0.
+    if (data.type === 'set_power') return Number(data.power) !== 0;
+    if (data.type === 'set_move') {
+        return Number(data.vx) !== 0 || Number(data.vy) !== 0 || Number(data.omega) !== 0;
+    }
+    return true;
+}
+
 function sendMessage(data) {
+    if (state.motionLocked && isMotionCommand(data)) return;
     if (state.ws && state.ws.readyState === WebSocket.OPEN) {
         state.ws.send(JSON.stringify(data));
+    }
+}
+
+/* =================================================================
+   Motion Lock — freeze the motors before unplugging the battery.
+   The CBF is proactive, so a "stopped" robot still creeps away from
+   nearby obstacles (your hands). This bypasses it server-side.
+   ================================================================= */
+function setMotionLockUI(locked) {
+    state.motionLocked = !!locked;
+    if (elements.motionLockBtn) {
+        elements.motionLockBtn.textContent = locked ? '🔒 Motion Lock: ON' : '🔓 Motion Lock: OFF';
+        elements.motionLockBtn.classList.toggle('locked', !!locked);
+    }
+    if (elements.motionLockBanner) {
+        elements.motionLockBanner.classList.toggle('visible', !!locked);
+    }
+    document.body.classList.toggle('motion-locked', !!locked);
+}
+
+function toggleMotionLock() {
+    const want = !state.motionLocked;
+    // Paint immediately so the local send-gate closes before the round trip;
+    // the server's "motion_lock" reply is authoritative and will correct it.
+    setMotionLockUI(want);
+    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+        state.ws.send(JSON.stringify({ type: 'set_motion_lock', enabled: want }));
     }
 }
 
@@ -1727,7 +1777,15 @@ function handleFoxgloveTextMessage(obj) {
 // Data Handling
 // =================================================================
 function handleMessage(data) {
+    if (data.type === "motion_lock") {
+        setMotionLockUI(data.enabled);
+        return;
+    }
+
     if (data.type === "hello") {
+        // Do this before the badge early-return below — a reconnecting tab must
+        // render the real lock state even if the mode badge is missing.
+        setMotionLockUI(data.motion_locked);
         const mode = data.mode; // "sim" | "ros2" | "direct"
         const label = elements.modeBadgeLabel;
         const badge = elements.modeBadge;
@@ -1882,6 +1940,11 @@ function handleMessage(data) {
         // nav_phase) so updateUI — which reads them off `data` — keeps working between the
         // 2 Hz "readout_slow" messages.
         Object.assign(data, state.latestData.slowFields);
+        // Telemetry is the source of truth — resyncs a tab that missed a
+        // "motion_lock" broadcast (e.g. it connected mid-flight).
+        if (typeof data.motion_locked === 'boolean' && data.motion_locked !== state.motionLocked) {
+            setMotionLockUI(data.motion_locked);
+        }
         state.latestData.readout = data;
         state.needsUIUpdate = true;
         state.latestData.robotPose = data.robot_pose;
@@ -2849,6 +2912,7 @@ if (elements.rightSlider) {
 }
 
 if (elements.autoDriveBtn) elements.autoDriveBtn.addEventListener('click', autoDriveToggle);
+if (elements.motionLockBtn) elements.motionLockBtn.addEventListener('click', toggleMotionLock);
 if (elements.demoModeBtn) elements.demoModeBtn.addEventListener('click', demoModeToggle);
 
 if (elements.stopBtn) elements.stopBtn.addEventListener('click', () => {

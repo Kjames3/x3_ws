@@ -228,6 +228,10 @@ depth_enabled = False
 stereo_enabled = False   # OAK-D left/right mono streaming to the GUI (off by default; bandwidth)
 lidar_enabled = False
 is_auto_driving = False
+motion_locked = False    # GUI "Motion Lock" (battery-swap safety). While set, every /cmd_vel
+                         # publish is a hard zero and the CBF is bypassed, so the robot cannot
+                         # push itself away from your hands. Also blocks the motion queue and
+                         # cancels any active Nav2 goal / auto-drive / frontier explore.
 last_detections = []
 active_model_name = "yolo26n"
 
@@ -545,7 +549,14 @@ class ROS2Bridge:
 
     def move(self, vx: float, vy: float, omega: float):
         from geometry_msgs.msg import Twist
-        
+
+        # Motion Lock: publish a true zero Twist and BYPASS the CBF entirely. The filter is
+        # proactive repulsion, so feeding it (0, 0) next to a person still yields a non-zero
+        # escape velocity — that is the "robot runs away while I unplug the battery" case.
+        if motion_locked:
+            self._cmd_vel_pub.publish(Twist())
+            return
+
         with self._lock:
             obstacles = list(self._latest_obstacles)
         
@@ -1301,6 +1312,8 @@ def _enqueue_motion(vx: float, vy: float, omega: float, instant: bool = False):
     """Enqueue a motion command; drops the oldest entry when full so stale commands never accumulate."""
     if motion_queue is None:
         return
+    if motion_locked and (vx or vy or omega):
+        return  # Motion Lock engaged — swallow drive commands, let zeros through
     if motion_queue.full():
         try:
             motion_queue.get_nowait()
@@ -1399,6 +1412,7 @@ async def handle_client(websocket):
     global _gazebo_proc, nav2_client
     global velocity_estimator, active_velocity_model_name, velocity_estimation_enabled
     global _p2p_proc, _ab_test_proc, _ab_test_mode
+    global motion_locked
 
     logger.info("Client connected")
     connected_clients.add(websocket)
@@ -1412,6 +1426,7 @@ async def handle_client(websocket):
         "mode": _mode,
         "active_velocity_model": active_velocity_model_name,
         "webrtc_camera": WEBRTC_CAMERA,   # GUI shows a WebRTC <video> instead of base64 frames
+        "motion_locked": motion_locked,   # so a reconnecting tab renders the real lock state
     }))
 
     try:
@@ -1513,6 +1528,38 @@ async def handle_client(websocket):
                     _enqueue_motion(0.0, 0.0, 0.0)
                     if nav2_client:
                         nav2_client.cancel()
+
+                elif msg_type == "set_motion_lock":
+                    # Battery-swap safety. Engaging must kill every motion source, because
+                    # the CBF makes even a "stopped" robot creep away from nearby obstacles
+                    # (i.e. your hands) — see ROS2Bridge.move().
+                    want = bool(data.get("enabled", False))
+                    motion_locked = want
+                    if want:
+                        is_auto_driving = False
+                        current_left_power = 0.0
+                        current_right_power = 0.0
+                        # Drop anything already queued so nothing fires after the lock.
+                        if motion_queue is not None:
+                            while True:
+                                try:
+                                    motion_queue.get_nowait()
+                                except asyncio.QueueEmpty:
+                                    break
+                        if nav2_client:
+                            nav2_client.cancel()
+                        if frontier_explorer:
+                            frontier_explorer.stop()
+                        # Immediate hard zero — don't wait for the next motion_loop tick.
+                        if drive:
+                            try:
+                                drive.move(0.0, 0.0, 0.0)
+                            except Exception as e:
+                                logger.warning(f"motion lock: immediate stop failed: {e}")
+                    logger.warning(f"MOTION LOCK {'ENGAGED' if want else 'RELEASED'}")
+                    # Tell every open tab, not just the one that clicked.
+                    websockets.broadcast(connected_clients, orjson_dumps(
+                        {"type": "motion_lock", "enabled": motion_locked}))
 
                 # ── Nav2 messages ──────────────────────────────────────────
                 elif msg_type == "launch_nav2":
@@ -2087,6 +2134,7 @@ async def broadcast_loop():
                 "right_power": current_right_power,
                 "detection_enabled": detection_enabled,
                 "is_auto_driving": is_auto_driving,
+                "motion_locked": motion_locked,
                 "detections": last_detections,
                 "velocity_estimates": velocity_estimates,
                 "battery": {"voltage": batt_v, "amps": est_current, "watts": est_watts},
@@ -2220,6 +2268,11 @@ async def motion_loop():
                 _target_vx = _target_vy = _target_omega = 0.0
                 _watchdog_fired = True
                 logger.debug("motion_loop: watchdog fired — ramping to stop")
+
+        # 2b. Motion Lock overrides everything: snap to zero, no ramp, no watchdog wait.
+        if motion_locked:
+            _target_vx = _target_vy = _target_omega = 0.0
+            _ramp_vx   = _ramp_vy   = _ramp_omega   = 0.0
 
         # 3. Step ramp toward target
         _ramp_vx    = _step_toward(_ramp_vx,    _target_vx,    _ACCEL,  _DECEL)

@@ -13,6 +13,10 @@
 </head>
 
 <body>
+    <!-- Unmissable banner while the motors are frozen for battery handling -->
+    <div id="motion-lock-banner" class="motion-lock-banner">
+        🔒 MOTION LOCK ENGAGED — motors frozen, CBF bypassed. Safe to handle the robot.
+    </div>
     <div class="app-container">
         <!-- Header -->
         <header class="header">
@@ -283,6 +287,10 @@
 
                             <div style="display: flex; flex-direction: column; gap: 0.5rem; align-items: center;">
                                 <button id="stop-btn" class="stop-btn">STOP</button>
+                                <button id="motion-lock-btn" class="motion-lock-btn"
+                                    title="Hard-freeze the motors and bypass the CBF. Use before unplugging the battery — otherwise the barrier function pushes the robot away from your hands.">
+                                    🔓 Motion Lock: OFF
+                                </button>
                                 <button id="auto-drive-btn" class="btn btn-primary"
                                     style="font-size: 0.75rem; padding: 0.4rem 0.8rem;">
                                     Auto-Drive
