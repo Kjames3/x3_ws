@@ -633,7 +633,12 @@ body {
    Motion Lock — hard motor freeze for battery swaps / handling
    ================================================================= */
 .motion-lock-btn {
+    /* Direct child of .motor-control-section so it outlives the controller-mode
+       swap that hides .sliders-container. Centred above whichever input UI shows. */
+    display: block;
     width: 100%;
+    max-width: 260px;
+    margin: 0 auto 0.6rem;
     padding: 0.5rem 0.6rem;
     font-size: 0.75rem;
     font-weight: 700;
