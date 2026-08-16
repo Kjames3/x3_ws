@@ -56,6 +56,31 @@ def make_configs():
     return cfgs
 
 
+def make_grid_configs():
+    """The compression x clamp interaction, plus refinements around it.
+
+    Complements make_configs(): those move one axis at a time, these cover the
+    2D interaction that actually matters. Compression manufactures fast
+    pedestrians and clip_d decides whether the features can represent them, so
+    neither is meaningful without the other.
+    """
+    base = dict(compress_frac=0.0, noise_mult=1.0, clip_d=0.25, T=10,
+                hidden=(256, 128, 64), dropout=0.2, max_label=4.0, huber=1.0)
+    cfgs = []
+    for frac in (0.15, 0.25, 0.35):
+        for cd in (0.25, 0.40, 0.60):
+            cfgs.append((f"g_c{int(frac*100)}_clip{cd}",
+                         {**base, "compress_frac": frac, "clip_d": cd}))
+    for nm in (0.5, 1.5, 2.0):
+        cfgs.append((f"g_c25_clip0.4_noise{nm}",
+                     {**base, "compress_frac": 0.25, "clip_d": 0.40, "noise_mult": nm}))
+    cfgs.append(("g_T15_c25_clip0.4",
+                 {**base, "compress_frac": 0.25, "clip_d": 0.40, "T": 15}))
+    cfgs.append(("g_wide_c25_clip0.4",
+                 {**base, "compress_frac": 0.25, "clip_d": 0.40, "hidden": (512, 256, 128)}))
+    return cfgs
+
+
 def build_split(P, split, cfg, seed, with_compression):
     """Assemble one split under a config: clean + noisy multi-rate (+ compressed)."""
     A.T = cfg["T"]
@@ -91,12 +116,15 @@ def main():
     ap.add_argument("--epochs", type=int, default=60)
     ap.add_argument("--patience", type=int, default=8)
     ap.add_argument("--only", help="comma-separated config indices")
+    ap.add_argument("--configs", choices=("axes", "grid"), default="axes",
+                    help="axes: one variable at a time. grid: the compression x "
+                         "clamp interaction (run this where the axes sweep is not)")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
 
     out = Path(args.out_dir); out.mkdir(parents=True, exist_ok=True)
     results_path = out / "results.jsonl"
-    cfgs = make_configs()
+    cfgs = make_configs() if args.configs == "axes" else make_grid_configs()
     if args.only:
         want = {int(i) for i in args.only.split(",")}
         cfgs = [c for i, c in enumerate(cfgs) if i in want]
