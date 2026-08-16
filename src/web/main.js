@@ -282,6 +282,7 @@ const elements = {
     launchNav2Btn: document.getElementById('launch-nav2-btn'),
     stopNav2Btn: document.getElementById('stop-nav2-btn'),
     setPoseBtn: document.getElementById('set-pose-btn'),
+    autoPoseBtn: document.getElementById('auto-pose-btn'),
     cancelNavBtn: document.getElementById('cancel-nav-btn'),
     mapSelect: document.getElementById('map-select'),
     loadMapBtn: document.getElementById('load-map-btn'),
@@ -552,6 +553,17 @@ function initNavPanel() {
             state.nav.mapMode = state.nav.mapMode === 'set_pose' ? 'navigate' : 'set_pose';
             elements.setPoseBtn.classList.toggle('active', state.nav.mapMode === 'set_pose');
             updateNavHint();
+        });
+    }
+
+    if (elements.autoPoseBtn) {
+        elements.autoPoseBtn.addEventListener('click', () => {
+            // Ignore the stored pose on a manual press: the operator is asking
+            // precisely because the automatic attempt did not land, so the thing
+            // it should not do is propose the same remembered pose again.
+            elements.autoPoseBtn.disabled = true;
+            elements.autoPoseBtn.textContent = '🎯 Locating…';
+            sendMessage({ type: 'auto_initial_pose', ignore_stored: true });
         });
     }
 
@@ -1737,6 +1749,22 @@ function handleMessage(data) {
                 elements.launchNav2Btn.textContent = '🚀 Launch Nav2';
                 elements.launchNav2Btn.disabled = false;
             }
+        }
+        return;
+    }
+
+    if (data.type === "auto_pose_result") {
+        if (elements.autoPoseBtn) {
+            elements.autoPoseBtn.disabled = false;
+            elements.autoPoseBtn.textContent = '🎯 Auto Pose';
+        }
+        if (data.success) {
+            console.log(`🎯 Auto pose → (${data.x.toFixed(2)}, ${data.y.toFixed(2)}) score ${data.score}`);
+            if (elements.navHint) elements.navHint.textContent = data.msg;
+        } else {
+            // A refusal is the safe outcome, not an error — fall back to the
+            // manual click rather than leaving the operator without a next step.
+            alert(`${data.msg}\n\nUse 📌 Set Initial Pose to place it by hand.`);
         }
         return;
     }

@@ -209,6 +209,7 @@ model = None
 oled = None
 nav2_client = None    # Nav2Client instance (ROS2/sim modes only)
 frontier_explorer = None  # FrontierExplorer instance (ROS2 mode only)
+auto_pose = None      # AutoInitialPose — seeds AMCL without a manual RViz click
 _gazebo_proc    = None   # subprocess handle when --sim auto-launches Gazebo
 _ros2_stack_proc = None  # subprocess handle for x3_bringup (launched by default in ROS2 mode)
 _mediamtx_proc = None    # subprocess handle for mediamtx (WebRTC camera, --webrtc-camera)
@@ -961,9 +962,28 @@ def _encode_mapu(grid: dict) -> bytes | None:
         return None
 
 
+def _init_auto_pose(node, client):
+    """
+    Construct AutoInitialPose, tolerating its absence.
+
+    Automatic AMCL seeding is a convenience: if the module or its deps are
+    missing the rest of the server must still come up, and the operator just
+    sets the pose by hand as before.
+    """
+    try:
+        from auto_initial_pose import AutoInitialPose
+        ap = AutoInitialPose(node, client)
+        logger.info("AutoInitialPose ready — AMCL will be seeded automatically")
+        return ap
+    except Exception as exc:
+        logger.warning(f"AutoInitialPose unavailable ({exc}) — "
+                       "AMCL will need a manual pose estimate")
+        return None
+
+
 def initialize_hardware():
     global ros_board, ros_bridge, drive, lidar, camera, oak, oak_ros_pub, model, oled, _gazebo_proc
-    global nav2_client, _ros2_stack_proc, frontier_explorer
+    global nav2_client, _ros2_stack_proc, frontier_explorer, auto_pose
     global velocity_estimator, active_velocity_model_name
     global _shared_bgr_shm, _shared_depth_shm, _shared_bgr_array, _shared_depth_array
 
@@ -1007,6 +1027,7 @@ def initialize_hardware():
         camera = bridge   # bridge provides get_frame() from /camera/image_raw
         nav2_client = Nav2Client(bridge._node)
         frontier_explorer = FrontierExplorer(nav2_client, bridge)
+        auto_pose = _init_auto_pose(bridge._node, nav2_client)
         logger.info("Nav2Client + FrontierExplorer initialized (sim mode) — click 🚀 Gazebo in GUI to start simulation")
     elif ROS2_MODE:
         # ROS2 bridge mode: subscribe to /odom, /map, /camera, /voltage; publish /cmd_vel.
@@ -1026,6 +1047,7 @@ def initialize_hardware():
         # camera intentionally left unset — falls through to AstraCamera init below
         nav2_client = Nav2Client(bridge._node)
         frontier_explorer = FrontierExplorer(nav2_client, bridge)
+        auto_pose = _init_auto_pose(bridge._node, nav2_client)
         logger.info("Nav2Client + FrontierExplorer initialized (ros2 mode)")
     else:
         # 1. Motor Controller (Serial) - uses auto-detected SERIAL_PORT
@@ -1504,6 +1526,10 @@ async def handle_client(websocket):
                         slam   = data.get("slam", False)
                         ok = nav2_client.launch_nav2(
                             use_sim_time=use_st, map_path=map_f, slam=slam)
+                        if ok and auto_pose is not None:
+                            # Tells the seeder which map to key the stored pose
+                            # to; it fires itself once AMCL and /scan show up.
+                            auto_pose.arm(map_path=map_f, slam=slam)
                         await websocket.send(json.dumps({
                             "type": "nav2_launch_result",
                             "success": ok,
@@ -1540,6 +1566,33 @@ async def handle_client(websocket):
                             float(data.get("y", 0.0)),
                             float(data.get("theta", 0.0)),
                         )
+
+                elif msg_type == "auto_initial_pose":
+                    # Manual re-run of the scan-match seeder, for when the
+                    # automatic attempt was rejected as ambiguous or the robot
+                    # has since been moved.
+                    if auto_pose is None:
+                        await websocket.send(json.dumps({
+                            "type": "auto_pose_result", "success": False,
+                            "msg": "Auto pose estimation unavailable"}))
+                    else:
+                        res = await asyncio.get_running_loop().run_in_executor(
+                            None, auto_pose.seed_now,
+                            bool(data.get("ignore_stored", False)))
+                        if res is None:
+                            await websocket.send(json.dumps({
+                                "type": "auto_pose_result", "success": False,
+                                "msg": "No map or no lidar scan yet"}))
+                        else:
+                            await websocket.send(json.dumps({
+                                "type": "auto_pose_result",
+                                "success": res.accepted,
+                                "x": round(res.x, 3), "y": round(res.y, 3),
+                                "theta": round(res.yaw, 4),
+                                "score": round(res.score, 3),
+                                "msg": (f"Pose set: {res.reason}" if res.accepted
+                                        else f"Could not localise — {res.reason}"),
+                            }))
 
                 elif msg_type == "get_maps":
                     maps = _list_maps()
@@ -2068,6 +2121,7 @@ async def broadcast_loop():
                     "nav": nav_status,
                     "slam_active": _slam_proc is not None and _slam_proc.poll() is None,
                     "frontier": frontier_explorer.status() if frontier_explorer else None,
+                    "auto_pose": auto_pose.status() if auto_pose else None,
                     "active_model_name": active_model_name,
                     "active_velocity_model_name": active_velocity_model_name,
                     "p2p_test_running": _p2p_proc is not None and _p2p_proc.poll() is None,

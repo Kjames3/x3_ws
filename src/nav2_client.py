@@ -137,8 +137,21 @@ class Nav2Client:
         cancel_future.add_done_callback(self._cancel_done_cb)
         logger.info("[Nav2Client] Cancel requested")
 
-    def set_initial_pose(self, x: float, y: float, theta: float = 0.0) -> None:
-        """Publish an initial pose estimate to /initialpose (used by AMCL)."""
+    def set_initial_pose(
+        self,
+        x: float,
+        y: float,
+        theta: float = 0.0,
+        cov_xy: float = 0.25,
+        cov_yaw: float = 0.07,
+    ) -> None:
+        """
+        Publish an initial pose estimate to /initialpose (used by AMCL).
+
+        cov_xy / cov_yaw size the particle cloud AMCL spawns.  The defaults suit
+        a hand-placed GUI estimate; auto_initial_pose passes tighter values for a
+        scan-matched seed, which converges faster because it deserves to.
+        """
         msg = PoseWithCovarianceStamped()
         msg.header.frame_id = "map"
         msg.header.stamp = self._node.get_clock().now().to_msg()
@@ -150,11 +163,11 @@ class Nav2Client:
         msg.pose.pose.orientation.y = qy
         msg.pose.pose.orientation.z = qz
         msg.pose.pose.orientation.w = qw
-        # Covariance: loose x, y, yaw; everything else zero
+        # Covariance: x, y, yaw only; everything else zero
         cov = [0.0] * 36
-        cov[0]  = 0.25   # x
-        cov[7]  = 0.25   # y
-        cov[35] = 0.07   # yaw (~15°)
+        cov[0]  = float(cov_xy)    # x
+        cov[7]  = float(cov_xy)    # y
+        cov[35] = float(cov_yaw)   # yaw
         msg.pose.covariance = cov
         self._initial_pose_pub.publish(msg)
         logger.info(f"[Nav2Client] Initial pose published ({x:.2f}, {y:.2f}, θ={math.degrees(theta):.1f}°)")

@@ -36,8 +36,16 @@ amcl:
     odom_frame_id: "odom"
     pf_err: 0.05
     pf_z: 0.99
-    recovery_alpha_fast: 0.0
-    recovery_alpha_slow: 0.0
+    # Random-particle injection.  At 0.0/0.0 (the previous setting) AMCL has no
+    # escape hatch: once the cloud has converged on a wrong pose it can only be
+    # dragged out by odometry, which is why a bad initial estimate used to take
+    # so long to correct itself.  These are the standard Nav2 values — the filter
+    # injects particles only when the short-term likelihood average falls below
+    # the long-term one, i.e. when the scan stops matching where it thinks it is.
+    # src/auto_initial_pose.py seeds a good pose in the first place; this is what
+    # recovers when the seed is wrong anyway.
+    recovery_alpha_fast: 0.1
+    recovery_alpha_slow: 0.001
     resample_interval: 1
     # OmniMotionModel is correct for holonomic (mecanum) robots.
     # DifferentialMotionModel (the DWA default) would produce bad localisation
