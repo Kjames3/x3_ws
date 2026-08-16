@@ -84,29 +84,52 @@ def splits(processed_dir):
             "train": [files[i] for i in idx[TEST_SEQS + VAL_SEQS:]]}
 
 
-def windows_from_track(a, stride, rng, noise, deployed):
+def windows_from_track(a, stride, rng, noise, deployed, compress=1, noise_mult=1.0,
+                       clip_d=CLIP_D, max_label=None):
     """Yield (features40, label2) for one body's track.
 
     a: (N,5) [time, rel_x, rel_y, vx, vy] at 10 Hz.
-    stride: 1 -> 10 Hz, 2 -> 5 Hz, 3 -> 3.33 Hz.
+
+    Two different uses of strided sampling, do not confuse them:
+
+    stride   the window really was captured at a slower rate. Deltas come out
+             larger, and dt_scale = 1/stride puts them back on the training
+             interval. The label is unchanged: the pedestrian's speed is what
+             it always was. This models the robot's 5.9-7.4 Hz loop.
+
+    compress TIME COMPRESSION. Sample every `compress` frames but keep dt_scale
+             at 1, so the window reads as a pedestrian covering `compress` times
+             the ground per frame — and scale the LABEL to match. This
+             manufactures running-speed examples from walking data. The model
+             saturates at 1.83 m/s, which is exactly the p99 of the training
+             labels (1.84), so the tail is missing rather than unlearnable.
+             Caveat: a time-compressed walk is not biomechanically a run, but
+             the network only ever sees the centroid path.
     """
     n = len(a)
-    span = (T - 1) * stride
-    dt_scale = 1.0 / stride
+    step = stride * compress
+    span = (T - 1) * step
+    dt_scale = 1.0 / stride           # compression deliberately does NOT rescale
     X, Y = [], []
-    for start in range(0, n - span - 1):
-        idx = np.arange(start, start + span + 1, stride)
+    for start in range(0, n - span - compress):
+        idx = np.arange(start, start + span + 1, step)
         rx = a[idx, 1].copy()
         ry = a[idx, 2].copy()
 
         if noise:
             Z = np.maximum(0.3, np.abs(rx))
-            rx = rx + rng.normal(0.0, sigma_depth(Z))
-            ry = ry + rng.normal(0.0, sigma_lateral(Z))
+            rx = rx + rng.normal(0.0, sigma_depth(Z) * noise_mult)
+            ry = ry + rng.normal(0.0, sigma_lateral(Z) * noise_mult)
 
-        # Label: 0.1 s after the window's last sample, at every stride.
-        lab = a[idx[-1] + 1, 3:5]
+        # Label: 0.1 s after the window's last sample, at every stride. Under
+        # compression the pedestrian is played back `compress` times faster, so
+        # the velocity it implies scales with it.
+        lab = a[idx[-1] + compress, 3:5] * compress
         if not np.all(np.isfinite(lab)):
+            continue
+        # Compression can manufacture speeds no human reaches; drop them rather
+        # than teach the net to expect them.
+        if max_label is not None and float(np.hypot(*lab)) > max_label:
             continue
 
         rx0, ry0 = rx[0], ry[0]
@@ -120,22 +143,30 @@ def windows_from_track(a, stride, rng, noise, deployed):
             if i == 0:
                 dx = dy = 0.0
             else:
-                dx = np.clip((rx[i] - rx[i - 1]) * dt_scale, -CLIP_D, CLIP_D)
-                dy = np.clip((ry[i] - ry[i - 1]) * dt_scale, -CLIP_D, CLIP_D)
+                dx = np.clip((rx[i] - rx[i - 1]) * dt_scale, -clip_d, clip_d)
+                dy = np.clip((ry[i] - ry[i - 1]) * dt_scale, -clip_d, clip_d)
             f += [rn, yn, dx, dy]
         X.append(f)
         Y.append(lab)
     return X, Y
 
 
-def build(processed_dir, split, strides=(1,), noise=False, deployed=True, seed=0):
-    """Build one split. Returns (X (N,40) float32, y (N,2) float32)."""
+def build(processed_dir, split, strides=(1,), noise=False, deployed=True, seed=0,
+          compress=1, noise_mult=1.0, clip_d=CLIP_D, max_label=None):
+    """Build one split. Returns (X (N,40) float32, y (N,2) float32).
+
+    NOTE: clip_d must match the serving code. `_build_window_features` on the
+    robot clamps at 0.25, which is a hard 2.5 m/s ceiling on the FEATURES — a
+    model trained with a larger clip_d needs the robot patched to match, or it
+    will never see the inputs it was trained for.
+    """
     rng = np.random.default_rng(seed)
     X, Y = [], []
     for path in splits(processed_dir)[split]:
         for a in load_sequence(path).values():
             for s in strides:
-                xs, ys = windows_from_track(a, s, rng, noise, deployed)
+                xs, ys = windows_from_track(a, s, rng, noise, deployed, compress,
+                                            noise_mult, clip_d, max_label)
                 X += xs
                 Y += ys
     if not X:
