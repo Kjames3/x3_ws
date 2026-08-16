@@ -213,7 +213,10 @@ def scene_windows(name, poses, labels, max_range=MAX_RANGE_M, keep_stopped=True)
             xyz = np.array([per_frame[f][0] for f in run])
             vel = smooth_velocity(run, xyz)
 
-            for end in range(WINDOW_SIZE - 1, len(run)):
+            # The label is the velocity one frame AFTER the window, matching
+            # 03_build_training_windows.py (`target = group.iloc[start + T]`).
+            # The net is a 0.1 s-ahead predictor, not a now-estimator.
+            for end in range(WINDOW_SIZE - 1, len(run) - 1):
                 counters["candidate"] += 1
                 sl = slice(end - WINDOW_SIZE + 1, end + 1)
 
@@ -234,7 +237,7 @@ def scene_windows(name, poses, labels, max_range=MAX_RANGE_M, keep_stopped=True)
                     if not keep_stopped:
                         continue
 
-                v_rob = R_T @ vel[end]
+                v_rob = R_T @ vel[end + 1]
                 X.append(feats[0])
                 y.append([v_rob[0], v_rob[1]])
                 meta.append((name, tid, per_frame[run[end]][1], run[end], rng))
