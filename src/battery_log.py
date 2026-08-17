@@ -1,0 +1,131 @@
+"""Always-on CSV trace of pack voltage / current / SoC.
+
+Kept separate from ``battery.py`` so that module stays pure and offline-testable
+-- this is the only part that touches the filesystem.
+
+Why always-on rather than a deliberate "discharge run" mode: the pack will
+almost certainly die in the middle of something else, and a capture you have to
+remember to start is a capture you will not have.  One file per server start
+means each power cycle is already segmented into its own discharge curve.
+
+Why fsync: the interesting event *is* the power cut.  A plain write only reaches
+the OS page cache, which a battery cutout discards -- up to 30 s of the most
+important samples.  At the default 10 s cadence an fsync'd append costs about
+6 writes per minute, which is nothing next to the 20 Hz telemetry loop it rides
+along with.
+"""
+
+from __future__ import annotations
+
+import os
+import time
+import glob
+import logging
+
+logger = logging.getLogger(__name__)
+
+HEADER = "iso_time,epoch_s,voltage_v,current_a,power_w,soc_pct\n"
+
+
+class BatteryLogger:
+    """Append-only CSV logger, self-throttling and failure-tolerant.
+
+    Call :meth:`log` as often as convenient (it ignores calls inside the
+    interval).  Any I/O error disables the logger permanently rather than
+    propagating -- losing the trace must never take telemetry down with it.
+    """
+
+    def __init__(self, directory: str, interval_s: float = 10.0,
+                 keep: int = 30, sync: bool = True):
+        self.directory = directory
+        self.interval_s = interval_s
+        self.keep = keep
+        self.sync = sync
+        self.path: str | None = None
+        self._fh = None
+        self._last_t: float | None = None
+        self._rows = 0
+        self._failed = False
+
+    # -- lifecycle ----------------------------------------------------------
+    def _open(self) -> bool:
+        try:
+            os.makedirs(self.directory, exist_ok=True)
+            self._prune()
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            self.path = os.path.join(self.directory, f"battery_{stamp}.csv")
+            new = not os.path.exists(self.path)
+            self._fh = open(self.path, "a")
+            if new:
+                self._fh.write(HEADER)
+                self._fh.flush()
+            logger.info(f"BatteryLogger: writing {self.path} every {self.interval_s:g}s")
+            return True
+        except Exception as e:
+            logger.error(f"BatteryLogger: disabled, could not open log: {e}")
+            self._failed = True
+            return False
+
+    def _prune(self) -> None:
+        """Keep only the newest ``keep`` traces so this cannot grow forever."""
+        try:
+            files = sorted(glob.glob(os.path.join(self.directory, "battery_*.csv")))
+            for old in files[: max(0, len(files) - self.keep + 1)]:
+                os.remove(old)
+        except Exception as e:
+            logger.warning(f"BatteryLogger: prune failed (continuing): {e}")
+
+    def _note_failure(self, where: str, exc: BaseException) -> None:
+        """Record why logging stopped, somewhere journald cannot rate-limit away.
+
+        The service emits enough output to trip journald's rate limiter, so an
+        error logged the normal way can vanish exactly when it matters.
+        """
+        import traceback
+        try:
+            with open(os.path.join(self.directory, "logger_errors.txt"), "a") as fh:
+                fh.write(f"--- {time.strftime('%Y-%m-%dT%H:%M:%S')} {where}\n")
+                fh.write(f"{type(exc).__name__}: {exc}\n")
+                fh.write(traceback.format_exc() + "\n")
+        except Exception:
+            pass
+
+    # -- input --------------------------------------------------------------
+    def log(self, voltage: float, current: float, soc_pct: float,
+            now: float | None = None) -> bool:
+        """Record one sample if the interval has elapsed.  Returns True if written."""
+        if self._failed:
+            return False
+        now = time.time() if now is None else now
+        if self._last_t is not None and (now - self._last_t) < self.interval_s:
+            return False
+        if self._fh is None and not self._open():
+            return False
+        try:
+            iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now))
+            self._fh.write(
+                f"{iso},{now:.3f},{voltage:.4f},{current:.4f},"
+                f"{voltage * current:.4f},{soc_pct:.2f}\n"
+            )
+            self._fh.flush()
+            if self.sync:
+                os.fsync(self._fh.fileno())
+            self._last_t = now
+            self._rows += 1
+            return True
+        except Exception as e:
+            logger.error(f"BatteryLogger: disabled after write error: {e}")
+            self._note_failure("write", e)
+            self._failed = True
+            return False
+
+    def close(self) -> None:
+        if self._fh is not None:
+            try:
+                self._fh.flush()
+                if self.sync:
+                    os.fsync(self._fh.fileno())
+                self._fh.close()
+            except Exception:
+                pass
+            self._fh = None

@@ -47,6 +47,35 @@ CELLS = 3
 # Recalibrate by resting the pack off-charger ~30 min and reading idle voltage.
 PACK_FULL_V = 13.0
 
+# Same quantity, but for a voltage source that is actually accurate.
+#
+# The 13.0 above exists solely to cancel the Rosmaster ADC's gain error -- it is
+# "what a full pack reads *through that ADC*", not a real pack voltage.  The
+# INA226 added 2026-08-15 measures the pack directly (1.25 mV LSB, +/-1%), so
+# feeding its readings into a curve stretched for the Rosmaster would shift the
+# whole gauge low.  This is the 3S Li-ion nameplate: 4.20 V/cell * 3.
+#
+# Measured off-charger by the INA226 on 2026-08-15 plus the operator's own
+# observations, which together rule out the 12.6 V 3S Li-ion nameplate: the pack
+# sat at 12.82 V while *delivering* 1.37 A with no charger attached, which a
+# 12.6 V-full pack cannot do.
+#
+# Reported full charge is 13.1-13.2 V and the robot cuts out at 11.7-11.8 V, so
+# both ends are pinned from observation rather than assumed from a chemistry.
+PACK_FULL_V_INA226 = 13.15
+
+# ...and the empty point, which is the half that cannot be derived.
+#
+# The per-cell table's 0% sits at 3.20 V/cell = 76% of full.  This pack dies at
+# 11.75/13.15 = 89% of full, so scaling by the full voltage alone would put 0%
+# near 10.0 V and still show ~35% at the moment the robot shuts off.  Supplying
+# both ends switches _pack_to_cell to a two-point affine map instead.
+#
+# Slightly conservative on purpose: 11.7-11.8 V is observed *under load*, so the
+# true open-circuit floor is a little higher and the gauge reaches 0% just
+# before the robot quits rather than after.
+PACK_EMPTY_V_INA226 = 11.75
+
 # Per-cell rest-voltage -> SoC for a typical 18650 NMC cell.  Sorted ascending.
 # Kept per-cell so PACK_FULL_V (and CELLS) reposition the curve without anyone
 # having to re-derive thirteen pack voltages by hand.
@@ -102,18 +131,40 @@ CHARGE_DETECT_PCT = 5.0
 CHARGE_DETECT_SAMPLES = 30
 
 
-def _pack_to_cell(volts: float) -> float:
+def _pack_to_cell(volts: float, pack_full_v: float | None = None,
+                  pack_empty_v: float | None = None) -> float:
     """Scale a reported pack voltage onto the per-cell curve.
 
-    PACK_FULL_V is defined to sit at 4.20 V/cell, so a pack that reads high by a
-    constant gain still lands on the right part of the curve.
+    Two modes:
+
+    * **Gain only** (``pack_empty_v`` is None) -- ``pack_full_v`` is defined to
+      sit at 4.20 V/cell, so a pack that reads high by a constant gain still
+      lands on the right part of the curve.  This is the Rosmaster ADC case,
+      where the error genuinely is a gain error through the whole range.
+    * **Two-point** (``pack_empty_v`` given) -- the voltage axis is mapped
+      affinely so that full lands on the table's top cell voltage and empty on
+      its bottom one.  Use this when both ends are known by observation and the
+      span between them does not match the table's own, which is the INA226
+      case: this pack's usable range is 89% of full, not the table's 76%.
+
+    Resolved at call time rather than as default arguments so that patching the
+    module-level :data:`PACK_FULL_V` still repositions the curve.
     """
-    return volts * (4.20 * CELLS / PACK_FULL_V) / CELLS
+    full = PACK_FULL_V if pack_full_v is None else pack_full_v
+    if pack_empty_v is None:
+        return volts * (4.20 * CELLS / full) / CELLS
+    cell_lo = _OCV_TABLE_CELL[0][0]
+    cell_hi = _OCV_TABLE_CELL[-1][0]
+    span = full - pack_empty_v
+    if span <= 0:
+        return cell_lo
+    return cell_lo + (volts - pack_empty_v) * (cell_hi - cell_lo) / span
 
 
-def voltage_to_soc(volts: float) -> float:
+def voltage_to_soc(volts: float, pack_full_v: float | None = None,
+                   pack_empty_v: float | None = None) -> float:
     """Interpolate an open-circuit pack voltage onto the SoC curve."""
-    v = _pack_to_cell(volts)
+    v = _pack_to_cell(volts, pack_full_v, pack_empty_v)
     if v <= _OCV_TABLE_CELL[0][0]:
         return 0.0
     if v >= _OCV_TABLE_CELL[-1][0]:
@@ -132,9 +183,15 @@ class BatteryEstimator:
     :attr:`percent` / :attr:`voltage_filtered` whenever telemetry is built.
     """
 
-    def __init__(self, r_int: float = R_INT_OHMS, tau_s: float = TAU_S):
+    def __init__(self, r_int: float = R_INT_OHMS, tau_s: float = TAU_S,
+                 pack_full_v: float | None = None,
+                 pack_empty_v: float | None = None):
         self.r_int = r_int
         self.tau_s = tau_s
+        # None => follow the module-level PACK_FULL_V at call time.
+        self.pack_full_v = pack_full_v
+        # None => gain-only scaling; set both to use the two-point map.
+        self.pack_empty_v = pack_empty_v
         self._v_ema: float | None = None
         self._i_ema: float = 0.0
         self._last_t: float | None = None
@@ -173,7 +230,7 @@ class BatteryEstimator:
         sag = min(MAX_SAG_COMP_V, self._i_ema * self.r_int)
         v_oc = self._v_ema + sag
 
-        soc = voltage_to_soc(v_oc)
+        soc = voltage_to_soc(v_oc, self.pack_full_v, self.pack_empty_v)
 
         # 3. A discharging pack's SoC only falls.  Without this the gauge
         #    bounces up every time the robot stops and the pack recovers.

@@ -171,6 +171,77 @@ def test_ignores_empty_packets():
     assert est.ready
 
 
+def _ina():
+    import battery
+    return BatteryEstimator(pack_full_v=battery.PACK_FULL_V_INA226,
+                            pack_empty_v=battery.PACK_EMPTY_V_INA226)
+
+
+def test_ina226_endpoints_match_the_observed_pack():
+    """Both ends are pinned to observation: 13.15 V full, 11.75 V cutoff."""
+    import battery
+
+    full = voltage_to_soc(battery.PACK_FULL_V_INA226,
+                          battery.PACK_FULL_V_INA226, battery.PACK_EMPTY_V_INA226)
+    empty = voltage_to_soc(battery.PACK_EMPTY_V_INA226,
+                           battery.PACK_FULL_V_INA226, battery.PACK_EMPTY_V_INA226)
+    assert approx(full, 100.0), full
+    assert approx(empty, 0.0), empty
+
+
+def test_gauge_reaches_zero_before_the_robot_cuts_out():
+    """The whole point of the two-point map.
+
+    Scaling by full voltage alone puts 0% near 10.0 V, so the gauge would still
+    read a third of a pack at the moment the robot shuts off at ~11.75 V.
+    """
+    import battery
+
+    two_point = voltage_to_soc(11.8, battery.PACK_FULL_V_INA226,
+                               battery.PACK_EMPTY_V_INA226)
+    gain_only = voltage_to_soc(11.8, battery.PACK_FULL_V_INA226)
+    assert two_point < 5.0, f"gauge still reads {two_point:.1f}% at cutoff"
+    assert gain_only > 25.0, (
+        f"gain-only scaling should be badly wrong here, got {gain_only:.1f}%")
+
+
+def test_ina226_curve_is_monotonic_across_the_real_range():
+    import battery
+
+    last = -1.0
+    v = battery.PACK_EMPTY_V_INA226
+    while v <= battery.PACK_FULL_V_INA226 + 1e-9:
+        soc = voltage_to_soc(v, battery.PACK_FULL_V_INA226,
+                             battery.PACK_EMPTY_V_INA226)
+        assert soc >= last - 1e-9, f"non-monotonic at {v:.3f} V"
+        last = soc
+        v += 0.02
+
+
+def test_ina226_calibration_is_not_the_rosmaster_curve():
+    """The two calibrations must not be interchangeable.
+
+    12.82 V is a genuine off-charger reading on this pack.  Through the
+    Rosmaster curve (stretched to 13.0 to cancel that ADC's gain error) it looks
+    essentially full; on the real two-point curve it is clearly partway down.
+    """
+    _, out_ina = _soak(_ina(), 12.82, 0.0, 120)
+    _, out_ros = _soak(BatteryEstimator(), 12.82, 0.0, 120)
+    assert out_ina[-1] < 80.0, out_ina[-1]      # real curve: ~70%
+    assert out_ros[-1] > 90.0, out_ros[-1]      # Rosmaster curve: ~94%
+    assert out_ros[-1] - out_ina[-1] > 15.0, (out_ros[-1], out_ina[-1])
+
+
+def test_ina226_real_current_compensates_sag():
+    """A real measured current must lift the estimate versus assuming zero draw."""
+    import battery
+
+    _, with_i = _soak(_ina(), 12.0, 6.0, 120)
+    _, without_i = _soak(_ina(), 12.0, 0.0, 120)
+
+    assert with_i[-1] > without_i[-1], (with_i[-1], without_i[-1])
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):
