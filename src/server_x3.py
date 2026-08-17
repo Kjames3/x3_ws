@@ -247,8 +247,11 @@ fps_detection = 0.0
 _batt_cache_v    = 12.0
 _batt_cache_time = 0.0
 
-# SoC estimator: OCV curve + EMA filter + load-sag compensation (see battery.py)
-_batt_est = BatteryEstimator()
+# SoC estimator (see battery.py).  Explicitly OCV-only: this call site feeds
+# `est_current`, which is *synthesised* from commanded motor power rather than
+# measured, and integrating that into a coulomb counter would drift badly.
+# The robot's own copy of this file wires the INA226 in and enables counting.
+_batt_est = BatteryEstimator(capacity_ah=None)
 _batt_est_time = 0.0
 
 connected_clients = set()
