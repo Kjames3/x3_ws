@@ -1,30 +1,45 @@
 """
-Battery state-of-charge estimation for the X3's 3S Li-ion pack (12.6 V, ~6 Ah).
+Battery state-of-charge estimation for the X3's pack.
 
-The Rosmaster board reports pack voltage as a single byte scaled by 10, so the
-raw signal is quantised to 0.1 V and arrives on /voltage at 10 Hz.  Turning that
-into a percentage well needs three things the old one-line linear map lacked:
+Rewritten 2026-08-16 against a **real full-cycle discharge**: 5.87 h, 2054
+samples of measured voltage *and* measured current from the INA226, taken from
+13.266 V at full charge down to 9.66 V where the pack collapsed and the robot
+died (``logs/battery/battery_20260815-132549.csv``).  Everything below is fitted
+to that trace.  Two things it overturned:
 
-  1. An OCV->SoC curve.  Li-ion discharge is flat between ~3.9 and ~3.6 V/cell
-     (roughly 70% of the capacity); a straight line over the voltage span makes
-     the gauge plummet at the top and stall at the bottom.
-  2. A realistic empty point.  0% must land where the robot stops working
-     (~3.2 V/cell = 9.6 V), not at the cell's absolute floor.
-  3. Filtering + load compensation.  One 0.1 V code is ~2-5 points of SoC, so
-     the gauge stepped between codes, and motor draw sags the terminal voltage
-     by several tenths of a volt, making the reading dive whenever the robot
-     drives and bounce back when it stops.
+**1. The pack is 4S LiFePO4, not 3S Li-ion.**  The old module assumed an NMC
+per-cell curve and a 12.6 V nameplate.  The trace rules that out and the LFP
+signature is unmistakable: 13.27 V full, a nominal 12.8 V, a dead-flat plateau
+between 13.0 and 12.85 V, a knee at ~12.4 V, then a cliff straight through
+10.0 V (= 2.50 V/cell, the LFP floor).  A 3S Li-ion pack cannot sit at 13.27 V.
 
-     Measured on the robot 2026-08-09: at rest the reported code is *perfectly*
-     stable (13.0 V held across 4561 samples / 5 min, zero dither).  So the EMA
-     does not recover resolution below the 0.1 V step the way oversampling a
-     dithering ADC would -- there is nothing to average at rest.  What it does
-     buy is a smooth ramp across a code transition instead of a 2-5 point jump,
-     and rejection of the genuine fluctuation seen under motor load.
+This also settles an old open question: "the Rosmaster ADC reads ~3% high" was
+inferred purely from a rested 13.0 V being impossible for a 12.6 V pack.  For
+*this* pack 13.0 V rested is unremarkable, so that inference is withdrawn --
+the ADC looks roughly honest and the readings just needed the right curve.
 
-No new hardware or dependencies: the only inputs are the voltage already on
-/voltage and the commanded-motor-power current estimate already computed by the
-telemetry loop.
+**2. Voltage alone cannot gauge this pack, so it no longer tries.**  That is
+not a tuning problem, it is the chemistry.  Measured from the trace:
+
+    85% -> 98% SoC spans      5 mV     (below the sensor's own 1.25 mV LSB)
+    30% -> 100% SoC spans   298 mV
+     0% ->  30% SoC spans  2418 mV
+
+Sag at a 1.4 A idle draw is already ~78 mV, so in the top two thirds of the
+pack the load noise is an order of magnitude larger than the entire signal.
+The old voltage-only gauge read **48.9% when the pack truly had 18.0% left** --
+about 64 minutes of runtime presented as three hours, which is how a robot ends
+up stranded mid-task.
+
+The fix is the one the INA226 made possible: integrate the measured current
+(coulomb counting) and use the OCV curve only where it actually carries
+information.  :meth:`BatteryEstimator.update` blends the two, weighting the OCV
+correction by how much SoC a plausible voltage error would move -- near zero on
+the plateau, dominant below the knee where accuracy matters most.
+
+Coulomb counting drifts without an anchor and cannot survive a restart on its
+own, so the caller should persist and restore ``charge_ah``; see
+``battery_log.SoCState``.
 """
 
 from __future__ import annotations
@@ -33,232 +48,298 @@ import math
 import time
 
 # --- Pack model ------------------------------------------------------------
-CELLS = 3
+# 4 cells of LiFePO4.  Kept for documentation and sanity checks only: the OCV
+# table below is expressed in *pack* volts because it was measured at the pack,
+# so nothing needs to divide by this any more.
+CELLS = 4
 
-# Pack voltage that corresponds to a full charge (4.20 V/cell).
-#
-# Measured 2026-08-09 on the robot: a rested, charger-disconnected pack reports
-# 13.0 V.  That is 4.33 V/cell, above the Li-ion ceiling, so the Rosmaster's ADC
-# reads roughly 3% high; 13.0 is used here rather than the 12.6 V nameplate so
-# the curve sits where this robot's readings actually land.  Everything scales
-# from this one number -- 0% correspondingly moves to 9.9 V reported, which is
-# the same true 9.6 V pack voltage seen through the same gain error.
-#
-# Recalibrate by resting the pack off-charger ~30 min and reading idle voltage.
-PACK_FULL_V = 13.0
+# Usable capacity, amp-hours.  Measured by trapezoidal integration of the
+# INA226 current over the full cycle: 8.067 Ah delivered between "just off the
+# charger" and "robot dead".  This is delivered capacity at the robot's ~1.4 A
+# idle draw, which is the operating point that matters; a much heavier load
+# would yield somewhat less.  It sets the SoC scale, so recalibrate it from a
+# fresh full-cycle CSV if the pack ages or is replaced.
+PACK_CAPACITY_AH = 8.07
 
-# Same quantity, but for a voltage source that is actually accurate.
-#
-# The 13.0 above exists solely to cancel the Rosmaster ADC's gain error -- it is
-# "what a full pack reads *through that ADC*", not a real pack voltage.  The
-# INA226 added 2026-08-15 measures the pack directly (1.25 mV LSB, +/-1%), so
-# feeding its readings into a curve stretched for the Rosmaster would shift the
-# whole gauge low.  This is the 3S Li-ion nameplate: 4.20 V/cell * 3.
-#
-# Measured off-charger by the INA226 on 2026-08-15 plus the operator's own
-# observations, which together rule out the 12.6 V 3S Li-ion nameplate: the pack
-# sat at 12.82 V while *delivering* 1.37 A with no charger attached, which a
-# 12.6 V-full pack cannot do.
-#
-# Reported full charge is 13.1-13.2 V and the robot cuts out at 11.7-11.8 V, so
-# both ends are pinned from observation rather than assumed from a chemistry.
-PACK_FULL_V_INA226 = 13.15
+# Endpoints of the measured curve.  Both are observations, not nameplate.
+PACK_FULL_V = 13.16
+PACK_EMPTY_V = 10.44
 
-# ...and the empty point, which is the half that cannot be derived.
-#
-# The per-cell table's 0% sits at 3.20 V/cell = 76% of full.  This pack dies at
-# 11.75/13.15 = 89% of full, so scaling by the full voltage alone would put 0%
-# near 10.0 V and still show ~35% at the moment the robot shuts off.  Supplying
-# both ends switches _pack_to_cell to a two-point affine map instead.
-#
-# Slightly conservative on purpose: 11.7-11.8 V is observed *under load*, so the
-# true open-circuit floor is a little higher and the gauge reaches 0% just
-# before the robot quits rather than after.
-PACK_EMPTY_V_INA226 = 11.75
+# The INA226 measures the pack directly and is the source of the table, so for
+# it the endpoints are simply the table's own.  Names kept for the call site in
+# server_x3.py; passing them is now a no-op re-anchor rather than a correction.
+PACK_FULL_V_INA226 = PACK_FULL_V
+PACK_EMPTY_V_INA226 = PACK_EMPTY_V
 
-# Per-cell rest-voltage -> SoC for a typical 18650 NMC cell.  Sorted ascending.
-# Kept per-cell so PACK_FULL_V (and CELLS) reposition the curve without anyone
-# having to re-derive thirteen pack voltages by hand.
-_OCV_TABLE_CELL = (
-    (3.20,   0.0),
-    (3.30,   3.0),
-    (3.40,   6.0),
-    (3.50,  11.0),
-    (3.60,  18.0),
-    (3.68,  26.0),
-    (3.73,  34.0),
-    (3.80,  45.0),
-    (3.87,  55.0),
-    (3.95,  67.0),
-    (4.00,  76.0),
-    (4.10,  90.0),
-    (4.20, 100.0),
+# Open-circuit *pack* voltage -> SoC percent, ascending.
+#
+# Built by binning the full-cycle trace on coulomb-counted SoC and taking the
+# median sag-compensated voltage in each bin (see the fit in the commit that
+# introduced this).  Chemistry-independent by construction: it maps what this
+# sensor reads to how much charge was actually left, so it stays valid even if
+# the voltage reading carries a gain error.
+#
+# The top of the table is deliberately coarse.  Between 80% and 100% the real
+# data spans 40 mV with non-monotonic noise inside it; pretending to resolve
+# 85 from 95 there would be fabrication.  The coulomb counter carries that
+# region, and the OCV weighting below correctly reports near-zero confidence.
+_OCV_TABLE_PACK = (
+    (10.44,   0.0),
+    (10.98,   1.0),
+    (11.49,   2.0),
+    (11.83,   3.0),
+    (12.25,   5.0),
+    (12.43,   7.0),
+    (12.52,  10.0),
+    (12.60,  15.0),
+    (12.73,  20.0),
+    (12.81,  25.0),
+    (12.86,  30.0),
+    (12.92,  40.0),
+    (12.96,  50.0),
+    (12.99,  60.0),
+    (13.06,  70.0),
+    (13.12,  80.0),
+    (13.16, 100.0),
 )
 
-# Internal resistance of the pack plus wiring and the Rosmaster's shunt path.
-# Used only to undo load sag: V_oc ~= V_terminal + I * R_INT.
+# Internal resistance of the pack plus wiring, used to undo load sag:
+# V_oc ~= V_terminal + I * R_INT.
 #
-# Measured 2026-08-09 via scripts/calibrate_battery.py: spinning in place pulled
-# the reported voltage from 13.0 to 12.9 while the server estimated 6.5 A, i.e.
-# 0.10 V / 6.5 A.  A generic 0.12 was badly wrong here -- it would have invented
-# ~0.7 V of compensation against a real 0.1 V sag, inflating SoC by tens of
-# points whenever the robot moved.
+# Re-measured 2026-08-16 by regressing short-timescale voltage deviations
+# against current deviations across the full cycle (n=1999, R^2=0.49):
+# 0.0558 ohm.  The previous 0.015 was fitted against the *fabricated* current
+# estimate (`0.5 + avg_pwr*6.0`) and is withdrawn along with it -- notably, the
+# old observation "13.0 -> 12.9 V while spinning" gives ~0.05 ohm once the real
+# current draw (~2 A above idle, not the imagined 6.5 A) is used, so the two
+# measurements agree.
 #
-# Two caveats.  The 6.5 A is the server's *estimate* from commanded motor power,
-# not a measurement; but since the compensation term is I_est * R_INT and R_INT
-# was fitted using that same I_est, the product is right at this operating point
-# even though neither factor is individually trustworthy.  And 0.10 V is a
-# single ADC code, so the true sag is somewhere in 0.05-0.15 V -- treat this as
-# "small", not as three significant figures.  It was also measured on a full
-# pack, which is the stiffest a pack ever is; a depleted one will sag more.
-R_INT_OHMS = 0.015
+# Caveat worth respecting: the regression only saw +/-0.075 A of natural load
+# variation, so extrapolating to a 6 A drive current is not supported by this
+# data.  That is exactly why the sag term is clamped and why the OCV correction
+# is down-weighted under load rather than trusted.
+R_INT_OHMS = 0.0558
 
-# Sag correction is clamped so a bad current estimate cannot invent charge.
-# Sized against the measurement above (~0.1 V at full tilt) with headroom for a
-# more depleted pack, rather than the arbitrary 0.8 V this started at.
+# Sag correction ceiling.  At the measured resistance this is reached around
+# 5.4 A; beyond that the estimate simply reads slightly pessimistic, which is
+# the safe direction.
 MAX_SAG_COMP_V = 0.30
 
-# EMA time constant for the voltage filter, seconds.  Long enough to average
-# away the 0.1 V quantisation step across many 10 Hz samples, short enough to
-# follow a real discharge.
+# EMA time constant for the voltage and current filters, seconds.
 TAU_S = 12.0
 
-# A jump of this many SoC points above the running estimate means the pack is on
-# the charger (or was swapped), so the monotonic clamp is released.
-CHARGE_DETECT_PCT = 5.0
+# --- OCV trust model -------------------------------------------------------
+# How wrong the open-circuit voltage estimate plausibly is, in volts.  This is
+# not sensor noise (the INA226's LSB is 1.25 mV) but residual sag error: the
+# uncertainty in R_INT times a realistic current, plus pack relaxation.
+OCV_VOLTAGE_UNCERTAINTY_V = 0.03
 
-# ...and must persist for this many consecutive updates before it is believed.
-CHARGE_DETECT_SAMPLES = 30
+# Standing uncertainty of the coulomb counter itself, in SoC points.  The two
+# estimates are combined by relative variance (the scalar Kalman gain), so this
+# is the yardstick the OCV estimate has to beat.  One point is about what the
+# INA226's ~1% current error accumulates over several hours at idle draw.
+#
+# Variance weighting rather than a linear roll-off matters here: it squares the
+# penalty for a flat curve, which turns the chemistry's knee into a sharp
+# handover instead of a gentle blend.  Across the pack it yields roughly
+#   11.5 V -> 0.99    12.45 V -> 0.53    12.9 V -> 0.04    13.14 V -> 0.004
+# i.e. the curve governs the endgame and the counter is left alone above it.
+OCV_TOLERANCE_PCT = 1.0
 
-
-def _pack_to_cell(volts: float, pack_full_v: float | None = None,
-                  pack_empty_v: float | None = None) -> float:
-    """Scale a reported pack voltage onto the per-cell curve.
-
-    Two modes:
-
-    * **Gain only** (``pack_empty_v`` is None) -- ``pack_full_v`` is defined to
-      sit at 4.20 V/cell, so a pack that reads high by a constant gain still
-      lands on the right part of the curve.  This is the Rosmaster ADC case,
-      where the error genuinely is a gain error through the whole range.
-    * **Two-point** (``pack_empty_v`` given) -- the voltage axis is mapped
-      affinely so that full lands on the table's top cell voltage and empty on
-      its bottom one.  Use this when both ends are known by observation and the
-      span between them does not match the table's own, which is the INA226
-      case: this pack's usable range is 89% of full, not the table's 76%.
-
-    Resolved at call time rather than as default arguments so that patching the
-    module-level :data:`PACK_FULL_V` still repositions the curve.
-    """
-    full = PACK_FULL_V if pack_full_v is None else pack_full_v
-    if pack_empty_v is None:
-        return volts * (4.20 * CELLS / full) / CELLS
-    cell_lo = _OCV_TABLE_CELL[0][0]
-    cell_hi = _OCV_TABLE_CELL[-1][0]
-    span = full - pack_empty_v
-    if span <= 0:
-        return cell_lo
-    return cell_lo + (volts - pack_empty_v) * (cell_hi - cell_lo) / span
+# Time constant for the OCV correction at full confidence, seconds.  Slow
+# enough that a transient cannot yank the gauge, fast enough that the endgame
+# is governed by the curve rather than by accumulated integration error.
+TAU_CORRECT_S = 600.0
 
 
 def voltage_to_soc(volts: float, pack_full_v: float | None = None,
                    pack_empty_v: float | None = None) -> float:
-    """Interpolate an open-circuit pack voltage onto the SoC curve."""
-    v = _pack_to_cell(volts, pack_full_v, pack_empty_v)
-    if v <= _OCV_TABLE_CELL[0][0]:
+    """Interpolate an open-circuit pack voltage onto the measured SoC curve.
+
+    ``pack_full_v`` / ``pack_empty_v`` optionally re-anchor the voltage axis
+    affinely onto the table's own endpoints, for a voltage source that reads
+    the same pack through a different gain and offset.  Both must be supplied
+    for the re-anchor to happen; the default is to use the table directly.
+    """
+    v_lo_t, v_hi_t = _OCV_TABLE_PACK[0][0], _OCV_TABLE_PACK[-1][0]
+    if pack_full_v is not None and pack_empty_v is not None:
+        span = pack_full_v - pack_empty_v
+        if span <= 0:
+            return 0.0
+        volts = v_lo_t + (volts - pack_empty_v) * (v_hi_t - v_lo_t) / span
+
+    if volts <= v_lo_t:
         return 0.0
-    if v >= _OCV_TABLE_CELL[-1][0]:
+    if volts >= v_hi_t:
         return 100.0
-    for (v_lo, s_lo), (v_hi, s_hi) in zip(_OCV_TABLE_CELL, _OCV_TABLE_CELL[1:]):
-        if v <= v_hi:
-            frac = (v - v_lo) / (v_hi - v_lo)
-            return s_lo + frac * (s_hi - s_lo)
+    for (v_lo, s_lo), (v_hi, s_hi) in zip(_OCV_TABLE_PACK, _OCV_TABLE_PACK[1:]):
+        if volts <= v_hi:
+            return s_lo + (volts - v_lo) / (v_hi - v_lo) * (s_hi - s_lo)
     return 100.0
 
 
-class BatteryEstimator:
-    """Filtered, load-compensated SoC estimate.
+def ocv_sensitivity(volts: float) -> float:
+    """Local slope of the curve, in SoC percent per volt.
 
-    Call :meth:`update` with each voltage sample (cheap; safe at 10 Hz) and read
-    :attr:`percent` / :attr:`voltage_filtered` whenever telemetry is built.
+    Large means the pack is on its flat plateau and voltage says little; small
+    means a millivolt is meaningful.  Used to weight the OCV correction.
+    """
+    v_lo_t, v_hi_t = _OCV_TABLE_PACK[0][0], _OCV_TABLE_PACK[-1][0]
+    if volts <= v_lo_t:
+        # A pack this far down is unambiguously empty; report the steep bottom
+        # segment's slope so it is believed.
+        return (_OCV_TABLE_PACK[1][1] - _OCV_TABLE_PACK[0][1]) / \
+               (_OCV_TABLE_PACK[1][0] - _OCV_TABLE_PACK[0][0])
+    if volts >= v_hi_t:
+        # Above the top of the curve the reading is *not* trustworthy in the
+        # same way: over-reading is how sag compensation invents charge, and
+        # overstating a pack is the dangerous direction.  Report the flat top
+        # segment's slope, which yields near-zero confidence.
+        return (_OCV_TABLE_PACK[-1][1] - _OCV_TABLE_PACK[-2][1]) / \
+               (_OCV_TABLE_PACK[-1][0] - _OCV_TABLE_PACK[-2][0])
+    for (v_lo, s_lo), (v_hi, s_hi) in zip(_OCV_TABLE_PACK, _OCV_TABLE_PACK[1:]):
+        if volts <= v_hi:
+            dv = v_hi - v_lo
+            return (s_hi - s_lo) / dv if dv > 0 else float("inf")
+    return float("inf")
+
+
+def ocv_confidence(volts: float) -> float:
+    """How far to trust an OCV reading at this voltage, in 0..1.
+
+    Derived, not tuned.  The OCV estimate's standard deviation is the voltage
+    uncertainty times the local slope; weighting it against the counter's own
+    standard deviation by relative variance is the scalar Kalman gain,
+
+        w = sigma_counter^2 / (sigma_counter^2 + sigma_ocv^2)
+    """
+    sens = ocv_sensitivity(volts)
+    if not math.isfinite(sens) or OCV_TOLERANCE_PCT <= 0:
+        return 0.0
+    ratio = OCV_VOLTAGE_UNCERTAINTY_V * sens / OCV_TOLERANCE_PCT
+    return 1.0 / (1.0 + ratio * ratio)
+
+
+class BatteryEstimator:
+    """Coulomb-counted SoC, anchored by the OCV curve where the curve is sharp.
+
+    Call :meth:`update` with each voltage/current sample and read
+    :attr:`percent` whenever telemetry is built.  Persist :attr:`charge_ah`
+    across restarts and pass it back as ``initial_charge_ah``, otherwise every
+    restart re-seeds from the plateau and throws the estimate away.
     """
 
     def __init__(self, r_int: float = R_INT_OHMS, tau_s: float = TAU_S,
                  pack_full_v: float | None = None,
-                 pack_empty_v: float | None = None):
+                 pack_empty_v: float | None = None,
+                 capacity_ah: float | None = PACK_CAPACITY_AH,
+                 initial_charge_ah: float | None = None):
+        """``capacity_ah=None`` disables coulomb counting (OCV lookup only).
+
+        Pass None whenever the current reading is absent or synthesised -- with
+        no current sensor the integral either never moves (freezing the gauge
+        at its seed) or drifts on a fabricated number, both of which are worse
+        than the plain curve.  On this pack the curve alone is poor above the
+        knee, so this is a real degradation, not an equivalent path.
+        """
         self.r_int = r_int
         self.tau_s = tau_s
-        # None => follow the module-level PACK_FULL_V at call time.
         self.pack_full_v = pack_full_v
-        # None => gain-only scaling; set both to use the two-point map.
         self.pack_empty_v = pack_empty_v
+        self.capacity_ah = capacity_ah
+        self.charge_ah: float | None = initial_charge_ah
+        self._soc_ocv_only: float | None = None
         self._v_ema: float | None = None
         self._i_ema: float = 0.0
         self._last_t: float | None = None
-        self._soc: float | None = None
-        self._rise_count = 0
 
     # -- inputs -------------------------------------------------------------
-    def update(self, volts: float, current_a: float = 0.0, now: float | None = None) -> float:
-        """Feed one terminal-voltage sample.  Returns the current SoC percent.
+    def update(self, volts: float, current_a: float = 0.0,
+               now: float | None = None) -> float:
+        """Feed one terminal-voltage/current sample; returns SoC percent.
 
-        ``current_a`` is the estimated pack draw used for sag compensation; pass
-        0 when unknown and the estimate simply reads a little pessimistic while
-        the motors are running.
+        ``current_a`` is the measured pack draw: positive discharging, negative
+        charging.  With no current sensor pass 0 and the estimator degrades to
+        an uncompensated OCV lookup, which on this pack is poor above the knee
+        -- that degradation is inherent to the chemistry, not to this code.
         """
-        if not volts or volts <= 0.1:      # Rosmaster sends 0 before the first report
+        if not volts or volts <= 0.1:      # sensor sends 0 before the first read
             return self.percent
         now = time.monotonic() if now is None else now
 
-        # 1. EMA over the raw samples.  Averaging many quantised readings
-        #    recovers resolution below the 0.1 V LSB.
-        current_a = max(0.0, current_a)
         if self._v_ema is None or self._last_t is None:
             self._v_ema = volts
             self._i_ema = current_a
+            dt = 0.0
         else:
             dt = max(0.0, now - self._last_t)
             alpha = 1.0 - math.exp(-dt / self.tau_s) if self.tau_s > 0 else 1.0
             self._v_ema += alpha * (volts - self._v_ema)
-            # The current must be filtered on the *same* time constant: a raw
-            # sag term would jump the instant the motors start while the voltage
-            # EMA is still lagging, briefly inflating the estimate.
+            # Filtered on the *same* time constant as the voltage: a raw sag
+            # term would jump the instant the motors start while the voltage
+            # EMA still lagged, briefly inflating the estimate.
             self._i_ema += alpha * (current_a - self._i_ema)
         self._last_t = now
 
-        # 2. Undo load sag to approximate the open-circuit voltage.
-        sag = min(MAX_SAG_COMP_V, self._i_ema * self.r_int)
+        # 1. Undo load sag to approximate the open-circuit voltage.
+        sag = self._i_ema * self.r_int
+        sag = max(-MAX_SAG_COMP_V, min(MAX_SAG_COMP_V, sag))
         v_oc = self._v_ema + sag
+        soc_ocv = voltage_to_soc(v_oc, self.pack_full_v, self.pack_empty_v)
 
-        soc = voltage_to_soc(v_oc, self.pack_full_v, self.pack_empty_v)
+        # 1b. No current sensor: report the curve directly and stop here.
+        if self.capacity_ah is None:
+            self._soc_ocv_only = soc_ocv
+            return soc_ocv
 
-        # 3. A discharging pack's SoC only falls.  Without this the gauge
-        #    bounces up every time the robot stops and the pack recovers.
-        if self._soc is None:
-            self._soc = soc
-        elif soc < self._soc:
-            self._soc = soc
-            self._rise_count = 0
-        elif soc > self._soc + CHARGE_DETECT_PCT:
-            # Only re-home upward once the rise persists — a transient must not
-            # be mistaken for a charger or a pack swap.
-            self._rise_count += 1
-            if self._rise_count >= CHARGE_DETECT_SAMPLES:
-                self._soc = soc
-                self._rise_count = 0
-        else:
-            self._rise_count = 0
-        return self._soc
+        # 2. Seed the counter from the curve on the very first sample.  This is
+        #    the weakest moment for the estimate; restoring a persisted
+        #    charge_ah instead is strongly preferred.
+        if self.charge_ah is None:
+            self.charge_ah = self.capacity_ah * soc_ocv / 100.0
+            return self.percent
+
+        # 3. Integrate the measured current.  Discharge removes charge; a
+        #    negative reading (charger attached) adds it back, so no separate
+        #    charge-detection heuristic is needed any more.
+        if dt > 0:
+            self.charge_ah -= current_a * dt / 3600.0
+
+        # 4. Pull toward the curve, weighted by how much the curve is worth
+        #    here.  On the plateau the weight is ~0.02 and this is a no-op over
+        #    a whole session; below the knee it approaches 1 and dominates.
+        if dt > 0:
+            conf = ocv_confidence(v_oc)
+            if conf > 0.0 and TAU_CORRECT_S > 0:
+                gain = (1.0 - math.exp(-dt / TAU_CORRECT_S)) * conf
+                target = self.capacity_ah * soc_ocv / 100.0
+                self.charge_ah += gain * (target - self.charge_ah)
+
+        self.charge_ah = max(0.0, min(self.capacity_ah, self.charge_ah))
+        return self.percent
 
     # -- outputs ------------------------------------------------------------
     @property
     def percent(self) -> float:
-        return 100.0 if self._soc is None else max(0.0, min(100.0, self._soc))
+        if self.capacity_ah is None:
+            return 100.0 if self._soc_ocv_only is None else self._soc_ocv_only
+        if self.charge_ah is None or self.capacity_ah <= 0:
+            return 100.0
+        return max(0.0, min(100.0, 100.0 * self.charge_ah / self.capacity_ah))
 
     @property
     def voltage_filtered(self) -> float:
-        return 12.6 if self._v_ema is None else self._v_ema
+        return PACK_FULL_V if self._v_ema is None else self._v_ema
+
+    @property
+    def minutes_remaining(self) -> float | None:
+        """Runtime left at the currently filtered draw, or None if unknown."""
+        if self.charge_ah is None or self._i_ema <= 0.05:
+            return None
+        return self.charge_ah / self._i_ema * 60.0
 
     @property
     def ready(self) -> bool:
-        return self._soc is not None
+        if self.capacity_ah is None:
+            return self._soc_ocv_only is not None
+        return self.charge_ah is not None

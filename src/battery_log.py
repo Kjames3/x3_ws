@@ -18,6 +18,7 @@ along with.
 from __future__ import annotations
 
 import os
+import json
 import time
 import glob
 import logging
@@ -129,3 +130,92 @@ class BatteryLogger:
             except Exception:
                 pass
             self._fh = None
+
+
+class SoCState:
+    """Persist the coulomb counter across restarts.
+
+    Coulomb counting has no way to recover its own zero, and on this pack the
+    OCV curve cannot supply one above the knee -- the whole 30-100% band is
+    300 mV wide.  So a server restart mid-session would otherwise reset the
+    gauge to whatever the plateau happens to imply, which is the exact error
+    this estimator exists to avoid.  The x3_server restarts often enough
+    (nine traces across two days) that this is the common case, not an edge one.
+
+    Kept here rather than in ``battery.py`` so that module stays free of I/O.
+    """
+
+    #: Beyond this age the stored charge is not trusted -- the pack may have
+    #: been charged, swapped, or simply relaxed far from where we left it.
+    MAX_AGE_S = 12 * 3600.0
+
+    #: A pack whose voltage came back up by more than this while we were not
+    #: looking gained charge from somewhere, so the stored value is stale.
+    #: Sized above ordinary post-load relaxation on the plateau.
+    CHARGE_DETECT_V = 0.15
+
+    def __init__(self, path: str, min_write_interval_s: float = 60.0):
+        self.path = path
+        self.min_write_interval_s = min_write_interval_s
+        self._last_write: float | None = None
+        self._failed = False
+
+    def load(self, voltage: float, now: float | None = None) -> float | None:
+        """Return a usable stored ``charge_ah``, or None to re-seed from OCV.
+
+        ``voltage`` is the pack voltage observed right now, used to notice that
+        the pack was charged while the server was down.
+        """
+        now = time.time() if now is None else now
+        try:
+            with open(self.path) as fh:
+                data = json.load(fh)
+            charge = float(data["charge_ah"])
+            stamp = float(data["epoch_s"])
+            stored_v = float(data["voltage_v"])
+        except FileNotFoundError:
+            return None
+        except Exception as e:
+            logger.warning(f"SoCState: ignoring unreadable state file: {e}")
+            return None
+
+        age = now - stamp
+        if age < 0 or age > self.MAX_AGE_S:
+            logger.info(f"SoCState: stored charge is {age / 3600.0:.1f} h old, re-seeding from OCV")
+            return None
+        if voltage > stored_v + self.CHARGE_DETECT_V:
+            logger.info(
+                f"SoCState: pack rose {voltage - stored_v:.2f} V while down "
+                f"(charged or swapped), re-seeding from OCV"
+            )
+            return None
+        logger.info(f"SoCState: restored {charge:.3f} Ah from {age / 60.0:.1f} min ago")
+        return charge
+
+    def save(self, charge_ah: float, voltage: float, now: float | None = None) -> bool:
+        """Store the counter, at most once per ``min_write_interval_s``.
+
+        Written via a temp file and rename so a power cut cannot leave a
+        half-written state file behind -- the one failure mode that would make
+        this worse than having no persistence at all.
+        """
+        if self._failed or charge_ah is None:
+            return False
+        now = time.time() if now is None else now
+        if self._last_write is not None and (now - self._last_write) < self.min_write_interval_s:
+            return False
+        tmp = self.path + ".tmp"
+        try:
+            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+            with open(tmp, "w") as fh:
+                json.dump({"charge_ah": round(charge_ah, 4), "epoch_s": round(now, 3),
+                           "voltage_v": round(voltage, 4)}, fh)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, self.path)
+            self._last_write = now
+            return True
+        except Exception as e:
+            logger.error(f"SoCState: disabled after write error: {e}")
+            self._failed = True
+            return False

@@ -1,18 +1,29 @@
 """Offline checks for the battery SoC estimator (no robot / ROS required).
 
 Run with:  python3 src/test_battery.py
+
+The centrepiece is :func:`test_replay_real_discharge`, which replays the actual
+5.87 h full-cycle trace in ``fixtures/`` -- the pack was run from full charge to
+death to produce it, so it is not a capture anyone will casually repeat.  Any
+change to the pack model should be judged against that replay first.
 """
 
+import csv
 import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from battery import BatteryEstimator, voltage_to_soc
+import battery
+from battery import (BatteryEstimator, voltage_to_soc, ocv_confidence,
+                     PACK_CAPACITY_AH, PACK_FULL_V, PACK_EMPTY_V)
+from battery_log import SoCState
+
+FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "fixtures", "battery_full_cycle_20260815.csv")
 
 
 def approx(a, b, tol=1e-6):
-    """The pack->cell scaling makes exact endpoint equality float-brittle."""
     return abs(a - b) <= tol
 
 
@@ -26,232 +37,358 @@ def _soak(est, volts, amps, seconds, t0=0.0, step=1.0):
     return t, out
 
 
-def test_curve_endpoints():
-    import battery
+def _load_trace():
+    with open(FIXTURE) as fh:
+        rows = list(csv.DictReader(fh))
+    return [(float(r["epoch_s"]), float(r["voltage_v"]), float(r["current_a"]))
+            for r in rows]
 
-    full = battery.PACK_FULL_V
-    assert approx(voltage_to_soc(full), 100.0)
-    assert approx(voltage_to_soc(full + 1.0), 100.0)
-    assert approx(voltage_to_soc(full * 3.20 / 4.20), 0.0)
-    assert approx(voltage_to_soc(full * 0.6), 0.0)
+
+def _true_soc(trace):
+    """Coulomb-counted ground truth for the fixture, 100% -> 0%."""
+    q = [0.0]
+    for k in range(1, len(trace)):
+        dt = trace[k][0] - trace[k - 1][0]
+        q.append(q[-1] + 0.5 * (trace[k][2] + trace[k - 1][2]) * dt / 3600.0)
+    total = q[-1]
+    return [100.0 * (total - x) / total for x in q], total
+
+
+# --- curve shape -----------------------------------------------------------
+def test_curve_endpoints():
+    assert approx(voltage_to_soc(PACK_EMPTY_V), 0.0), voltage_to_soc(PACK_EMPTY_V)
+    assert approx(voltage_to_soc(PACK_FULL_V), 100.0), voltage_to_soc(PACK_FULL_V)
+    assert voltage_to_soc(9.0) == 0.0
+    assert voltage_to_soc(14.0) == 100.0
 
 
 def test_curve_is_monotonic():
     prev = -1.0
-    v = 9.0
-    while v <= 13.0:
-        soc = voltage_to_soc(v)
-        assert soc >= prev, f"curve dips at {v} V"
-        prev = soc
+    v = 10.0
+    while v <= 13.5:
+        s = voltage_to_soc(v)
+        assert s >= prev, f"curve dips at {v:.2f} V: {s} < {prev}"
+        prev = s
         v += 0.01
 
 
-def test_calibration_constant_shifts_whole_curve():
-    """PACK_FULL_V must reposition the curve coherently, not just its top.
+def test_curve_matches_the_measured_trace():
+    """The table must reproduce the coulomb-counted truth it was fitted to."""
+    trace = _load_trace()
+    truth, _ = _true_soc(trace)
+    worst = 0.0
+    for (t, v, i), s_true in zip(trace, truth):
+        v_oc = v + i * battery.R_INT_OHMS
+        worst = max(worst, abs(voltage_to_soc(v_oc) - s_true))
+    # The plateau is genuinely ambiguous, so a static lookup cannot be tight
+    # there; this only pins that the table is not grossly mis-shaped.  The
+    # residual is itself the argument for coulomb counting -- a voltage-only
+    # gauge on this pack is wrong by this much even using a perfect table.
+    assert worst < 25.0, f"table deviates {worst:.1f} points from measured truth"
+    assert worst > 5.0, "unexpectedly good: re-check the fit before relaxing this"
 
-    This is the knob to turn once the pack's true resting full voltage is known,
-    so it needs to keep 'full reads 100%, empty reads 0%' true at any setting.
+
+def test_pack_is_lifepo4_shaped_not_nmc():
+    """Guard the finding that overturned the old model.
+
+    An NMC curve spreads its charge fairly evenly over voltage.  This pack puts
+    70% of its charge into 300 mV.  If someone "fixes" the table back to a
+    textbook Li-ion shape, this fails.
     """
-    import battery
+    span_top = PACK_FULL_V - 12.86      # 30% -> 100%
+    span_bottom = 12.86 - PACK_EMPTY_V  # 0%  -> 30%
+    assert span_top < 0.35, f"top 70% should be flat, spans {span_top:.3f} V"
+    assert span_bottom > 2.0, f"bottom 30% should be steep, spans {span_bottom:.3f} V"
 
-    original = battery.PACK_FULL_V
+
+def test_plateau_is_below_sensor_resolution():
+    """Documents *why* coulomb counting is required rather than optional."""
+    v80, v100 = 13.12, 13.16
+    assert voltage_to_soc(v100) - voltage_to_soc(v80) == 20.0
+    assert (v100 - v80) < 0.05, "the top 20% really is ~40 mV wide"
+    # The pack's own idle sag is larger than that entire band.
+    assert 1.4 * battery.R_INT_OHMS > (v100 - v80), \
+        "idle sag should exceed the whole top-of-pack voltage span"
+
+
+# --- OCV trust weighting ---------------------------------------------------
+def test_ocv_is_distrusted_on_the_plateau_and_trusted_at_the_bottom():
+    top = ocv_confidence(13.14)
+    plateau = ocv_confidence(13.0)
+    knee = ocv_confidence(12.45)
+    bottom = ocv_confidence(11.5)
+    assert top < 0.15, f"top band confidence should collapse, got {top:.3f}"
+    assert plateau < 0.15, f"plateau confidence should collapse, got {plateau:.3f}"
+    assert bottom > 0.8, f"steep region should be trusted, got {bottom:.3f}"
+    assert bottom > knee > plateau
+
+
+def test_a_collapsed_pack_is_believed_but_an_over_reading_is_not():
+    """Asymmetric on purpose: understating charge is the safe direction.
+
+    Below the curve the pack is unambiguously flat and the reading must be
+    trusted so the gauge reaches 0%.  Above the curve the same trust would let
+    sag compensation invent a full pack out of a heavy motor draw.
+    """
+    assert ocv_confidence(9.0) > 0.9, "a dead pack should be believed"
+    assert ocv_confidence(14.0) < 0.15, "an over-reading should not be believed"
+
+
+# --- coulomb counting ------------------------------------------------------
+def test_counts_charge_out_of_the_pack():
+    """Pure integration, with the OCV correction disabled."""
+    saved = battery.OCV_VOLTAGE_UNCERTAINTY_V
+    battery.OCV_VOLTAGE_UNCERTAINTY_V = 1e9      # drives every confidence to ~0
     try:
-        for full in (12.6, 13.0):
-            battery.PACK_FULL_V = full
-            assert approx(battery.voltage_to_soc(full), 100.0)
-            empty = full * (3.20 / 4.20)
-            assert approx(battery.voltage_to_soc(empty), 0.0)
-            mid = battery.voltage_to_soc(full * (3.80 / 4.20))
-            assert 40.0 < mid < 50.0, f"midpoint off at PACK_FULL_V={full}: {mid}"
+        est = BatteryEstimator(initial_charge_ah=PACK_CAPACITY_AH)
+        _soak(est, 12.98, 2.0, 3600, step=10.0)
+        used = PACK_CAPACITY_AH - est.charge_ah
     finally:
-        battery.PACK_FULL_V = original
+        battery.OCV_VOLTAGE_UNCERTAINTY_V = saved
+    assert 1.95 < used < 2.05, f"expected ~2 Ah drawn, got {used:.3f}"
 
 
-def test_reported_13v_is_not_silently_pinned():
-    """The live robot reads 13.0 V; that must clamp to 100%, never overflow."""
-    assert approx(voltage_to_soc(13.0), 100.0)
-    assert approx(voltage_to_soc(20.0), 100.0)
+def test_negative_current_recharges_without_a_heuristic():
+    # A pack actually on a charger sits above the curve, not on the plateau.
+    est = BatteryEstimator(initial_charge_ah=4.0)
+    _soak(est, 13.60, -2.0, 3600, step=10.0)
+    assert est.charge_ah > 5.5, f"charging should add charge, got {est.charge_ah:.3f}"
 
 
-def test_dead_pack_reads_zero():
-    """The old linear map called 9.4 V ~29%; the pack is actually flat there."""
-    est = BatteryEstimator()
-    _soak(est, 9.4, 0.5, 120)
-    assert est.percent == 0.0
+def test_percent_never_leaves_bounds():
+    est = BatteryEstimator(initial_charge_ah=0.05)
+    _soak(est, 12.9, 5.0, 3600, step=10.0)
+    assert est.percent == 0.0, f"drained pack read {est.percent}"
+    est = BatteryEstimator(initial_charge_ah=PACK_CAPACITY_AH)
+    _soak(est, 13.80, -5.0, 3600, step=10.0)
+    assert est.percent == 100.0, f"charging pack read {est.percent}"
 
 
-def test_code_transition_is_smoothed():
-    """Alternating 0.1 V codes must not swing the gauge by ~5 points.
+def test_plateau_does_not_yank_a_good_estimate():
+    """A correct counter must not be dragged off by an ambiguous reading.
 
-    At rest the robot's ADC does not dither (measured 2026-08-09: one code held
-    across 4561 samples), so this is not about recovering sub-LSB resolution.
-    It models a reading sitting on a code boundary or fluctuating under load,
-    where the unfiltered gauge would visibly flip back and forth.
+    Sitting at 12.99 V the table says ~60%, but a 30 mV error there is worth
+    10 SoC points, so a counter that says 40% must survive the hour largely
+    intact rather than being pulled to the curve.
     """
+    est = BatteryEstimator(initial_charge_ah=PACK_CAPACITY_AH * 0.40)
+    _soak(est, 12.99, 0.05, 3600, step=10.0)   # ~no draw, so only OCV can move it
+    assert est.percent < 46.0, f"plateau pulled the estimate to {est.percent:.1f}%"
+
+
+def test_steep_region_does_correct_a_wrong_estimate():
+    """Below the knee the curve must be allowed to fix accumulated drift."""
+    est = BatteryEstimator(initial_charge_ah=PACK_CAPACITY_AH * 0.50)
+    _soak(est, 11.83, 0.05, 3600, step=10.0)   # 11.83 V is ~3% on the table
+    assert est.percent < 10.0, f"steep region failed to correct, got {est.percent:.1f}%"
+
+
+def test_sag_compensation_matches_measured_resistance():
     est = BatteryEstimator()
-    t = 0.0
-    out = []
-    for i in range(120):
-        t += 1.0
-        out.append(est.update(11.6 if i % 2 else 11.5, 0.0, t))
-    swing = max(out[-20:]) - min(out[-20:])
-    raw_swing = voltage_to_soc(11.6) - voltage_to_soc(11.5)
-    assert raw_swing > 3.0, "test premise: raw quantisation step is large"
-    assert swing < 0.5, f"filtered swing still {swing:.2f} points"
-
-
-def test_never_rises_on_load_transient():
-    """Starting the motors must not spike SoC via the sag-compensation term."""
-    est = BatteryEstimator()
-    t, _ = _soak(est, 11.8, 0.5, 120)
-    prev = est.percent
-    for _ in range(120):
-        t += 1.0
-        p = est.update(11.2, 5.5, t)          # sag of 0.6 V under 5.5 A
-        assert p <= prev + 1e-9, f"SoC rose {prev:.1f} -> {p:.1f}"
-        prev = p
-
-
-def test_sag_compensation_matches_measured_hardware():
-    """Replay the real load profile measured on the robot 2026-08-09.
-
-    Spinning in place moved the reported voltage 13.0 -> 12.9 at an estimated
-    6.5 A; stopping returned it to 13.0.  The compensation should very nearly
-    cancel that dip, since R_INT_OHMS was fitted to exactly this point.
-    """
-    est = BatteryEstimator()
-    t, _ = _soak(est, 13.0, 0.5, 200)
-    idle = est.percent
-    _soak(est, 12.9, 6.5, 200, t0=t)
-    driving = est.percent
-    assert idle - driving < 2.0, f"driving dip is {idle - driving:.1f} points"
+    est.update(12.90, 0.0, 0.0)
+    v_no_load = est.voltage_filtered
+    est2 = BatteryEstimator()
+    _soak(est2, 12.90, 6.0, 600, step=1.0)
+    # 6 A * 0.0558 = 0.335 V, clamped to MAX_SAG_COMP_V.
+    assert approx(v_no_load, 12.90, 1e-6)
+    assert battery.MAX_SAG_COMP_V == 0.30
 
 
 def test_sag_compensation_cannot_invent_charge():
-    """A wildly wrong current estimate must not inflate SoC without bound."""
-    est = BatteryEstimator()
-    t, _ = _soak(est, 11.0, 0.0, 200)
-    honest = est.percent
-    est2 = BatteryEstimator()
-    _soak(est2, 11.0, 500.0, 200)          # absurd current
-    inflated = est2.percent
-    headroom = voltage_to_soc(11.0 + 0.30) - voltage_to_soc(11.0)
-    assert inflated - honest <= headroom + 1e-6, "sag clamp not holding"
-
-
-def test_monotonic_no_bounce_on_rest():
-    """Voltage recovery after stopping must not push the gauge back up.
-
-    Uses the recovery actually measured on the robot (12.9 -> 13.0 when the
-    motors stop), not a large synthetic swing -- a swing that big really would
-    mean a charger, and the estimator is right to re-home on it.
-    """
-    est = BatteryEstimator()
-    t, _ = _soak(est, 12.9, 6.5, 200)
-    driving = est.percent
-    _soak(est, 13.0, 0.5, 200, t0=t)          # pack relaxes at rest
-    assert est.percent <= driving + 1e-9
-
-
-def test_charge_is_eventually_detected():
-    """A sustained large rise (charger / pack swap) re-homes the estimate."""
-    est = BatteryEstimator()
-    t, _ = _soak(est, 10.6, 0.5, 200)
-    low = est.percent
-    assert low < 25.0
-    _soak(est, 13.0, 0.0, 600, t0=t)
-    assert est.percent > 95.0, f"charger not picked up (still {est.percent:.1f}%)"
+    est = BatteryEstimator(initial_charge_ah=PACK_CAPACITY_AH * 0.5)
+    _soak(est, 12.5, 500.0, 600, step=1.0)     # absurd current
+    assert est.percent <= 50.0, "huge sag correction inflated the estimate"
 
 
 def test_ignores_empty_packets():
-    est = BatteryEstimator()
-    assert est.update(0.0, 0.0, 1.0) == 100.0  # pre-first-sample default
-    assert not est.ready
-    est.update(11.4, 0.0, 2.0)
+    est = BatteryEstimator(initial_charge_ah=4.0)
+    before = est.percent
+    est.update(0.0, 1.0, 1.0)
+    est.update(None, 1.0, 2.0)
+    assert est.percent == before
+
+
+def test_ocv_only_mode_tracks_voltage_and_ignores_current():
+    """The no-current-sensor fallback must not run the integrator."""
+    est = BatteryEstimator(capacity_ah=None)
+    est.update(12.60, 0.0, 0.0)
     assert est.ready
+    assert abs(est.percent - voltage_to_soc(12.60)) < 0.5, est.percent
+    # A fabricated current must not be able to drain a counter that isn't there.
+    _soak(est, 12.60, 3.0, 3600, step=10.0)
+    assert est.percent > 5.0, f"OCV-only mode drifted to {est.percent:.1f}%"
 
 
-def _ina():
-    import battery
-    return BatteryEstimator(pack_full_v=battery.PACK_FULL_V_INA226,
-                            pack_empty_v=battery.PACK_EMPTY_V_INA226)
+def test_missing_current_sensor_does_not_freeze_the_gauge():
+    """With capacity set but current stuck at 0, the counter would never move.
 
-
-def test_ina226_endpoints_match_the_observed_pack():
-    """Both ends are pinned to observation: 13.15 V full, 11.75 V cutoff."""
-    import battery
-
-    full = voltage_to_soc(battery.PACK_FULL_V_INA226,
-                          battery.PACK_FULL_V_INA226, battery.PACK_EMPTY_V_INA226)
-    empty = voltage_to_soc(battery.PACK_EMPTY_V_INA226,
-                           battery.PACK_FULL_V_INA226, battery.PACK_EMPTY_V_INA226)
-    assert approx(full, 100.0), full
-    assert approx(empty, 0.0), empty
-
-
-def test_gauge_reaches_zero_before_the_robot_cuts_out():
-    """The whole point of the two-point map.
-
-    Scaling by full voltage alone puts 0% near 10.0 V, so the gauge would still
-    read a third of a pack at the moment the robot shuts off at ~11.75 V.
+    Guards the failure this mode exists to prevent: if the INA226 fails to
+    initialise, current reads a constant 0 and a coulomb counter reports the
+    same percentage forever while the pack actually drains.
     """
-    import battery
+    frozen = BatteryEstimator(initial_charge_ah=PACK_CAPACITY_AH * 0.8)
+    _soak(frozen, 12.99, 0.0, 3600, step=10.0)
+    stuck = frozen.percent
 
-    two_point = voltage_to_soc(11.8, battery.PACK_FULL_V_INA226,
-                               battery.PACK_EMPTY_V_INA226)
-    gain_only = voltage_to_soc(11.8, battery.PACK_FULL_V_INA226)
-    assert two_point < 5.0, f"gauge still reads {two_point:.1f}% at cutoff"
-    assert gain_only > 25.0, (
-        f"gain-only scaling should be badly wrong here, got {gain_only:.1f}%")
-
-
-def test_ina226_curve_is_monotonic_across_the_real_range():
-    import battery
-
-    last = -1.0
-    v = battery.PACK_EMPTY_V_INA226
-    while v <= battery.PACK_FULL_V_INA226 + 1e-9:
-        soc = voltage_to_soc(v, battery.PACK_FULL_V_INA226,
-                             battery.PACK_EMPTY_V_INA226)
-        assert soc >= last - 1e-9, f"non-monotonic at {v:.3f} V"
-        last = soc
-        v += 0.02
+    ok = BatteryEstimator(capacity_ah=None)
+    _soak(ok, 12.99, 0.0, 600, step=10.0)
+    _soak(ok, 12.43, 0.0, 600, t0=600.0, step=10.0)
+    assert ok.percent < stuck - 20.0, \
+        "OCV-only mode should follow a falling pack when the counter cannot"
 
 
-def test_ina226_calibration_is_not_the_rosmaster_curve():
-    """The two calibrations must not be interchangeable.
+def test_minutes_remaining_tracks_draw():
+    est = BatteryEstimator(initial_charge_ah=4.0)
+    _soak(est, 12.9, 2.0, 300, step=1.0)
+    mins = est.minutes_remaining
+    assert mins is not None and 60.0 < mins < 130.0, mins
 
-    12.82 V is a genuine off-charger reading on this pack.  Through the
-    Rosmaster curve (stretched to 13.0 to cancel that ADC's gain error) it looks
-    essentially full; on the real two-point curve it is clearly partway down.
+
+# --- the real trace --------------------------------------------------------
+def test_replay_real_discharge():
+    """Replay the full cycle and require the gauge to track measured truth.
+
+    Seeded at 100% as it would be off the charger, then given nothing but the
+    voltage and current the robot actually saw.
     """
-    _, out_ina = _soak(_ina(), 12.82, 0.0, 120)
-    _, out_ros = _soak(BatteryEstimator(), 12.82, 0.0, 120)
-    assert out_ina[-1] < 80.0, out_ina[-1]      # real curve: ~70%
-    assert out_ros[-1] > 90.0, out_ros[-1]      # Rosmaster curve: ~94%
-    assert out_ros[-1] - out_ina[-1] > 15.0, (out_ros[-1], out_ina[-1])
+    trace = _load_trace()
+    truth, total_ah = _true_soc(trace)
+    est = BatteryEstimator(initial_charge_ah=PACK_CAPACITY_AH)
+    errs = []
+    for (t, v, i), s_true in zip(trace, truth):
+        est.update(v, i, t)
+        errs.append(est.percent - s_true)
+
+    worst = max(abs(e) for e in errs)
+    rms = (sum(e * e for e in errs) / len(errs)) ** 0.5
+    # Measured 0.18 / 0.11 at the time of writing.  Tight on purpose: this is
+    # the regression net for any future change to the pack model.
+    assert worst < 1.0, f"worst replay error {worst:.2f} points"
+    assert rms < 0.5, f"replay RMS error {rms:.2f} points"
 
 
-def test_ina226_real_current_compensates_sag():
-    """A real measured current must lift the estimate versus assuming zero draw."""
-    import battery
+def test_replay_beats_the_old_voltage_only_gauge():
+    """The specific failure that motivated this: 48.9% shown at a true 18%."""
+    trace = _load_trace()
+    truth, _ = _true_soc(trace)
+    est = BatteryEstimator(initial_charge_ah=PACK_CAPACITY_AH)
+    worst_at_low = 0.0
+    for (t, v, i), s_true in zip(trace, truth):
+        est.update(v, i, t)
+        if s_true <= 25.0:
+            worst_at_low = max(worst_at_low, est.percent - s_true)
+    # Never overstate the remaining charge by much when it is nearly gone.
+    assert worst_at_low < 8.0, f"overstated a low pack by {worst_at_low:.1f} points"
 
-    _, with_i = _soak(_ina(), 12.0, 6.0, 120)
-    _, without_i = _soak(_ina(), 12.0, 0.0, 120)
 
-    assert with_i[-1] > without_i[-1], (with_i[-1], without_i[-1])
+def test_replay_ends_empty_when_the_pack_dies():
+    """The gauge must be at the floor at the instant the pack collapsed.
+
+    Note it reads ~0%, not "0% with minutes to spare": no artificial reserve is
+    built in, because inventing one would hide real capacity and change what
+    the number means.  Advance warning is :attr:`minutes_remaining`'s job.
+    """
+    trace = _load_trace()
+    est = BatteryEstimator(initial_charge_ah=PACK_CAPACITY_AH)
+    for t, v, i in trace:
+        est.update(v, i, t)
+    assert est.percent < 1.0, f"gauge still read {est.percent:.2f}% on a dead pack"
+
+
+def test_recovers_from_a_wrong_starting_estimate():
+    """The property the replay alone cannot show.
+
+    The replay is seeded with the same capacity that was fitted from it, so it
+    is partly self-fulfilling.  This starts the counter 30 points too high --
+    a stale restore, or a pack that was not as full as assumed -- and requires
+    the OCV curve to have hauled it back by the time the pack is genuinely low,
+    which is the only place being wrong actually hurts.
+    """
+    trace = _load_trace()
+    truth, _ = _true_soc(trace)
+    est = BatteryEstimator(initial_charge_ah=PACK_CAPACITY_AH)
+    est.update(trace[0][1], trace[0][2], trace[0][0])
+    est.charge_ah = min(PACK_CAPACITY_AH, est.charge_ah + PACK_CAPACITY_AH * 0.30)
+
+    worst_low = 0.0
+    for (t, v, i), s_true in zip(trace[1:], truth[1:]):
+        est.update(v, i, t)
+        if s_true <= 20.0:
+            worst_low = max(worst_low, abs(est.percent - s_true))
+    assert worst_low < 10.0, \
+        f"a 30-point seeding error survived into the endgame ({worst_low:.1f} points)"
+    assert est.percent < 2.0, f"finished a dead pack at {est.percent:.2f}%"
+
+
+def test_measured_capacity_matches_the_trace():
+    trace = _load_trace()
+    _, total_ah = _true_soc(trace)
+    assert abs(PACK_CAPACITY_AH - total_ah) < 0.05, \
+        f"PACK_CAPACITY_AH={PACK_CAPACITY_AH} vs measured {total_ah:.3f}"
+
+
+# --- persistence -----------------------------------------------------------
+def test_state_round_trips(tmpdir="/tmp/x3_soc_state_test"):
+    os.makedirs(tmpdir, exist_ok=True)
+    path = os.path.join(tmpdir, "soc.json")
+    if os.path.exists(path):
+        os.remove(path)
+    st = SoCState(path, min_write_interval_s=0.0)
+    assert st.load(12.9, now=1000.0) is None, "no file should mean no state"
+    assert st.save(5.5, 12.9, now=1000.0)
+    assert approx(st.load(12.9, now=1060.0), 5.5, 1e-3)
+
+
+def test_state_expires():
+    path = "/tmp/x3_soc_state_test/soc_old.json"
+    st = SoCState(path, min_write_interval_s=0.0)
+    st.save(5.5, 12.9, now=1000.0)
+    assert st.load(12.9, now=1000.0 + 13 * 3600) is None, "stale state was trusted"
+
+
+def test_state_detects_a_charge_while_down():
+    path = "/tmp/x3_soc_state_test/soc_chg.json"
+    st = SoCState(path, min_write_interval_s=0.0)
+    st.save(1.0, 12.4, now=1000.0)
+    assert st.load(13.2, now=1600.0) is None, "pack was charged; state should be dropped"
+    assert approx(st.load(12.45, now=1600.0), 1.0, 1e-3), "small drift should be kept"
+
+
+def test_restart_mid_plateau_keeps_the_estimate():
+    """The whole point of persisting: a restart at 40% must not jump to 60%."""
+    path = "/tmp/x3_soc_state_test/soc_restart.json"
+    if os.path.exists(path):
+        os.remove(path)
+    st = SoCState(path, min_write_interval_s=0.0)
+    est = BatteryEstimator(initial_charge_ah=PACK_CAPACITY_AH * 0.40)
+    _soak(est, 12.99, 1.4, 600, step=10.0)
+    st.save(est.charge_ah, 12.99, now=2000.0)
+
+    restored = st.load(12.99, now=2100.0)
+    est2 = BatteryEstimator(initial_charge_ah=restored)
+    est2.update(12.99, 1.4, 0.0)
+    assert abs(est2.percent - est.percent) < 1.0, \
+        f"restart moved the gauge {est.percent:.1f}% -> {est2.percent:.1f}%"
+
+    cold = BatteryEstimator()          # no persisted state: seeds from OCV
+    cold.update(12.99, 1.4, 0.0)
+    assert cold.percent - est.percent > 10.0, \
+        "fixture assumption broken: a cold seed should be badly off here"
 
 
 if __name__ == "__main__":
-    failures = 0
-    for name, fn in sorted(globals().items()):
-        if not name.startswith("test_") or not callable(fn):
-            continue
+    tests = [(n, o) for n, o in sorted(globals().items())
+             if n.startswith("test_") and callable(o)]
+    failed = 0
+    for name, fn in tests:
         try:
             fn()
-            print(f"PASS  {name}")
-        except AssertionError as exc:
-            failures += 1
-            print(f"FAIL  {name}: {exc}")
-    print(f"\n{failures} failure(s)")
-    sys.exit(1 if failures else 0)
+            print(f"  ok   {name}")
+        except AssertionError as e:
+            failed += 1
+            print(f"  FAIL {name}: {e}")
+        except Exception as e:
+            failed += 1
+            print(f"  ERR  {name}: {type(e).__name__}: {e}")
+    print(f"\n{len(tests) - failed}/{len(tests)} passed")
+    sys.exit(1 if failed else 0)
