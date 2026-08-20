@@ -123,3 +123,17 @@ Saved maps are stored as `.pgm`/`.yaml` pairs in `src/yahboomcar_nav/maps/`. New
 - JPEG frames are sent as **binary WebSocket messages** (not base64 JSON) to save 2–5 ms/frame.
 - Lidar point conversion uses vectorized numpy operations.
 - Battery voltage is read at 1 Hz (cached), not per-loop.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as GitHub issues on `Kjames3/x3_ws`, managed with the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage roles, each label string equal to its name. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` at the repo root plus `docs/adr/`. See `docs/agents/domain.md`.
