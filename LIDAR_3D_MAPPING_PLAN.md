@@ -8,12 +8,14 @@ Feasibility study and implementation plan for adapting:
 
 Status: **Phase 0 implemented (§7), Phases 1–4 design only.** Written 2026-08-08.
 
-Phases 1–3 need a tilt bracket, which is deferred — there is a spare **STS3215**
-serial bus servo in storage earmarked for it. Note that an STS3215 is a bus
-servo, not PWM, so it would use `Rosmaster_Lib.set_uart_servo_angle()`
-(`src/Rosmaster_Lib.py:709`) rather than the `set_pwm_servo()` path assumed in
-§3.3 — and its position feedback would make the α-estimation caveat in §3.5
-much less of a worry.
+Phases 1–3 need a tilt bracket, which is deferred. See **§3.3a — servo
+selection**, which supersedes an earlier note here that assumed the spare
+**STS3215** could drive the bracket via `Rosmaster_Lib.set_uart_servo_angle()`.
+Bench testing on 2026-08-20 disproved that. Short version: the Rosmaster's
+S1–S4 headers are PWM outputs with no read-back path, its bus-servo protocol is
+byte-incompatible with Feetech, and the STS3215's voltage exceeds the board's
+6 V rail. A **Yahboom YB-SD15M** is the drop-in part; anything else needs a
+separate USB half-duplex adapter.
 
 ---
 
@@ -169,16 +171,67 @@ drops you to 2.15° / 11 cm plane spacing — noticeably gappy. Prefer slow.
 A permanently tilted lidar **destroys 2D SLAM and Nav2** — `slam_toolbox` and
 AMCL both assume a horizontal scan. So tilt has to be a *mode*, not a mount.
 
-Good news: the Rosmaster board already drives PWM servos.
-`src/Rosmaster_Lib.py:408` — `set_pwm_servo(servo_id, angle)`, `servo_id ∈
-[1,4]`, `angle ∈ [0,180]`. A single hobby servo on a printed bracket, on a free
-channel, with two detents:
+The Rosmaster drives PWM servos on S1–S4: `src/Rosmaster_Lib.py:408` —
+`set_pwm_servo(servo_id, angle)`, `servo_id ∈ [1,4]`, `angle ∈ [0,180]`. That
+path is **write-only** — there is no `get_pwm_*` anywhere in the protocol — so a
+plain hobby servo gives no position feedback and leaves the α-estimation caveat
+in §3.5 fully in force. A bus servo on the UART path (§3.3a) does report
+position. Either way the bracket has two detents:
 
 - **NAV mode** — α = 0°, horizontal. 2D SLAM, AMCL, Nav2 all behave exactly as
   today. Nothing in the existing stack changes.
 - **SCAN mode** — α ≈ 40°. Robot is stationary. Nav2 must be idle.
 
 Hard interlock: **never tilt while Nav2 has an active goal.**
+
+### 3.3a Servo selection — measured, not assumed
+
+Bench-tested against the real board on 2026-08-20 (Rosmaster firmware 2.4,
+`car_type=1` / `CARTYPE_X3`). The board exposes **two unrelated servo
+subsystems**, and picking the wrong one is the trap:
+
+| | `FUNC_PWM_SERVO` (0x03) | `FUNC_UART_SERVO` (0x20) |
+|---|---|---|
+| Headers | S1–S4, 3-pin 6 V | bus-servo / arm port |
+| Signal pin | PWM output from the STM32 | half-duplex serial |
+| Read-back | **none — no `get_pwm_*` exists** | `get_uart_servo_value()` |
+
+A serial bus servo plugged into S1–S4 is unreachable. Its signal wire needs
+half-duplex UART; the pin only ever emits PWM. This is STM32 firmware, so no
+host-side change in `server_x3.py` can work around it. Confirmed empirically: a
+powered LX-16A on S1–S4 answered nothing across a sweep of **all 250 bus IDs**,
+with torque both disabled and enabled, while the board itself streamed happily
+at 76 frames/s.
+
+**Use the Yahboom YB-SD15M** (6.0–7.4 V, 115200 baud, 15 kgf·cm at 7.4 V,
+300°±15° over counts 96–4000, IDs 1–250 default 1, PH2.0-3Pin). It is the part
+`Rosmaster_Lib` is actually calibrated for: `__arm_convert_angle` maps counts
+900–3100 onto 180° (and 380–3700 onto 270° for ID 5) ≈ **12.2 counts/degree**,
+which is a ~4000-count full scale over ~300°. That matches the YB-SD15M
+exactly. It does *not* match an LX-16A, which is 0–1000 counts over 240°
+(4.17 counts/deg) — feed LX-16A counts through that conversion and every angle
+is wrong by ~3x.
+
+Its ≤1° accuracy also comfortably beats the ~1–2° detent repeatability §3.5
+assumes, and its position feedback means α can be *read* rather than only
+estimated.
+
+Two cautions:
+
+- **The spare STS3215 is not a substitute.** Feetech STS uses Dynamixel-1.0
+  framing (`FF FF ID LEN INST … ~chk`) at 1 Mbps stock, versus the Rosmaster's
+  115200 Yahboom dialect — byte-incompatible. Its 7.4 V/12 V variants also sit
+  above the board's 6 V servo rail. Driving it means a USB half-duplex adapter
+  (Feetech FE-URT-1 or equivalent) and its own supply, bypassing the Rosmaster
+  entirely. Interestingly its 12-bit count scale is the *closer* relative of the
+  two to the Rosmaster's, but baud and framing still rule it out.
+- **6 V rail, 7.4 V ratings.** The 15 kgf·cm and 0.30 sec/60° figures are quoted
+  at 7.4 V. On the Rosmaster's 6 V rail expect meaningfully less of both. For a
+  tilt bracket holding a ~200 g lidar this is ample either way.
+
+Read-only probes for all three servo protocols are staged on the Jetson at
+`/tmp/probe_lx16a.py`, `/tmp/probe_sts3215.py`, and
+`/tmp/probe_rosmaster_servo.py` (the last one queries via the Rosmaster relay).
 
 ### 3.4 Pipeline
 
@@ -299,7 +352,9 @@ estimator's centroid extraction.
   of down — ceilings and upper walls are the structure Nav2 is missing anyway,
   and the floor is already well covered by the horizontal NAV-mode scan.
 - **Servo repeatability** ~1–2°, i.e. 5–10 cm at 3 m. Mitigate by estimating α
-  in the optimisation (§3.5), not by trusting the detent.
+  in the optimisation (§3.5), not by trusting the detent. The YB-SD15M spec'd
+  in §3.3a claims ≤1° and reports position, which tightens this — but read the
+  angle back rather than assuming the commanded one landed.
 - **Nav2 interlock is safety-critical.** A tilted lidar mid-goal means Nav2 is
   planning against garbage.
 - **Missing libs on the Jetson.** `open3d` and `small_gicp` are both absent;
