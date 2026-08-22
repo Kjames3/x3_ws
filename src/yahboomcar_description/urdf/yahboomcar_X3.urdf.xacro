@@ -109,30 +109,96 @@
                      iyy="3.89262522903605E-05" iyz="3.24809725932687E-07" izz="4.86230801106223E-05"/>
         </inertial>
     </common_link>
+    <!-- ============ 2D->3D tilting lidar mount (2026-08) ============
+         Bottom plate + 4ROS adapter bolt to the chassis; the lidar rides in a
+         carousel cradle pitching in four 608RS bearings, driven by an LX-16A
+         bus servo. Geometry from yahboomcar_description/cad/Prototype_Assembly.STEP.
+         See yahboomcar_X3.urdf for the full derivation notes. -->
     <link name="${ns}/lidar_mount_link">
         <inertial>
-            <origin xyz="0 0 0.0375" rpy="0 0 0"/>
-            <mass value="0.035"/>
-            <inertia ixx="2.55E-05" ixy="0" ixz="0"
-                     iyy="2.55E-05" iyz="0" izz="1.76E-05"/>
+            <origin xyz="-0.01270 -0.02147 0.10269" rpy="0 0 0"/>
+            <mass value="0.2387"/>
+            <inertia ixx="1.1115E-03" ixy="1.0498E-06" ixz="-4.3702E-06"
+                     iyy="7.1579E-04" iyz="1.6225E-04" izz="4.7960E-04"/>
         </inertial>
+        <xacro:macro name="mount_part" params="file xyz rpy">
+            <visual>
+                <origin xyz="${xyz}" rpy="${rpy}"/>
+                <geometry>
+                    <mesh filename="package://yahboomcar_description/meshes/${file}" scale="0.001 0.001 0.001"/>
+                </geometry>
+                <material name="White"/>
+            </visual>
+            <collision>
+                <origin xyz="${xyz}" rpy="${rpy}"/>
+                <geometry>
+                    <mesh filename="package://yahboomcar_description/meshes/${file}" scale="0.001 0.001 0.001"/>
+                </geometry>
+            </collision>
+        </xacro:macro>
+        <xacro:mount_part file="4ROS_mount_adapterV2.STL" xyz="0.035000 0.042000 0.000000" rpy="1.5707963 0 -1.5707963"/>
+        <xacro:mount_part file="bottomPlate.STL"          xyz="0.035000 0.042040 0.012000" rpy="1.5707963 0 -1.5707963"/>
+        <xacro:mount_part file="lx16_mountV2.STL"         xyz="0.002850 -0.039300 0.087875" rpy="1.5707963 0 -1.5707963"/>
+        <!-- LX-16A body: STEP only, drawn as its bounding box -->
         <visual>
-            <origin xyz="-0.0275 0.03368 0" rpy="1.5707963 0 0"/>
+            <origin xyz="-0.012500 -0.075150 0.140650" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="package://yahboomcar_description/meshes/4ROS_lidar_mount.STL" scale="0.001 0.001 0.001"/>
+                <box size="0.0247 0.0381 0.0452"/>
             </geometry>
             <material name="White"/>
         </visual>
         <collision>
-            <origin xyz="-0.0275 0.03368 0" rpy="1.5707963 0 0"/>
+            <origin xyz="-0.012500 -0.075150 0.140650" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="package://yahboomcar_description/meshes/4ROS_lidar_mount.STL" scale="0.001 0.001 0.001"/>
+                <box size="0.0247 0.0381 0.0452"/>
             </geometry>
         </collision>
+        <!-- 4x 608RS on the tilt axis; the pitch term is CAD clocking only -->
+        <xacro:macro name="mount_bearing" params="xyz rpy">
+            <visual>
+                <origin xyz="${xyz}" rpy="${rpy}"/>
+                <geometry>
+                    <mesh filename="package://yahboomcar_description/meshes/608RS.STL" scale="0.001 0.001 0.001"/>
+                </geometry>
+                <material name="White"/>
+            </visual>
+        </xacro:macro>
+        <xacro:mount_bearing xyz="0.003056 0.034900 0.153076"  rpy="1.5707963 0.7902475 -3.1415927"/>
+        <xacro:mount_bearing xyz="-0.027746 0.031300 0.149906" rpy="1.5707963 0.5851783 0"/>
+        <xacro:mount_bearing xyz="-0.023842 -0.024300 0.142353" rpy="1.5707963 0.0315727 0"/>
+        <xacro:mount_bearing xyz="-0.026141 -0.034900 0.145522" rpy="1.5707963 0.2839484 0"/>
     </link>
-    <!-- lidar moved 55 mm rearward, 6 mm up (2026); OAK-D took its old front spot -->
-    <fixed_joint name="lidar_mount_joint" parent="base_link" child="lidar_mount_link" xyz="-0.0115 5.25826986680105E-05 0.116" rpy="0 0 0"/>
-    <fixed_joint name="laser_joint" parent="base_link" child="laser_link" xyz="-0.0115 5.25826986680105E-05 0.191" rpy="0 0 3.14159265"/>
+    <fixed_joint name="lidar_mount_joint" parent="base_link" child="lidar_mount_link" xyz="-0.0108 5.25826986680105E-05 0.0885" rpy="0 0 0"/>
+
+    <!-- Rotating cradle: carousel + shaft coupler -->
+    <link name="${ns}/lidar_tilt_link">
+        <inertial>
+            <origin xyz="-0.00006 -0.01407 0.01659" rpy="0 0 0"/>
+            <mass value="0.0224"/>
+            <inertia ixx="1.729E-05" ixy="4.846E-08" ixz="-1.519E-08"
+                     iyy="6.351E-06" iyz="-6.114E-07" izz="2.068E-05"/>
+        </inertial>
+        <xacro:mount_part file="4ros_carouselV3.STL" xyz="0.030000 0.045049 -0.010000" rpy="1.5707963 0 -1.5707963"/>
+        <visual>
+            <origin xyz="0.004714 -0.024000 0.004714" rpy="-1.5707963 0 -3.1415927"/>
+            <geometry>
+                <mesh filename="package://yahboomcar_description/meshes/couplerV4.STL" scale="0.001 0.001 0.001"/>
+            </geometry>
+            <material name="White"/>
+        </visual>
+    </link>
+    <!-- axis +Y: positive noses the lidar DOWN. Limits are the LX-16A's own
+         +/-120 deg travel; nothing publishes this joint yet, so
+         joint_state_publisher holds it at 0 (= the old fixed-lidar TF). -->
+    <joint name="${ns}/lidar_tilt_joint" type="revolute">
+        <parent link="${ns}/lidar_mount_link"/>
+        <child link="${ns}/lidar_tilt_link"/>
+        <origin xyz="-0.0125 0 0.153" rpy="0 0 0"/>
+        <axis xyz="0 1 0"/>
+        <limit lower="-2.0944" upper="2.0944" effort="1.6" velocity="6.5"/>
+    </joint>
+    <fixed_joint name="laser_joint" parent="lidar_tilt_link" child="laser_link" xyz="0 0 0.022" rpy="0 0 3.14159265"/>
+
     <common_link name="camera_link" material="White" path="sensor">
         <inertial>
             <origin xyz="0 0 0" rpy="0 0 0"/>

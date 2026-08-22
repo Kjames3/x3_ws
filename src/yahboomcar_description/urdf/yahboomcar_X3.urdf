@@ -5,6 +5,13 @@
 <robot name="yahboomcar">
     <link name="base_footprint"/>
     <link name="imu_link"/>
+    <!-- Chassis mesh is base_link_X3.STL with the display and its mount stripped
+         (2026-08): they were removed from the robot to clear space for the
+         tilting lidar mount. That drops 2340 of 69192 triangles - everything
+         above the deck at z=0.075 - so the chassis now tops out at z=0.071 and
+         no longer overhangs to x=-0.176 at the rear. Regenerate with the same
+         cut if the stock mesh is ever updated; the inertial below is still the
+         stock Yahboom value and has NOT been reduced for the removed hardware. -->
     <link name="base_link">
         <inertial>
             <origin xyz="0.00498197982182523 5.70233829969297E-05 -0.0121008098068578" rpy="0 0 0"/>
@@ -20,7 +27,7 @@
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="package://yahboomcar_description/meshes/base_link_X3.STL"/>
+                <mesh filename="package://yahboomcar_description/meshes/base_link_X3_noscreen.STL"/>
             </geometry>
             <material name="">
                 <color rgba="0 0.7 0 1"/>
@@ -29,7 +36,7 @@
         <collision>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="package://yahboomcar_description/meshes/base_link_X3.STL"/>
+                <mesh filename="package://yahboomcar_description/meshes/base_link_X3_noscreen.STL"/>
             </geometry>
         </collision>
     </link>
@@ -186,49 +193,223 @@
             </geometry>
         </collision>
     </link>
-    <!-- 4ROS lidar riser mount (75 mm tall, 35 g). Moved 55 mm rearward and
-         6 mm up from its previous location (x 0.0435 -> -0.0115, z 0.11 -> 0.116)
-         to make room for the OAK-D Lite, which now occupies the lidar's old
-         front position (see oak-d-base-frame below).
-         Mesh is in millimeters (scale 0.001) and modeled Y-up, so it is rolled
-         90 deg about X to stand vertical. Horizontal offset centers the mesh
-         centroid under the laser axis; verify alignment in RViz. -->
+    <!-- ============ 2D->3D tilting lidar mount (2026-08, "Prototype_Assembly") ============
+         Replaces the old fixed 4ROS riser. A printed bottom plate + 4ROS mount
+         adapter bolt to the chassis at the riser's old footprint; the lidar now
+         rides in a carousel cradle that pitches forward/back in four 608RS
+         bearings, driven by a LewanSoul LX-16A bus servo through a coupler.
+         Sweeping the tilt while the 2-D scanner spins is what produces the 3-D
+         point cloud.
+
+         All geometry below is taken from cad/Prototype_Assembly.STEP (mm, SW 2024):
+           - tilt axis is along the robot's Y (pitch), 153.0 mm above the mount
+             base datum and 12.5 mm behind the lidar centerline
+           - the lidar seat sits 22.0 mm radially out from that axis, so at
+             tilt=0 the scan plane is the same horizontal plane as before
+           - the STLs were exported "translated to positive space", so each
+             visual/collision origin re-applies the part's own STEP origin
+             offset; do not assume the meshes are centered.
+
+         Placement datum: the lidar was first measured as 11.8 mm rearward and
+         90 mm higher than the old fixed position (-0.0115, ~0, 0.191), which put
+         this link's base at z=0.106, visibly floating once the display and its
+         mount were stripped from the chassis mesh. Dropped 17.5 mm on 2026-08-21
+         to seat it toward the top plate, so the base is now z=0.0885 and the
+         scan origin is (-0.0233, ~0, 0.2635) at tilt=0, i.e. +72.5 mm over the
+         old lidar rather than +90.
+         lidar_mount_joint's z is the single number to trim. The chassis mesh's
+         standoffs top out at z=0.071 and its deck plate at z=0.062, so a further
+         17.5 / 26.5 mm would make the bottom plate actually touch. -->
     <link name="lidar_mount_link">
+        <!-- adapter + bottom plate + 4x 608RS + servo bracket + LX-16A.
+             Printed parts at ~0.55 g/cm^3 effective (PLA, ~45% fill); bearings
+             12 g each and the LX-16A 52 g from spec. Mass/inertia integrated
+             over the actual meshes, expressed about the composite COM. -->
         <inertial>
-            <!-- 35 g; box approx 55 x 55 x 75 mm, I = m/12 * (a^2 + b^2) -->
-            <origin xyz="0 0 0.0375" rpy="0 0 0"/>
-            <mass value="0.035"/>
-            <inertia ixx="2.55E-05" ixy="0" ixz="0"
-                     iyy="2.55E-05" iyz="0" izz="1.76E-05"/>
+            <origin xyz="-0.01270 -0.02147 0.10269" rpy="0 0 0"/>
+            <mass value="0.2387"/>
+            <inertia ixx="1.1115E-03" ixy="1.0498E-06" ixz="-4.3702E-06"
+                     iyy="7.1579E-04" iyz="1.6225E-04" izz="4.7960E-04"/>
         </inertial>
+
+        <!-- 4ROS mount adapter: bolts to the chassis lidar pad on its lower
+             face (same 21 mm / 3-hole circle the lidar itself used) -->
         <visual>
-            <origin xyz="-0.0275 0.03368 0" rpy="1.5707963 0 0"/>
+            <origin xyz="0.035000 0.042000 0.000000" rpy="1.5707963 0 -1.5707963"/>
             <geometry>
-                <mesh filename="package://yahboomcar_description/meshes/4ROS_lidar_mount.STL" scale="0.001 0.001 0.001"/>
+                <mesh filename="package://yahboomcar_description/meshes/4ROS_mount_adapterV2.STL" scale="0.001 0.001 0.001"/>
             </geometry>
             <material name="">
                 <color rgba="0.3 0.3 0.3 1"/>
             </material>
         </visual>
         <collision>
-            <origin xyz="-0.0275 0.03368 0" rpy="1.5707963 0 0"/>
+            <origin xyz="0.035000 0.042000 0.000000" rpy="1.5707963 0 -1.5707963"/>
             <geometry>
-                <mesh filename="package://yahboomcar_description/meshes/4ROS_lidar_mount.STL" scale="0.001 0.001 0.001"/>
+                <mesh filename="package://yahboomcar_description/meshes/4ROS_mount_adapterV2.STL" scale="0.001 0.001 0.001"/>
             </geometry>
         </collision>
+
+        <!-- bottom plate: the 156 mm upright that carries the bearing bores -->
+        <visual>
+            <origin xyz="0.035000 0.042040 0.012000" rpy="1.5707963 0 -1.5707963"/>
+            <geometry>
+                <mesh filename="package://yahboomcar_description/meshes/bottomPlate.STL" scale="0.001 0.001 0.001"/>
+            </geometry>
+            <material name="">
+                <color rgba="0.3 0.3 0.3 1"/>
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0.035000 0.042040 0.012000" rpy="1.5707963 0 -1.5707963"/>
+            <geometry>
+                <mesh filename="package://yahboomcar_description/meshes/bottomPlate.STL" scale="0.001 0.001 0.001"/>
+            </geometry>
+        </collision>
+
+        <!-- LX-16A servo bracket -->
+        <visual>
+            <origin xyz="0.002850 -0.039300 0.087875" rpy="1.5707963 0 -1.5707963"/>
+            <geometry>
+                <mesh filename="package://yahboomcar_description/meshes/lx16_mountV2.STL" scale="0.001 0.001 0.001"/>
+            </geometry>
+            <material name="">
+                <color rgba="0.3 0.3 0.3 1"/>
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0.002850 -0.039300 0.087875" rpy="1.5707963 0 -1.5707963"/>
+            <geometry>
+                <mesh filename="package://yahboomcar_description/meshes/lx16_mountV2.STL" scale="0.001 0.001 0.001"/>
+            </geometry>
+        </collision>
+
+        <!-- LewanSoul LX-16A body, on the robot's right (-Y) side.
+             STEP only, no STL in the zip, so it is drawn as its 24.7 x 45.2 x
+             38.1 mm bounding box. -->
+        <visual>
+            <origin xyz="-0.012500 -0.075150 0.140650" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.0247 0.0381 0.0452"/>
+            </geometry>
+            <material name="">
+                <color rgba="0.1 0.1 0.1 1"/>
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="-0.012500 -0.075150 0.140650" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.0247 0.0381 0.0452"/>
+            </geometry>
+        </collision>
+
+        <!-- 4x 608RS bearings on the tilt axis at y = +38.4, +27.8, -27.8, -38.4 mm.
+             Visual only; the pitch term in each rpy is that bearing's own
+             clocking in the CAD and has no kinematic meaning. -->
+        <visual>
+            <origin xyz="0.003056 0.034900 0.153076" rpy="1.5707963 0.7902475 -3.1415927"/>
+            <geometry>
+                <mesh filename="package://yahboomcar_description/meshes/608RS.STL" scale="0.001 0.001 0.001"/>
+            </geometry>
+            <material name="">
+                <color rgba="0.6 0.6 0.6 1"/>
+            </material>
+        </visual>
+        <visual>
+            <origin xyz="-0.027746 0.031300 0.149906" rpy="1.5707963 0.5851783 0"/>
+            <geometry>
+                <mesh filename="package://yahboomcar_description/meshes/608RS.STL" scale="0.001 0.001 0.001"/>
+            </geometry>
+            <material name="">
+                <color rgba="0.6 0.6 0.6 1"/>
+            </material>
+        </visual>
+        <visual>
+            <origin xyz="-0.023842 -0.024300 0.142353" rpy="1.5707963 0.0315727 0"/>
+            <geometry>
+                <mesh filename="package://yahboomcar_description/meshes/608RS.STL" scale="0.001 0.001 0.001"/>
+            </geometry>
+            <material name="">
+                <color rgba="0.6 0.6 0.6 1"/>
+            </material>
+        </visual>
+        <visual>
+            <origin xyz="-0.026141 -0.034900 0.145522" rpy="1.5707963 0.2839484 0"/>
+            <geometry>
+                <mesh filename="package://yahboomcar_description/meshes/608RS.STL" scale="0.001 0.001 0.001"/>
+            </geometry>
+            <material name="">
+                <color rgba="0.6 0.6 0.6 1"/>
+            </material>
+        </visual>
     </link>
     <joint name="lidar_mount_joint" type="fixed">
-        <origin xyz="-0.0115 5.25826986680105E-05 0.116" rpy="0 0 0"/>
+        <origin xyz="-0.0108 5.25826986680105E-05 0.0885" rpy="0 0 0"/>
         <parent link="base_link"/>
         <child link="lidar_mount_link"/>
     </joint>
+
+    <!-- Rotating cradle: carousel + shaft coupler. -->
+    <link name="lidar_tilt_link">
+        <inertial>
+            <origin xyz="-0.00006 -0.01407 0.01659" rpy="0 0 0"/>
+            <mass value="0.0224"/>
+            <inertia ixx="1.729E-05" ixy="4.846E-08" ixz="-1.519E-08"
+                     iyy="6.351E-06" iyz="-6.114E-07" izz="2.068E-05"/>
+        </inertial>
+        <visual>
+            <origin xyz="0.030000 0.045049 -0.010000" rpy="1.5707963 0 -1.5707963"/>
+            <geometry>
+                <mesh filename="package://yahboomcar_description/meshes/4ros_carouselV3.STL" scale="0.001 0.001 0.001"/>
+            </geometry>
+            <material name="">
+                <color rgba="0.3 0.3 0.3 1"/>
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0.030000 0.045049 -0.010000" rpy="1.5707963 0 -1.5707963"/>
+            <geometry>
+                <mesh filename="package://yahboomcar_description/meshes/4ros_carouselV3.STL" scale="0.001 0.001 0.001"/>
+            </geometry>
+        </collision>
+        <visual>
+            <origin xyz="0.004714 -0.024000 0.004714" rpy="-1.5707963 0 -3.1415927"/>
+            <geometry>
+                <mesh filename="package://yahboomcar_description/meshes/couplerV4.STL" scale="0.001 0.001 0.001"/>
+            </geometry>
+            <material name="">
+                <color rgba="0.5 0.5 0.5 1"/>
+            </material>
+        </visual>
+    </link>
+    <!-- Pitch joint. axis +Y, so a POSITIVE command noses the lidar DOWN
+         (scan plane sweeps toward the floor in front of the robot) and a
+         negative command noses it up. Limits are the LX-16A's own 0-240 deg
+         travel (+/-120 deg about center); tighten them to the cradle's real
+         mechanical sweep once it has been measured. effort/velocity are the
+         servo's 17 kg-cm stall torque and 0.16 s/60 deg no-load speed.
+
+         NOTE: nothing publishes this joint yet. joint_state_publisher (already
+         in x3_bringup.launch.py / x3_slam.launch.py) will hold it at 0, which
+         reproduces the old fixed-lidar TF exactly. Feed the real servo angle
+         into /joint_states before trusting any assembled 3-D cloud. -->
+    <joint name="lidar_tilt_joint" type="revolute">
+        <origin xyz="-0.0125 0 0.153" rpy="0 0 0"/>
+        <parent link="lidar_mount_link"/>
+        <child link="lidar_tilt_link"/>
+        <axis xyz="0 1 0"/>
+        <limit lower="-2.0944" upper="2.0944" effort="1.6" velocity="6.5"/>
+    </joint>
+
     <joint name="laser_joint" type="fixed">
-        <!-- raised 75 mm above the riser base, then +6 mm with the 2026 move
-             (0.11 -> 0.116 base, scan plane 0.185 -> 0.191); shifted 55 mm rear -->
-        <origin xyz="-0.0115 5.25826986680105E-05 0.191" rpy="0 0 3.14159265"/>
-        <parent link="base_link"/>
+        <!-- 22.0 mm out from the tilt axis onto the carousel's lidar seat.
+             The carousel reuses the adapter's 3-hole 21 mm bolt circle in the
+             same clocking, so the lidar keeps its previous 180 deg yaw. -->
+        <origin xyz="0 0 0.022" rpy="0 0 3.14159265"/>
+        <parent link="lidar_tilt_link"/>
         <child link="laser_link"/>
     </joint>
+
     <link name="camera_link">
         <inertial>
             <origin xyz="0 0 0" rpy="0 0 0"/>
