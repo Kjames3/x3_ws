@@ -168,7 +168,7 @@
         <xacro:mount_bearing xyz="-0.023842 -0.024300 0.142353" rpy="1.5707963 0.0315727 0"/>
         <xacro:mount_bearing xyz="-0.026141 -0.034900 0.145522" rpy="1.5707963 0.2839484 0"/>
     </link>
-    <fixed_joint name="lidar_mount_joint" parent="base_link" child="lidar_mount_link" xyz="-0.0108 5.25826986680105E-05 0.0885" rpy="0 0 0"/>
+    <fixed_joint name="lidar_mount_joint" parent="base_link" child="lidar_mount_link" xyz="0.0557 5.25826986680105E-05 0.0885" rpy="0 0 0"/>
 
     <!-- Rotating cradle: carousel + shaft coupler -->
     <link name="${ns}/lidar_tilt_link">

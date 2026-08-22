@@ -210,16 +210,35 @@
              visual/collision origin re-applies the part's own STEP origin
              offset; do not assume the meshes are centered.
 
-         Placement datum: the lidar was first measured as 11.8 mm rearward and
-         90 mm higher than the old fixed position (-0.0115, ~0, 0.191), which put
-         this link's base at z=0.106, visibly floating once the display and its
-         mount were stripped from the chassis mesh. Dropped 17.5 mm on 2026-08-21
-         to seat it toward the top plate, so the base is now z=0.0885 and the
-         scan origin is (-0.0233, ~0, 0.2635) at tilt=0, i.e. +72.5 mm over the
-         old lidar rather than +90.
-         lidar_mount_joint's z is the single number to trim. The chassis mesh's
-         standoffs top out at z=0.071 and its deck plate at z=0.062, so a further
-         17.5 / 26.5 mm would make the bottom plate actually touch. -->
+         Placement datum. The new lidar is 11.8 mm rearward and 90 mm higher than
+         the old one, applied to the old lidar's MEASURED pose, not to the value
+         the URDF used to record.
+
+         x: the old laser_joint x was measured on the robot 2026-08-08 as +0.055
+         (NOT the -0.0115 this file once claimed, which recorded a '55 mm rear'
+         shift that never happened). Method: spin in place through 5 full turns;
+         if the offset is wrong by e the scan-to-map position traces a circle of
+         radius |e|, linear in the unknowns and solvable by least squares. Result
+         ex = +0.056 +/- 0.007 m statistical (8.2 sigma), ~+/-0.03 m systematic;
+         ey = -0.011 m and NOT significant (1.6 sigma), which is correct since the
+         unit is laterally centred and doubles as a control on the fit. True x lies
+         in +0.045..+0.061, central estimate 0.055. This brackets the stock X3
+         value (+0.0435), further evidence the rear-shift edit was wrong; the
+         measurement was chosen over the stock figure because this chassis is an
+         X3 PLUS running the X3 model, so no stock number can be assumed.
+         0.055 - 0.0118 = 0.0432 is therefore the new scan x.
+
+         A wrong x here is a lever arm: it swings the scan about the wrong point as
+         the robot turns, and slam_toolbox bakes the same error into any map it
+         builds. REMAP after changing it.
+
+         z: +90 mm would have put this link's base at 0.106, visibly floating once
+         the display and its mount were stripped from the chassis mesh. Dropped
+         17.5 mm on 2026-08-21, so the base is z=0.0885 and the scan origin is
+         (0.0432, ~0, 0.2635) at tilt=0, i.e. +72.5 mm over the old lidar rather
+         than +90. lidar_mount_joint's z is the single number to trim: the chassis
+         mesh's standoffs top out at z=0.071 and its deck plate at z=0.062, so a
+         further 17.5 / 26.5 mm would make the bottom plate actually touch. -->
     <link name="lidar_mount_link">
         <!-- adapter + bottom plate + 4x 608RS + servo bracket + LX-16A.
              Printed parts at ~0.55 g/cm^3 effective (PLA, ~45% fill); bearings
@@ -344,7 +363,7 @@
         </visual>
     </link>
     <joint name="lidar_mount_joint" type="fixed">
-        <origin xyz="-0.0108 5.25826986680105E-05 0.0885" rpy="0 0 0"/>
+        <origin xyz="0.0557 5.25826986680105E-05 0.0885" rpy="0 0 0"/>
         <parent link="base_link"/>
         <child link="lidar_mount_link"/>
     </joint>
