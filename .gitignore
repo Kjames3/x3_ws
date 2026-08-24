@@ -28,3 +28,9 @@ archive/
 # Cache directories and cache files
 .cache/
 *.cache
+# Obsidian per-user state (vault config itself IS tracked)
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/cache
+.obsidian/plugins/
+.trash/
