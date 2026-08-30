@@ -28,3 +28,7 @@ archive/
 # Cache directories and cache files
 .cache/
 *.cache
+# Claude Code local state: worktrees are full nested checkouts, and
+# settings.local.json is per-machine. The skills/ dir is tracked.
+.claude/worktrees/
+.claude/settings.local.json
