@@ -218,6 +218,18 @@ class Nav2Client:
 
         return True
 
+    def is_busy(self) -> bool:
+        """True while a goal is planning, executing, or being cancelled.
+
+        The tilting lidar interlock uses this: a tilted scan plane means
+        slam_toolbox and AMCL are being fed nothing (lidar_3d_processor_node
+        gates /scan off), so Nav2 would be planning against a costmap that
+        stops updating while the robot is still allowed to drive.
+        """
+        with self._lock:
+            return self._state in (STATE_PLANNING, STATE_EXECUTING,
+                                   STATE_CANCELLING)
+
     def load_map(self, map_path: str, timeout: float = 10.0) -> tuple[bool, str]:
         """
         Hot-swap the map AMCL localises against, without restarting Nav2.

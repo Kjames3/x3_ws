@@ -4,21 +4,20 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Viam Rover Control Panel</title>
+    <title>X3 Control</title>
     <!-- Three.js (for 3D visualization) -->
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 
-    <link rel="stylesheet" href="style.css?v=4">
+    <link rel="stylesheet" href="style.css?v=6">
+    <link rel="stylesheet" href="dashboard.css?v=1">
 </head>
 
 <body>
-    <div class="app-container">
-        <!-- Header -->
+    <div class="app-container dashboard">
         <header class="header">
             <div class="header-title">
-                <div class="logo">🤖</div>
-                <h1>Viam Rover Control</h1>
+                                <h1>X3 Control</h1>
             </div>
 
             <div class="connection-status">
@@ -31,14 +30,13 @@
                         padding:0.2rem 0.6rem; background:linear-gradient(135deg,#f59e0b,#d97706);
                         color:#fff; border:none; border-radius:3px; cursor:pointer;"
                         title="Launch Gazebo with X3 robot">
-                        🚀 Gazebo
+                         Gazebo
                     </button>
                 </div>
 
                 <!-- Controller Status -->
                 <div id="gamepad-indicator" class="gamepad-indicator">
-                    <span class="icon">🎮</span>
-                    <span id="gamepad-status-text" class="status-text">No Controller</span>
+                                        <span id="gamepad-status-text" class="status-text">No Controller</span>
                 </div>
 
                 <div class="status-indicator">
@@ -53,10 +51,69 @@
             </div>
         </header>
 
-        <!-- Camera Feed (Full Width) -->
+        <div id="reconnect-banner"></div>
+
+        <!-- ================================================================
+             Status strip. One tile per subsystem, always visible, never
+             behind a tab: every value here is one you need while the robot
+             is actually moving.
+             ================================================================ -->
+        <section class="status-strip" id="status-strip">
+            <div class="tile" id="tile-link">
+                <div class="tile-label">LINK</div>
+                <div class="tile-value" id="tile-link-value">--</div>
+                <div class="tile-sub" id="tile-link-sub">no server</div>
+            </div>
+            <div class="tile" id="tile-battery">
+                <div class="tile-label">BATTERY</div>
+                <div class="tile-value" id="tile-battery-value">--</div>
+                <div class="tile-sub" id="tile-battery-sub">-- V / -- A</div>
+            </div>
+            <div class="tile" id="tile-lidar">
+                <div class="tile-label">LIDAR 2D</div>
+                <div class="tile-value" id="tile-lidar-value">--</div>
+                <div class="tile-sub" id="tile-lidar-sub">gate --</div>
+            </div>
+            <div class="tile" id="tile-tilt">
+                <div class="tile-label">TILT</div>
+                <div class="tile-value" id="tile-tilt-value">--</div>
+                <div class="tile-sub" id="tile-tilt-sub">idle</div>
+            </div>
+            <div class="tile" id="tile-oak">
+                <div class="tile-label">OAK-D</div>
+                <div class="tile-value" id="tile-oak-value">--</div>
+                <div class="tile-sub" id="tile-oak-sub">depth --</div>
+            </div>
+            <div class="tile" id="tile-imu">
+                <div class="tile-label">IMU</div>
+                <div class="tile-value" id="tile-imu-value">--</div>
+                <div class="tile-sub" id="tile-imu-sub">gyro z --</div>
+            </div>
+            <div class="tile" id="tile-cpu">
+                <div class="tile-label">CPU</div>
+                <div class="tile-value" id="tile-cpu-value">--</div>
+                <div class="tile-sub" id="tile-cpu-sub">-- C</div>
+            </div>
+            <div class="tile" id="tile-net">
+                <div class="tile-label">NET</div>
+                <div class="tile-value" id="tile-net-value">--</div>
+                <div class="tile-sub" id="tile-net-sub">-- msg/s</div>
+            </div>
+        </section>
+
+        <nav class="tabbar" id="tabbar">
+            <button class="tab active" data-tab="drive">Drive</button>
+            <button class="tab" data-tab="sweep">Sweep</button>
+            <button class="tab" data-tab="pedestrian">Pedestrian</button>
+            <button class="tab" data-tab="nav">Navigation</button>
+            <button class="tab" data-tab="diag">Diagnostics</button>
+        </nav>
+
+        <div class="tab-area">
+        <section class="tab-panel active" data-panel="drive">
         <div class="card">
             <div class="card-header">
-                <h2><span class="icon">📹</span> Camera Feed</h2>
+                <h2>Camera Feed</h2>
                 <div style="display: flex; flex-direction: column; gap: 0.4rem; align-items: flex-end;">
                     <!-- Primary row: always visible -->
                     <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
@@ -75,6 +132,10 @@
                         <div class="toggle-wrapper">
                             <span class="toggle-label">Stereo</span>
                             <div id="stereo-toggle" class="toggle" title="Toggle OAK-D stereo (left/right) view"></div>
+                        </div>
+                        <div class="toggle-wrapper">
+                            <span class="toggle-label">3D Scan</span>
+                            <div id="scan-3d-toggle" class="toggle" title="Toggle 3D LiDAR Scanning (Nodding)"></div>
                         </div>
                         <select id="model-select" class="btn"
                             style="padding: 0.3rem 0.6rem; font-size: 0.75rem; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); outline: none;">
@@ -102,29 +163,29 @@
                         <!-- Data tools expand/collapse button -->
                         <button id="data-tools-toggle" class="btn" title="Show/hide data capture tools"
                             style="padding: 0.3rem 0.6rem; font-size: 0.75rem; background: var(--bg-tertiary); border: 1px solid var(--border-color);">
-                            📸 Data ▾
+                             Data
                         </button>
                     </div>
                     <!-- Secondary row: data capture tools (collapsed by default) -->
                     <div id="camera-toolbar-secondary" style="display: none; align-items: center; gap: 0.6rem; flex-wrap: wrap; padding-top: 0.2rem; border-top: 1px solid var(--border-color);">
                         <button id="capture-btn" class="btn btn-primary toolbar-btn"
-                            title="Capture image for training">📸 Capture</button>
+                            title="Capture image for training"> Capture</button>
                         <span id="capture-count" style="font-size: 0.75rem; color: var(--text-secondary);">0 saved</span>
                         <button id="download-images-btn" class="btn toolbar-btn"
                             style="background: var(--bg-tertiary); border: 1px solid var(--border-color);"
-                            title="Download all captured images as ZIP">💾 Download All</button>
+                            title="Download all captured images as ZIP"> Download All</button>
                         <button id="blur-sweep-btn" class="btn toolbar-btn"
                             style="background: linear-gradient(135deg, var(--accent-purple), #7c3aed); color: white; border: none; box-shadow: 0 4px 12px rgba(168, 85, 247, 0.3);"
-                            title="Capture 25 images with focus 0.0-12.0 (step 0.5)">🌊 Blur Sweep</button>
+                            title="Capture 25 images with focus 0.0-12.0 (step 0.5)"> Blur Sweep</button>
                         <button id="golden-set-btn" class="btn toolbar-btn"
                             style="background: linear-gradient(135deg, var(--accent-yellow), #d97706); color: white; border: none; box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);"
-                            title="Start continuous collection of dynamic motion blur frames (600 max)">✨ Golden Set: Start</button>
+                            title="Start continuous collection of dynamic motion blur frames (600 max)"> Golden Set: Start</button>
                         <button id="class-filter-toggle" class="btn toolbar-btn" title="Toggle detected classes"
                             style="font-size: 0.72rem; padding: 0.3rem 0.7rem; background: var(--bg-tertiary); color: var(--accent-warning, #facc15); border: 1px solid var(--accent-warning, #facc15); border-radius: 4px; cursor: pointer; white-space: nowrap; transition: all 0.25s;">
-                            🥫 Cans Only</button>
+                             Cans Only</button>
                         <button id="label-toggle" class="btn toolbar-btn" title="Toggle detection labels"
                             style="font-size: 0.72rem; padding: 0.3rem 0.7rem; background: var(--bg-tertiary); color: #60a5fa; border: 1px solid #60a5fa; border-radius: 4px; cursor: pointer; white-space: nowrap; transition: all 0.25s;">
-                            🏷️ Labels On</button>
+                             Labels On</button>
                     </div>
                 </div>
             </div>
@@ -136,7 +197,7 @@
                         <video id="webrtc-cam" class="camera-feed" autoplay muted playsinline style="display: none; width: 100%;"></video>
                         <canvas id="camera-canvas" class="camera-feed" style="display: none; width: 100%;"></canvas>
                         <div id="camera-placeholder" class="camera-placeholder">
-                            <span class="camera-placeholder-icon">📷</span>
+                            <span class="camera-placeholder-icon"></span>
                             <span>Awaiting camera feed...</span>
                         </div>
                     </div>
@@ -144,7 +205,7 @@
                     <div id="depth-panel" style="flex: 1; position: relative; min-width: 0; display: none;">
                         <img id="depth-feed" class="camera-feed" alt="Depth feed" style="display: none; width: 100%;">
                         <div id="depth-placeholder" class="camera-placeholder">
-                            <span class="camera-placeholder-icon">📡</span>
+                            <span class="camera-placeholder-icon"></span>
                             <span>Awaiting depth feed...</span>
                         </div>
                         <div class="overlay-chip" style="color: #67e8f9;">DEPTH</div>
@@ -158,7 +219,7 @@
                     <div id="oak-left-panel" style="flex: 1; position: relative; min-width: 0; display: none;">
                         <img id="oak-left-feed" class="camera-feed" alt="OAK-D left" style="display: none; width: 100%;">
                         <div class="camera-placeholder" id="oak-left-placeholder">
-                            <span class="camera-placeholder-icon">🅛</span>
+                            <span class="camera-placeholder-icon"></span>
                             <span>Awaiting OAK-D left...</span>
                         </div>
                         <div class="overlay-chip" style="color: #86efac;">OAK L</div>
@@ -166,7 +227,7 @@
                     <div id="oak-right-panel" style="flex: 1; position: relative; min-width: 0; display: none;">
                         <img id="oak-right-feed" class="camera-feed" alt="OAK-D right" style="display: none; width: 100%;">
                         <div class="camera-placeholder" id="oak-right-placeholder">
-                            <span class="camera-placeholder-icon">🅡</span>
+                            <span class="camera-placeholder-icon"></span>
                             <span>Awaiting OAK-D right...</span>
                         </div>
                         <div class="overlay-chip" style="color: #86efac;">OAK R</div>
@@ -191,7 +252,7 @@
                      background: linear-gradient(90deg, rgba(109,40,217,0.85), rgba(167,139,250,0.85));
                      color: #fff; padding: 0.35rem 0.7rem; font-size: 0.78rem; font-weight: 600;
                      z-index: 20; display: none; align-items: center; gap: 0.5rem; border-radius: 4px 4px 0 0;">
-                    <span>🎬 DEMO</span>
+                    <span> DEMO</span>
                     <span id="demo-banner-role" style="font-size: 0.68rem; opacity: 0.85;"></span>
                     <span id="demo-banner-model" style="margin-left: auto; font-size: 0.72rem;"></span>
                 </div>
@@ -199,21 +260,21 @@
                 <!-- FPS Display Overlay -->
                 <div id="fps-display" class="fps-display" style="display: none;">
                     <span class="fps-item" style="color: var(--accent-green);">
-                        📷 Camera: <strong id="fps-camera">0</strong> FPS
+                         Camera: <strong id="fps-camera">0</strong> FPS
                     </span>
                     <span id="fps-detection-wrapper" class="fps-item"
                         style="display: none; color: var(--accent-yellow);">
-                        🔍 YOLO: <strong id="fps-detection">0</strong> FPS
+                         YOLO: <strong id="fps-detection">0</strong> FPS
                     </span>
                     <span class="fps-item" style="color: var(--accent-blue);">
-                        🎯 OAK depth: <strong id="fps-oak">0</strong> FPS
+                         OAK depth: <strong id="fps-oak">0</strong> FPS
                     </span>
                     <span class="fps-item" style="color: var(--accent-green);">
-                        🖥️ Render: <strong id="fps-render">0</strong> FPS
+                         Render: <strong id="fps-render">0</strong> FPS
                     </span>
                     <span id="fps-video-wrapper" class="fps-item"
                         style="display: none; color: var(--accent-green);">
-                        📡 Video: <strong id="fps-video">0</strong> FPS
+                         Video: <strong id="fps-video">0</strong> FPS
                     </span>
                 </div>
 
@@ -246,6 +307,7 @@
                     <div class="detection-header">
                         <span class="detection-count">
                             <strong id="detection-count">0</strong> objects detected
+                        </span>
                     </div>
                     <div id="detection-list" class="detection-list">
                         <div class="no-detections">No objects detected</div>
@@ -253,15 +315,13 @@
                 </div>
             </div>
         </div>
-
-        <!-- Combined Controls Card: Motor Control + Status + Position all in one -->
         <div class="card" style="margin-top: 0.5rem;">
             <div class="card-header">
-                <h2><span class="icon">🎮</span> Controls & Status</h2>
+                <h2>Controls & Status</h2>
                 <!-- Controller Status inline -->
                 <div id="controller-status"
                     style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: var(--text-muted);">
-                    <span>🎮</span>
+                    <span></span>
                     <span id="controller-name">No controller</span>
                 </div>
             </div>
@@ -287,25 +347,28 @@
                                     style="font-size: 0.75rem; padding: 0.4rem 0.8rem;">
                                     Auto-Drive
                                 </button>
+                                <button id="motor-toggle-btn" class="btn" style="font-size: 0.75rem; padding: 0.4rem 0.8rem; background: var(--bg-tertiary); color: var(--accent-red); border: 1px solid var(--accent-red);">
+                                    Disable Movement
+                                </button>
                                 <button id="demo-mode-btn" class="btn" style="font-size: 0.75rem; padding: 0.4rem 0.8rem;
                                            background: var(--bg-tertiary); color: #a78bfa;
                                            border: 1px solid #a78bfa; border-radius: 4px;
                                            cursor: pointer; transition: all 0.25s;"
                                     title="Cycle teacher/student models every 30s while auto-driving">
-                                    🎬 Demo Mode
+                                     Demo Mode
                                 </button>
                                 <!-- Compact WASD -->
                                 <div class="d-pad" style="transform: scale(0.8);">
-                                    <button class="d-btn" id="btn-w">↑</button>
-                                    <button class="d-btn" id="btn-a">↶</button>
-                                    <button class="d-btn" id="btn-s">↓</button>
-                                    <button class="d-btn" id="btn-d">↷</button>
+                                    <button class="d-btn" id="btn-w"></button>
+                                    <button class="d-btn" id="btn-a"></button>
+                                    <button class="d-btn" id="btn-s"></button>
+                                    <button class="d-btn" id="btn-d"></button>
                                 </div>
                                 <!-- Keyboard Toggle -->
                                 <label
                                     style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.7rem; color: var(--text-secondary); cursor: pointer; margin-top: 0.3rem;">
                                     <input type="checkbox" id="keyboard-toggle" style="cursor: pointer;">
-                                    <span>⌨️ Keyboard</span>
+                                    <span> Keyboard</span>
                                 </label>
                             </div>
 
@@ -337,20 +400,20 @@
                                 <circle id="RightStick" cx="278" cy="238" r="22" fill="hsl(218,25%,28%)" stroke="hsl(210,50%,55%)" stroke-width="2.5"/>
                                 <!-- D-pad arrows (translate-53,-78 renders these over the top-left circle) -->
                                 <g transform="translate(-53,-78)">
-                                    <path id="dpad-up"    d="M177.669 222.335C180.793 219.21 180.816 213.997 176.868 212.014C176.327 211.743 175.776 211.491 175.215 211.258C172.182 210.002 168.931 209.355 165.648 209.355C162.365 209.355 159.114 210.002 156.081 211.258C155.521 211.491 154.969 211.743 154.429 212.014C150.48 213.997 150.503 219.21 153.627 222.335L159.991 228.698C163.116 231.823 168.181 231.823 171.305 228.698Z"    fill="hsl(218,25%,30%)" stroke="hsl(210,40%,50%)" stroke-width="2"/>
+                                    <path id="dpad-up" d="M177.669 222.335C180.793 219.21 180.816 213.997 176.868 212.014C176.327 211.743 175.776 211.491 175.215 211.258C172.182 210.002 168.931 209.355 165.648 209.355C162.365 209.355 159.114 210.002 156.081 211.258C155.521 211.491 154.969 211.743 154.429 212.014C150.48 213.997 150.503 219.21 153.627 222.335L159.991 228.698C163.116 231.823 168.181 231.823 171.305 228.698Z" fill="hsl(218,25%,30%)" stroke="hsl(210,40%,50%)" stroke-width="2"/>
                                     <path id="dpad-right" d="M181.447 249.669C184.571 252.793 189.785 252.816 191.768 248.868C192.039 248.327 192.291 247.776 192.523 247.215C193.78 244.182 194.426 240.931 194.426 237.648C194.426 234.365 193.78 231.114 192.523 228.081C192.291 227.521 192.039 226.969 191.768 226.429C189.785 222.48 184.571 222.503 181.447 225.627L175.083 231.991C171.959 235.116 171.959 240.181 175.083 243.305Z" fill="hsl(218,25%,30%)" stroke="hsl(210,40%,50%)" stroke-width="2"/>
-                                    <path id="dpad-down"  d="M153.627 253.961C150.503 257.086 150.48 262.299 154.429 264.282C154.969 264.553 155.521 264.804 156.081 265.038C159.114 266.294 162.365 266.941 165.648 266.941C168.931 266.941 172.182 266.294 175.215 265.038C175.776 264.804 176.327 264.553 176.868 264.282C180.816 262.299 180.793 257.086 177.669 253.961L171.305 247.598C168.181 244.473 163.116 244.473 159.991 247.598Z"  fill="hsl(218,25%,30%)" stroke="hsl(210,40%,50%)" stroke-width="2"/>
-                                    <path id="dpad-left"  d="M149.849 249.669C146.725 252.793 141.511 252.816 139.528 248.868C139.257 248.327 139.005 247.776 138.773 247.215C137.516 244.182 136.87 240.931 136.87 237.648C136.87 234.365 137.516 231.114 138.773 228.081C139.005 227.521 139.257 226.969 139.528 226.429C141.511 222.48 146.725 222.503 149.849 225.627L156.213 231.991C159.337 235.116 159.337 240.181 156.213 243.305Z"  fill="hsl(218,25%,30%)" stroke="hsl(210,40%,50%)" stroke-width="2"/>
+                                    <path id="dpad-down" d="M153.627 253.961C150.503 257.086 150.48 262.299 154.429 264.282C154.969 264.553 155.521 264.804 156.081 265.038C159.114 266.294 162.365 266.941 165.648 266.941C168.931 266.941 172.182 266.294 175.215 265.038C175.776 264.804 176.327 264.553 176.868 264.282C180.816 262.299 180.793 257.086 177.669 253.961L171.305 247.598C168.181 244.473 163.116 244.473 159.991 247.598Z" fill="hsl(218,25%,30%)" stroke="hsl(210,40%,50%)" stroke-width="2"/>
+                                    <path id="dpad-left" d="M149.849 249.669C146.725 252.793 141.511 252.816 139.528 248.868C139.257 248.327 139.005 247.776 138.773 247.215C137.516 244.182 136.87 240.931 136.87 237.648C136.87 234.365 137.516 231.114 138.773 228.081C139.005 227.521 139.257 226.969 139.528 226.429C141.511 222.48 146.725 222.503 149.849 225.627L156.213 231.991C159.337 235.116 159.337 240.181 156.213 243.305Z" fill="hsl(218,25%,30%)" stroke="hsl(210,40%,50%)" stroke-width="2"/>
                                 </g>
-                                <!-- Face buttons: △ Y(top) ○ B(right) ✕ A(bottom) □ X(left) -->
+                                <!-- Face buttons: Y(top) B(right) A(bottom) X(left) -->
                                 <circle id="face-y" cx="329" cy="143" r="11" fill="hsl(120,45%,22%)" stroke="hsl(120,50%,42%)" stroke-width="2"/>
-                                <text x="329" y="147" text-anchor="middle" font-size="11" fill="hsl(120,50%,68%)" font-family="sans-serif">△</text>
-                                <circle id="face-b" cx="347" cy="160" r="11" fill="hsl(0,45%,22%)"   stroke="hsl(0,50%,42%)"   stroke-width="2"/>
-                                <text x="347" y="164" text-anchor="middle" font-size="11" fill="hsl(0,50%,68%)"   font-family="sans-serif">○</text>
+                                <text x="329" y="147" text-anchor="middle" font-size="11" fill="hsl(120,50%,68%)" font-family="sans-serif"></text>
+                                <circle id="face-b" cx="347" cy="160" r="11" fill="hsl(0,45%,22%)" stroke="hsl(0,50%,42%)" stroke-width="2"/>
+                                <text x="347" y="164" text-anchor="middle" font-size="11" fill="hsl(0,50%,68%)" font-family="sans-serif"></text>
                                 <circle id="face-a" cx="329" cy="177" r="11" fill="hsl(220,45%,22%)" stroke="hsl(220,50%,42%)" stroke-width="2"/>
-                                <text x="329" y="181" text-anchor="middle" font-size="11" fill="hsl(220,50%,68%)" font-family="sans-serif">✕</text>
+                                <text x="329" y="181" text-anchor="middle" font-size="11" fill="hsl(220,50%,68%)" font-family="sans-serif"></text>
                                 <circle id="face-x" cx="311" cy="160" r="11" fill="hsl(270,45%,22%)" stroke="hsl(270,50%,42%)" stroke-width="2"/>
-                                <text x="311" y="164" text-anchor="middle" font-size="11" fill="hsl(270,50%,68%)" font-family="sans-serif">□</text>
+                                <text x="311" y="164" text-anchor="middle" font-size="11" fill="hsl(270,50%,68%)" font-family="sans-serif"></text>
                                 <!-- R2 trigger bar (top-right grip) -->
                                 <text x="400" y="91" text-anchor="middle" font-size="9" fill="hsl(210,30%,55%)" font-family="sans-serif">R2</text>
                                 <rect x="370" y="93" width="40" height="9" rx="4" fill="hsl(218,25%,22%)" stroke="hsl(210,40%,40%)" stroke-width="1.5"/>
@@ -362,7 +425,7 @@
 
                     <!-- Motor Status Section -->
                     <div class="control-section-item">
-                        <h3 style="margin: 0 0 0.5rem 0; font-size: 0.9rem; color: var(--text-secondary);">📊 Status
+                        <h3 style="margin: 0 0 0.5rem 0; font-size: 0.9rem; color: var(--text-secondary);"> Status
                         </h3>
                         <div class="motor-grid" style="grid-template-columns: 1fr 1fr; gap: 0.5rem;">
                             <div class="motor-card">
@@ -392,9 +455,24 @@
                         </div>
                     </div>
 
+                    <!-- Servo Status Section -->
+                    <div class="control-section-item" style="margin-top: 0.5rem;">
+                        <h3 style="margin: 0 0 0.5rem 0; font-size: 0.9rem; color: var(--text-secondary);"> Servo Status</h3>
+                        <div class="motor-grid" style="grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                            <div class="motor-card">
+                                <h3>Voltage</h3>
+                                <div id="servo-voltage" class="motor-value" style="color: var(--accent-cyan);">--</div>
+                            </div>
+                            <div class="motor-card">
+                                <h3>State</h3>
+                                <div id="servo-state" class="motor-value" style="color: var(--accent-green);">Free</div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Position Section -->
                     <div class="control-section-item">
-                        <h3 style="margin: 0 0 0.5rem 0; font-size: 0.9rem; color: var(--text-secondary);">📍 Position
+                        <h3 style="margin: 0 0 0.5rem 0; font-size: 0.9rem; color: var(--text-secondary);"> Position
                         </h3>
                         <div class="motor-grid" style="grid-template-columns: 1fr 1fr 1fr;">
                             <div class="motor-card">
@@ -425,7 +503,7 @@
                         <!-- Power Readout Section -->
                         <div
                             style="margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border-color);">
-                            <h3 style="margin: 0 0 0.5rem 0; font-size: 0.85rem; color: var(--text-secondary);">🔋 Power
+                            <h3 style="margin: 0 0 0.5rem 0; font-size: 0.85rem; color: var(--text-secondary);"> Power
                             </h3>
                             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; font-size: 0.8rem;">
                                 <div class="power-tile">
@@ -463,13 +541,97 @@
             </div>
         </div>
 
-        <!-- Advanced / Research Tools drawer (native details/summary, no JS) -->
-        <details class="advanced-drawer">
-        <summary>⚙️ Advanced / Research Tools</summary>
-        <!-- Pedestrian Velocity Estimator Card (EE244 Project) -->
+        </section>
+        <section class="tab-panel" data-panel="sweep">
+            <div class="card">
+                <div class="card-header"><h2>Sweep Control</h2>
+                    <span class="hdr-note" id="sweep-state-note">idle</span>
+                </div>
+                <div class="card-body">
+                <!-- Sweep style A/B (testing). Step-and-stare is the
+                     production path; continuous exists to make the smear
+                     visible in the octree, not to map with. -->
+                <div class="section-divider" style="margin: 0.6rem 0 0.3rem;">
+                    Sweep Style (A/B test)
+                </div>
+                <div class="nav-controls" style="gap: 0.4rem;">
+                    <button id="sweep-mode-step-btn" class="btn-nav"
+                            title="Step-and-stare: hold still at each station so every ray in a dwell shares one exact transform. No smear.">
+                         Step &amp; Stare
+                    </button>
+                    <button id="sweep-mode-continuous-btn" class="btn-nav"
+                            title="Constant speed: never stops, so each 156 ms scan is smeared across the pitch travelled during it.">
+                         Constant Speed
+                    </button>
+                </div>
+                <div style="display:flex; align-items:center; gap:0.5rem; margin-top:0.4rem;">
+                    <label for="sweep-speed-slider" style="font-size:0.7rem; color:var(--text-muted); white-space:nowrap;">Speed</label>
+                    <input id="sweep-speed-slider" type="range" min="2" max="90" step="1" value="40" style="flex:1;">
+                    <span id="sweep-speed-value" style="font-size:0.7rem; color:var(--text-primary); min-width:3.5rem; text-align:right;">40 °/s</span>
+                </div>
+                <div id="sweep-config-hint" class="nav-hint" style="margin-top: 0.25rem;"></div>
+
+                    <div class="section-divider" style="margin:0.7rem 0 0.4rem;">Mount</div>
+                    <div class="tiltbar" title="Mount pitch, -45 to +45 degrees">
+                        <div class="tiltbar-zero"></div>
+                        <div class="tiltbar-mark" id="tilt-mark"></div>
+                    </div>
+                    <div class="sys-grid">
+                        <div class="sys-row"><span class="k">Angle</span><span class="v" id="tilt-deg">--</span></div>
+                        <div class="sys-row"><span class="k">Counts</span><span class="v" id="tilt-counts">--</span></div>
+                        <div class="sys-row"><span class="k">Sample age</span><span class="v" id="tilt-age">--</span></div>
+                        <div class="sys-row"><span class="k">Read errors</span><span class="v" id="tilt-errors">--</span></div>
+                        <div class="sys-row"><span class="k">/scan gate</span><span class="v" id="tilt-gate">--</span></div>
+                    </div>
+                    <p class="hint">A rising sample age against a frozen angle is the read_pos desync
+                       that has spiked TF by 117 degrees. A closed gate means the CBF is holding a
+                       stale obstacle set.</p>
+                </div>
+            </div>
+        <div class="controls-row" style="margin-top: 1rem;">
+            <!-- Lidar -->
+            <div class="card">
+                <div class="card-header">
+                    <h2>Lidar View</h2>
+                    <div class="toggle-wrapper">
+                        <span class="toggle-label">Enable</span>
+                        <div id="lidar-toggle" class="toggle"></div>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="lidar-container">
+                        <canvas id="lidar-canvas" class="lidar-canvas" width="300" height="300"></canvas>
+                        <span class="lidar-scale">100px = 1 meter</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 3D Visualization (Three.js) -->
+            <div id="viewport-3d-card" class="card">
+                <div class="card-header">
+                    <h2>3D View</h2>
+                    <div id="nav-phase-display"
+                        style="font-size: 0.75rem; color: var(--accent-cyan); font-family: monospace;">IDLE</div>
+                </div>
+                <div class="card-body" style="padding: 0;">
+                    <div id="viewport-3d-container" style="width: 100%; height: 300px; position: relative;">
+                        <canvas id="viewport-3d-canvas" style="width: 100%; height: 100%;"></canvas>
+                    </div>
+                    <div
+                        style="display: flex; gap: 1rem; padding: 0.5rem 1rem; font-size: 0.7rem; color: var(--text-muted); background: var(--bg-tertiary);">
+                        <span> Robot</span>
+                        <span style="color: #22c55e;"> Start</span>
+                        <span style="color: #ef4444;"> Target</span>
+                        <span style="color: #64748b;"> Grid = 1m</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        </section>
+        <section class="tab-panel" data-panel="pedestrian">
         <div class="card" id="velocity-estimator-card" style="margin-top: 0.5rem;">
             <div class="card-header">
-                <h2><span class="icon">🏃</span> Pedestrian Velocity Estimator (EE244)</h2>
+                <h2>Pedestrian Velocity Estimator (EE244)</h2>
                 <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
                     <select id="velocity-model-select" class="btn"
                         style="padding: 0.3rem 0.6rem; font-size: 0.75rem; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); outline: none;">
@@ -509,7 +671,7 @@
                     <div style="width: 1px; height: 1.2rem; background: var(--border-color); display: inline-block;"></div>
                     <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: var(--text-secondary); cursor: pointer; user-select: none; font-weight: 500;">
                         <input type="checkbox" id="ab-repeat-check" style="accent-color: #00cc66; cursor: pointer; width: 16px; height: 16px; margin: 0; border-radius: 4px; background: rgba(0,0,0,0.3); border: 1px solid var(--border-color);">
-                        <span>🔄 Continuous Loop (Repeat)</span>
+                        <span> Continuous Loop (Repeat)</span>
                     </label>
                 </div>
                 <!-- Mode display: prominent indicator for demo audience -->
@@ -524,40 +686,11 @@
                 </div>
             </div>
         </div>
-
-        <!-- AMCL Localization Map: hot-swap the map AMCL matches against -->
-        <div class="card" id="amcl-map-card" style="margin-top: 0.5rem;">
-            <div class="card-header">
-                <h2><span class="icon">🧭</span> AMCL Localization Map</h2>
-                <span id="amcl-current-map"
-                    style="font-size: 0.75rem; color: var(--text-muted); font-family: monospace;">in use: —</span>
-            </div>
-            <div class="card-body">
-                <div class="nav-map-row" style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
-                    <label style="font-size:0.8rem; color:var(--text-secondary);">Map:</label>
-                    <select id="amcl-map-select" class="btn"
-                        style="padding:0.25rem 0.5rem; font-size:0.75rem; background:var(--bg-tertiary);
-                               color:var(--text-primary); border:1px solid var(--border-color); outline:none; flex:1; min-width:9rem;">
-                        <option value="">-- select map --</option>
-                    </select>
-                    <button id="amcl-refresh-maps-btn" class="btn-nav-sm" title="Re-scan the maps directory">⟳</button>
-                    <button id="amcl-apply-map-btn" class="btn-nav-sm"
-                        title="Load this map into the running map_server; AMCL re-localizes against it without stopping Nav2">
-                        Apply to AMCL
-                    </button>
-                </div>
-                <div id="amcl-map-status" class="nav-hint" style="margin-top: 0.4rem;">
-                    Requires Nav2 running in AMCL mode (SLAM Mode unchecked). Swaps the map live —
-                    set an initial pose afterwards if the new map has a different origin.
-                </div>
-            </div>
-        </div>
-        </details>
-
-        <!-- Navigation Card -->
+        </section>
+        <section class="tab-panel" data-panel="nav">
         <div class="card nav-card" id="nav-card" style="margin-top: 0.5rem;">
             <div class="card-header">
-                <h2><span class="icon">🧭</span> Navigation</h2>
+                <h2>Navigation</h2>
                 <span id="nav-status-badge" class="nav-badge unavailable">UNAVAILABLE</span>
             </div>
             <div class="card-body">
@@ -574,10 +707,10 @@
 
                 <!-- Control button row -->
                 <div class="nav-controls" style="margin-top: 0.6rem;">
-                    <button id="launch-nav2-btn" class="btn-nav">🚀 Launch Nav2</button>
-                    <button id="stop-nav2-btn"   class="btn-nav btn-nav-danger" style="display:none;">⏹ Stop Nav2</button>
-                    <button id="set-pose-btn"    class="btn-nav">📌 Set Initial Pose</button>
-                    <button id="cancel-nav-btn"  class="btn-nav btn-nav-warn">✖ Cancel Nav</button>
+                    <button id="launch-nav2-btn" class="btn-nav"> Launch Nav2</button>
+                    <button id="stop-nav2-btn" class="btn-nav btn-nav-danger" style="display:none;"> Stop Nav2</button>
+                    <button id="set-pose-btn" class="btn-nav"> Set Initial Pose</button>
+                    <button id="cancel-nav-btn" class="btn-nav btn-nav-warn"> Cancel Nav</button>
                 </div>
 
                 <!-- Map selector row -->
@@ -604,9 +737,9 @@
                 <!-- Legend -->
                 <div style="display:flex; gap:1rem; margin-top:0.4rem; font-size:0.7rem; color:var(--text-muted);">
                     <span style="color:#22d3ee;">— Path</span>
-                    <span style="color:#22d3ee;">▶ Robot</span>
-                    <span style="color:#ef4444;">✕ Goal</span>
-                    <span style="color:#f59e0b;">◎ Initial Pose</span>
+                    <span style="color:#22d3ee;"> Robot</span>
+                    <span style="color:#ef4444;"> Goal</span>
+                    <span style="color:#f59e0b;"> Initial Pose</span>
                 </div>
 
                 <!-- Mapping section divider -->
@@ -614,13 +747,24 @@
                     Mapping (SLAM Toolbox)
                 </div>
                 <div class="nav-controls">
-                    <button id="start-slam-btn" class="btn-nav">🗺 Start SLAM</button>
-                    <button id="stop-slam-btn"  class="btn-nav btn-nav-danger" style="display:none;">⏹ Stop SLAM</button>
+                    <button id="start-slam-btn" class="btn-nav"> Start 2D SLAM</button>
+                    <button id="stop-slam-btn" class="btn-nav btn-nav-danger" style="display:none;"> Stop 2D SLAM</button>
+                    <button id="start-slam-3d-btn" class="btn-nav"> Start 3D Mapping</button>
+                    <button id="stop-slam-3d-btn" class="btn-nav btn-nav-danger" style="display:none;"> Stop 3D Mapping</button>
+                    <button id="slam-scan-3d-btn" class="btn-nav" style="margin-top: 0.4rem;"> 3D Scan: OFF</button>
                 </div>
+
                 <div class="nav-map-row" style="margin-top: 0.4rem;">
                     <input id="map-name-input" class="nav-map-input" placeholder="map name…">
-                    <button id="save-map-btn" class="btn-nav-sm">💾 Save Map</button>
+                    <button id="save-map-btn" class="btn-nav-sm"> Save Map</button>
                 </div>
+                <!-- The octree had no save path at all until 2026-08-23: every
+                     3D map ever built died with the octomap_server process. -->
+                <div class="nav-map-row" style="margin-top: 0.3rem;">
+                    <input id="map-3d-name-input" class="nav-map-input" placeholder="3D map name…">
+                    <button id="save-3d-map-btn" class="btn-nav-sm"> Save 3D Map</button>
+                </div>
+                <div id="saved-3d-maps" class="nav-hint" style="margin-top: 0.25rem;"></div>
                 <div id="slam-status-text" class="nav-hint" style="margin-top: 0.3rem;"></div>
 
                 <!-- Frontier Explorer -->
@@ -629,7 +773,7 @@
                 </div>
                 <div class="nav-controls" style="align-items: center; gap: 0.5rem;">
                     <button id="frontier-btn" class="btn-nav" title="Autonomously explore unmapped areas using frontier-based exploration. Requires Nav2 running." disabled>
-                        🤖 Start Auto-Explore
+                         Start Auto-Explore
                     </button>
                     <span id="frontier-state-badge" style="font-size:0.7rem; padding:0.15rem 0.4rem; border-radius:4px; background:var(--bg-tertiary); color:var(--text-muted);">IDLE</span>
                 </div>
@@ -641,50 +785,32 @@
                 <div id="frontier-status-text" class="nav-hint" style="margin-top: 0.2rem;"></div>
             </div>
         </div>
-
-        <!-- Bottom Row: Lidar and 3D View side by side -->
-        <div class="controls-row" style="margin-top: 1rem;">
-            <!-- Lidar -->
+        </section>
+        <section class="tab-panel" data-panel="diag">
             <div class="card">
-                <div class="card-header">
-                    <h2><span class="icon">📡</span> Lidar View</h2>
-                    <div class="toggle-wrapper">
-                        <span class="toggle-label">Enable</span>
-                        <div id="lidar-toggle" class="toggle"></div>
-                    </div>
+                <div class="card-header"><h2>System</h2>
+                    <span class="hdr-note" id="sys-build">build --</span>
                 </div>
                 <div class="card-body">
-                    <div class="lidar-container">
-                        <canvas id="lidar-canvas" class="lidar-canvas" width="300" height="300"></canvas>
-                        <span class="lidar-scale">100px = 1 meter</span>
+                    <div class="sys-grid">
+                        <div class="sys-row"><span class="k">Server process</span><span class="v" id="sys-proc">--</span></div>
+                        <div class="sys-row"><span class="k">Memory</span><span class="v" id="sys-mem">--</span></div>
+                        <div class="sys-row"><span class="k">Load (1m)</span><span class="v" id="sys-load">--</span></div>
+                        <div class="sys-row"><span class="k">Hottest zone</span><span class="v" id="sys-temp">--</span></div>
                     </div>
+                    <div class="section-divider" style="margin:0.7rem 0 0.4rem;">Per-core utilisation</div>
+                    <div id="sys-cores" class="corebars"></div>
+                    <p class="hint">Per-core rather than averaged: one core pinned while five idle is
+                       the failure worth seeing, and a 20% average hides it completely.</p>
                 </div>
             </div>
 
-            <!-- 3D Visualization (Three.js) -->
-            <div id="viewport-3d-card" class="card">
-                <div class="card-header">
-                    <h2><span class="icon">🎮</span> 3D View</h2>
-                    <div id="nav-phase-display"
-                        style="font-size: 0.75rem; color: var(--accent-cyan); font-family: monospace;">IDLE</div>
-                </div>
-                <div class="card-body" style="padding: 0;">
-                    <div id="viewport-3d-container" style="width: 100%; height: 300px; position: relative;">
-                        <canvas id="viewport-3d-canvas" style="width: 100%; height: 100%;"></canvas>
-                    </div>
-                    <div
-                        style="display: flex; gap: 1rem; padding: 0.5rem 1rem; font-size: 0.7rem; color: var(--text-muted); background: var(--bg-tertiary);">
-                        <span>🔵 Robot</span>
-                        <span style="color: #22c55e;">🟢 Start</span>
-                        <span style="color: #ef4444;">🔴 Target</span>
-                        <span style="color: #64748b;">⬜ Grid = 1m</span>
-                    </div>
-                </div>
-            </div>
+        </section>
         </div>
     </div>
 
     <script src="main.js?v=4"></script>
+    <script src="dashboard.js?v=1"></script>
 </body>
 
 </html>

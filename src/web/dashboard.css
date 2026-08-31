@@ -1,0 +1,326 @@
+/* ==========================================================================
+   X3 dashboard shell.
+   Layered on top of style.css: this file owns the page frame (fixed viewport,
+   status strip, tab bar) and the new diagnostic widgets. The existing .card
+   look is left alone so the panels that moved keep their appearance.
+   ========================================================================== */
+
+:root {
+    --strip-h: 62px;
+    --ok:    #22c55e;
+    --warn:  #f59e0b;
+    --bad:   #ef4444;
+    --idle:  #64748b;
+}
+
+/* --- Page frame ----------------------------------------------------------
+   The whole point of the dashboard is that the status strip never scrolls
+   away, so the app owns the viewport and only the tab area scrolls. */
+html, body { height: 100%; }
+
+body:has(.dashboard) { overflow: hidden; }
+
+.app-container.dashboard {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    max-height: 100vh;
+    gap: 0;
+    padding: 0.5rem 0.75rem 0;
+    box-sizing: border-box;
+}
+
+.app-container.dashboard > .header { flex: 0 0 auto; }
+
+.tab-area {
+    flex: 1 1 auto;
+    min-height: 0;          /* without this the flex child refuses to shrink */
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 0.6rem 0 0.75rem;
+}
+
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* --- Status strip --------------------------------------------------------- */
+.status-strip {
+    flex: 0 0 auto;
+    display: grid;
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+    gap: 0.4rem;
+    margin-top: 0.5rem;
+}
+
+.tile {
+    background: var(--bg-secondary, #16202e);
+    border: 1px solid var(--border-color, #24344a);
+    border-left: 3px solid var(--idle);
+    border-radius: 5px;
+    padding: 0.4rem 0.55rem;
+    min-width: 0;
+    /* Colour changes are the main signal here, so they get a transition;
+       a tile that snaps between states reads as a rendering glitch. */
+    transition: border-left-color 0.35s ease, background 0.35s ease;
+}
+
+.tile-label {
+    font-size: 0.6rem;
+    letter-spacing: 0.09em;
+    color: var(--text-muted, #64748b);
+    font-weight: 700;
+}
+
+.tile-value {
+    font-size: 1.02rem;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;   /* stops digits jittering the width */
+    color: var(--text-primary, #e2e8f0);
+    line-height: 1.25;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.tile-sub {
+    font-size: 0.63rem;
+    color: var(--text-muted, #64748b);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.tile.ok   { border-left-color: var(--ok); }
+.tile.warn { border-left-color: var(--warn); }
+.tile.bad  { border-left-color: var(--bad); }
+.tile.idle { border-left-color: var(--idle); }
+
+/* A tile whose data has stopped arriving. The failure this guards against is
+   a frozen number reading as a live one -- that is how a stalled camera and a
+   dead link both hid in the old GUI. Dim it and say so, never leave it bright. */
+.tile.stale {
+    opacity: 0.42;
+    background: repeating-linear-gradient(
+        135deg, transparent 0 6px, rgba(148, 163, 184, 0.07) 6px 12px);
+}
+
+/* --- Tab bar -------------------------------------------------------------- */
+.tabbar {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 0.15rem;
+    margin-top: 0.5rem;
+    border-bottom: 1px solid var(--border-color, #24344a);
+}
+
+.tab {
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-muted, #64748b);
+    font-size: 0.78rem;
+    font-weight: 600;
+    font-family: inherit;
+    padding: 0.45rem 0.9rem;
+    cursor: pointer;
+    transition: color 0.2s ease, border-color 0.2s ease;
+}
+
+.tab:hover { color: var(--text-primary, #e2e8f0); }
+
+.tab.active {
+    color: var(--accent-cyan, #22d3ee);
+    border-bottom-color: var(--accent-cyan, #22d3ee);
+}
+
+/* Tab badge: lets a background tab report a problem without stealing focus. */
+.tab .badge {
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    margin-left: 0.35rem;
+    vertical-align: middle;
+    background: var(--bad);
+}
+
+/* --- Diagnostic widgets --------------------------------------------------- */
+.sys-grid { display: flex; flex-direction: column; gap: 0.2rem; }
+
+.sys-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 1rem;
+    font-size: 0.76rem;
+    padding: 0.15rem 0;
+    border-bottom: 1px dotted rgba(100, 116, 139, 0.18);
+}
+
+.sys-row .k { color: var(--text-muted, #64748b); }
+
+.sys-row .v {
+    color: var(--text-primary, #e2e8f0);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+}
+
+.sys-row .v.ok   { color: var(--ok); }
+.sys-row .v.warn { color: var(--warn); }
+.sys-row .v.bad  { color: var(--bad); }
+
+.corebars { display: flex; flex-direction: column; gap: 0.22rem; }
+
+.corebar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.66rem;
+    color: var(--text-muted, #64748b);
+    font-variant-numeric: tabular-nums;
+}
+
+.corebar-track {
+    flex: 1;
+    height: 7px;
+    background: var(--bg-tertiary, #1e293b);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.corebar-fill {
+    height: 100%;
+    width: 0;
+    background: var(--ok);
+    border-radius: 3px;
+    /* Smooths the 0.5 Hz sample into continuous motion, which is both easier
+       to read and cheaper than sending samples faster. */
+    transition: width 0.5s linear, background-color 0.5s linear;
+}
+
+.corebar-fill.warn { background: var(--warn); }
+.corebar-fill.bad  { background: var(--bad); }
+
+/* --- Tilt indicator ------------------------------------------------------- */
+.tiltbar {
+    position: relative;
+    height: 22px;
+    background: var(--bg-tertiary, #1e293b);
+    border: 1px solid var(--border-color, #24344a);
+    border-radius: 4px;
+    margin: 0.35rem 0 0.5rem;
+    overflow: hidden;
+}
+
+.tiltbar-zero {
+    position: absolute;
+    left: 50%; top: 0; bottom: 0;
+    width: 1px;
+    background: rgba(148, 163, 184, 0.45);
+}
+
+.tiltbar-mark {
+    position: absolute;
+    top: 2px; bottom: 2px;
+    width: 3px;
+    left: 50%;
+    background: var(--accent-cyan, #22d3ee);
+    border-radius: 2px;
+    transform: translateX(-50%);
+    transition: left 0.12s linear;   /* tracks a 50 Hz sampler sent at 20 Hz */
+}
+
+.tiltbar-mark.gated { background: var(--warn); }
+
+.hdr-note {
+    font-size: 0.68rem;
+    color: var(--text-muted, #64748b);
+    font-variant-numeric: tabular-nums;
+}
+
+.hint {
+    font-size: 0.66rem;
+    color: var(--text-muted, #64748b);
+    line-height: 1.45;
+    margin: 0.5rem 0 0;
+}
+
+/* --- Reconnect banner ----------------------------------------------------- */
+#reconnect-banner {
+    display: none;
+    flex: 0 0 auto;
+    background: rgba(245, 158, 11, 0.12);
+    border: 1px solid var(--warn);
+    color: var(--warn);
+    font-size: 0.73rem;
+    padding: 0.35rem 0.7rem;
+    border-radius: 4px;
+    margin-top: 0.4rem;
+}
+
+#reconnect-banner.visible { display: block; }
+
+/* Narrow windows: the strip wraps to two rows rather than shrinking the
+   tiles until the numbers truncate. */
+@media (max-width: 1100px) {
+    .status-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .tile, .corebar-fill, .tiltbar-mark { transition: none; }
+}
+
+/* --- Feed sizing ---------------------------------------------------------
+   style.css sizes the camera purely by aspect ratio, so on a wide window the
+   feed grows past the viewport and pushes the controls off-screen -- which
+   defeats the fixed dashboard. Cap the height and let the width follow.
+   The source frames are 320x240, so there is nothing to gain from a larger
+   box anyway; it only upscales. */
+.dashboard .camera-feed,
+.dashboard .camera-placeholder {
+    max-height: 42vh;
+    width: auto;
+    max-width: 100%;
+    margin: 0 auto;
+}
+
+.dashboard #camera-panels > div {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+/* Same treatment for the panels that share the camera row. */
+.dashboard .nav-canvas { max-height: 42vh; }
+
+/* The lidar and 3D cards sit side by side on the Sweep tab; keep them from
+   growing taller than the pane they live in. */
+.dashboard #viewport-3d-container { height: 300px; }
+
+/* --- Drive tab layout ----------------------------------------------------
+   Stacked, the camera card plus the controls card is ~1120px tall and does
+   not fit any laptop screen, so the controls end up below the fold on the one
+   tab you use while actually driving. Side by side on a wide window they both
+   fit without scrolling. */
+@media (min-width: 1400px) {
+    /* Must match .active: `.dashboard [data-panel=...]` outranks
+       `.tab-panel { display: none }`, so without the .active qualifier this
+       rule forces the Drive panel visible on every other tab too. */
+    .dashboard .tab-panel.active[data-panel="drive"] {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 0.5rem;
+        align-items: start;
+    }
+
+    .dashboard [data-panel="drive"] > .card { margin-top: 0 !important; }
+
+    /* The feed no longer competes with the controls for width, so it can be
+       taller here than the global cap allows. */
+    .dashboard [data-panel="drive"] .camera-feed,
+    .dashboard [data-panel="drive"] .camera-placeholder { max-height: 50vh; }
+}
+
+/* The Sweep tab pairs the lidar and 3D cards; keep the existing side-by-side
+   row but stop it stretching past the pane. */
+.dashboard [data-panel="sweep"] .controls-row { margin-top: 0.5rem !important; }

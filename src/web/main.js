@@ -7,11 +7,21 @@ const state = {
     detectionEnabled: false,
     depthEnabled: false,
     stereoEnabled: false,
+    scan3dEnabled: false,
+    // 3D sweep style A/B. Mirrors the server; the server is authoritative and
+    // pushes `sweep_config` on connect and on every change.
+    sweepMode: 'step',
+    sweepSpeed: 40,
+    sweepSmearDeg: 0,
+    sweepSmearCm3m: 0,
+    sweepSettledBypass: false,
+    sweepNote: null,
     mapEnabled: false,
     lidarEnabled: false,
     autoDriveEnabled: false, // Local toggle tracking
-    isAutoDriving: false,    // Server state
-    isDemoMode: false,       // Demo cycling mode
+    motorsEnabled: true,
+    isAutoDriving: false, // Server state
+    isDemoMode: false, // Demo cycling mode
     gamepadIndex: null,
     lastLeftPower: 0,
     lastRightPower: 0,
@@ -25,8 +35,8 @@ const state = {
 
     // Data Buffer for Render Loop
     latestData: {
-        readout: null,        // Motor positions, power, image
-        slowFields: {},       // last-seen 2Hz fields (active_model_name, nav_phase) merged onto fast readout
+        readout: null, // Motor positions, power, image
+        slowFields: {}, // last-seen 2Hz fields (active_model_name, nav_phase) merged onto fast readout
         robotPose: null,
         targetPose: null,
         trajectory: null,
@@ -68,7 +78,7 @@ const state = {
 
     // A/B comparison state
     abTestRunning: false,
-    abTestMode: null,          // "reactive" | "predictive" | null
+    abTestMode: null, // "reactive" | "predictive" | null
     velocityEstimationEnabled: true,
 
     // Web Worker for offscreen lidar rendering (Step 2)
@@ -76,11 +86,11 @@ const state = {
 
     // Foxglove WebSocket bridge connection state
     foxglove: {
-        ws: null,             // raw WebSocket to foxglove_bridge (:8765)
-        channelMap: {},       // subscriptionId (number) → topic string
-        topicToSubId: {},     // topic string → subscriptionId
-        topicToChannelId: {}, // topic string → channelId (for unsubscribe)
-        subIdCounter: 1,      // auto-increment subscription ID
+        ws: null, // raw WebSocket to foxglove_bridge (:8765)
+        channelMap: {}, // subscriptionId (number) topic string
+        topicToSubId: {}, // topic string subscriptionId
+        topicToChannelId: {}, // topic string channelId (for unsubscribe)
+        subIdCounter: 1, // auto-increment subscription ID
         reconnectTimer: null,
         reconnectDelay: 1000, // ms, doubles on each failure up to 10 000
     },
@@ -88,15 +98,15 @@ const state = {
     // Navigation state
     nav: {
         status: 'UNAVAILABLE',
-        goal: null,          // {x, y, theta} in metres (map frame)
-        path: [],            // [[x, y], ...] in metres
+        goal: null, // {x, y, theta} in metres (map frame)
+        path: [], // [[x, y], ...] in metres
         distRemaining: null,
         mapMode: 'navigate', // 'navigate' | 'set_pose'
-        mapMeta: null,       // {resolution, origin:[x,y], originYaw, width, height}
-        mapImage: null,      // HTMLImageElement of the loaded map PNG (legacy JSON path)
-        mapBitmap: null,     // ImageBitmap from binary MAPU frame (Step 3)
-        _prevBitmap: null,   // previous bitmap kept so we can call .close()
-        rawPixels: null,     // Uint8Array of latest costmap pixels for WebGL re-render
+        mapMeta: null, // {resolution, origin:[x,y], originYaw, width, height}
+        mapImage: null, // HTMLImageElement of the loaded map PNG (legacy JSON path)
+        mapBitmap: null, // ImageBitmap from binary MAPU frame (Step 3)
+        _prevBitmap: null, // previous bitmap kept so we can call .close()
+        rawPixels: null, // Uint8Array of latest costmap pixels for WebGL re-render
         rawPixelW: 0,
         rawPixelH: 0,
         nav2Running: false,
@@ -109,6 +119,10 @@ const state = {
         },
     },
 };
+
+// Exported for dashboard.js. `state` is a const, so unlike the top-level
+// function declarations it is NOT already a property of window.
+window.state = state;
 
 const DEFAULT_PORT = 8081;
 
@@ -151,6 +165,13 @@ const elements = {
     miniMapCanvas: document.getElementById('mini-map-canvas'),
     // OAK-D stereo + IMU + spatial detections
     stereoToggle: document.getElementById('stereo-toggle'),
+    scan3dToggle: document.getElementById('scan-3d-toggle'),
+    slamScan3dBtn: document.getElementById('slam-scan-3d-btn'),
+    sweepModeStepBtn: document.getElementById('sweep-mode-step-btn'),
+    sweepModeContinuousBtn: document.getElementById('sweep-mode-continuous-btn'),
+    sweepSpeedSlider: document.getElementById('sweep-speed-slider'),
+    sweepSpeedValue: document.getElementById('sweep-speed-value'),
+    sweepConfigHint: document.getElementById('sweep-config-hint'),
     oakLeftPanel: document.getElementById('oak-left-panel'),
     oakLeftFeed: document.getElementById('oak-left-feed'),
     oakLeftPlaceholder: document.getElementById('oak-left-placeholder'),
@@ -173,6 +194,7 @@ const elements = {
     detectionCount: document.getElementById('detection-count'),
     detectionList: document.getElementById('detection-list'),
     autoDriveBtn: document.getElementById('auto-drive-btn'),
+    motorToggleBtn: document.getElementById('motor-toggle-btn'),
     autoDriveWrapper: document.getElementById('auto-drive-wrapper'),
     demoModeBtn: document.getElementById('demo-mode-btn'),
     demoBanner: document.getElementById('demo-banner'),
@@ -195,6 +217,9 @@ const elements = {
     m4Pos: document.getElementById('m4-pos'),
     m4PosLabel: document.getElementById('m4-pos-label'),
     m4Power: document.getElementById('m4-power'),
+
+    servoVoltage: document.getElementById('servo-voltage'),
+    servoState: document.getElementById('servo-state'),
 
     // FPS
     fpsDisplay: document.getElementById('fps-display'),
@@ -229,7 +254,7 @@ const elements = {
     // Lidar
     lidarToggle: document.getElementById('lidar-toggle'),
     lidarCanvas: document.getElementById('lidar-canvas'),
-    lidarCtx: null,  // set by initLidarWorker (must not create context before transferControlToOffscreen)
+    lidarCtx: null, // set by initLidarWorker (must not create context before transferControlToOffscreen)
 
     // Motors Controls
     leftSlider: document.getElementById('left-slider'),
@@ -291,16 +316,14 @@ const elements = {
     // SLAM controls
     startSlamBtn: document.getElementById('start-slam-btn'),
     stopSlamBtn: document.getElementById('stop-slam-btn'),
+    startSlam3dBtn: document.getElementById('start-slam-3d-btn'),
+    stopSlam3dBtn: document.getElementById('stop-slam-3d-btn'),
     saveMapBtn: document.getElementById('save-map-btn'),
     mapNameInput: document.getElementById('map-name-input'),
+    save3dMapBtn: document.getElementById('save-3d-map-btn'),
+    map3dNameInput: document.getElementById('map-3d-name-input'),
+    saved3dMaps: document.getElementById('saved-3d-maps'),
     slamStatusText: document.getElementById('slam-status-text'),
-
-    // AMCL localization map selector (Advanced / Research Tools)
-    amclMapSelect: document.getElementById('amcl-map-select'),
-    amclApplyMapBtn: document.getElementById('amcl-apply-map-btn'),
-    amclRefreshMapsBtn: document.getElementById('amcl-refresh-maps-btn'),
-    amclMapStatus: document.getElementById('amcl-map-status'),
-    amclCurrentMap: document.getElementById('amcl-current-map'),
 
     // Velocity Estimator (EE244 Project)
     velocityModelSelect: document.getElementById('velocity-model-select'),
@@ -322,11 +345,11 @@ const elements = {
 // =================================================================
 function updateClassFilterBtn(btn, allClasses) {
     if (allClasses) {
-        btn.textContent = '🌐 All Classes';
+        btn.textContent = 'All Classes';
         btn.style.color = '#4ade80';
         btn.style.borderColor = '#4ade80';
     } else {
-        btn.textContent = '🥫 Cans Only';
+        btn.textContent = 'Cans Only';
         btn.style.color = 'var(--accent-warning, #facc15)';
         btn.style.borderColor = 'var(--accent-warning, #facc15)';
     }
@@ -334,12 +357,12 @@ function updateClassFilterBtn(btn, allClasses) {
 
 function updateLabelToggleBtn(btn, labelsOn) {
     if (labelsOn) {
-        btn.textContent = '🏷️ Labels On';
-        btn.style.color = '#60a5fa';   // blue
+        btn.textContent = 'Labels On';
+        btn.style.color = '#60a5fa'; // blue
         btn.style.borderColor = '#60a5fa';
     } else {
-        btn.textContent = '🏷️ Labels Off';
-        btn.style.color = '#6b7280';   // grey
+        btn.textContent = 'Labels Off';
+        btn.style.color = '#6b7280'; // grey
         btn.style.borderColor = '#6b7280';
     }
 }
@@ -350,7 +373,7 @@ function updateLabelToggleBtn(btn, labelsOn) {
 function initLidarWorker() {
     const canvas = elements.lidarCanvas;
     if (!canvas) return;
-    if (state.lidarWorker) return;  // already initialised — guard against double DOMContentLoaded
+    if (state.lidarWorker) return; // already initialised — guard against double DOMContentLoaded
 
     if (!canvas.transferControlToOffscreen) {
         // Fallback: browser doesn't support OffscreenCanvas — render on main thread
@@ -545,7 +568,7 @@ function initNavPanel() {
                 type: 'launch_nav2', use_sim_time: state.serverMode === 'sim',
                 map: mapName || null, slam
             });
-            elements.launchNav2Btn.textContent = '⏳ Launching…';
+            elements.launchNav2Btn.textContent = 'Launching…';
             elements.launchNav2Btn.disabled = true;
         });
     }
@@ -583,9 +606,9 @@ function updateNavHint() {
     if (state.nav.status === 'UNAVAILABLE') {
         hint.textContent = 'Connect in --ros2 or --sim mode to enable navigation';
     } else if (state.nav.mapMode === 'set_pose') {
-        hint.textContent = '📌 Click on map to set initial pose for AMCL';
+        hint.textContent = 'Click on map to set initial pose for AMCL';
     } else if (state.nav.mapImage) {
-        hint.textContent = 'Click on map to set navigation goal  |  Shift-click = pose only';
+        hint.textContent = 'Click on map to set navigation goal | Shift-click = pose only';
     } else {
         hint.textContent = 'Load a map, then click to set a navigation goal';
     }
@@ -649,14 +672,14 @@ function handleNavMapClick(e) {
 
     if (state.nav.mapMode === 'set_pose') {
         sendMessage({ type: 'set_initial_pose', x: world.x, y: world.y, theta: 0 });
-        console.log(`📌 Initial pose → (${world.x.toFixed(2)}, ${world.y.toFixed(2)})`);
+        console.log(`Initial pose (${world.x.toFixed(2)}, ${world.y.toFixed(2)})`);
         state.nav.mapMode = 'navigate';
         if (elements.setPoseBtn) elements.setPoseBtn.classList.remove('active');
         updateNavHint();
     } else {
         state.nav.goal = { x: world.x, y: world.y, theta: 0 };
         sendMessage({ type: 'set_nav_goal', x: world.x, y: world.y, theta: 0 });
-        console.log(`🎯 Nav goal → (${world.x.toFixed(2)}, ${world.y.toFixed(2)})`);
+        console.log(`Nav goal (${world.x.toFixed(2)}, ${world.y.toFixed(2)})`);
         drawNavMap();
     }
 }
@@ -734,11 +757,11 @@ function drawNavMap() {
         }
     }
 
-    // 3.5 Live lidar scan overlay (robot frame → world frame → canvas pixels)
+    // 3.5 Live lidar scan overlay (robot frame world frame canvas pixels)
     const scanPts = state.latestData.lidarPoints;
     const rpose = state.latestData.robotPose;
     if (state.lidarEnabled && scanPts && scanPts.length >= 2 && rpose && state.nav.mapMeta) {
-        const rx = rpose.x / 100.0;   // cm → metres
+        const rx = rpose.x / 100.0; // cm metres
         const ry = rpose.y / 100.0;
         const cosT = Math.cos(rpose.theta);
         const sinT = Math.sin(rpose.theta);
@@ -774,7 +797,7 @@ function drawNavMap() {
             const len = 14;
             ctx.save();
             ctx.translate(rcanvas.x, rcanvas.y);
-            ctx.rotate(theta + Math.PI);  // +π: Yahboom CW-positive yaw, arrow tip points forward
+            ctx.rotate(theta + Math.PI); // +π: Yahboom CW-positive yaw, arrow tip points forward
             ctx.fillStyle = '#1c27a5ff';
             ctx.beginPath();
             ctx.moveTo(len, 0);
@@ -808,16 +831,6 @@ function updateNavStatus(nav) {
     if (nav.nav2_running !== undefined) state.nav.nav2Running = nav.nav2_running;
     if (nav.goal) state.nav.goal = nav.goal;
 
-    // Map currently served to AMCL (Advanced / Research Tools card)
-    if (elements.amclCurrentMap) {
-        elements.amclCurrentMap.textContent = `in use: ${nav.map || '—'}`;
-    }
-    if (elements.amclApplyMapBtn && !elements.amclApplyMapBtn.disabled) {
-        elements.amclApplyMapBtn.title = state.nav.nav2Running
-            ? 'Load this map into the running map_server; AMCL re-localizes against it without stopping Nav2'
-            : 'Launch Nav2 (AMCL mode) first — map_server must be running';
-    }
-
     // Gate frontier button: needs both SLAM active and Nav2 running
     if (elements.frontierBtn) {
         const nav2Up = !!state.nav.nav2Running;
@@ -833,7 +846,7 @@ function updateNavStatus(nav) {
     const badge = elements.navStatusBadge;
     if (badge) {
         badge.textContent = state.nav.status;
-        badge.className = 'nav-badge ' + state.nav.status.toLowerCase();
+        badge.className = 'nav-badge' + state.nav.status.toLowerCase();
     }
 
     // Stats
@@ -850,7 +863,7 @@ function updateNavStatus(nav) {
     // Launch / Stop button visibility
     if (elements.launchNav2Btn) {
         elements.launchNav2Btn.style.display = state.nav.nav2Running ? 'none' : 'inline-block';
-        elements.launchNav2Btn.textContent = '🚀 Launch Nav2';
+        elements.launchNav2Btn.textContent = 'Launch Nav2';
         elements.launchNav2Btn.disabled = false;
     }
     if (elements.stopNav2Btn) {
@@ -867,55 +880,125 @@ function updateNavStatus(nav) {
 }
 
 // -----------------------------------------------------------------
-// AMCL Localization Map (Advanced / Research Tools)
-//
-// Swaps the map AMCL matches scans against by calling nav2's
-// /map_server/load_map — Nav2 keeps running, so this works mid-drive.
-// -----------------------------------------------------------------
-
-function initAmclMapControls() {
-    const { amclApplyMapBtn, amclRefreshMapsBtn, amclMapSelect, amclMapStatus } = elements;
-    if (!amclApplyMapBtn) return;
-
-    amclApplyMapBtn.addEventListener('click', () => {
-        const name = amclMapSelect?.value;
-        if (!name) {
-            setAmclMapStatus('Pick a saved map first', false);
-            return;
-        }
-        amclApplyMapBtn.disabled = true;
-        amclApplyMapBtn.textContent = '⏳ Loading…';
-        if (amclMapStatus) {
-            amclMapStatus.textContent = `Loading "${name}" into map_server…`;
-            amclMapStatus.style.color = '';
-        }
-        sendMessage({ type: 'set_amcl_map', map: name });
-    });
-
-    amclRefreshMapsBtn?.addEventListener('click', () => sendMessage({ type: 'get_maps' }));
-}
-
-function setAmclMapStatus(text, ok) {
-    const el = elements.amclMapStatus;
-    if (!el) return;
-    el.textContent = text;
-    el.style.color = ok ? 'var(--accent-green)' : '#f87171';
-}
-
-// -----------------------------------------------------------------
 // SLAM Controls
 // -----------------------------------------------------------------
 
 function initSlamControls() {
-    const { startSlamBtn, stopSlamBtn, saveMapBtn, mapNameInput } = elements;
+    const { startSlamBtn, stopSlamBtn, startSlam3dBtn, stopSlam3dBtn, saveMapBtn, mapNameInput, slamScan3dBtn } = elements;
     if (!startSlamBtn) return;
 
     startSlamBtn.addEventListener('click', () => sendMessage({ type: 'start_slam' }));
     stopSlamBtn.addEventListener('click', () => sendMessage({ type: 'stop_slam' }));
+    if (startSlam3dBtn) startSlam3dBtn.addEventListener('click', () => sendMessage({ type: 'start_3d_slam' }));
+    if (stopSlam3dBtn) stopSlam3dBtn.addEventListener('click', () => sendMessage({ type: 'stop_3d_slam' }));
     saveMapBtn.addEventListener('click', () => {
         const name = (mapNameInput?.value || '').trim() || 'slam_map';
         sendMessage({ type: 'save_map', name });
     });
+    if (elements.save3dMapBtn) {
+        elements.save3dMapBtn.addEventListener('click', () => {
+            const name = (elements.map3dNameInput?.value || '').trim() || 'octomap';
+            if (elements.slamStatusText) elements.slamStatusText.textContent = 'Saving 3D map…';
+            sendMessage({ type: 'save_3d_map', name });
+        });
+        // The octree lives only in octomap_server's memory, so show what is
+        // already on disk as soon as the panel is usable.
+        sendMessage({ type: 'list_3d_maps' });
+    }
+    if (elements.sweepModeStepBtn) {
+        elements.sweepModeStepBtn.addEventListener('click', () => {
+            state.sweepMode = 'step';
+            updateSweepConfigUI();
+            sendSweepConfig({ mode: 'step' });
+        });
+    }
+    if (elements.sweepModeContinuousBtn) {
+        elements.sweepModeContinuousBtn.addEventListener('click', () => {
+            state.sweepMode = 'continuous';
+            updateSweepConfigUI();
+            sendSweepConfig({ mode: 'continuous' });
+        });
+    }
+    if (elements.sweepSpeedSlider) {
+        // Repaint live while dragging, but only tell the server on release --
+        // each change can trigger a `ros2 param set` on the robot.
+        elements.sweepSpeedSlider.addEventListener('input', () => {
+            state.sweepSpeed = Number(elements.sweepSpeedSlider.value);
+            updateSweepConfigUI();
+        });
+        elements.sweepSpeedSlider.addEventListener('change', () => {
+            sendSweepConfig({ speed_deg_s: Number(elements.sweepSpeedSlider.value) });
+        });
+    }
+    updateSweepConfigUI();
+    if (slamScan3dBtn) {
+        slamScan3dBtn.addEventListener('click', () => {
+            if (!state.connected) return;
+            state.scan3dEnabled = !state.scan3dEnabled;
+            sendMessage({ type: "toggle_3d_scan", enabled: state.scan3dEnabled });
+            updateScan3dUI();
+        });
+    }
+}
+
+// One YDLidar X3 revolution (~6.4 Hz). A continuous sweep pitches by
+// speed * this within a single scan, which is the error being demonstrated.
+const SCAN_PERIOD_S = 0.156;
+
+function sendSweepConfig(patch) {
+    if (!state.connected) return;
+    sendMessage(Object.assign({ type: 'set_sweep_config' }, patch));
+}
+
+function updateSweepConfigUI() {
+    const isCont = state.sweepMode === 'continuous';
+    if (elements.sweepModeStepBtn) {
+        elements.sweepModeStepBtn.classList.toggle('btn-nav-active', !isCont);
+    }
+    if (elements.sweepModeContinuousBtn) {
+        elements.sweepModeContinuousBtn.classList.toggle('btn-nav-active', isCont);
+    }
+    if (elements.sweepSpeedSlider &&
+            document.activeElement !== elements.sweepSpeedSlider) {
+        elements.sweepSpeedSlider.value = state.sweepSpeed;
+    }
+    if (elements.sweepSpeedValue) {
+        elements.sweepSpeedValue.textContent = `${state.sweepSpeed} \u00b0/s`;
+    }
+    if (elements.sweepConfigHint) {
+        let hint;
+        if (isCont) {
+            // State the cost of the mode rather than making the operator
+            // remember it: this is the whole point of the A/B.
+            // Computed here, not read from the server's echo, so the
+            // numbers track the slider live while it is being dragged.
+            const smearDeg = state.sweepSpeed * SCAN_PERIOD_S;
+            const smearCm = 300 * Math.tan(smearDeg * Math.PI / 180);
+            hint = `Smearing each scan over ~${smearDeg.toFixed(1)}\u00b0 ` +
+                   `(~${smearCm.toFixed(0)} cm of height error at 3 m).` +
+                   `Expect blurred/doubled surfaces in the octree.`;
+            if (state.sweepSettledBypass) {
+                hint += ' \u26a0 could not clear require_settled on ' +
+                        'lidar_3d_processor_node \u2014 reporting the mount ' +
+                        'as settled instead so clouds still publish.';
+            }
+        } else {
+            hint = 'Holding still at each station \u2014 every ray in a ' +
+                   'dwell shares one transform (no smear). Production path.';
+        }
+        if (state.sweepNote) hint += `[${state.sweepNote}]`;
+        elements.sweepConfigHint.textContent = hint;
+    }
+}
+
+function updateScan3dUI() {
+    if (elements.scan3dToggle) {
+        elements.scan3dToggle.classList.toggle('active', state.scan3dEnabled);
+    }
+    if (elements.slamScan3dBtn) {
+        elements.slamScan3dBtn.textContent = state.scan3dEnabled ? "3D Scan: ON" : "3D Scan: OFF";
+        elements.slamScan3dBtn.classList.toggle('btn-nav-active', state.scan3dEnabled);
+    }
 }
 
 function updateSlamStatus(active) {
@@ -930,9 +1013,14 @@ function updateSlamStatus(active) {
         sendMessage({ type: 'request_live_map' });
     }
 
-    const { startSlamBtn, stopSlamBtn, slamStatusText } = elements;
+    const { startSlamBtn, stopSlamBtn, startSlam3dBtn, stopSlam3dBtn, slamStatusText } = elements;
     if (startSlamBtn) startSlamBtn.style.display = active ? 'none' : 'inline-block';
     if (stopSlamBtn) stopSlamBtn.style.display = active ? 'inline-block' : 'none';
+
+    const active3d = !!status.slam_3d_active;
+    if (startSlam3dBtn) startSlam3dBtn.style.display = active3d ? 'none' : 'inline-block';
+    if (stopSlam3dBtn) stopSlam3dBtn.style.display = active3d ? 'inline-block' : 'none';
+
     if (slamStatusText) {
         slamStatusText.textContent = active
             ? 'SLAM active — drive to build map, or use Auto-Explore below'
@@ -942,11 +1030,11 @@ function updateSlamStatus(active) {
 }
 
 const FRONTIER_STATE_COLORS = {
-    IDLE:       { bg: 'var(--bg-tertiary)', color: 'var(--text-muted)' },
-    SELECTING:  { bg: '#1e3a5f',            color: '#60a5fa' },
-    EXPLORING:  { bg: '#14532d',            color: '#4ade80' },
-    COMPLETE:   { bg: '#1a2e1a',            color: '#86efac' },
-    STOPPED:    { bg: '#3b1515',            color: '#f87171' },
+    IDLE: { bg: 'var(--bg-tertiary)', color: 'var(--text-muted)' },
+    SELECTING: { bg: '#1e3a5f', color: '#60a5fa' },
+    EXPLORING: { bg: '#14532d', color: '#4ade80' },
+    COMPLETE: { bg: '#1a2e1a', color: '#86efac' },
+    STOPPED: { bg: '#3b1515', color: '#f87171' },
 };
 
 function updateFrontierStatus(frontier) {
@@ -966,7 +1054,7 @@ function updateFrontierStatus(frontier) {
 
     // Button label
     if (frontierBtn) {
-        frontierBtn.textContent = isActive ? '⏹ Stop Auto-Explore' : '🤖 Start Auto-Explore';
+        frontierBtn.textContent = isActive ? 'Stop Auto-Explore' : 'Start Auto-Explore';
         frontierBtn.classList.toggle('btn-nav-danger', isActive);
     }
 
@@ -975,7 +1063,7 @@ function updateFrontierStatus(frontier) {
         const hasStats = frontier.frontiers_found > 0 || frontier.frontiers_visited > 0;
         frontierStats.style.display = hasStats ? 'inline' : 'none';
         if (frontierVisited) frontierVisited.textContent = frontier.frontiers_visited;
-        if (frontierFound)   frontierFound.textContent   = frontier.frontiers_found;
+        if (frontierFound) frontierFound.textContent = frontier.frontiers_found;
     }
 
     // Status hint
@@ -1021,7 +1109,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Class filter toggle — Cans Only ↔ All Classes
+    // Class filter toggle — Cans Only All Classes
     const classFilterBtn = document.getElementById('class-filter-toggle');
     if (classFilterBtn) {
         let allClassesActive = false;
@@ -1032,7 +1120,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Label overlay toggle — Labels On ↔ Labels Off
+    // Label overlay toggle — Labels On Labels Off
     const labelToggleBtn = document.getElementById('label-toggle');
     if (labelToggleBtn) {
         let labelsOn = true;
@@ -1050,18 +1138,17 @@ document.addEventListener('DOMContentLoaded', () => {
         dataToolsToggle.addEventListener('click', () => {
             const isVisible = cameraToolbarSecondary.style.display !== 'none';
             cameraToolbarSecondary.style.display = isVisible ? 'none' : 'flex';
-            dataToolsToggle.textContent = isVisible ? '📸 Data ▾' : '✖ Close';
+            dataToolsToggle.textContent = isVisible ? 'Data' : 'Close';
         });
     }
 
     // Init Navigation Panel
     initNavPanel();
-    initLidarWorker();   // Step 2: transfer lidar canvas to Web Worker
-    initNavMapWebGL();   // Step 4: init WebGL context for costmap texture
+    initLidarWorker(); // Step 2: transfer lidar canvas to Web Worker
+    initNavMapWebGL(); // Step 4: init WebGL context for costmap texture
 
     // Init SLAM Controls
     initSlamControls();
-    initAmclMapControls();
 
     // Init Visuals
     updateVisuals(0, elements.leftFill, elements.leftThumb);
@@ -1230,14 +1317,14 @@ function foxgloveScanToXY(scan) {
  */
 function foxgloveGridToPixels(grid) {
     const { width, height, resolution } = grid.info;
-    const origin_x  = grid.info.origin.position.x;
-    const origin_y  = grid.info.origin.position.y;
-    const q         = grid.info.origin.orientation;
+    const origin_x = grid.info.origin.position.x;
+    const origin_y = grid.info.origin.position.y;
+    const q = grid.info.origin.orientation;
     const origin_yaw = Math.atan2(2.0 * (q.w * q.z + q.x * q.y),
                                    1.0 - 2.0 * (q.y * q.y + q.z * q.z));
-    const data = grid.data;  // Int8Array or plain Array: -1=unknown, 0=free, 100=occupied
+    const data = grid.data; // Int8Array or plain Array: -1=unknown, 0=free, 100=occupied
 
-    // Map occupancy values → greyscale: unknown→128, free→255, occupied→0
+    // Map occupancy values greyscale: unknown128, free255, occupied0
     const flat = new Uint8Array(width * height);
     for (let i = 0; i < data.length; i++) {
         const v = data[i];
@@ -1273,7 +1360,7 @@ function connectFoxglove() {
 
     ws.onopen = () => {
         console.log('[foxglove] Bridge connected');
-        fg.reconnectDelay = 1000;  // reset backoff on success
+        fg.reconnectDelay = 1000; // reset backoff on success
         // Reset map frame counter so first-frame suppression re-applies on reconnect
         state.nav._mapUpdateCount = 0;
     };
@@ -1316,7 +1403,7 @@ function disconnectFoxglove() {
         fg.reconnectTimer = null;
     }
     if (fg.ws) {
-        fg.ws.onclose = null;  // suppress auto-reconnect
+        fg.ws.onclose = null; // suppress auto-reconnect
         fg.ws.close();
         fg.ws = null;
     }
@@ -1326,10 +1413,10 @@ function disconnectFoxglove() {
 
 function _resetFoxgloveSubscriptions() {
     const fg = state.foxglove;
-    fg.channelMap      = {};
-    fg.topicToSubId    = {};
+    fg.channelMap = {};
+    fg.topicToSubId = {};
     fg.topicToChannelId = {};
-    fg.subIdCounter    = 1;
+    fg.subIdCounter = 1;
 }
 
 /**
@@ -1353,12 +1440,12 @@ function foxgloveUnsubscribe(topic) {
  */
 function foxgloveResubscribe(topic) {
     const fg = state.foxglove;
-    if (fg.topicToSubId[topic] !== undefined) return;  // already subscribed
+    if (fg.topicToSubId[topic] !== undefined) return; // already subscribed
     const channelId = fg.topicToChannelId[topic];
-    if (channelId === undefined) return;  // channel not yet seen from server
+    if (channelId === undefined) return; // channel not yet seen from server
     const subId = fg.subIdCounter++;
-    fg.channelMap[subId]      = topic;
-    fg.topicToSubId[topic]    = subId;
+    fg.channelMap[subId] = topic;
+    fg.topicToSubId[topic] = subId;
     if (fg.ws && fg.ws.readyState === WebSocket.OPEN) {
         fg.ws.send(JSON.stringify({
             op: 'subscribe',
@@ -1426,18 +1513,18 @@ function handleBinaryFrame(buf) {
 
         // Obstacle proximity rumble disabled
         // if (pts.length >= 2) {
-        //     const OBSTACLE_THRESHOLD = 0.35;
-        //     let minDist = Infinity;
-        //     for (let i = 0; i < pts.length; i += 2) {
-        //         const d = Math.sqrt(pts[i] * pts[i] + pts[i + 1] * pts[i + 1]);
-        //         if (d < minDist) minDist = d;
-        //     }
-        //     const now = Date.now();
-        //     if (minDist < OBSTACLE_THRESHOLD && now - state.lastObstacleRumble > 1000) {
-        //         state.lastObstacleRumble = now;
-        //         const intensity = Math.max(0.2, 1 - (minDist / OBSTACLE_THRESHOLD));
-        //         rumble(intensity * 0.7, intensity * 0.4, 200);
-        //     }
+        // const OBSTACLE_THRESHOLD = 0.35;
+        // let minDist = Infinity;
+        // for (let i = 0; i < pts.length; i += 2) {
+        // const d = Math.sqrt(pts[i] * pts[i] + pts[i + 1] * pts[i + 1]);
+        // if (d < minDist) minDist = d;
+        // }
+        // const now = Date.now();
+        // if (minDist < OBSTACLE_THRESHOLD && now - state.lastObstacleRumble > 1000) {
+        // state.lastObstacleRumble = now;
+        // const intensity = Math.max(0.2, 1 - (minDist / OBSTACLE_THRESHOLD));
+        // rumble(intensity * 0.7, intensity * 0.4, 200);
+        // }
         // }
 
         // Dispatch to lidar worker if active (Step 2); keep pts in state for nav map overlay
@@ -1466,7 +1553,7 @@ function handleBinaryFrame(buf) {
             const ctx = cvs._ctx || (cvs._ctx = cvs.getContext('2d'));
             ctx.drawImage(bitmap, 0, 0);
             bitmap.close();
-            state.latestData.fps._renderFrames++;   // client-side render-rate counter
+            state.latestData.fps._renderFrames++; // client-side render-rate counter
             if (cvs.style.display === 'none') cvs.style.display = 'block';
             if (elements.cameraPlaceholder && elements.cameraPlaceholder.style.display !== 'none') {
                 elements.cameraPlaceholder.style.display = 'none';
@@ -1477,13 +1564,13 @@ function handleBinaryFrame(buf) {
 
 function handleMapuFrame(buf) {
     const dv = new DataView(buf);
-    const width      = dv.getUint32(4,  false);
-    const height     = dv.getUint32(8,  false);
+    const width = dv.getUint32(4, false);
+    const height = dv.getUint32(8, false);
     const resolution = dv.getFloat32(12, false);
-    const origin_x   = dv.getFloat32(16, false);
-    const origin_y   = dv.getFloat32(20, false);
-    const origin_yaw = dv.getFloat32(24, false);  // map frame Z-rotation (radians)
-    const pixels     = new Uint8Array(buf, 28);   // pixel data starts at byte 28
+    const origin_x = dv.getFloat32(16, false);
+    const origin_y = dv.getFloat32(20, false);
+    const origin_yaw = dv.getFloat32(24, false); // map frame Z-rotation (radians)
+    const pixels = new Uint8Array(buf, 28); // pixel data starts at byte 28
 
     // Suppress the first map frame — SLAM Toolbox's initial publish often has an
     // unsettled origin that snaps to the corrected value on the second frame (~500 ms later).
@@ -1492,11 +1579,11 @@ function handleMapuFrame(buf) {
 
     // Store raw pixels and meta immediately so WebGL + render loop can draw without
     // waiting for the async createImageBitmap call below.
-    state.nav.rawPixels  = pixels;
-    state.nav.rawPixelW  = width;
-    state.nav.rawPixelH  = height;
-    state.nav.mapMeta    = { resolution, origin: [origin_x, origin_y], originYaw: origin_yaw, width, height };
-    state.nav.mapImage   = null;  // MAPU binary path is now the sole source of truth
+    state.nav.rawPixels = pixels;
+    state.nav.rawPixelW = width;
+    state.nav.rawPixelH = height;
+    state.nav.mapMeta = { resolution, origin: [origin_x, origin_y], originYaw: origin_yaw, width, height };
+    state.nav.mapImage = null; // MAPU binary path is now the sole source of truth
 
     // Draw immediately via WebGL if ready — don't wait for ImageBitmap
     if (state.nav.webgl.ready) {
@@ -1504,7 +1591,7 @@ function handleMapuFrame(buf) {
         drawNavMap();
     }
 
-    // Grayscale → RGBA for ImageBitmap fallback (used when WebGL not available)
+    // Grayscale RGBA for ImageBitmap fallback (used when WebGL not available)
     const rgba = new Uint8ClampedArray(width * height * 4);
     for (let i = 0; i < pixels.length; i++) {
         rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = pixels[i];
@@ -1513,7 +1600,7 @@ function handleMapuFrame(buf) {
 
     createImageBitmap(new ImageData(rgba, width, height)).then(bitmap => {
         if (state.nav._prevBitmap) state.nav._prevBitmap.close();
-        state.nav.mapBitmap  = bitmap;
+        state.nav.mapBitmap = bitmap;
         state.nav._prevBitmap = bitmap;
         drawNavMap();
         updateNavHint();
@@ -1537,18 +1624,18 @@ function handleFoxgloveScan(msg) {
 
     // Obstacle proximity rumble disabled
     // if (pts.length >= 2) {
-    //     const OBSTACLE_THRESHOLD = 0.35;
-    //     let minDist = Infinity;
-    //     for (let i = 0; i < pts.length; i += 2) {
-    //         const d = Math.sqrt(pts[i] * pts[i] + pts[i + 1] * pts[i + 1]);
-    //         if (d < minDist) minDist = d;
-    //     }
-    //     const now = Date.now();
-    //     if (minDist < OBSTACLE_THRESHOLD && now - state.lastObstacleRumble > 1000) {
-    //         state.lastObstacleRumble = now;
-    //         const intensity = Math.max(0.2, 1 - (minDist / OBSTACLE_THRESHOLD));
-    //         rumble(intensity * 0.7, intensity * 0.4, 200);
-    //     }
+    // const OBSTACLE_THRESHOLD = 0.35;
+    // let minDist = Infinity;
+    // for (let i = 0; i < pts.length; i += 2) {
+    // const d = Math.sqrt(pts[i] * pts[i] + pts[i + 1] * pts[i + 1]);
+    // if (d < minDist) minDist = d;
+    // }
+    // const now = Date.now();
+    // if (minDist < OBSTACLE_THRESHOLD && now - state.lastObstacleRumble > 1000) {
+    // state.lastObstacleRumble = now;
+    // const intensity = Math.max(0.2, 1 - (minDist / OBSTACLE_THRESHOLD));
+    // rumble(intensity * 0.7, intensity * 0.4, 200);
+    // }
     // }
 
     if (state.lidarWorker) {
@@ -1571,11 +1658,11 @@ function handleFoxgloveMap(msg) {
     const { pixels, width, height, resolution, origin_x, origin_y, origin_yaw }
         = foxgloveGridToPixels(msg);
 
-    state.nav.rawPixels  = pixels;
-    state.nav.rawPixelW  = width;
-    state.nav.rawPixelH  = height;
-    state.nav.mapMeta    = { resolution, origin: [origin_x, origin_y], originYaw: origin_yaw, width, height };
-    state.nav.mapImage   = null;
+    state.nav.rawPixels = pixels;
+    state.nav.rawPixelW = width;
+    state.nav.rawPixelH = height;
+    state.nav.mapMeta = { resolution, origin: [origin_x, origin_y], originYaw: origin_yaw, width, height };
+    state.nav.mapImage = null;
 
     if (state.nav.webgl.ready) {
         renderCostmapWebGL(pixels, width, height);
@@ -1589,7 +1676,7 @@ function handleFoxgloveMap(msg) {
     }
     createImageBitmap(new ImageData(rgba, width, height)).then(bitmap => {
         if (state.nav._prevBitmap) state.nav._prevBitmap.close();
-        state.nav.mapBitmap  = bitmap;
+        state.nav.mapBitmap = bitmap;
         state.nav._prevBitmap = bitmap;
         drawNavMap();
         updateNavHint();
@@ -1609,15 +1696,15 @@ class CDRReader {
         // not from the CDR stream start. Using streamStart+4 as the alignment base ensures
         // float64 fields (e.g. Pose origin) get correct 8-byte padding.
         this.base = streamStart + 4;
-        this.offset = streamStart + 4;  // skip CDR encapsulation header
+        this.offset = streamStart + 4; // skip CDR encapsulation header
         this.le = true;
     }
     _align(n) {
         const rem = (this.offset - this.base) % n;
         if (rem) this.offset += n - rem;
     }
-    readInt8()   { return this.view.getInt8(this.offset++); }
-    readInt32()  { this._align(4); const v = this.view.getInt32 (this.offset, this.le); this.offset += 4; return v; }
+    readInt8() { return this.view.getInt8(this.offset++); }
+    readInt32() { this._align(4); const v = this.view.getInt32 (this.offset, this.le); this.offset += 4; return v; }
     readUint32() { this._align(4); const v = this.view.getUint32(this.offset, this.le); this.offset += 4; return v; }
     readFloat32(){ this._align(4); const v = this.view.getFloat32(this.offset, this.le); this.offset += 4; return v; }
     readFloat64(){ this._align(8); const v = this.view.getFloat64(this.offset, this.le); this.offset += 8; return v; }
@@ -1646,7 +1733,7 @@ function parseLaserScanCDR(buf, payloadOffset) {
     const angle_min = r.readFloat32(), angle_max = r.readFloat32();
     const angle_increment = r.readFloat32(), time_increment = r.readFloat32();
     const scan_time = r.readFloat32(), range_min = r.readFloat32(), range_max = r.readFloat32();
-    const ranges      = r.readFloat32Array(r.readUint32());
+    const ranges = r.readFloat32Array(r.readUint32());
     const intensities = r.readFloat32Array(r.readUint32());
     return { header: { stamp: { sec, nanosec }, frame_id },
              angle_min, angle_max, angle_increment, time_increment,
@@ -1682,11 +1769,11 @@ function parseOccupancyGridCDR(buf, payloadOffset) {
  */
 function handleFoxgloveBinaryFrame(buf) {
     const view = new DataView(buf);
-    if (view.getUint8(0) !== 0x01) return;  // only MessageData frames
+    if (view.getUint8(0) !== 0x01) return; // only MessageData frames
     const subId = view.getUint32(1, true);
     const topic = state.foxglove.channelMap[subId];
     if (!topic) return;
-    const payloadOffset = 13;  // CDR stream starts at byte 13
+    const payloadOffset = 13; // CDR stream starts at byte 13
     try {
         if (topic === '/scan') handleFoxgloveScan(parseLaserScanCDR(buf, payloadOffset));
         else if (topic === '/map') handleFoxgloveMap(parseOccupancyGridCDR(buf, payloadOffset));
@@ -1708,13 +1795,13 @@ function handleFoxgloveTextMessage(obj) {
     const subs = [];
     for (const ch of obj.channels) {
         if (!TOPICS.includes(ch.topic)) continue;
-        if (fg.topicToSubId[ch.topic] !== undefined) continue;  // already subscribed
+        if (fg.topicToSubId[ch.topic] !== undefined) continue; // already subscribed
 
         const subId = fg.subIdCounter++;
-        fg.channelMap[subId]          = ch.topic;
-        fg.topicToSubId[ch.topic]     = subId;
+        fg.channelMap[subId] = ch.topic;
+        fg.topicToSubId[ch.topic] = subId;
         fg.topicToChannelId[ch.topic] = ch.id;
-        subs.push({ id: subId, channelId: ch.id });  // bridge 3.x always sends CDR; encoding field is ignored
+        subs.push({ id: subId, channelId: ch.id }); // bridge 3.x always sends CDR; encoding field is ignored
     }
 
     if (subs.length > 0 && fg.ws && fg.ws.readyState === WebSocket.OPEN) {
@@ -1773,9 +1860,9 @@ function handleMessage(data) {
     if (data.type === "launch_gazebo_result") {
         const btn = elements.launchGazeboBtn;
         if (data.success) {
-            if (btn) { btn.textContent = '⏳ Launching…'; btn.disabled = true; }
+            if (btn) { btn.textContent = 'Launching…'; btn.disabled = true; }
             setTimeout(() => {
-                if (btn) { btn.textContent = '🚀 Gazebo'; btn.disabled = false; }
+                if (btn) { btn.textContent = 'Gazebo'; btn.disabled = false; }
             }, 15000);
         } else {
             alert(`Gazebo: ${data.msg}`);
@@ -1788,7 +1875,7 @@ function handleMessage(data) {
             alert(`Nav2: ${data.msg}`);
             // Restore button on failure
             if (elements.launchNav2Btn) {
-                elements.launchNav2Btn.textContent = '🚀 Launch Nav2';
+                elements.launchNav2Btn.textContent = 'Launch Nav2';
                 elements.launchNav2Btn.disabled = false;
             }
         }
@@ -1798,7 +1885,7 @@ function handleMessage(data) {
     if (data.type === "save_map_result") {
         const { slamStatusText } = elements;
         if (data.success) {
-            if (slamStatusText) slamStatusText.textContent = `Map "${data.name}" saved ✓`;
+            if (slamStatusText) slamStatusText.textContent = `Map "${data.name}" saved `;
         } else {
             if (slamStatusText) slamStatusText.textContent = `Save failed: ${data.message}`;
             console.warn(`[slam] Save map failed: ${data.message}`);
@@ -1806,34 +1893,38 @@ function handleMessage(data) {
         return;
     }
 
-    if (data.type === "map_list") {
-        if (data.maps) {
-            // Both the Navigation card and the Advanced AMCL card list maps.
-            [elements.mapSelect, elements.amclMapSelect].forEach(sel => {
-                if (!sel) return;
-                const prev = sel.value;           // keep the user's pick across refreshes
-                sel.innerHTML = '<option value="">-- select map --</option>';
-                data.maps.forEach(name => {
-                    const opt = document.createElement('option');
-                    opt.value = name;
-                    opt.textContent = name;
-                    sel.appendChild(opt);
-                });
-                if (prev && data.maps.includes(prev)) sel.value = prev;
-            });
+    if (data.type === "save_3d_map_result") {
+        const { slamStatusText } = elements;
+        if (slamStatusText) {
+            slamStatusText.textContent = data.success
+                ? `3D map: ${data.message}`
+                : `3D save failed: ${data.message}`;
+        }
+        if (!data.success) console.warn(`[slam3d] Save failed: ${data.message}`);
+        return;
+    }
+
+    if (data.type === "octomap_list") {
+        const el = elements.saved3dMaps;
+        if (el) {
+            el.textContent = (data.maps && data.maps.length)
+                ? 'Saved 3D:' + data.maps
+                    .map(m => `${m.name} (${m.size_kb} kB)`).join(',')
+                : 'No 3D maps saved yet';
         }
         return;
     }
 
-    if (data.type === "amcl_map_result") {
-        const btn = elements.amclApplyMapBtn;
-        if (btn) { btn.disabled = false; btn.textContent = 'Apply to AMCL'; }
-        setAmclMapStatus(
-            data.success ? `${data.msg} — AMCL is now localizing against it.`
-                         : `Failed: ${data.msg}`,
-            data.success);
-        if (data.success && elements.amclCurrentMap) {
-            elements.amclCurrentMap.textContent = `in use: ${data.map}`;
+    if (data.type === "map_list") {
+        const sel = elements.mapSelect;
+        if (sel && data.maps) {
+            sel.innerHTML = '<option value="">-- select map --</option>';
+            data.maps.forEach(name => {
+                const opt = document.createElement('option');
+                opt.value = name;
+                opt.textContent = name;
+                sel.appendChild(opt);
+            });
         }
         return;
     }
@@ -1870,7 +1961,7 @@ function handleMessage(data) {
             state.nav.mapImage = img;
             drawNavMap();
             updateNavHint();
-            console.log(`[nav] Map loaded: ${captureMeta.width}×${captureMeta.height}px, ` +
+            console.log(`[nav] Map loaded: ${captureMeta.width}×${captureMeta.height}px,` +
                 `res=${captureMeta.resolution}m, origin=${captureMeta.origin}`);
         };
         img.src = src;
@@ -1917,27 +2008,27 @@ function handleMessage(data) {
             const tp = data.target_pose;
             const thetaDeg = (rp.theta * 180 / Math.PI).toFixed(1);
 
-            console.groupCollapsed(`🤖 State: ${data.nav_phase || 'IDLE'}`);
-            console.log(`📍 Pose:   X=${rp.x.toFixed(1)}, Y=${rp.y.toFixed(1)}, θ=${thetaDeg}°`);
+            console.groupCollapsed(` State: ${data.nav_phase || 'IDLE'}`);
+            console.log(`Pose: X=${rp.x.toFixed(1)}, Y=${rp.y.toFixed(1)}, θ=${thetaDeg}°`);
             if (tp && tp.x !== null) {
-                console.log(`🎯 Target: X=${tp.x.toFixed(1)}, Y=${tp.y.toFixed(1)}, Dist=${tp.distance_cm.toFixed(0)}cm`);
+                console.log(`Target: X=${tp.x.toFixed(1)}, Y=${tp.y.toFixed(1)}, Dist=${tp.distance_cm.toFixed(0)}cm`);
             } else {
-                console.log(`🎯 Target: None`);
+                console.log(`Target: None`);
             }
-            console.log(`⚙️ Motors: L=${data.left_power.toFixed(2)}, R=${data.right_power.toFixed(2)}`);
-            console.log(`🔋 Power:  ${data.power ? data.power.voltage.toFixed(2) + 'V' : '--'}`);
-            console.log(`⚙️ Motors: L=${data.left_power.toFixed(2)}, R=${data.right_power.toFixed(2)}`);
+            console.log(`Motors: L=${data.left_power.toFixed(2)}, R=${data.right_power.toFixed(2)}`);
+            console.log(` Power: ${data.power ? data.power.voltage.toFixed(2) + 'V' : '--'}`);
+            console.log(`Motors: L=${data.left_power.toFixed(2)}, R=${data.right_power.toFixed(2)}`);
             console.groupEnd();
         }
 
         // Piped Server Logging
         if (data.latest_log && data.latest_log.time > (state.lastLogTime || 0)) {
-            console.log(`%c🐍 SERVER: ${data.latest_log.msg}`, "color: #4ade80; font-weight: bold;");
+            console.log(`%c SERVER: ${data.latest_log.msg}`, "color: #4ade80; font-weight: bold;");
 
             // Auto-reset Golden Set button if complete
             if (data.latest_log.msg.includes("Golden collection COMPLETE") || data.latest_log.msg.includes("STOPPED")) {
                 if (elements.goldenSetBtn) {
-                    elements.goldenSetBtn.textContent = '✨ Golden Set: Start';
+                    elements.goldenSetBtn.textContent = 'Golden Set: Start';
                     window.goldenSetActive = false;
                 }
             }
@@ -1952,6 +2043,7 @@ function handleMessage(data) {
         state.latestData.slowFields = {
             active_model_name: data.active_model_name,
             nav_phase: data.nav_phase,
+            servo_stats: data.servo_stats,
         };
         state.latestData.navPhase = data.nav_phase;
 
@@ -1977,21 +2069,21 @@ function handleMessage(data) {
         if (data.slam_active !== undefined) updateSlamStatus(data.slam_active);
         if (data.frontier) updateFrontierStatus(data.frontier);
 
-        state.needsUIUpdate = true;  // refresh nav-metrics / fps text
+        state.needsUIUpdate = true; // refresh nav-metrics / fps text
 
     } else if (data.type === "capture_response") {
         const category = data.category || "saved";
-        const dist = data.distance_cm ? ` (${Math.round(data.distance_cm)}cm)` : "";
+        const dist = data.distance_cm ? `(${Math.round(data.distance_cm)}cm)` : "";
         if (elements.captureCount) elements.captureCount.textContent = `${data.count} total • ${category}${dist}`;
 
     } else if (data.type === "model_changed") {
         const modelSelect = document.getElementById('model-select');
         const label = modelSelect ? modelSelect.options[modelSelect.selectedIndex].text : data.model;
         if (data.success) {
-            console.log(`%c✅ Model loaded: ${label}`, "color: #4ade80; font-weight: bold;");
+            console.log(`%c Model loaded: ${label}`, "color: #4ade80; font-weight: bold;");
         } else {
             const reason = data.error || 'Unknown error';
-            console.warn(`❌ Model FAILED to load: ${label}\n   Reason: ${reason}\n   Path tried: ${data.path}`);
+            console.warn(` Model FAILED to load: ${label}\n Reason: ${reason}\n Path tried: ${data.path}`);
         }
         // Flash the dropdown border green/red so there's a visible cue
         if (modelSelect) {
@@ -2007,9 +2099,9 @@ function handleMessage(data) {
 
     } else if (data.type === "velocity_model_changed") {
         if (data.success) {
-            console.log(`%c✅ Velocity Model loaded: ${data.model}`, "color: #a855f7; font-weight: bold;");
+            console.log(`%c Velocity Model loaded: ${data.model}`, "color: #a855f7; font-weight: bold;");
         } else {
-            console.warn(`❌ Velocity Model FAILED to load: ${data.model}\n   Reason: ${data.error}`);
+            console.warn(` Velocity Model FAILED to load: ${data.model}\n Reason: ${data.error}`);
         }
         if (elements.velocityModelSelect) {
             elements.velocityModelSelect.style.transition = 'border-color 0.3s';
@@ -2031,26 +2123,45 @@ function handleMessage(data) {
 
     } else if (data.type === "ab_test_status") {
         state.abTestRunning = (data.status === "running");
-        state.abTestMode    = data.mode || null;
+        state.abTestMode = data.mode || null;
         updateAbTestButtonsUI();
         console.log(`[AB Test] status=${data.status} mode=${data.mode}`);
 
     } else if (data.type === "demo_model_changed") {
         updateDemoBannerFromEvent(data);
 
+    } else if (data.type === "sweep_config") {
+        state.sweepMode = data.mode || 'step';
+        state.sweepSpeed = Math.round(data.speed_deg_s ?? 40);
+        state.sweepSmearDeg = data.smear_deg ?? 0;
+        state.sweepSmearCm3m = data.smear_cm_at_3m ?? 0;
+        state.sweepSettledBypass = !!data.settled_bypass;
+        state.sweepNote = data.note || null;
+        if (elements.sweepSpeedSlider) {
+            if (data.speed_min != null) elements.sweepSpeedSlider.min = data.speed_min;
+            if (data.speed_max != null) elements.sweepSpeedSlider.max = data.speed_max;
+        }
+        updateSweepConfigUI();
+        console.log(`[3D sweep] mode=${state.sweepMode} speed=${state.sweepSpeed} deg/s`);
+
+    } else if (data.type === "3d_scan_status") {
+        state.scan3dEnabled = data.enabled;
+        if (typeof updateScan3dUI === 'function') updateScan3dUI();
+
     } else if (data.type === "demo_status") {
         console.log(`[DEMO] ${data.msg}`);
+
 
     } else if (data.type === "classes_updated") {
         // Server confirmed the class filter changed
         const btn = document.getElementById('class-filter-toggle');
         if (btn) updateClassFilterBtn(btn, data.all_classes);
-        console.log(`%c🔍 Class filter: ${data.all_classes ? 'All COCO classes' : 'Cans only'}`, 'color: #60a5fa;');
+        console.log(`%c Class filter: ${data.all_classes ? 'All COCO classes' : 'Cans only'}`, 'color: #60a5fa;');
 
     } else if (data.type === "labels_updated") {
         const btn = document.getElementById('label-toggle');
         if (btn) updateLabelToggleBtn(btn, data.show_labels);
-        console.log(`%c🏷️ Labels: ${data.show_labels ? 'ON' : 'OFF'}`, 'color: #60a5fa;');
+        console.log(`%c Labels: ${data.show_labels ? 'ON' : 'OFF'}`, 'color: #60a5fa;');
 
     } else if (data.type === "download_images_response") {
         handleDownloadResponse(data);
@@ -2081,6 +2192,13 @@ function updateUI() {
     if (elements.m4Pos) elements.m4Pos.textContent = fmtPos(data.m4_pos);
     if (elements.m4PosLabel) elements.m4PosLabel.textContent = posLabel;
     if (elements.m4Power) elements.m4Power.textContent = `${Math.round((data.m4_power ?? 0) * 100)}%`;
+
+    // Servo Stats
+    const servoStats = data.servo_stats;
+    if (servoStats) {
+        if (elements.servoVoltage) elements.servoVoltage.textContent = servoStats.voltage;
+        if (elements.servoState) elements.servoState.textContent = servoStats.state;
+    }
 
     // 2. Camera image is now sent as a binary WebSocket frame (P3) — handled in onmessage
 
@@ -2124,7 +2242,7 @@ function updateUI() {
                     return `${d.label} ${(d.conf * 100).toFixed(0)}% <span style="color:#f87171;">range unknown</span>`;
                 }
                 const b = d.xyz_base_m;
-                return `${d.label} ${(d.conf * 100).toFixed(0)}% ` +
+                return `${d.label} ${(d.conf * 100).toFixed(0)}%` +
                     `<span style="color:#86efac;">` +
                     `fwd ${b.x.toFixed(2)} · left ${b.y.toFixed(2)} · up ${b.z.toFixed(2)} m</span>`;
             }).join('<br>');
@@ -2181,7 +2299,7 @@ function updateUI() {
         if (elements.metricLabel) elements.metricLabel.textContent = detectingLabel;
         if (elements.metricFrames) elements.metricFrames.textContent = state.movingFrameCount;
         if (elements.metricRatio) elements.metricRatio.textContent = ratio.toFixed(1) + "%";
-        if (elements.metricLatency) elements.metricLatency.textContent = latency + " ms";
+        if (elements.metricLatency) elements.metricLatency.textContent = latency + "ms";
     } else {
         if (elements.navMetricsOverlay) elements.navMetricsOverlay.style.display = 'none';
     }
@@ -2390,9 +2508,9 @@ function updatePowerUI() {
     const pwr = state.latestData.power;
     if (!pwr) return;
 
-    if (elements.powerVoltage) elements.powerVoltage.textContent = pwr.voltage.toFixed(2) + ' V';
-    if (elements.powerCurrent) elements.powerCurrent.textContent = pwr.current.toFixed(2) + ' A';
-    if (elements.powerWatts) elements.powerWatts.textContent = pwr.power.toFixed(1) + ' W';
+    if (elements.powerVoltage) elements.powerVoltage.textContent = pwr.voltage.toFixed(2) + 'V';
+    if (elements.powerCurrent) elements.powerCurrent.textContent = pwr.current.toFixed(2) + 'A';
+    if (elements.powerWatts) elements.powerWatts.textContent = pwr.power.toFixed(1) + 'W';
 
     if (elements.powerBatteryPct) {
         const pct = pwr.battery_pct;
@@ -2421,7 +2539,7 @@ function updatePowerUI() {
         const secs = Math.floor(pct * 150); // ~2.5 min linear map to critical
         const m = Math.floor(secs / 60);
         const s = secs % 60;
-        elements.powerTimeRemaining.textContent = `⚠ ${m}:${s.toString().padStart(2, '0')}`;
+        elements.powerTimeRemaining.textContent = ` ${m}:${s.toString().padStart(2, '0')}`;
         elements.powerTimeRemaining.style.color = 'var(--accent-red)';
     } else if (elements.powerTimeRemaining && pwr.current > 0.1) {
         const BATTERY_CAPACITY_AH = 6.0;
@@ -2554,7 +2672,7 @@ function init3DViewport() {
         }
     });
 
-    console.log('✓ 3D Viewport initialized');
+    console.log('3D Viewport initialized');
 }
 
 function update3DSceneContent() {
@@ -2586,8 +2704,8 @@ function update3DSceneContent() {
         const max = Math.min(trajectory.length, MAX_TRAJECTORY_POINTS);
 
         for (let i = 0; i < max; i++) {
-            positions[count * 3] = trajectory[i].x / 100;     // x
-            positions[count * 3 + 1] = 0.02;                  // y (height)
+            positions[count * 3] = trajectory[i].x / 100; // x
+            positions[count * 3 + 1] = 0.02; // y (height)
             positions[count * 3 + 2] = trajectory[i].y / 100; // z
             count++;
         }
@@ -2703,6 +2821,26 @@ function updateAutoDriveButton() {
     }
 }
 
+function motorToggle() {
+    if (!state.connected) return;
+    state.motorsEnabled = !state.motorsEnabled;
+    sendMessage({ type: "toggle_motors", enabled: state.motorsEnabled });
+    updateMotorToggleButton();
+}
+
+function updateMotorToggleButton() {
+    if (!elements.motorToggleBtn) return;
+    if (state.motorsEnabled) {
+        elements.motorToggleBtn.textContent = 'Disable Movement';
+        elements.motorToggleBtn.style.color = 'var(--accent-red)';
+        elements.motorToggleBtn.style.borderColor = 'var(--accent-red)';
+    } else {
+        elements.motorToggleBtn.textContent = 'Enable Movement';
+        elements.motorToggleBtn.style.color = 'var(--accent-green)';
+        elements.motorToggleBtn.style.borderColor = 'var(--accent-green)';
+    }
+}
+
 function demoModeToggle() {
     if (!state.connected) return;
     if (state.isDemoMode) {
@@ -2721,12 +2859,12 @@ function updateDemoModeButton(active) {
     const btn = elements.demoModeBtn;
     if (!btn) return;
     if (active) {
-        btn.textContent = "⏹ Stop Demo";
+        btn.textContent = "Stop Demo";
         btn.style.background = "#7c3aed";
         btn.style.color = "#fff";
         btn.style.borderColor = "#7c3aed";
     } else {
-        btn.textContent = "🎬 Demo Mode";
+        btn.textContent = "Demo Mode";
         btn.style.background = "var(--bg-tertiary)";
         btn.style.color = "#a78bfa";
         btn.style.borderColor = "#a78bfa";
@@ -2849,6 +2987,7 @@ if (elements.rightSlider) {
 }
 
 if (elements.autoDriveBtn) elements.autoDriveBtn.addEventListener('click', autoDriveToggle);
+if (elements.motorToggleBtn) elements.motorToggleBtn.addEventListener('click', motorToggle);
 if (elements.demoModeBtn) elements.demoModeBtn.addEventListener('click', demoModeToggle);
 
 if (elements.stopBtn) elements.stopBtn.addEventListener('click', () => {
@@ -2890,7 +3029,7 @@ setInterval(() => {
     const dt = f._lastCalc ? (now - f._lastCalc) / 1000 : 1;
     if (dt > 0) {
         f.render = f._renderFrames / dt;
-        f.video  = f._videoFrames / dt;
+        f.video = f._videoFrames / dt;
     }
     f._renderFrames = 0;
     f._videoFrames = 0;
@@ -3033,6 +3172,13 @@ if (elements.stereoToggle) elements.stereoToggle.addEventListener('click', () =>
     sendMessage({ type: "toggle_stereo", enabled: state.stereoEnabled });
 });
 
+if (elements.scan3dToggle) elements.scan3dToggle.addEventListener('click', () => {
+    if (!state.connected) return;
+    state.scan3dEnabled = !state.scan3dEnabled;
+    if (typeof updateScan3dUI === 'function') updateScan3dUI();
+    sendMessage({ type: "toggle_3d_scan", enabled: state.scan3dEnabled });
+});
+
 if (elements.mapToggle) elements.mapToggle.addEventListener('click', () => {
     state.mapEnabled = !state.mapEnabled;
     elements.mapToggle.classList.toggle('active', state.mapEnabled);
@@ -3077,15 +3223,15 @@ if (elements.captureBtn) elements.captureBtn.addEventListener('click', () => {
     if (!state.connected) return;
     sendMessage({ type: "capture_image" });
     elements.captureBtn.disabled = true;
-    elements.captureBtn.textContent = '⏳';
-    setTimeout(() => { elements.captureBtn.disabled = false; elements.captureBtn.textContent = '📸 Capture'; }, 500);
+    elements.captureBtn.textContent = '';
+    setTimeout(() => { elements.captureBtn.disabled = false; elements.captureBtn.textContent = 'Capture'; }, 500);
 });
 
 if (elements.downloadImagesBtn) elements.downloadImagesBtn.addEventListener('click', () => {
     if (!state.connected) return;
     const shouldClear = confirm("Do you want to DELETE these images from the robot after downloading?\n\nOK = Download & Delete\nCancel = Download Only");
     elements.downloadImagesBtn.disabled = true;
-    elements.downloadImagesBtn.textContent = '⏳ Preparing...';
+    elements.downloadImagesBtn.textContent = 'Preparing...';
     sendMessage({ type: "download_images", clear: shouldClear });
 });
 
@@ -3102,10 +3248,10 @@ if (elements.goldenSetBtn) {
         if (!state.connected) return;
         window.goldenSetActive = !window.goldenSetActive;
         if (window.goldenSetActive) {
-            elements.goldenSetBtn.textContent = '⏹️ Golden Set: Stop';
+            elements.goldenSetBtn.textContent = 'Golden Set: Stop';
             sendMessage({ type: "start_golden_collection" });
         } else {
-            elements.goldenSetBtn.textContent = '✨ Golden Set: Start';
+            elements.goldenSetBtn.textContent = 'Golden Set: Start';
             sendMessage({ type: "stop_golden_collection" });
         }
     });
@@ -3113,7 +3259,7 @@ if (elements.goldenSetBtn) {
 
 function handleDownloadResponse(data) {
     elements.downloadImagesBtn.disabled = false;
-    elements.downloadImagesBtn.textContent = '💾 Download All';
+    elements.downloadImagesBtn.textContent = 'Download All';
 
     if (data.success && data.zip_data) {
         const byteCharacters = atob(data.zip_data);
@@ -3137,14 +3283,14 @@ function handleDownloadResponse(data) {
 function handleBlurResponse(data) {
     if (data.status === "started") {
         elements.blurSweepBtn.disabled = true;
-        elements.blurSweepBtn.textContent = "📸 Sweeping...";
+        elements.blurSweepBtn.textContent = "Sweeping...";
     } else if (data.status === "complete") {
         elements.blurSweepBtn.disabled = false;
-        elements.blurSweepBtn.textContent = "🌊 Blur Sweep";
+        elements.blurSweepBtn.textContent = "Blur Sweep";
     } else if (data.status === "error") {
         elements.blurSweepBtn.disabled = false;
-        elements.blurSweepBtn.textContent = "🌊 Blur Sweep";
-        alert("Sweep failed: " + data.message);
+        elements.blurSweepBtn.textContent = "Blur Sweep";
+        alert("Sweep failed:" + data.message);
     }
 }
 
@@ -3206,9 +3352,9 @@ function drawGamepadWidget(axes, buttons) {
 
     // Button pills
     const pillDefs = [
-        { idx: 0, label: '✕ Stop', color: '#f87171' },
-        { idx: 2, label: '□ Detect', color: '#a78bfa' },
-        { idx: 3, label: '△ Auto', color: '#34d399' },
+        { idx: 0, label: 'Stop', color: '#f87171' },
+        { idx: 2, label: 'Detect', color: '#a78bfa' },
+        { idx: 3, label: 'Auto', color: '#34d399' },
     ];
     const pillContainer = document.getElementById('gamepad-btns');
     if (pillContainer) {
@@ -3236,7 +3382,7 @@ window.addEventListener("gamepadconnected", (e) => {
     state.gamepadIndex = e.gamepad.index;
     if (elements.controllerName) elements.controllerName.textContent = e.gamepad.id.substring(0, 30);
     if (elements.gamepadIndicator) elements.gamepadIndicator.classList.add('connected');
-    if (elements.gamepadStatusText) elements.gamepadStatusText.textContent = '✓ Connected';
+    if (elements.gamepadStatusText) elements.gamepadStatusText.textContent = 'Connected';
     showGamepadWidget(true);
 });
 
@@ -3282,7 +3428,7 @@ function pollGamepad() {
                 gamepad = gps[i];
                 if (elements.controllerName) elements.controllerName.textContent = gamepad.id.substring(0, 30);
                 if (elements.gamepadIndicator) elements.gamepadIndicator.classList.add('connected');
-                if (elements.gamepadStatusText) elements.gamepadStatusText.textContent = '✓ Connected';
+                if (elements.gamepadStatusText) elements.gamepadStatusText.textContent = 'Connected';
                 showGamepadWidget(true);
                 break;
             }
@@ -3326,9 +3472,9 @@ function pollGamepad() {
     }
 
     // D-pad toggles (buttons 12–14)
-    // Up  (12) → Lidar
-    // Down(13) → Depth Camera
-    // Left(14) → Map
+    // Up (12) Lidar
+    // Down(13) Depth Camera
+    // Left(14) Map
     const dUp = gamepad.buttons[12];
     if (dUp && dUp.pressed && !buttonDebounce.dUp) {
         buttonDebounce.dUp = true;
@@ -3378,7 +3524,7 @@ function pollGamepad() {
 
     // 4. Joystick Drive (Holonomic Mecanum)
     // Right stick: forward/backward (vx) + strafe left/right (vy)
-    // Left stick:  rotate in place (omega)
+    // Left stick: rotate in place (omega)
     // Both sticks can be used simultaneously.
     // Only if NOT auto-driving
     if (!state.isAutoDriving) {
@@ -3396,8 +3542,8 @@ function pollGamepad() {
         if (Math.abs(lx) < deadzone) lx = 0;
 
         // R2 (right trigger) boosts move speed; low base for slow/accurate SLAM driving
-        const BASE_SCALE = 0.20;   // no R2: ~40 PWM
-        const FAST_SCALE = 0.45;   // full R2: ~90 PWM
+        const BASE_SCALE = 0.20; // no R2: ~40 PWM
+        const FAST_SCALE = 0.45; // full R2: ~90 PWM
         const r2 = gamepad.buttons[7] ? gamepad.buttons[7].value : 0;
         const MOVE_SCALE = BASE_SCALE + r2 * (FAST_SCALE - BASE_SCALE);
         const ROT_SCALE = 0.5 + r2 * (1.0 - 0.5);
@@ -3405,9 +3551,9 @@ function pollGamepad() {
         // Quadratic expo: fine control at low deflections, full speed at max stick
         const expo = v => Math.sign(v) * Math.pow(Math.abs(v), 1.5);
 
-        const vx = -expo(ry) * MOVE_SCALE;  // Right stick Y up → forward (positive vx)
-        const vy = -expo(rx) * MOVE_SCALE;  // Right stick X right → strafe right
-        const omega = -expo(lx) * ROT_SCALE;   // Left stick X right → rotate CW
+        const vx = -expo(ry) * MOVE_SCALE; // Right stick Y up forward (positive vx)
+        const vy = -expo(rx) * MOVE_SCALE; // Right stick X right strafe right
+        const omega = -expo(lx) * ROT_SCALE; // Left stick X right rotate CW
 
         const vxR = Math.round(vx * 100) / 100;
         const vyR = Math.round(vy * 100) / 100;
@@ -3419,17 +3565,17 @@ function pollGamepad() {
         const anyActive = vxR !== 0 || vyR !== 0 || omegaR !== 0;
         let shouldSend = false;
         if (anyActive) {
-            state.stopFrameCount = 3;   // arm continuous stop on release (~50 ms)
+            state.stopFrameCount = 3; // arm continuous stop on release (~50 ms)
             shouldSend = true;
         } else if (state.stopFrameCount > 0) {
             state.stopFrameCount--;
-            shouldSend = true;          // keep sending zeros until counter expires
+            shouldSend = true; // keep sending zeros until counter expires
         }
 
         if (shouldSend) {
             const now = Date.now();
             const timeSinceLastSend = now - (state.lastSendTime || 0);
-            
+
             // Throttle to 20 Hz (50 ms) to avoid TCP queueing lag, but always send stops instantly.
             if (timeSinceLastSend >= 50 || !anyActive) {
                 sendMessage({ type: "set_move", vx: vxR, vy: vyR, omega: omegaR });

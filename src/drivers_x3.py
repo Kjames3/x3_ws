@@ -16,12 +16,26 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 # Serial Config
-if os.path.exists("/dev/ttyCH341USB0"):
-    SERIAL_PORT = "/dev/ttyCH341USB0"
-elif os.path.exists("/dev/ttyCH341USB1"):
-    SERIAL_PORT = "/dev/ttyCH341USB1"
-else:
-    SERIAL_PORT = "/dev/ttyUSB0"  # Fallback for standard kernel driver
+def _find_rosmaster_port():
+    """Locate the Rosmaster mainboard, never the LX16A servo bus.
+
+    Both boards are CH340s with identical VID:PID and no serial number, so
+    /dev/ttyCH341USB0 and USB1 swap with hub enumeration order. Picking by
+    index would, half the time, push Rosmaster motor frames into the lidar
+    tilt servo. Prefer the udev symlink (src/63-rosmaster.rules keys on the
+    chip revision); if it is missing, at least exclude whatever /dev/lx16a
+    currently points at.
+    """
+    if os.path.exists("/dev/rosmaster"):
+        return "/dev/rosmaster"
+    servo = os.path.realpath("/dev/lx16a") if os.path.exists("/dev/lx16a") else None
+    for candidate in ("/dev/ttyCH341USB0", "/dev/ttyCH341USB1", "/dev/ttyUSB0"):
+        if os.path.exists(candidate) and os.path.realpath(candidate) != servo:
+            return candidate
+    return "/dev/ttyUSB0"  # Fallback for standard kernel driver
+
+
+SERIAL_PORT = _find_rosmaster_port()
 
 SERIAL_BAUDRATE = 115200
 
@@ -611,3 +625,116 @@ class YDLidarDriver:
             except Exception:
                 pass
         logger.info("YDLidar: disconnected")
+
+
+# =============================================================================
+# INA226 BATTERY MONITOR (I2C)
+# =============================================================================
+
+# INA226 register map + fixed scales from the datasheet.
+_INA226_REG_SHUNT_V = 0x01   # signed, 2.5 uV/LSB
+_INA226_REG_BUS_V   = 0x02   # unsigned, 1.25 mV/LSB
+_INA226_SHUNT_LSB_V = 2.5e-6
+_INA226_BUS_LSB_V   = 1.25e-3
+
+# Shunt resistance of the breakout actually fitted to this robot.  Measured
+# 2026-08-31 against the live chip: the shunt register sits at ~3.1 mV with the
+# robot idle, which is 1.55 A across 2 mOhm and matches the 1.21-1.36 A idle
+# draw in the full-discharge trace (logs/battery/battery_20260815-132549.csv).
+# A 0.1 Ohm shunt would make that same reading 31 mA / 0.39 W, which cannot run
+# an Orin Nano -- so the value is pinned by an order of magnitude, not a guess.
+_INA226_SHUNT_OHMS = 0.002
+
+
+class INA226BatteryMonitor:
+    """
+    Driver for INA226 Voltage/Current monitor over I2C.
+
+    Wiring (verified live): the INA226 is the ONLY device on **i2c-7**
+    (40-pin header pins 3=SDA / 5=SCL) at address 0x40.  Pins 27/28 are i2c-1,
+    which carries the OLED plus the devkit's own INA3221 -- also at 0x40 -- so
+    do not move this chip there.
+
+    Current and power are computed **in software** from the shunt-voltage
+    register rather than read from the chip's current/power registers.  Those
+    registers return 0 unless the calibration register (0x05) is programmed,
+    and it is 0 on this board; computing from the shunt needs no config write,
+    so it cannot clobber a setting some other process depends on.
+    """
+    def __init__(self, i2c_bus=7, i2c_addr=0x40, max_voltage=12.6, min_voltage=9.6,
+                 shunt_ohms=_INA226_SHUNT_OHMS):
+        self.bus_num = i2c_bus
+        self.addr = i2c_addr
+        self.max_voltage = max_voltage
+        self.min_voltage = min_voltage
+        self.shunt_ohms = shunt_ohms
+        self.bus = None
+        try:
+            import smbus2
+            self.bus = smbus2.SMBus(self.bus_num)
+            logger.info(f"INA226 initialized on I2C bus {self.bus_num} at addr 0x{self.addr:02X}")
+        except ImportError:
+            logger.warning("smbus2 not installed — INA226 unavailable (run: pip install smbus2)")
+        except Exception as e:
+            logger.error(f"INA226 init failed on bus {self.bus_num}: {e}")
+
+    def _read_reg(self, reg):
+        """One raw 16-bit register.  INA226 is big-endian, smbus2 is little."""
+        word = self.bus.read_word_data(self.addr, reg)
+        return ((word << 8) & 0xFF00) + (word >> 8)
+
+    def get_voltage(self):
+        if self.bus is None:
+            return 0.0
+        try:
+            return self._read_reg(_INA226_REG_BUS_V) * _INA226_BUS_LSB_V
+        except Exception as e:
+            logger.error(f"INA226 read error: {e}")
+            return 0.0
+
+    def get_current(self):
+        """Measured pack current in amps.  Positive = discharge.
+
+        Returns None (not 0.0) when the chip cannot be read, so a caller can
+        tell "no sensor" apart from "genuinely drawing nothing" -- the battery
+        estimator must not coulomb-count a failed read as an idle pack.
+        """
+        if self.bus is None:
+            return None
+        try:
+            raw = self._read_reg(_INA226_REG_SHUNT_V)
+            if raw > 32767:            # register is signed two's complement
+                raw -= 65536
+            return (raw * _INA226_SHUNT_LSB_V) / self.shunt_ohms
+        except Exception as e:
+            logger.error(f"INA226 shunt read error: {e}")
+            return None
+
+    def get_power(self):
+        """Measured pack power in watts, or None if the chip cannot be read."""
+        amps = self.get_current()
+        if amps is None:
+            return None
+        return self.get_voltage() * amps
+
+    def get_percentage(self, voltage=None):
+        """Crude voltage-only gauge.  Kept ONLY as a cold-start fallback.
+
+        This pack is 4S LiFePO4: 85%->98% SoC spans 5 mV, which is below the
+        sensor's own 1.25 mV LSB, while sag at idle is ~78 mV.  On the real
+        discharge trace this mapping read 48.9% with 18.0% actually left.  Use
+        battery.BatteryEstimator (coulomb counting) wherever there is current.
+        """
+        if voltage is None:
+            voltage = self.get_voltage()
+        if voltage <= 0.0:
+            return 0.0
+
+        # Simple linear mapping
+        pct = (voltage - self.min_voltage) / (self.max_voltage - self.min_voltage) * 100.0
+        return max(0.0, min(100.0, pct))
+        
+    def cleanup(self):
+        if self.bus:
+            self.bus.close()
+            self.bus = None

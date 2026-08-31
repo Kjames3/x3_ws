@@ -1131,6 +1131,20 @@ body {
     box-shadow: 0 0 6px rgba(34, 211, 238, 0.3);
 }
 
+/* Selected state for a segmented choice (sweep style) and for the 3D Scan
+   toggle button, which has set this class since it was added but never had a
+   rule to match -- so it changed its label and nothing else. */
+.btn-nav.btn-nav-active {
+    background: #22d3ee;
+    color: var(--bg-primary, #0b1120);
+    border-color: #22d3ee;
+    box-shadow: 0 0 8px rgba(34, 211, 238, 0.45);
+}
+
+.btn-nav.btn-nav-active:hover {
+    background: #67e8f9;
+}
+
 .btn-nav-sm {
     padding: 0.25rem 0.6rem;
     font-size: 0.72rem;

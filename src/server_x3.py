@@ -36,6 +36,14 @@ import threading
 import socket
 import subprocess
 from multiprocessing import shared_memory
+import math
+try:
+    from dynamixel_servo import (
+        XL430, DynamixelError, COUNTS_PER_DEG,
+        OPERATING_MODE_POSITION, deg_s_to_profile_velocity,
+    )
+except ImportError:
+    pass
 
 # Shared Memory Buffers for zero-copy IPC (Idea 145)
 _shared_bgr_shm = None
@@ -78,7 +86,8 @@ logger = logging.getLogger(__name__)
 
 # Import X3 specific drivers
 from drivers_x3 import (
-    Rosmaster, MecanumDrive, YDLidarDriver, AstraCamera, OLEDDisplay, SERIAL_PORT
+    Rosmaster, MecanumDrive, YDLidarDriver, AstraCamera, OLEDDisplay, SERIAL_PORT,
+    INA226BatteryMonitor
 )
 from nav2_client import Nav2Client
 from frontier_explorer import FrontierExplorer
@@ -121,6 +130,14 @@ parser.add_argument('--webrtc-camera', action='store_true', dest='webrtc_camera'
                     help='Serve the color camera over WebRTC (via mediamtx) instead of '
                          'base64/WebSocket. Releases the Astra so ffmpeg can capture it at '
                          'full framerate; launches mediamtx. GUI shows the WebRTC <video>.')
+parser.add_argument('--auto-nav2-map', type=str, default=None, dest='auto_nav2_map',
+                    metavar='MAP.yaml',
+                    help='Launch Nav2 + AMCL on this map at startup. OFF by '
+                         'default: AMCL publishes map->odom, and so does '
+                         'slam_toolbox, so leaving this on breaks mapping and '
+                         'makes RViz drop odom-framed messages.')
+parser.add_argument('--oak-cloud', action='store_true', dest='oak_cloud',
+                    help='Enable OAK-D point cloud publishing.')
 args = parser.parse_args()
 SIM_MODE  = args.sim
 ROS2_MODE = not args.sim  # ROS2 hardware bridge is the default; only --sim disables it
@@ -130,10 +147,16 @@ OAK_ROS_PUBLISH = args.oak_ros_publish      # republish OAK streams as ROS2 topi
 OAK_ROS_RATE = args.oak_ros_rate
 OAK_ROS_STEREO = not args.oak_ros_no_stereo
 WEBRTC_CAMERA = args.webrtc_camera  # color via WebRTC/mediamtx instead of base64 (releases Astra)
+AUTO_NAV2_MAP = args.auto_nav2_map  # None = do not auto-launch Nav2/AMCL (see --auto-nav2-map)
 
 # Apply ROS_DOMAIN_ID early — must be set before rclpy.init() inside ROS2Bridge
 if args.domain_id is not None:
     os.environ['ROS_DOMAIN_ID'] = str(args.domain_id)
+
+# Force FastDDS to use the TCP profile for large messages when in Simple Discovery mode
+if os.environ.get('X3_SIMPLE_DISCOVERY') == '1':
+    os.environ['FASTRTPS_DEFAULT_PROFILES_FILE'] = '/home/jetson/x3_ws/config/fastdds_tcp_server.xml'
+    os.environ['FASTDDS_DEFAULT_PROFILES_FILE'] = '/home/jetson/x3_ws/config/fastdds_tcp_server.xml'
 
 def _resolve_discovery_server() -> str:
     """Resolve the active IP address to use for the FastDDS Discovery Server.
@@ -204,6 +227,14 @@ drive = None
 lidar = None
 camera = None
 oak = None          # OakDCamera instance (stereo + depth + IMU); depth source when present
+ina226 = None       # INA226 Battery Monitor
+battery_estimator = None   # battery.BatteryEstimator — coulomb-counted SoC
+_batt_cache_a = None       # last measured pack current (A), None = no sensor
+_batt_cache_w = None       # last measured pack power (W)
+_batt_cache_a_time = 0.0   # own clock: the voltage lane resets _batt_cache_time
+_batt_state_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "config", "battery_state.json")
+_batt_state_last_save = 0.0
 oak_ros_pub = None  # OakRosPublisher — republishes /oak/* topics (--oak-ros-publish only)
 model = None
 oled = None
@@ -213,6 +244,7 @@ _gazebo_proc    = None   # subprocess handle when --sim auto-launches Gazebo
 _ros2_stack_proc = None  # subprocess handle for x3_bringup (launched by default in ROS2 mode)
 _mediamtx_proc = None    # subprocess handle for mediamtx (WebRTC camera, --webrtc-camera)
 _slam_proc      = None   # subprocess handle when SLAM Toolbox is running
+_octomap_proc   = None   # subprocess handle for 3D SLAM (octomap_server)
 _shutting_down  = False  # set on SIGINT/SIGTERM/cleanup so motion_loop stops publishing
                          # to /cmd_vel before rclpy is torn down (avoids a publish-on-dead-
                          # context RCLError → C++ abort that orphaned the bringup stack)
@@ -226,6 +258,208 @@ _ab_test_mode = None       # A/B comparison test mode ("reactive" or "predictive
 detection_enabled = False
 depth_enabled = False
 stereo_enabled = False   # OAK-D left/right mono streaming to the GUI (off by default; bandwidth)
+lidar_3d_scan_enabled = False
+# Tilt sweep geometry.  +/-45 deg about level covers a 0.8 m tabletop from
+# 0.61 m out and a 2.4 m ceiling from 2.2 m out, given the lidar at z=0.191.
+# The step sets vertical resolution: 1.0 deg is ~5 cm at 3 m, 0.5 deg ~2.6 cm.
+LIDAR_SWEEP_DEG = 45.0
+LIDAR_SWEEP_STEP_DEG = 1.0
+LIDAR_SWEEP_SETTLE_S = 0.15   # moving-flag startup grace for each 1 deg step
+LIDAR_SWEEP_DWELL_S = 0.25    # leaves capture margin after a 156 ms scan window
+LIDAR_SWEEP_SPEED_DEG_S = 40.0
+LIDAR_SWEEP_ACCELERATION = 40  # deterministic, moderate XL430 profile ramp
+
+# ── Sweep style, switchable from the GUI for A/B testing ────────────────────
+# "step"       = step-and-stare (the production path; every ray in a dwell
+#                shares one exact transform, so the cloud needs no deskewing)
+# "continuous" = drive endpoint-to-endpoint without stopping, deliberately
+#                smearing each 156 ms scan across speed*0.156 deg of pitch.
+# The point of the toggle is to SEE that smear: at 40 deg/s a scan spans
+# 6.25 deg, which at 3 m is ~33 cm of height error per revolution.
+lidar_sweep_mode = "step"
+lidar_sweep_speed_deg_s = LIDAR_SWEEP_SPEED_DEG_S
+LIDAR_SWEEP_SPEED_MIN_DEG_S = 2.0
+LIDAR_SWEEP_SPEED_MAX_DEG_S = 90.0
+# lidar_3d_processor_node drops every cloud captured while the mount is
+# travelling (require_settled).  In continuous mode the mount is ALWAYS
+# travelling, so leaving that on yields an empty octree -- a silent, and very
+# convincing, "the hardware is broken".  See _set_processor_require_settled.
+_sweep_settled_bypass = False   # True = lie "settled" in joint_states because
+                                # the param could not be set on the node
+
+# How old /scan-derived obstacles may be before the CBF stops trusting them.
+# /scan_raw measures ~6.4 Hz (156 ms), so 0.5 s allows ~3 missed scans.
+OBSTACLE_STALE_S = 0.5
+
+# Which websocket asked for the running sweep, so it can be cancelled when
+# that client goes away, and a wall-clock backstop for every other way a
+# sweep can be orphaned (crashed client, lost disable, forgotten tab).
+_sweep_owner = None
+_sweep_started_at = 0.0
+LIDAR_SWEEP_MAX_S = 600.0
+
+# ── Tilt sampler: the servo's read path, owned by ONE thread ───────────────
+# The tilt angle used to be read inside lidar_scan_loop's 0.1 s asyncio cycle,
+# which measured 6.4 Hz with a 429 ms worst gap (std 66 ms) -- at 45 deg/s that
+# is 20 deg of pitch across one gap, and interpolating linearly through it puts
+# ~54 cm of error at 3 m into any deskewed cloud, WORSE than the smear being
+# corrected.  A dedicated thread at a fixed period fixes both the rate and the
+# regularity, and stamps the sample at the instant it was measured rather than
+# whenever the event loop got round to publishing it.
+#
+# dynamixel_sdk BUSY-WAITS on the read (measured 97% CPU for the whole round
+# trip), so the poll rate costs real CPU: at 1 Mbps one read_pos is 1.49 ms, so
+# 50 Hz is ~7.5% of a core.  At the old 57600 it was 6.14 ms and ~31%.  Do not
+# raise TILT_SAMPLE_HZ without re-checking that arithmetic.
+# TILT_SAMPLE_HZ is a TARGET, not what you get.  Measured in-process
+# 2026-08-29: 38.4 Hz, period p50 20.0 ms (exactly on target) but p95 86 ms,
+# p99 105 ms.  The median proves the thread's scheduling is fine; the tail is
+# the read itself stretching from **1.49 ms standalone to 8.0 ms in-process**,
+# because dynamixel_sdk's read is a Python-level busy-wait poll competing for
+# the GIL with ~16 other working threads (oakd alone is 52% of a core).
+#
+# `sys.setswitchinterval(0.001)` was TRIED and does NOT help: 38.2 Hz, read
+# 8.31 ms, tail actually worse (max 350 ms). Do not retry it.  The only real
+# fix is moving this sampler into its own process, which is why the plan has
+# that as a separate step -- see notes/ and the memory entry.
+TILT_SAMPLE_HZ = 50.0
+_servo_lock = threading.Lock()       # every touch of the Dynamixel bus
+_tilt_lock = threading.Lock()        # guards _tilt_sample
+_tilt_sample = {
+    "counts": None,      # raw servo counts, None until the first good read
+    "deg": 0.0,          # signed degrees about the calibrated level
+    "moving": False,     # the XL430's Moving flag (only polled when needed)
+    "t": 0.0,            # time.monotonic() midpoint of the read
+    "reads": 0,
+    "errors": 0,
+}
+# read_moving costs a second round trip (1.49 -> 2.87 ms) and only the
+# step-and-stare state machine needs it, so lidar_scan_loop turns it on for
+# exactly as long as it has an outstanding goal.  In continuous mode the mount
+# never stops and the flag is meaningless, so it stays off.
+_tilt_need_moving = False
+_tilt_gate_moving = False   # what to publish as the /scan gate's "discard" flag
+
+
+# Wall-clock stamp of the last non-zero MANUAL motion command (set in
+# _enqueue_motion).  -inf so a fresh process is never considered "just driven".
+_last_teleop_motion_t = float('-inf')
+# How long after a teleop command the mount stays locked out.  Joystick input
+# arrives at 20-50 Hz, so anything above ~0.2 s makes a continuous drive read as
+# continuously moving; 1.5 s also covers the gap between D-pad taps and lets the
+# chassis actually come to rest before a station is captured.
+TELEOP_TILT_LOCKOUT_S = 1.5
+
+
+def _sweep_config_payload(note=None):
+    """Current sweep style + the derived numbers the GUI shows as a hint."""
+    scan_s = 0.156   # one YDLidar revolution at ~6.4 Hz
+    smear_deg = lidar_sweep_speed_deg_s * scan_s
+    return {
+        "type": "sweep_config",
+        "mode": lidar_sweep_mode,
+        "speed_deg_s": round(lidar_sweep_speed_deg_s, 1),
+        "speed_min": LIDAR_SWEEP_SPEED_MIN_DEG_S,
+        "speed_max": LIDAR_SWEEP_SPEED_MAX_DEG_S,
+        "step_deg": LIDAR_SWEEP_STEP_DEG,
+        "dwell_s": LIDAR_SWEEP_DWELL_S,
+        # What the mode actually costs, so the GUI can state it rather than
+        # making the operator remember it.
+        "smear_deg": round(smear_deg, 2) if lidar_sweep_mode == "continuous" else 0.0,
+        "smear_cm_at_3m": round(300.0 * math.tan(math.radians(smear_deg)), 1)
+                          if lidar_sweep_mode == "continuous" else 0.0,
+        "settled_bypass": _sweep_settled_bypass,
+        "scanning": lidar_3d_scan_enabled,
+        "note": note,
+    }
+
+
+async def _broadcast_sweep_config(note=None):
+    payload = json.dumps(_sweep_config_payload(note))
+    for ws in list(connected_clients):
+        try:
+            await ws.send(payload)
+        except Exception:
+            pass
+
+
+async def _set_processor_require_settled(value):
+    """Turn lidar_3d_processor_node's moving-scan gate on or off at runtime.
+
+    Returns (ok, detail).  `ok` False means the gate is still whatever it was,
+    and a continuous sweep would therefore produce NO cloud at all -- the
+    caller falls back to publishing a fake "settled" velocity so the test still
+    yields data rather than an empty octree that looks like dead hardware.
+
+    Done over the CLI rather than an rclpy parameter client on purpose: the
+    processor runs in the bringup stack as a separate process (sometimes
+    composed), and `ros2 param set` works the same either way.
+    """
+    cmd = ["ros2", "param", "set", "/lidar_3d_processor_node",
+           "require_settled", "true" if value else "false"]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=8.0)
+        text = (out or b"").decode(errors="replace").strip()
+        # `ros2 param set` exits 0 even when it cannot find the node, so the
+        # exit code alone is not enough -- it prints "Set parameter successful"
+        # only on the real thing.
+        if proc.returncode == 0 and "successful" in text.lower():
+            return True, text
+        return False, text or ("exit %s" % proc.returncode)
+    except asyncio.TimeoutError:
+        return False, "timed out (is lidar_3d_processor_node running?)"
+    except Exception as e:
+        return False, str(e)
+
+
+async def _apply_sweep_gate():
+    """Make the processor's moving-scan gate match the current sweep mode.
+
+    Called both when the mode changes and at the start of every sweep -- the
+    node can be restarted (or the server can be) independently of this
+    process, and an out-of-date gate is invisible until a map comes out empty
+    (continuous) or suspiciously clean-looking (step with the gate stuck off).
+    Returns (ok, detail).
+    """
+    global _sweep_settled_bypass
+    ok, detail = await _set_processor_require_settled(lidar_sweep_mode == "step")
+    _sweep_settled_bypass = (lidar_sweep_mode == "continuous" and not ok)
+    return ok, detail
+
+
+def _tilt_nav_conflict():
+    """Why a tilt sweep and robot motion must not overlap, or None if they may.
+
+    A tilted scan plane makes lidar_3d_processor_node gate /scan off, so
+    slam_toolbox and AMCL stop receiving data while Nav2's costmaps go stale
+    and the robot is still free to drive.  Measured on the robot 2026-08-22:
+    during a 50 s sweep only 52 of 391 scans reached /scan, all of them from
+    the level part of the sweep.
+
+    This is the ONE interlock that is safety-critical, so it is checked in
+    both directions -- a sweep refuses to start while the robot is moving, and
+    a sweep in progress is aborted the moment motion begins.
+
+    FOUR arms, not three.  The first three cover the autonomous drivers (Nav2,
+    auto-drive, frontier exploration); the fourth covers a human on the
+    joystick, which for a long time bypassed this check entirely.  Manual
+    driving during a sweep is the worst case of the lot: it gates /scan off
+    while the robot moves AND it breaks the stationary-station assumption that
+    the whole step-and-stare design rests on, so every point inserted during
+    the drive is smeared by chassis motion on top of the tilt.
+    """
+    if nav2_client is not None and nav2_client.is_busy():
+        return "Nav2 has an active goal"
+    if is_auto_driving:
+        return "auto-drive is running"
+    if frontier_explorer is not None and frontier_explorer.is_exploring():
+        return "frontier exploration is running"
+    if time.monotonic() - _last_teleop_motion_t < TELEOP_TILT_LOCKOUT_S:
+        return "the robot is being driven manually"
+    return None
 lidar_enabled = False
 is_auto_driving = False
 last_detections = []
@@ -234,6 +468,8 @@ active_model_name = "yolo26n"
 # Current motor powers (tank-drive representation for GUI readout)
 current_left_power = 0.0
 current_right_power = 0.0
+
+motors_enabled = True
 
 # FPS tracking
 _cam_frame_count = 0
@@ -259,6 +495,7 @@ MOTION_WATCHDOG_TIMEOUT = 0.50
 # inside the event loop.  Handlers enqueue (vx, vy, omega) tuples; motion_loop()
 # drains the queue at 100 Hz and calls drive.move().
 motion_queue = None
+servo_stats = {"voltage": "--", "state": "Free"}
 
 # =============================================================================
 # INITIALIZATION
@@ -298,6 +535,7 @@ class ROS2Bridge:
         from src.cbf_filter import HolonomicCBFFilter
 
         from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+        from sensor_msgs.msg import JointState
 
         rclpy.init(args=None)
         self._node = Node('x3_ws_bridge')
@@ -309,6 +547,36 @@ class ROS2Bridge:
         self._twist = {"vx": 0.0, "vy": 0.0, "wz": 0.0}   # body velocity m/s, rad/s
         self._voltage = 12.0               # volts, updated by /voltage subscriber
         self._occupancy_grid: dict | None = None  # latest OccupancyGrid info dict for frontier explorer
+        # TWO publishers, on purpose.
+        #
+        # `joint_pub` -> /lidar_tilt/joint_states is the tilt mount's own topic.
+        # lidar_3d_processor_node gates /scan on it and must NOT read the merged
+        # /joint_states, where anything publishing `lidar_tilt_joint: 0.0` reads
+        # as a fresh, level measurement forever.
+        #
+        # `full_joint_pub` -> /joint_states feeds robot_state_publisher DIRECTLY,
+        # replacing the joint_state_publisher `source_list` relay that used to
+        # sit in between.  Measured on the robot 2026-08-29, that relay:
+        #   * pinned TF at 10.0 Hz however fast it was fed (10/25/50/100 Hz in
+        #     -> 8.9/10.0/10.0/10.0 Hz out), and reached only 15.7-18 Hz even at
+        #     `rate:=100`, while burning 28% of a core to do it;
+        #   * RE-STAMPED ~34% of what it emitted with its own timer's time
+        #     instead of the measurement time (proved by feeding it joint states
+        #     stamped 10 s in the past: 66% came out old, 34% came out "now").
+        # Both are fatal for per-ray deskew, which interpolates TF between the
+        # stamps on either side of a scan.  Publishing here instead makes this
+        # process the single authority at its own rate with honest stamps.
+        #
+        # It carries all four wheel joints at 0.0 as well, exactly as
+        # joint_state_publisher did, so removing that node changes nothing for
+        # the wheel TF.  (`driver_node` also publishes /joint_states, but under
+        # the R2's Ackermann joint names, of which only back_left/back_right
+        # exist in the X3 URDF -- robot_state_publisher merges by name and
+        # ignores the rest, so there is no fight over lidar_tilt_joint.)
+        self.joint_pub = self._node.create_publisher(
+            JointState, '/lidar_tilt/joint_states', 10)
+        self.full_joint_pub = self._node.create_publisher(
+            JointState, '/joint_states', 10)
         # safe_distance MUST stay ABOVE the _scan_cb min-range gate (0.12 m). The CBF
         # only brakes hard as distance -> safe_distance; if safe_distance were below the
         # gate, a real obstacle would be filtered out (mistaken for the chassis) before
@@ -318,6 +586,9 @@ class ROS2Bridge:
         # workaround goes away once the Lidar is raised above the chassis.
         self.cbf = HolonomicCBFFilter(safe_distance=0.30, gamma=1.0)
         self._latest_obstacles = []
+        # When that list was last REFRESHED.  Without this the CBF cannot
+        # tell a live obstacle from one frozen by a /scan dropout.
+        self._obstacles_stamp = 0.0
 
         # SLAM Toolbox publishes /map as TRANSIENT_LOCAL; match so late-joining still gets the map
         _map_qos = QoSProfile(depth=1,
@@ -372,6 +643,7 @@ class ROS2Bridge:
             angle += msg.angle_increment
         with self._lock:
             self._latest_obstacles = obstacles
+            self._obstacles_stamp = time.monotonic()
 
     def _image_cb(self, msg):
         """Convert sensor_msgs/Image (RGB_INT8 from Fortress) to cv2 BGR ndarray."""
@@ -545,13 +817,57 @@ class ROS2Bridge:
 
     def move(self, vx: float, vy: float, omega: float):
         from geometry_msgs.msg import Twist
+        global velocity_estimation_enabled, velocity_estimator
         
         with self._lock:
             obstacles = list(self._latest_obstacles)
+            obst_age = time.monotonic() - self._obstacles_stamp
+            
+        if velocity_estimation_enabled and velocity_estimator is not None:
+            try:
+                estimates = velocity_estimator.get_estimates()
+                for est in estimates:
+                    speed = est.get("speed", 0.0)
+                    if speed > 0.15:
+                        ox = est.get("z", est.get("y", 0.0))
+                        oy = -est.get("x", 0.0)
+                        rx = float(ox)
+                        ry = float(oy)
+                        rvx = est.get("vx", 0.0)
+                        rvy = est.get("vy", 0.0)
+                        for t in [0.5, 1.0, 1.5]:
+                            obstacles.append((rx + rvx * t, ry + rvy * t))
+            except Exception as e:
+                logger.warning(f"Failed to add predictive obstacles: {e}")
         
-        # Apply CBF safety filter to translation (always active, even when vx, vy == 0, to enable proactive repulsion)
-        # Assume robot is at (0,0) in its local frame to match local obstacle coordinates
-        safe_vx, safe_vy = self.cbf.filter_velocity(vx, vy, (0.0, 0.0), obstacles)
+        # CBF safety filter. Its proactive repulsion INVENTS velocity from a zero
+        # command, so it is only ever safe on FRESH obstacles -- and _scan_cb only
+        # refreshes them when a /scan message arrives.
+        #
+        # A 3D tilt sweep gates /scan off for its whole tilted portion BY DESIGN
+        # (lidar_3d_processor_node, so slam_toolbox and AMCL never see a pitched
+        # scan plane). That freezes _latest_obstacles, and repelling from the
+        # frozen set drove the robot forward at 30 Hz until it hit a wall and kept
+        # pushing -- a frozen list can never reveal the wall being approached.
+        # Reported from the GUI 2026-08-23.
+        if lidar_3d_scan_enabled:
+            # The mount is sweeping: the robot is supposed to be a stationary
+            # scanning station anyway, and every step-and-stare guarantee depends
+            # on it not moving. Hold still, rotation included.
+            safe_vx, safe_vy, omega = 0.0, 0.0, 0.0
+        elif obst_age > OBSTACLE_STALE_S:
+            # Blind. Pass the operator's own command through untouched, but never
+            # let the CBF ADD motion nobody asked for.
+            safe_vx, safe_vy = vx, vy
+            if (vx or vy) and not getattr(self, '_warned_stale_obst', False):
+                self._warned_stale_obst = True
+                logger.warning(
+                    "CBF disabled: /scan obstacles are %.1f s stale. Driving "
+                    "UNPROTECTED until /scan resumes.", obst_age)
+        else:
+            self._warned_stale_obst = False
+            # Robot is at (0,0) in its local frame, matching the obstacle coords.
+            safe_vx, safe_vy = self.cbf.filter_velocity(vx, vy, (0.0, 0.0), obstacles)
 
         msg = Twist()
         msg.linear.x  = float(safe_vx)    * self.LINEAR_SCALE
@@ -560,7 +876,18 @@ class ROS2Bridge:
         self._cmd_vel_pub.publish(msg)
 
     def stop(self):
-        self.move(0.0, 0.0, 0.0)
+        """A REAL stop: a zero Twist straight to /cmd_vel, bypassing the CBF.
+
+        This used to be `self.move(0, 0, 0)`, which routed the stop through the
+        CBF's proactive repulsion and could therefore produce MOTION -- which is
+        why the robot has previously wandered off during battery swaps. A stop
+        must never be conditional on obstacle data.
+        """
+        try:
+            from geometry_msgs.msg import Twist
+            self._cmd_vel_pub.publish(Twist())
+        except Exception as e:
+            logger.warning("stop(): direct zero-Twist publish failed: %s", e)
 
     def cleanup(self):
         import rclpy
@@ -581,7 +908,8 @@ class ROS2Bridge:
         import math
 
         pose_array = PoseArray()
-        pose_array.header.stamp = self._node.get_clock().now().to_msg()
+        pose_array.header.stamp.sec = 0
+        pose_array.header.stamp.nanosec = 0
         pose_array.header.frame_id = 'base_link'
 
         marker_array = MarkerArray()
@@ -632,6 +960,8 @@ class ROS2Bridge:
             marker.id = int(tid)
             marker.type = Marker.ARROW
             marker.action = Marker.ADD
+            marker.lifetime.sec = 0
+            marker.lifetime.nanosec = 500000000
             marker.pose.position.x = float(z)
             marker.pose.position.y = -float(x)
             marker.pose.position.z = 0.2
@@ -661,6 +991,8 @@ class ROS2Bridge:
             text_marker.id = int(tid) + 1000
             text_marker.type = Marker.TEXT_VIEW_FACING
             text_marker.action = Marker.ADD
+            text_marker.lifetime.sec = 0
+            text_marker.lifetime.nanosec = 500000000
             text_marker.pose.position.x = float(z)
             text_marker.pose.position.y = -float(x)
             text_marker.pose.position.z = 0.7
@@ -671,6 +1003,53 @@ class ROS2Bridge:
             text_marker.color.b = 1.0
             text_marker.text = f"ID:{tid} {speed:.2f}m/s"
             marker_array.markers.append(text_marker)
+
+            # Trajectory Marker
+            if speed > 0.1:
+                from geometry_msgs.msg import Point
+                traj_marker = Marker()
+                traj_marker.header = pose_array.header
+                traj_marker.ns = "pedestrian_trajectories"
+                traj_marker.id = int(tid) + 2000
+                traj_marker.type = Marker.LINE_STRIP
+                traj_marker.action = Marker.ADD
+                traj_marker.lifetime.sec = 0
+                traj_marker.lifetime.nanosec = 500000000
+                traj_marker.scale.x = 0.05
+                traj_marker.color.a = 0.8
+                traj_marker.color.r = 1.0
+                traj_marker.color.g = 1.0
+                traj_marker.color.b = 0.0
+                
+                for t in [0.0, 0.4, 0.8, 1.2, 1.6, 2.0]:
+                    p = Point()
+                    p.x = float(z) + float(vx) * t
+                    p.y = -float(x) + float(vy) * t
+                    p.z = 0.0
+                    traj_marker.points.append(p)
+                marker_array.markers.append(traj_marker)
+
+            # Person Volume Marker (Bounding Box)
+            vol_marker = Marker()
+            vol_marker.header = pose_array.header
+            vol_marker.ns = "pedestrian_volumes"
+            vol_marker.id = int(tid) + 3000
+            vol_marker.type = Marker.CUBE
+            vol_marker.action = Marker.ADD
+            vol_marker.lifetime.sec = 0
+            vol_marker.lifetime.nanosec = 500000000
+            vol_marker.pose.position.x = float(z)
+            vol_marker.pose.position.y = -float(x)
+            vol_marker.pose.position.z = 0.85
+            vol_marker.pose.orientation.w = 1.0
+            vol_marker.scale.x = 0.5
+            vol_marker.scale.y = 0.5
+            vol_marker.scale.z = 1.7
+            vol_marker.color.a = 0.3
+            vol_marker.color.r = 0.0
+            vol_marker.color.g = 1.0
+            vol_marker.color.b = 1.0
+            marker_array.markers.append(vol_marker)
 
         self._pedestrian_pub.publish(pose_array)
         self._pedestrian_marker_pub.publish(marker_array)
@@ -876,6 +1255,68 @@ def _launch_slam(use_sim_time: bool = False):
     return proc
 
 
+def _launch_octomap(use_sim_time: bool = False, frame_id: str = 'odom'):
+    """Start octomap_server (3D mapping) as a background subprocess.
+
+    Consumes /pointcloud_raw from lidar_3d_processor_node and publishes
+    /octomap_binary, /octomap_binary_throttled (1 Hz, for RViz over WiFi) and
+    /projected_map.  Pair it with the GUI's "3D Scan" toggle: the scan tilts the
+    mount and produces the cloud, this turns that cloud into a map.
+
+    frame_id defaults to `odom`, NOT `map`.  `map` only exists while AMCL or
+    slam_toolbox is actually localized; without map->odom octomap_server's
+    message filter drops 100% of clouds while logging only "queue is full",
+    never naming the missing frame.  For a stationary sweep odom is exactly
+    equivalent and never jumps.
+
+    Same clean-environment pattern as _launch_slam(), and the same
+    preexec_fn=os.setsid so the stop handler's os.killpg() reaches the whole
+    launch tree rather than just the `ros2 launch` parent.
+    Returns the Popen handle.
+    """
+    ws_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    install_setup = os.path.join(ws_root, 'install', 'setup.bash')
+
+    child_env = os.environ.copy()
+    if SIMPLE_DISCOVERY:
+        child_env.pop('ROS_DISCOVERY_SERVER', None)
+    else:
+        child_env['ROS_DISCOVERY_SERVER'] = os.environ.get(
+            'ROS_DISCOVERY_SERVER', '127.0.0.1:11811')
+    child_env.setdefault('DISPLAY', ':0')
+    clean_path = ':'.join(
+        p for p in child_env.get('PATH', '').split(':')
+        if 'conda' not in p.lower()
+    )
+    child_env['PATH'] = clean_path
+    if 'PYTHONPATH' in child_env:
+        child_env['PYTHONPATH'] = ':'.join(
+            p for p in child_env['PYTHONPATH'].split(':')
+            if 'conda' not in p.lower()
+        )
+
+    st_arg = 'use_sim_time:=true' if use_sim_time else 'use_sim_time:=false'
+    cmd = (
+        f'source /opt/ros/humble/setup.bash && '
+        f'source {install_setup} && '
+        f'ros2 launch yahboomcar_nav x3_octomap.launch.py '
+        f'frame_id:={frame_id} {st_arg}'
+    )
+    log_path = '/tmp/octomap_launch.log'
+    log_file = open(log_path, 'w')
+    proc = subprocess.Popen(
+        ['bash', '-c', cmd],
+        stdout=log_file,
+        stderr=log_file,
+        preexec_fn=os.setsid,
+        env=child_env,
+    )
+    logger.info(
+        f"OctoMap 3D mapping launched (pid {proc.pid}, frame={frame_id}) "
+        f"— log: {log_path}")
+    return proc
+
+
 def _save_map(name: str) -> tuple[bool, str]:
     """Call the slam_toolbox/save_map service synchronously.
 
@@ -923,6 +1364,93 @@ def _save_map(name: str) -> tuple[bool, str]:
         return False, str(exc)
 
 
+def _save_octomap(name: str, full: bool = False) -> tuple[bool, str]:
+    """Write the live octree to disk as .bt (binary) or .ot (full).
+
+    Until this existed NOTHING in the pipeline ever wrote an octree: octomap
+    ran, RViz drew it, and the map died with the process.  src/octomap_viewer.py
+    browses .bt/.ot files that had no way of being produced.
+
+    Two non-obvious things about the ROS 2 saver, neither of which matches the
+    ROS 1 documentation everyone quotes:
+
+      * it takes the path as a PARAMETER (`-p octomap_path:=...`), not as
+        `-f path` or a positional argument.  Both of those are accepted
+        silently and then fail with "Invalid file name or extension:" and an
+        empty name.
+      * it pulls the tree from the `/octomap_binary` SERVICE, not the topic of
+        the same name.  If octomap_server is not running it simply blocks on
+        "Waiting for service..." forever, which is why this call is bounded by
+        a timeout rather than left to finish.
+    """
+    if not name.endswith(('.bt', '.ot')):
+        name += '.ot' if full else '.bt'
+    name = os.path.basename(name)          # no path traversal from the GUI
+
+    ws_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    maps_dir = os.path.join(ws_root, 'src', 'yahboomcar_nav', 'maps')
+    os.makedirs(maps_dir, exist_ok=True)
+    out_path = os.path.join(maps_dir, name)
+
+    if _octomap_proc is None or _octomap_proc.poll() is not None:
+        return False, ("3D mapping is not running -- start it first, or the "
+                       "saver blocks forever waiting on /octomap_binary")
+
+    install_setup = os.path.join(ws_root, 'install', 'setup.bash')
+    child_env = os.environ.copy()
+    if SIMPLE_DISCOVERY:
+        child_env.pop('ROS_DISCOVERY_SERVER', None)
+    else:
+        child_env['ROS_DISCOVERY_SERVER'] = os.environ.get(
+            'ROS_DISCOVERY_SERVER', '127.0.0.1:11811')
+    child_env['PATH'] = ':'.join(
+        p for p in child_env.get('PATH', '').split(':')
+        if 'conda' not in p.lower())
+
+    cmd = (
+        f'source /opt/ros/humble/setup.bash && '
+        f'source {install_setup} && '
+        f'ros2 run octomap_server octomap_saver_node --ros-args '
+        f'-p octomap_path:={out_path}'
+        + (' -p full:=true' if full else '')
+    )
+    try:
+        result = subprocess.run(
+            ['bash', '-c', cmd],
+            capture_output=True, text=True, timeout=30, env=child_env,
+        )
+    except subprocess.TimeoutExpired:
+        return False, ("Timed out waiting for the /octomap_binary service -- "
+                       "is octomap_server actually up?")
+    except Exception as exc:
+        return False, str(exc)
+
+    # The saver exits 0 even when it refuses the filename, so trust the file.
+    if os.path.isfile(out_path) and os.path.getsize(out_path) > 0:
+        size_kb = os.path.getsize(out_path) / 1024.0
+        logger.info("3D map saved: %s (%.1f kB)", out_path, size_kb)
+        return True, "Saved '%s' (%.1f kB)" % (name, size_kb)
+    err = (result.stderr or result.stdout).strip().splitlines()
+    return False, (err[-1] if err else "octomap_saver wrote no file")
+
+
+def _list_octomaps() -> list:
+    """Every saved octree, newest first, for the GUI's 3D map list."""
+    ws_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    maps_dir = os.path.join(ws_root, 'src', 'yahboomcar_nav', 'maps')
+    out = []
+    try:
+        for f in os.listdir(maps_dir):
+            if f.endswith(('.bt', '.ot')):
+                fp = os.path.join(maps_dir, f)
+                out.append({"name": f,
+                            "size_kb": round(os.path.getsize(fp) / 1024.0, 1),
+                            "mtime": os.path.getmtime(fp)})
+    except OSError:
+        return []
+    return sorted(out, key=lambda m: m["mtime"], reverse=True)
+
+
 def _encode_mapu(grid: dict) -> bytes | None:
     """Encode an OccupancyGrid dict as a MAPU binary WebSocket frame.
 
@@ -962,7 +1490,7 @@ def _encode_mapu(grid: dict) -> bytes | None:
 
 
 def initialize_hardware():
-    global ros_board, ros_bridge, drive, lidar, camera, oak, oak_ros_pub, model, oled, _gazebo_proc
+    global ros_board, ros_bridge, drive, lidar, camera, oak, ina226, oak_ros_pub, model, oled, _gazebo_proc
     global nav2_client, _ros2_stack_proc, frontier_explorer
     global velocity_estimator, active_velocity_model_name
     global _shared_bgr_shm, _shared_depth_shm, _shared_bgr_array, _shared_depth_array
@@ -1027,6 +1555,24 @@ def initialize_hardware():
         nav2_client = Nav2Client(bridge._node)
         frontier_explorer = FrontierExplorer(nav2_client, bridge)
         logger.info("Nav2Client + FrontierExplorer initialized (ros2 mode)")
+
+        # Opt-in only (--auto-nav2-map). This used to fire unconditionally on a
+        # hardcoded RealLab2.yaml "for velocity estimator testing", which meant
+        # every session started with someone else's map on /map and with AMCL
+        # publishing map->odom. slam_toolbox publishes map->odom as well, so
+        # starting SLAM produced two publishers fighting over one transform:
+        # RViz could not transform odom-framed octomap data to a `map` fixed
+        # frame, its filter queue filled, and the 3D map lagged by seconds.
+        if AUTO_NAV2_MAP:
+            if not os.path.isfile(AUTO_NAV2_MAP):
+                logger.error("--auto-nav2-map %s does not exist; not launching "
+                             "Nav2", AUTO_NAV2_MAP)
+            else:
+                logger.info("Auto-launching Nav2 with AMCL on %s (requested via "
+                            "--auto-nav2-map). Do NOT start SLAM while this "
+                            "runs -- both publish map->odom.", AUTO_NAV2_MAP)
+                nav2_client.launch_nav2(use_sim_time=False,
+                                        map_path=AUTO_NAV2_MAP, slam=False)
     else:
         # 1. Motor Controller (Serial) - uses auto-detected SERIAL_PORT
         logger.info(f"Connecting to Rosmaster on {SERIAL_PORT}...")
@@ -1039,6 +1585,11 @@ def initialize_hardware():
         # 5. YDLidar
         logger.info(f"Initializing Lidar on {LIDAR_PORT}...")
         lidar = YDLidarDriver(port=LIDAR_PORT, sim_mode=False)
+
+    if not SIM_MODE:
+        logger.info("Initializing INA226 Battery Monitor on bus 7...")
+        ina226 = INA226BatteryMonitor(i2c_bus=7)
+        _init_battery_estimator()
 
     # 3. Camera — direct USB in both direct-hardware and --ros2 modes.
     #    Only --sim uses ROS2Bridge.get_frame() (Gazebo publishes /camera/image_raw).
@@ -1260,6 +1811,12 @@ def cleanup():
             os.killpg(os.getpgid(_slam_proc.pid), signal.SIGTERM)
         except Exception:
             pass
+    if _octomap_proc is not None:
+        logger.info("Shutting down OctoMap 3D SLAM...")
+        try:
+            os.killpg(os.getpgid(_octomap_proc.pid), signal.SIGTERM)
+        except Exception:
+            pass
     if ros_board: ros_board.cleanup()
     if camera: camera.cleanup()
     if not (SIM_MODE or ROS2_MODE) and lidar: lidar.cleanup()
@@ -1299,6 +1856,14 @@ def _get_ssid() -> str:
 
 def _enqueue_motion(vx: float, vy: float, omega: float, instant: bool = False):
     """Enqueue a motion command; drops the oldest entry when full so stale commands never accumulate."""
+    global _last_teleop_motion_t
+    # Every manual path funnels through here (joystick, D-pad, tank power) --
+    # Nav2, auto-drive and the FSM do NOT.  Stamping non-zero commands here is
+    # therefore exactly "a human is driving right now", which is the fourth arm
+    # of the tilt interlock (see _tilt_nav_conflict).  Zeros are stops, so they
+    # must not count or releasing the joystick would keep the sweep locked out.
+    if vx or vy or omega:
+        _last_teleop_motion_t = time.monotonic()
     if motion_queue is None:
         return
     if motion_queue.full():
@@ -1334,24 +1899,6 @@ def _list_maps() -> list:
     if not os.path.isdir(d):
         return []
     return [f for f in os.listdir(d) if f.endswith('.yaml')]
-
-
-def _resolve_map_path(yaml_name: str) -> str | None:
-    """
-    Turn a map name from the GUI into an absolute YAML path inside the maps
-    directory. Returns None if empty or if the file does not exist.
-
-    Only the basename is honoured, so a crafted name can't escape maps/.
-    Nav2's map_server and x3_nav2.launch.py both need a full path — a bare
-    filename would be resolved against the launcher's cwd and silently fail.
-    """
-    if not yaml_name:
-        return None
-    name = os.path.basename(yaml_name)
-    if not name.endswith('.yaml'):
-        name += '.yaml'
-    path = os.path.join(_maps_dir(), name)
-    return path if os.path.isfile(path) else None
 
 
 def _load_map_data(yaml_name: str) -> dict | None:
@@ -1392,12 +1939,32 @@ def _load_map_data(yaml_name: str) -> dict | None:
         return None
 
 
+def _resolve_map_path(yaml_name: str) -> str | None:
+    """
+    Turn a map name from the GUI into an absolute YAML path inside the maps
+    directory. Returns None if empty or if the file does not exist.
+
+    Only the basename is honoured, so a crafted name can't escape maps/.
+    Nav2's map_server and x3_nav2.launch.py both need a full path — a bare
+    filename would be resolved against the launcher's cwd and silently fail.
+    """
+    if not yaml_name:
+        return None
+    name = os.path.basename(yaml_name)
+    if not name.endswith('.yaml'):
+        name += '.yaml'
+    path = os.path.join(_maps_dir(), name)
+    return path if os.path.isfile(path) else None
+
+
 async def handle_client(websocket):
     global detection_enabled, depth_enabled, stereo_enabled, lidar_enabled, is_auto_driving
     global current_left_power, current_right_power
     global model, active_model_name
     global _gazebo_proc, nav2_client
+    global detection_enabled, depth_enabled, stereo_enabled, lidar_enabled, is_auto_driving
     global velocity_estimator, active_velocity_model_name, velocity_estimation_enabled
+    global motors_enabled
     global _p2p_proc, _ab_test_proc, _ab_test_mode
 
     logger.info("Client connected")
@@ -1412,7 +1979,11 @@ async def handle_client(websocket):
         "mode": _mode,
         "active_velocity_model": active_velocity_model_name,
         "webrtc_camera": WEBRTC_CAMERA,   # GUI shows a WebRTC <video> instead of base64 frames
+        "build": _build_info(),
     }))
+    # A fresh tab must not show "step" while the mount is actually running a
+    # continuous test sweep started from another tab.
+    await websocket.send(json.dumps(_sweep_config_payload()))
 
     try:
         async for message in websocket:
@@ -1458,11 +2029,16 @@ async def handle_client(websocket):
                 elif msg_type == "stop":
                     current_left_power = 0.0
                     current_right_power = 0.0
+                    if ros_board: ros_board.set_motor(0, 0, 0, 0)
                     _enqueue_motion(0.0, 0.0, 0.0)
 
                 elif msg_type == "toggle_detection":
                     detection_enabled = data.get("enabled", False)
                     logger.info(f"Detection: {detection_enabled}")
+
+                elif msg_type == "toggle_motors":
+                    motors_enabled = data.get("enabled", True)
+                    logger.info(f"Motors: {'enabled' if motors_enabled else 'disabled'}")
 
                 elif msg_type == "launch_gazebo":
                     if SIM_MODE:
@@ -1499,8 +2075,84 @@ async def handle_client(websocket):
                     logger.info(f"Depth streaming: {depth_enabled}")
 
                 elif msg_type == "toggle_stereo":
+                    global stereo_enabled
                     stereo_enabled = data.get("enabled", False)
                     logger.info(f"OAK-D stereo streaming: {stereo_enabled}")
+
+                elif msg_type == "toggle_3d_scan":
+                    global lidar_3d_scan_enabled
+                    want_scan = data.get("enabled", False)
+                    conflict = _tilt_nav_conflict() if want_scan else None
+                    if conflict:
+                        logger.warning(
+                            "3D scan REFUSED: %s. Tilting the lidar gates "
+                            "/scan off, which would leave Nav2 driving on a "
+                            "costmap that has stopped updating.", conflict)
+                        await websocket.send(json.dumps({
+                            "type": "3d_scan_status",
+                            "enabled": False,
+                            "refused": True,
+                            "reason": conflict,
+                        }))
+                    else:
+                        lidar_3d_scan_enabled = want_scan
+                        global _sweep_owner, _sweep_started_at
+                        _sweep_owner = websocket if want_scan else None
+                        _sweep_started_at = time.monotonic() if want_scan else 0.0
+                        logger.info(f"Lidar 3D Scan: {lidar_3d_scan_enabled}")
+                        await websocket.send(json.dumps({
+                            "type": "3d_scan_status",
+                            "enabled": lidar_3d_scan_enabled,
+                            "refused": False,
+                        }))
+
+                elif msg_type == "set_sweep_config":
+                    # Testing knob: swap the 3D sweep between step-and-stare
+                    # and a constant-speed nod, and set that speed, so the
+                    # mapping degradation can be watched side by side.
+                    global lidar_sweep_mode, lidar_sweep_speed_deg_s
+                    note = None
+                    if "speed_deg_s" in data:
+                        try:
+                            lidar_sweep_speed_deg_s = min(
+                                LIDAR_SWEEP_SPEED_MAX_DEG_S,
+                                max(LIDAR_SWEEP_SPEED_MIN_DEG_S,
+                                    float(data["speed_deg_s"])))
+                        except (TypeError, ValueError):
+                            pass
+                    if "mode" in data:
+                        want_mode = ("continuous"
+                                     if data.get("mode") == "continuous"
+                                     else "step")
+                        if want_mode != lidar_sweep_mode:
+                            lidar_sweep_mode = want_mode
+                            # Continuous means never settled, so the
+                            # processor's moving-scan gate has to come off or
+                            # the octree stays empty.  Put it back on the way
+                            # out -- leaving it off would silently degrade
+                            # every later step-and-stare map.
+                            ok, detail = await _apply_sweep_gate()
+                            if not ok:
+                                logger.warning(
+                                    "set_sweep_config: could not set "
+                                    "require_settled on "
+                                    "lidar_3d_processor_node (%s). %s",
+                                    detail,
+                                    "Falling back to reporting the mount as "
+                                    "settled in /lidar_tilt/joint_states so "
+                                    "the continuous sweep still yields a "
+                                    "cloud."
+                                    if want_mode == "continuous"
+                                    else "The gate may still be OFF -- "
+                                         "step-and-stare clouds will include "
+                                         "smeared in-motion scans.")
+                                note = ("processor param not set (%s)"
+                                        % detail)
+                    logger.info("3D sweep config: mode=%s speed=%.1f deg/s "
+                                "(settled_bypass=%s)",
+                                lidar_sweep_mode, lidar_sweep_speed_deg_s,
+                                _sweep_settled_bypass)
+                    await _broadcast_sweep_config(note)
 
                 elif msg_type == "start_auto_drive":
                     is_auto_driving = True
@@ -1540,7 +2192,19 @@ async def handle_client(websocket):
                         nav2_client.stop_nav2()
 
                 elif msg_type == "set_nav_goal":
-                    if nav2_client:
+                    if lidar_3d_scan_enabled:
+                        # The other half of the interlock.  Without this you can
+                        # click a goal mid-sweep and Nav2 plans against frozen
+                        # costmaps.
+                        logger.warning(
+                            "set_nav_goal REFUSED: a 3D tilt scan is running. "
+                            "Turn 3D Scan off (the mount returns to level) "
+                            "before navigating.")
+                        await websocket.send(json.dumps({
+                            "type": "nav_goal_refused",
+                            "reason": "3D tilt scan in progress",
+                        }))
+                    elif nav2_client:
                         nav2_client.navigate_to(
                             float(data.get("x", 0.0)),
                             float(data.get("y", 0.0)),
@@ -1686,6 +2350,33 @@ async def handle_client(websocket):
                             logger.warning(f"Failed to stop SLAM: {exc}")
                         _slam_proc = None
 
+                elif msg_type == "start_3d_slam":
+                    global _octomap_proc
+                    if _octomap_proc is None or _octomap_proc.poll() is not None:
+                        _octomap_proc = _launch_octomap(use_sim_time=SIM_MODE)
+                        logger.info("OctoMap 3D Mapping launched")
+                        await websocket.send(json.dumps({
+                            "type": "slam_3d_started",
+                            "success": True,
+                            "msg": "3D SLAM launching...",
+                        }))
+                    else:
+                        logger.info("3D SLAM already running")
+                        await websocket.send(json.dumps({
+                            "type": "slam_3d_started",
+                            "success": True,
+                            "msg": "3D SLAM already running",
+                        }))
+
+                elif msg_type == "stop_3d_slam":
+                    if _octomap_proc is not None and _octomap_proc.poll() is None:
+                        try:
+                            os.killpg(os.getpgid(_octomap_proc.pid), signal.SIGTERM)
+                            logger.info("OctoMap 3D Mapping stopped")
+                        except Exception as exc:
+                            logger.warning(f"Failed to stop 3D SLAM: {exc}")
+                        _octomap_proc = None
+
                 elif msg_type == "request_live_map":
                     if ros_bridge is not None:
                         grid = ros_bridge.get_occupancy_grid()
@@ -1706,6 +2397,24 @@ async def handle_client(websocket):
                     if ok:
                         await websocket.send(json.dumps(
                             {"type": "map_list", "maps": _list_maps()}))
+
+                elif msg_type == "save_3d_map":
+                    map_name = (data.get("name") or "octomap").strip() or "octomap"
+                    ok, msg_text = await asyncio.to_thread(
+                        _save_octomap, map_name, bool(data.get("full", False)))
+                    await websocket.send(json.dumps({
+                        "type": "save_3d_map_result",
+                        "success": ok,
+                        "message": msg_text,
+                        "name": map_name,
+                    }))
+                    if ok:
+                        await websocket.send(json.dumps(
+                            {"type": "octomap_list", "maps": _list_octomaps()}))
+
+                elif msg_type == "list_3d_maps":
+                    await websocket.send(json.dumps(
+                        {"type": "octomap_list", "maps": _list_octomaps()}))
 
                 elif msg_type == "set_model":
                     model_name = data.get("model")
@@ -1794,6 +2503,9 @@ async def handle_client(websocket):
 
                 elif msg_type == "start_p2p_test":
                     if _p2p_proc is None or _p2p_proc.poll() is not None:
+                        if nav2_client and not (nav2_client._nav2_proc and nav2_client._nav2_proc.poll() is None):
+                            logger.info("Auto-launching Nav2 with AMCL on RealLab2.yaml for test...")
+                            nav2_client.launch_nav2(use_sim_time=SIM_MODE, map_path='/home/jetson/x3_ws/src/yahboomcar_nav/maps/RealLab2.yaml', slam=False)
                         logger.info("Starting Point-to-Point Test...")
                         script_path = str(Path(__file__).parent.resolve() / "point_to_point_test.py")
                         
@@ -1842,6 +2554,9 @@ async def handle_client(websocket):
                     distance = data.get("distance", 4.0)
                     repeat = data.get("repeat", False)
                     if _ab_test_proc is None or _ab_test_proc.poll() is not None:
+                        if nav2_client and not (nav2_client._nav2_proc and nav2_client._nav2_proc.poll() is None):
+                            logger.info("Auto-launching Nav2 with AMCL on RealLab2.yaml for test...")
+                            nav2_client.launch_nav2(use_sim_time=SIM_MODE, map_path='/home/jetson/x3_ws/src/yahboomcar_nav/maps/RealLab2.yaml', slam=False)
                         logger.info(f"Starting A/B comparison test (mode={mode}, distance={distance}, repeat={repeat})...")
                         script_path = str(Path(__file__).parent.resolve() / "ab_comparison_test.py")
 
@@ -1914,16 +2629,214 @@ async def handle_client(websocket):
             camera._has_clients = False  # P7: no clients left — skip lock+copy in capture loop
         # Eager stop — don't wait for the watchdog timeout on disconnect
         _enqueue_motion(0.0, 0.0, 0.0)
+        # A sweep must not outlive the client that asked for it: while the
+        # mount is tilted /scan is gated off, so an orphaned sweep blinds
+        # slam_toolbox and AMCL and freezes the CBF's obstacle set.
+        # Both names are already declared global earlier in this handler
+        # (the toggle_3d_scan branch); re-declaring here is a SyntaxError,
+        # because a global statement must precede every use in the scope.
+        if _sweep_owner is websocket and lidar_3d_scan_enabled:
+            lidar_3d_scan_enabled = False
+            logger.warning("3D sweep CANCELLED: the client that started it "
+                           "disconnected. Returning the mount to level.")
+        if _sweep_owner is websocket:
+            _sweep_owner = None
         logger.info("Client disconnected")
 
 # =============================================================================
 # MAIN BROADCAST LOOP
 # =============================================================================
 
+# --- System metrics -------------------------------------------------------
+# Sampled on a background thread, never in the event loop: psutil.cpu_percent
+# with an interval blocks, and a blocking call here stalls every client.
+_sys_stats = {"cpu_per_core": [], "cpu_total": 0.0, "proc_cpu": 0.0,
+              "proc_rss_mb": 0.0, "temp_c": None, "mem_pct": 0.0, "loadavg": 0.0}
+_sys_stats_lock = threading.Lock()
+
+
+_BUILD_INFO = None
+
+
+def _build_info():
+    """Identify which checkout is actually serving, cached after first call.
+
+    The robot and the laptop have drifted repeatedly, and the failure mode is
+    silent: an old GUI against a new server looks like a broken feature rather
+    than a stale file.  Showing the rev in the header makes that a glance.
+    """
+    global _BUILD_INFO
+    if _BUILD_INFO is not None:
+        return _BUILD_INFO
+    here = os.path.dirname(os.path.abspath(__file__))
+    info = {"rev": "unknown", "dirty": False, "server_mtime": None}
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=here,
+                             capture_output=True, text=True, timeout=5)
+        if out.returncode == 0:
+            info["rev"] = out.stdout.strip()
+        st = subprocess.run(["git", "status", "--porcelain"], cwd=here,
+                            capture_output=True, text=True, timeout=5)
+        info["dirty"] = bool(st.returncode == 0 and st.stdout.strip())
+    except Exception:
+        pass
+    try:
+        info["server_mtime"] = int(os.path.getmtime(os.path.abspath(__file__)))
+    except Exception:
+        pass
+    info["host"] = socket.gethostname()
+    _BUILD_INFO = info
+    return info
+
+
+_THERMAL_ZONES = None
+
+
+def _read_thermal_c():
+    """Hottest thermal zone in Celsius, or None.
+
+    psutil.sensors_temperatures() returns nothing on this Jetson, so read the
+    sysfs zones directly.  Several Orin zones (cv0-cv2) exist but have no
+    reading and yield an empty file -- those are skipped rather than treated
+    as 0 C, which would make the max look healthy while hiding a real one.
+    """
+    global _THERMAL_ZONES
+    if _THERMAL_ZONES is None:
+        try:
+            import glob
+            _THERMAL_ZONES = sorted(glob.glob(
+                "/sys/devices/virtual/thermal/thermal_zone*/temp"))
+        except Exception:
+            _THERMAL_ZONES = []
+    best = None
+    for path in _THERMAL_ZONES:
+        try:
+            with open(path) as fh:
+                raw = fh.read().strip()
+            if not raw:
+                continue
+            c = int(raw) / 1000.0
+            if 0.0 < c < 150.0 and (best is None or c > best):
+                best = c
+        except Exception:
+            continue
+    return round(best, 1) if best is not None else None
+
+
+def _system_snapshot():
+    with _sys_stats_lock:
+        return dict(_sys_stats)
+
+
+def _system_sampler(period_s=2.0):
+    """1/2 Hz snapshot of CPU, memory and thermals for the GUI diagnostics tile.
+
+    Per-core rather than aggregate on purpose: the interesting failure on this
+    machine is one core pinned at 100% while five idle, which an average of
+    ~20% hides completely.
+    """
+    try:
+        import psutil
+    except Exception as e:
+        logger.warning(f"psutil unavailable, system metrics disabled: {e}")
+        return
+
+    proc = psutil.Process()
+    proc.cpu_percent(None)          # prime; the first call always returns 0.0
+    psutil.cpu_percent(percpu=True)
+
+    while not _shutting_down:
+        try:
+            per_core = psutil.cpu_percent(interval=period_s, percpu=True)
+            vm = psutil.virtual_memory()
+            temp = _read_thermal_c()
+            snap = {
+                "cpu_per_core": [round(c, 1) for c in per_core],
+                "cpu_total": round(sum(per_core) / max(1, len(per_core)), 1),
+                # >100% is correct and meaningful here: it means the server is
+                # finally using more than one core.
+                "proc_cpu": round(proc.cpu_percent(None), 1),
+                "proc_rss_mb": round(proc.memory_info().rss / 1048576.0, 1),
+                "mem_pct": round(vm.percent, 1),
+                "loadavg": round(os.getloadavg()[0], 2),
+                "temp_c": temp,
+            }
+            with _sys_stats_lock:
+                _sys_stats.update(snap)
+        except Exception as e:
+            logger.debug(f"system sampler: {e}")
+            time.sleep(period_s)
+
+
+def _init_battery_estimator():
+    """Stand up the coulomb-counted SoC gauge, restoring the persisted charge.
+
+    Coulomb counting has no absolute reference of its own, so a restart that
+    re-seeds from the voltage plateau throws the estimate away -- on this pack
+    the plateau spans 5 mV across 85-98% SoC, so the reseed can be off by most
+    of a charge.  Persisting charge_ah is what makes the gauge survive the
+    service restarts this robot does constantly.
+    """
+    global battery_estimator
+    try:
+        import battery
+    except Exception as e:
+        logger.warning(f"battery module unavailable, SoC stays voltage-only: {e}")
+        return
+
+    initial = None
+    try:
+        with open(_batt_state_path) as fh:
+            saved = json.load(fh)
+        # A stale charge is worse than none: the pack may have been swapped or
+        # charged with the robot off, and neither shows up in the integral.
+        age_h = (time.time() - float(saved.get("saved_epoch", 0))) / 3600.0
+        if 0.0 <= age_h <= 12.0:
+            initial = float(saved["charge_ah"])
+            logger.info(f"Battery: restored {initial:.2f} Ah ({age_h:.1f} h old)")
+        else:
+            logger.info(f"Battery: persisted charge is {age_h:.1f} h old, re-seeding")
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logger.warning(f"Battery: could not restore charge: {e}")
+
+    # No current sensor means no coulomb counting; battery.py wants capacity_ah
+    # None in that case so it degrades to an honest OCV lookup rather than
+    # integrating a fabricated current.
+    has_current = ina226 is not None and ina226.get_current() is not None
+    battery_estimator = battery.BatteryEstimator(
+        capacity_ah=battery.PACK_CAPACITY_AH if has_current else None,
+        initial_charge_ah=initial,
+    )
+    logger.info(f"Battery estimator ready (coulomb counting: {has_current})")
+
+
+def _save_battery_state():
+    """Persist charge_ah so the next restart does not lose the integral."""
+    global _batt_state_last_save
+    if battery_estimator is None or battery_estimator.charge_ah is None:
+        return
+    now = time.time()
+    if now - _batt_state_last_save < 60.0:
+        return
+    _batt_state_last_save = now
+    try:
+        os.makedirs(os.path.dirname(_batt_state_path), exist_ok=True)
+        tmp = _batt_state_path + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump({"charge_ah": battery_estimator.charge_ah,
+                       "saved_epoch": now}, fh)
+        os.replace(tmp, _batt_state_path)   # atomic: a torn file reads as absent
+    except Exception as e:
+        logger.debug(f"Battery: could not persist charge: {e}")
+
+
 async def broadcast_loop():
     global _cam_frame_count, _yolo_frame_count, _fps_last_time
     global fps_camera, fps_detection, last_detections, depth_enabled, lidar_enabled
-    global _batt_cache_v, _batt_cache_time  # P9
+    global _batt_cache_v, _batt_cache_time, _batt_cache_a, _batt_cache_w  # P9
+    global _batt_cache_a_time
     global _ab_test_mode, stereo_enabled
 
     loop = asyncio.get_event_loop()
@@ -2034,23 +2947,56 @@ async def broadcast_loop():
                 # Per-wheel velocities (m/s) derived from /odom twist via mecanum kinematics
                 m1_enc, m2_enc, m3_enc, m4_enc = drive.get_wheel_velocities()
                 if now - _batt_cache_time >= 1.0:  # Throttle to 1Hz (Idea 67)
-                    _batt_cache_v    = drive.get_battery_voltage()
+                    if ina226 is not None:
+                        _batt_cache_v = ina226.get_voltage() or drive.get_battery_voltage()
+                    else:
+                        _batt_cache_v = drive.get_battery_voltage()
                     _batt_cache_time = now
                 batt_v = _batt_cache_v
             elif ros_board:
                 m1_enc, m2_enc, m3_enc, m4_enc = ros_board.get_motor_encoder()
                 if now - _batt_cache_time >= 1.0:
-                    _batt_cache_v    = ros_board.get_battery_voltage()
+                    if ina226 is not None:
+                        _batt_cache_v = ina226.get_voltage() or ros_board.get_battery_voltage()
+                    else:
+                        _batt_cache_v = ros_board.get_battery_voltage()
                     _batt_cache_time = now
                 batt_v = _batt_cache_v
             else:
                 m1_enc = m2_enc = m3_enc = m4_enc = 0
                 batt_v = 12.0
 
-            batt_pct    = max(0.0, min(100.0, (batt_v - 8.1) / (12.6 - 8.1) * 100.0))
-            avg_pwr     = (abs(current_left_power) + abs(current_right_power)) / 2.0
-            est_current = 0.5 + (avg_pwr * 6.0)
-            est_watts   = batt_v * est_current
+            # Pack current: measured across the INA226 shunt when the chip is
+            # there.  The old `0.5 + avg_power*6.0` was a guess from motor duty
+            # that ignored the Orin, the OAK and the lidar -- i.e. most of the
+            # draw -- and it fed a gauge the GUI labelled in amps.
+            if ina226 is not None and now - _batt_cache_a_time >= 1.0:
+                _batt_cache_a = ina226.get_current()
+                _batt_cache_w = ina226.get_power()
+                _batt_cache_a_time = now
+            batt_a = _batt_cache_a
+            batt_w = _batt_cache_w
+            batt_measured = batt_a is not None
+
+            if not batt_measured:
+                # Fall back to the duty-cycle guess, but flag it so the GUI can
+                # show it as an estimate rather than a measurement.
+                avg_pwr = (abs(current_left_power) + abs(current_right_power)) / 2.0
+                batt_a  = 0.5 + (avg_pwr * 6.0)
+                batt_w  = batt_v * batt_a
+
+            batt_minutes = None
+            if battery_estimator is not None:
+                batt_pct = battery_estimator.update(
+                    batt_v, batt_a if batt_measured else 0.0)
+                batt_minutes = battery_estimator.minutes_remaining
+                _save_battery_state()
+            elif ina226 is not None:
+                batt_pct = ina226.get_percentage(batt_v)
+            else:
+                batt_pct = max(0.0, min(100.0, (batt_v - 8.1) / (12.6 - 8.1) * 100.0))
+            est_current = batt_a
+            est_watts   = batt_w
 
             # Get velocity estimator predictions (EE244 Project)
             velocity_estimates = []
@@ -2065,6 +3011,27 @@ async def broadcast_loop():
             # P3: send camera frame as a binary WebSocket message (raw JPEG, no base64)
             if img_bytes:
                 websockets.broadcast(connected_clients, img_bytes)
+
+            # 7b. Tilt mount — sampled at 50 Hz by _tilt_sampler but, until now,
+            #     never sent anywhere.  The GUI had no way to see where the
+            #     mount actually was, which is why a mount stuck off-level
+            #     could only be diagnosed over SSH.
+            with _tilt_lock:
+                _ts = dict(_tilt_sample)
+            tilt_state = {
+                "deg":     round(_ts["deg"], 2),
+                "counts":  _ts["counts"],
+                "moving":  _ts["moving"],
+                "reads":   _ts["reads"],
+                "errors":  _ts["errors"],
+                # Age of the newest good sample.  A rising age with a static
+                # angle is the read_pos desync that has spiked TF by 117deg.
+                "age_s":   round(time.monotonic() - _ts["t"], 2) if _ts["t"] else None,
+                "scanning": lidar_3d_scan_enabled,
+                # True while the sweep is gating /scan away from the CBF.  A
+                # frozen obstacle set here is what drove the robot into a wall.
+                "scan_gated": _tilt_gate_moving,
+            }
 
             # 8. Fast readout lane (20 Hz): pose, motors, power, detections, depth.
             msg = {
@@ -2095,7 +3062,13 @@ async def broadcast_loop():
                     "current":     est_current,
                     "power":       est_watts,
                     "battery_pct": batt_pct,
+                    # measured=False means current/power are the duty-cycle
+                    # guess, not the shunt.  The GUI must not present the two
+                    # the same way.
+                    "measured":    batt_measured,
+                    "minutes_left": batt_minutes,
                 },
+                "tilt": tilt_state,
             }
             # Fast orjson serialization with fallback (Idea 87)
             websockets.broadcast(connected_clients, orjson_dumps(msg))
@@ -2112,16 +3085,19 @@ async def broadcast_loop():
                     "nav_phase": nav_status["state"],
                     "nav": nav_status,
                     "slam_active": _slam_proc is not None and _slam_proc.poll() is None,
+                    "slam_3d_active": _octomap_proc is not None and _octomap_proc.poll() is None,
                     "frontier": frontier_explorer.status() if frontier_explorer else None,
                     "active_model_name": active_model_name,
                     "active_velocity_model_name": active_velocity_model_name,
                     "p2p_test_running": _p2p_proc is not None and _p2p_proc.poll() is None,
                     "ab_test_running": _ab_running,
                     "ab_test_mode": _ab_test_mode if _ab_running else None,
+                    "servo_stats": servo_stats if 'servo_stats' in globals() else {"voltage": "--", "state": "Free"},
                     "fps_camera": fps_camera,
                     "fps_detection": fps_detection,
                     # OAK-D stereo/depth capture rate — cheap cached read from the
                     # driver's worker thread (no capture-path impact).
+                    "system": _system_snapshot(),
                     "fps_oak_depth": (oak.get_depth_fps()
                                       if (oak is not None and getattr(oak, "available", False))
                                       else 0.0),
@@ -2178,7 +3154,7 @@ async def motion_loop():
     - Continuously publishes cmd_vel as an active keep-alive heartbeat.
     - Safety watchdog: zero targets if input silent for too long.
     """
-    global _p2p_proc, _ab_test_proc
+    global _p2p_proc, _ab_test_proc, motors_enabled
     # Ramp rates per tick at ~30 Hz
     _ACCEL      = 0.5     # m/s  per tick
     _DECEL      = 1.0     # m/s  per tick
@@ -2234,7 +3210,20 @@ async def motion_loop():
                        _is_standalone_test_running()
         if drive and not test_running and not _shutting_down:
             try:
-                drive.move(_ramp_vx, _ramp_vy, _ramp_omega)
+                if motors_enabled:
+                    drive.move(_ramp_vx, _ramp_vy, _ramp_omega)
+                else:
+                    if hasattr(drive, '_cmd_vel_pub'):
+                        from geometry_msgs.msg import Twist
+                        msg = Twist()
+                        msg.linear.x = 0.0
+                        msg.linear.y = 0.0
+                        msg.angular.z = 0.0
+                        drive._cmd_vel_pub.publish(msg)
+                    elif hasattr(drive, 'ros_board'):
+                        drive.ros_board.set_motor(0, 0, 0, 0)
+                    else:
+                        drive.stop()
             except Exception as e:
                 # During shutdown the rclpy context may already be torn down;
                 # publishing then raises RCLError. Never let that propagate — an
@@ -2316,11 +3305,492 @@ def _start_http_server():
     logger.info(f"GUI available at http://0.0.0.0:{HTTP_PORT}/GUI.html")
 
 
+def _move_locked(servo, servo_id, counts, profile_v):
+    """servo.move under _servo_lock (the sampler is reading on the same bus)."""
+    with _servo_lock:
+        servo.move(servo_id, counts, profile_v)
+
+
+def _tilt_sampler(servo, servo_id, counts_to_deg, rate_hz=TILT_SAMPLE_HZ):
+    """Poll the tilt servo at a fixed period and publish the angle.
+
+    Runs in its own thread so its cadence does not depend on the asyncio loop
+    getting round to it.  It is the ONLY reader of the servo; lidar_scan_loop
+    consumes the snapshot and issues goal writes under the same _servo_lock.
+
+    Publishes both /lidar_tilt/joint_states (the /scan safety gate's source)
+    and /joint_states (robot_state_publisher, replacing the
+    joint_state_publisher relay -- see ROS2Bridge.full_joint_pub).
+    """
+    global _tilt_gate_moving
+    from sensor_msgs.msg import JointState
+
+    period = 1.0 / max(1.0, rate_hz)
+    next_t = time.monotonic()
+    warned = False
+    # Loop-period histogram.  The whole point of this thread is REGULARITY --
+    # a high mean rate with a long tail is still useless to deskew, which
+    # interpolates across whatever the worst gap happens to be.  Logging the
+    # tail makes GIL stalls visible instead of leaving them as a mystery in
+    # somebody's rate measurement later.
+    stat_t = time.monotonic()
+    periods = []
+    last_pub = None
+    read_ms_sum = 0.0
+    read_n = 0
+    # Wheel joints are declared so this message is a drop-in for what
+    # joint_state_publisher used to emit; nothing drives them, exactly as
+    # before.  lidar_tilt_joint MUST be last so the slices below line up.
+    names = ['front_right_joint', 'front_left_joint',
+             'back_right_joint', 'back_left_joint', 'lidar_tilt_joint']
+
+    while not _shutting_down:
+        next_t += period
+        try:
+            with _servo_lock:
+                t0 = time.monotonic()
+                pos = servo.read_pos(servo_id)
+                t1 = time.monotonic()
+                # Only pay for the second round trip when the state machine is
+                # actually waiting on it.
+                moving = servo.read_moving(servo_id) if _tilt_need_moving else False
+            # Midpoint of the round trip, not the moment we finished parsing:
+            # at 1.49 ms and 45 deg/s the difference is only 0.03 deg, but it
+            # costs nothing and it is the defensible instant.
+            t_meas = 0.5 * (t0 + t1)
+            read_ms_sum += (t1 - t0)
+            read_n += 1
+            warned = False
+        except Exception as e:
+            with _tilt_lock:
+                _tilt_sample["errors"] += 1
+                errs = _tilt_sample["errors"]
+            if not warned:
+                warned = True
+                logger.warning("tilt sampler: servo read failed (%d total): %s",
+                               errs, e)
+            # Do NOT publish on failure.  A silent tilt source makes
+            # lidar_3d_processor_node LATCH the last known angle, which is the
+            # safe behaviour; publishing a stale or zero angle would tell it
+            # the mount is level when it may be pitched over.
+            time.sleep(max(0.005, next_t - time.monotonic()))
+            continue
+
+        deg = counts_to_deg(pos)
+        with _tilt_lock:
+            _tilt_sample.update(counts=pos, deg=deg, moving=bool(moving),
+                                t=t_meas)
+            _tilt_sample["reads"] += 1
+
+        if ros_bridge is not None and hasattr(ros_bridge, 'joint_pub'):
+            try:
+                stamp = ros_bridge._node.get_clock().now().to_msg()
+                tilt_rad = math.radians(deg)
+                gate = 1.0 if _tilt_gate_moving else 0.0
+
+                # The mount's own topic: tilt only, so nothing here can ever be
+                # mistaken for a level reading of a joint we did not measure.
+                m = JointState()
+                m.header.stamp = stamp
+                m.name = ['lidar_tilt_joint']
+                m.position = [tilt_rad]
+                m.velocity = [gate]
+                ros_bridge.joint_pub.publish(m)
+
+                # The merged topic robot_state_publisher listens to.
+                f = JointState()
+                f.header.stamp = stamp
+                f.name = names
+                f.position = [0.0, 0.0, 0.0, 0.0, tilt_rad]
+                f.velocity = [0.0, 0.0, 0.0, 0.0, gate]
+                ros_bridge.full_joint_pub.publish(f)
+            except Exception as e:
+                logger.debug("tilt sampler publish failed: %s", e)
+
+        now_p = time.monotonic()
+        if last_pub is not None:
+            periods.append((now_p - last_pub) * 1e3)
+        last_pub = now_p
+        if now_p - stat_t >= 60.0 and periods:
+            periods.sort()
+            n = len(periods)
+            logger.info(
+                "tilt sampler: %.1f Hz over %.0f s (target %.0f) | period ms "
+                "p50 %.1f p95 %.1f p99 %.1f max %.1f | read %.2f ms | "
+                "%d errors",
+                n / (now_p - stat_t), now_p - stat_t, rate_hz,
+                periods[n // 2], periods[int(n * 0.95)], periods[int(n * 0.99)],
+                periods[-1], read_ms_sum / max(1, read_n) * 1e3,
+                _tilt_sample["errors"])
+            stat_t, periods = now_p, []
+            read_ms_sum = read_n = 0
+
+        slack = next_t - time.monotonic()
+        if slack > 0:
+            time.sleep(slack)
+        else:
+            # Fell behind (a long GIL hold, or the bus stalled).  Re-base rather
+            # than trying to catch up, which would burst reads back to back.
+            next_t = time.monotonic()
+
+    logger.info("tilt sampler: stopped after %d reads, %d errors",
+                _tilt_sample["reads"], _tilt_sample["errors"])
+
+
+async def lidar_scan_loop():
+    """Drive the Dynamixel XL430 tilt mount and publish lidar_tilt_joint.
+
+    Step-and-stare, not a continuous nod.  A continuous sweep moves the mount
+    while the lidar is mid-revolution: at 30 deg/s and 8 Hz the scan plane
+    pitches 3.75 deg within one revolution, smearing every return by ~20 cm at
+    3 m.  Holding still for each step instead means every ray in a dwell shares
+    one exact transform, so no deskewing or continuous-time trajectory is
+    needed -- and the mount's own encoder, not wheel odometry, supplies the
+    geometry.
+
+    Publishes /lidar_tilt/joint_states at 10 Hz with velocity used as a
+    "still moving" flag (0 = holding, 1 = travelling) so lidar_3d_processor_node
+    can discard the moving part of each step.
+    """
+    if 'XL430' not in globals():
+        return
+
+    try:
+        servo = XL430('/dev/openrb150')
+    except DynamixelError as e:
+        logger.warning("lidar_scan_loop: No Dynamixel servo found on "
+                       "/dev/openrb150: %s", e)
+        return
+
+    counts_per_deg = COUNTS_PER_DEG
+    servo_id = 1
+    horiz = 2048
+    direction = None
+    limits = (0, 4095)
+    # The XL430 settles 7-11 counts short of any goal (gearbox backlash,
+    # measured 2026-08-28 -- Position I Gain does nothing).  A 3-count level
+    # check therefore fired on every single startup and re-homed to the same
+    # off-by-10 spot.  Take the band from the calibration file.
+    home_tol = 12
+    try:
+        calib_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'lidar_tilt_calibration_dynamixel.json')
+        with open(calib_path) as f:
+            calib = json.load(f)
+        horiz = int(calib["horizontal_counts"])
+        servo_id = int(calib.get("servo_id", 1))
+        home_tol = max(3, int(calib.get("tolerance_counts", home_tol)))
+        direction = calib.get("tilt_direction")
+        lim = (calib.get("servo_state_at_calibration") or {}).get("position_limit_counts")
+        if lim and len(lim) == 2:
+            limits = (int(lim[0]), int(lim[1]))
+    except Exception as e:
+        logger.warning(f"lidar_scan_loop: Could not load calibration: {e}")
+
+    try:
+        if servo.ping(servo_id) is None:
+            logger.warning("lidar_scan_loop: Dynamixel id %d did not answer on "
+                           "/dev/openrb150", servo_id)
+            servo.close()
+            return
+        # Position mode is an EEPROM setting and can only be changed with
+        # torque disabled. Reassert it here so the GUI never inherits a mode
+        # left behind by a commissioning/test utility.
+        if servo.is_loaded(servo_id):
+            servo.set_load(servo_id, False)
+        servo.set_operating_mode(servo_id, OPERATING_MODE_POSITION)
+        # Profile acceleration is persistent RAM state.  Without setting it,
+        # sweep feel depends on whichever commissioning tool ran last; that
+        # made nominally identical 30 deg/s sweeps alternately sluggish or
+        # abrupt.  Reassert a moderate ramp on every server start.
+        servo.set_profile_acceleration(servo_id, LIDAR_SWEEP_ACCELERATION)
+        limits = tuple(int(v) for v in servo.read_position_limits(servo_id))
+    except DynamixelError as e:
+        logger.warning("lidar_scan_loop: Dynamixel initialization failed: %s", e)
+        servo.close()
+        return
+
+    if direction not in (1, -1):
+        # The URDF's lidar_tilt_joint is positive nose-DOWN.  Which way the
+        # servo counts run has never been watched, so this is a guess: a wrong
+        # one MIRRORS the 3D cloud about the horizontal plane.  It does not
+        # affect the /scan safety gate, which only looks at |angle|.
+        logger.warning("lidar_scan_loop: tilt_direction unverified in the "
+                       "calibration file; assuming +1 (more counts = nose "
+                       "down). A wrong sign mirrors the 3D map vertically.")
+        direction = 1
+
+    def deg_to_counts(deg):
+        return int(round(horiz + deg * counts_per_deg * direction))
+
+    def counts_to_deg(counts):
+        return (counts - horiz) * direction / counts_per_deg
+
+    # Sweep symmetrically about the CALIBRATED horizontal, then clamp to what
+    # the servo can actually reach.  The previous version re-centred on
+    # wherever the mount happened to be sitting, which with a level mount near
+    # the bottom of its travel silently threw away the entire downward half.
+    lo_counts = max(limits[0], deg_to_counts(-LIDAR_SWEEP_DEG))
+    hi_counts = min(limits[1], deg_to_counts(LIDAR_SWEEP_DEG))
+    if lo_counts > hi_counts:
+        lo_counts, hi_counts = hi_counts, lo_counts
+    lo_deg, hi_deg = sorted((counts_to_deg(lo_counts), counts_to_deg(hi_counts)))
+    step_counts = max(1, int(round(LIDAR_SWEEP_STEP_DEG * counts_per_deg)))
+    n_steps = max(1, int((hi_counts - lo_counts) / step_counts) + 1)
+    logger.info(
+        "lidar_scan_loop: sweep %.1f..%.1f deg (%d..%d counts, level=%d), "
+        "%d steps of %.2f deg, ~%.0f s per sweep"
+        % (lo_deg, hi_deg, lo_counts, hi_counts, horiz, n_steps,
+           step_counts / counts_per_deg,
+           n_steps * (LIDAR_SWEEP_SETTLE_S + LIDAR_SWEEP_DWELL_S)))
+    if abs(hi_deg - lo_deg) < LIDAR_SWEEP_DEG:
+        logger.warning(
+            "lidar_scan_loop: the servo's angle limits %s clip the requested "
+            "+/-%.0f deg sweep down to %.1f..%.1f deg. Vertical coverage is "
+            "asymmetric; re-seat the mount or re-run --calibrate.",
+            limits, LIDAR_SWEEP_DEG, lo_deg, hi_deg)
+
+    # Home on startup. x3_dynamixel_tilt_home.service only runs at boot, and the loop
+    # below only returns the mount to level if THIS process was the one
+    # sweeping, so a restart while tilted leaves it parked off-level forever --
+    # and a tilted mount gates /scan off indefinitely, blinding slam_toolbox
+    # and AMCL.  Seen live 2026-08-23: restarted mid-sweep, mount sat at
+    # 12.9 deg with /scan dark until homed by hand.
+    try:
+        pos0 = await asyncio.to_thread(servo.read_pos, servo_id)
+        if pos0 is not None and abs(pos0 - horiz) > home_tol:
+            logger.warning(
+                "lidar_scan_loop: mount is at %d counts (%.1f deg off level) at "
+                "startup -- homing to %d so /scan is not left gated off.",
+                pos0, (pos0 - horiz) / counts_per_deg, horiz)
+            await asyncio.to_thread(servo.set_load, servo_id, True)
+            await asyncio.to_thread(servo.move, servo_id, horiz,
+                                    deg_s_to_profile_velocity(LIDAR_SWEEP_SPEED_DEG_S))
+            await asyncio.to_thread(servo.wait_until_settled, servo_id, 5.0)
+            pos1 = await asyncio.to_thread(servo.read_pos, servo_id)
+            logger.info("lidar_scan_loop: homed, mount now at %s counts", pos1)
+    except Exception as e:
+        logger.warning("lidar_scan_loop: startup homing failed: %s", e)
+
+    global lidar_3d_scan_enabled
+    global servo_stats
+    global _tilt_need_moving, _tilt_gate_moving
+
+    # Hand the read path to its own thread from here on.  Everything above ran
+    # before the sampler existed, so it could touch the bus freely; below this
+    # line every servo access must hold _servo_lock.
+    threading.Thread(target=_tilt_sampler, name='tilt_sampler',
+                     args=(servo, servo_id, counts_to_deg),
+                     daemon=True).start()
+    logger.info("lidar_scan_loop: tilt sampler started at %.0f Hz "
+                "(publishing /lidar_tilt/joint_states AND /joint_states)",
+                TILT_SAMPLE_HZ)
+
+    scanning = False
+    active_mode = lidar_sweep_mode
+    target_counts = None
+    settled_at = 0.0
+    target_commanded_at = 0.0
+    target_was_moving = False
+    step_idx = 0
+    sweep_dir = 1          # +1 climbing toward hi_counts, -1 coming back down
+    last_vin_check = 0.0
+
+    while True:
+        if _shutting_down:
+            break
+
+        try:
+            # The sampler thread owns the read path now; this loop consumes its
+            # snapshot instead of racing it for the bus.
+            with _tilt_lock:
+                pos = _tilt_sample["counts"]
+                hardware_moving = _tilt_sample["moving"]
+
+            now = time.monotonic()
+            if now - last_vin_check > 5.0:
+                try:
+                    def _read_vin():
+                        with _servo_lock:
+                            return servo.read_vin(servo_id)
+                    vin = await asyncio.to_thread(_read_vin)
+                    servo_stats["voltage"] = "%.2f V" % vin if vin else "--"
+                except Exception:
+                    servo_stats["voltage"] = "--"
+                last_vin_check = now
+
+            if pos is not None:
+                # The XL430's Moving flag asserts a few milliseconds after a
+                # goal write. Keep a short grace period so an immediate false
+                # reading cannot make us skip straight to the next waypoint.
+                moving = (target_counts is not None and
+                          (hardware_moving or now - target_commanded_at <
+                           LIDAR_SWEEP_SETTLE_S))
+                if hardware_moving:
+                    target_was_moving = True
+                if (target_counts is not None and not moving and
+                        (target_was_moving or now - target_commanded_at >=
+                         LIDAR_SWEEP_SETTLE_S)):
+                    if settled_at < target_commanded_at:
+                        settled_at = now
+                servo_stats["state"] = "Busy" if moving else "Free"
+
+                # Tell the sampler what to publish and what to spend a second
+                # round trip on.  The Moving flag is only consulted by the
+                # step-and-stare settle logic, so it is only worth reading
+                # while a goal is outstanding in step mode.
+                _tilt_need_moving = (target_counts is not None and
+                                     active_mode != "continuous")
+                # velocity on /lidar_tilt/joint_states is read by
+                # lidar_3d_processor_node purely as a "discard this scan" flag.
+                # In continuous mode the mount never stops, so if we could not
+                # turn that gate off on the node itself we report "settled"
+                # instead -- otherwise the whole continuous run captures
+                # nothing.
+                _tilt_gate_moving = moving and not (
+                    scanning and lidar_sweep_mode == "continuous"
+                    and _sweep_settled_bypass)
+
+                # Abort arm of the interlock: a goal can arrive from RViz,
+                # the CLI, or navigation_fsm without ever passing through the
+                # websocket handler, so the running sweep has to watch for it
+                # too and get the scan plane back to level.
+                if scanning and _sweep_started_at and (
+                        now - _sweep_started_at > LIDAR_SWEEP_MAX_S):
+                    logger.warning(
+                        "lidar_scan_loop: sweep hit the %.0f s cap — stopping. "
+                        "A full pass is ~43 s, so this means the disable was "
+                        "lost or the client vanished.", LIDAR_SWEEP_MAX_S)
+                    lidar_3d_scan_enabled = False
+                if scanning:
+                    conflict = _tilt_nav_conflict()
+                    if conflict:
+                        logger.warning(
+                            "lidar_scan_loop: ABORTING sweep -- %s. Returning "
+                            "the mount to level so /scan resumes.", conflict)
+                        lidar_3d_scan_enabled = False
+
+                if lidar_3d_scan_enabled:
+                    if not scanning:
+                        # Enable torque and prove the XL430 accepted it before
+                        # starting a sweep; reads still work when torque is off,
+                        # while goal-position writes produce no movement.
+                        try:
+                            def _vin_temp():
+                                with _servo_lock:
+                                    return (servo.read_vin(servo_id),
+                                            servo.read_temp(servo_id))
+                            vin, temp = await asyncio.to_thread(_vin_temp)
+                        except Exception:
+                            vin, temp = None, None
+                        def _enable_torque():
+                            with _servo_lock:
+                                servo.set_load(servo_id, True)
+                        await asyncio.to_thread(_enable_torque)
+                        await asyncio.sleep(0.05)
+                        try:
+                            def _is_loaded():
+                                with _servo_lock:
+                                    return servo.is_loaded(servo_id)
+                            loaded = await asyncio.to_thread(_is_loaded)
+                        except Exception:
+                            loaded = None
+                        if loaded is False:
+                            logger.error(
+                                "lidar_scan_loop: servo refuses torque "
+                                "(vin=%s V, temp=%s C). Check the Dynamixel "
+                                "power supply and hardware-error status. "
+                                "Sweep aborted.",
+                                "%.2f" % vin if vin else "?", temp)
+                            lidar_3d_scan_enabled = False
+                            continue
+                        if vin is not None and vin < 9.0:
+                            logger.warning(
+                                "lidar_scan_loop: servo vin=%.2f V is below "
+                                "the XL430's 9.0 V rated minimum -- it may "
+                                "stall or fault mid-sweep.", vin)
+                        logger.info("lidar_scan_loop: sweep starting "
+                                    "(vin=%s V, temp=%s C, torque on)",
+                                    "%.2f" % vin if vin else "?", temp)
+                        scanning = True
+                        step_idx = 0
+                        sweep_dir = 1
+                        target_counts = None
+                        active_mode = lidar_sweep_mode
+                        logger.info("lidar_scan_loop: style=%s at %.1f deg/s",
+                                    active_mode, lidar_sweep_speed_deg_s)
+                        # Fire-and-forget: an 8 s `ros2 param set` must not
+                        # stall the 10 Hz joint publisher the /scan gate
+                        # depends on.
+                        asyncio.create_task(_apply_sweep_gate())
+                    if active_mode != lidar_sweep_mode:
+                        # Switched mid-sweep from the GUI.  Re-plan from the
+                        # next waypoint rather than finishing the old style's
+                        # pass, so an A/B comparison starts immediately.
+                        active_mode = lidar_sweep_mode
+                        target_counts = None
+                        step_idx = 0
+                        sweep_dir = 1
+                        logger.info("lidar_scan_loop: sweep style switched to "
+                                    "%s at %.1f deg/s mid-pass",
+                                    active_mode, lidar_sweep_speed_deg_s)
+                    profile_v = deg_s_to_profile_velocity(lidar_sweep_speed_deg_s)
+                    if active_mode == "continuous":
+                        # No dwell and no stations: run limit to limit and
+                        # turn around on arrival.  Every scan captured in
+                        # between straddles speed*0.156 deg of pitch, and the
+                        # processor is told (or made) to keep it anyway.
+                        if target_counts is None or (not moving and settled_at):
+                            target_counts = hi_counts if sweep_dir > 0 else lo_counts
+                            await asyncio.to_thread(
+                                _move_locked, servo, servo_id, target_counts,
+                                profile_v)
+                            target_commanded_at = now
+                            target_was_moving = False
+                            settled_at = 0.0
+                            sweep_dir = -sweep_dir
+                    elif target_counts is None or (not moving and now >= settled_at + LIDAR_SWEEP_DWELL_S):
+                        target_counts = min(hi_counts,
+                                            lo_counts + step_idx * step_counts)
+                        await asyncio.to_thread(
+                            _move_locked, servo, servo_id, target_counts,
+                            profile_v)
+                        target_commanded_at = now
+                        target_was_moving = False
+                        settled_at = 0.0
+                        # Ping-pong between the limits.  Resetting step_idx to
+                        # zero here creates one uninterrupted 90 deg flyback,
+                        # defeating the station timing and looking like a
+                        # backwards jerk at the end of every pass.
+                        step_idx += sweep_dir
+                        if step_idx >= n_steps:
+                            sweep_dir = -1
+                            step_idx = max(0, n_steps - 2)
+                        elif step_idx < 0:
+                            sweep_dir = 1
+                            step_idx = min(n_steps - 1, 1)
+                elif scanning:
+                    scanning = False
+                    target_counts = horiz
+                    await asyncio.to_thread(
+                        _move_locked, servo, servo_id, horiz,
+                        deg_s_to_profile_velocity(LIDAR_SWEEP_SPEED_DEG_S))
+                    target_commanded_at = time.monotonic()
+                    target_was_moving = False
+                    settled_at = 0.0
+                    logger.info("lidar_scan_loop: sweep stopped, returning to level")
+        except Exception as e:
+            logger.debug(f"lidar_scan_loop error: {e}")
+
+        await asyncio.sleep(0.1)
+
 async def main():
     global motion_queue
     _start_http_server()
     initialize_hardware()
     motion_queue = asyncio.Queue(maxsize=2)
+
+    threading.Thread(target=_system_sampler, name='system_sampler',
+                     daemon=True).start()
 
     # Graceful shutdown: on SIGINT/SIGTERM (e.g. `systemctl restart`) set the flag so
     # the async loops exit, gather() returns, and the finally-block cleanup() runs —
@@ -2341,7 +3811,7 @@ async def main():
     # Disable websockets deflate compression to avoid blocking main thread zlib operations (Idea 117)
     async with websockets.serve(handle_client, "0.0.0.0", WS_PORT, compression=None):
         logger.info(f"Server started on ws://0.0.0.0:{WS_PORT}")
-        await asyncio.gather(broadcast_loop(), motion_loop(), oled_loop(), map_push_loop())
+        await asyncio.gather(broadcast_loop(), motion_loop(), oled_loop(), map_push_loop(), lidar_scan_loop())
 
 if __name__ == "__main__":
     try:
