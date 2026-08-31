@@ -30,6 +30,7 @@
         rateWindowStart: performance.now(),
         dirty: false,
         rafHandle: null,
+        lastCommit: 0,   // drives the non-rAF heartbeat below
         // Gyro-z bias tracker. The chassis IMU's drift is a recurring fault on
         // this robot, so the strip shows a running mean rather than an instant
         // value: instantaneous rate is dominated by noise and tells you nothing.
@@ -90,6 +91,7 @@
         S.rafHandle = null;
         if (!S.dirty) return;
         S.dirty = false;
+        S.lastCommit = performance.now();
         try {
             render();
         } catch (e) {
@@ -99,7 +101,29 @@
 
     // The strip must keep updating even with no traffic, otherwise a dead link
     // leaves the last good values on screen looking healthy.
-    setInterval(schedule, 500);
+    //
+    // This tick must NOT rely on requestAnimationFrame. rAF stops firing
+    // whenever the page is not being composited -- a backgrounded or minimised
+    // tab, and also any offscreen/headless renderer -- which would freeze the
+    // strip *and* the staleness watchdog with it, leaving a dead link showing
+    // its last good values indefinitely: exactly the failure the watchdog
+    // exists to catch. So if a frame has not landed in a while, render
+    // synchronously instead of waiting for one that may never come.
+    const FRAME_STALL_MS = 1000;
+
+    setInterval(function heartbeat() {
+        const now = performance.now();
+        if (now - S.lastCommit > FRAME_STALL_MS) {
+            if (S.rafHandle !== null) {
+                cancelAnimationFrame(S.rafHandle);
+                S.rafHandle = null;
+            }
+            S.dirty = true;
+            commit();
+            return;
+        }
+        schedule();
+    }, 500);
 
     // ----------------------------------------------------------- strip render
     function render() {
@@ -276,7 +300,28 @@
             'peak core ' + fmt(peak, 0, '%') +
             (sys.temp_c !== null && sys.temp_c !== undefined ? '  ' + fmt(sys.temp_c, 0, ' C') : ''));
 
-        setText($('sys-proc'), fmt(sys.proc_cpu, 1, '% cpu') + '  ' + fmt(sys.proc_rss_mb, 0, ' MB'));
+        // psutil scales cpu_percent so 100% == one core fully busy. On a 6-core
+        // Orin the ceiling is 600%, so 126% is 1.3 cores' worth spread across
+        // them -- NOT one core at 126%, which is not a thing. Spell out both
+        // numbers, because the bare percentage is what makes this look pinned.
+        const nCores = cores.length || 1;
+        const coresUsed = sys.proc_cpu / 100.0;
+        setText($('sys-proc'),
+            fmt(sys.proc_cpu, 0, '%') + '  =  ' + coresUsed.toFixed(2) +
+            ' of ' + nCores + ' cores' + '   ' + fmt(sys.proc_rss_mb, 0, ' MB'));
+
+        // A process sitting just under 1.00 core is the GIL signature worth
+        // flagging; above it, Python-level work is already overlapping with
+        // C extensions that release the lock.
+        const procEl = $('sys-proc');
+        if (procEl) {
+            const nearOneCore = coresUsed > 0.85 && coresUsed < 1.05;
+            setClass(procEl, 'warn', nearOneCore);
+            setClass(procEl, 'ok', coresUsed >= 1.05);
+            procEl.title = nearOneCore
+                ? 'Pinned near one core: the GIL serialises Python bytecode, so this is the ceiling for pure-Python work.'
+                : 'Above one core, so work is running outside the GIL (cv2/numpy/torch/depthai release it) or in subprocesses.';
+        }
         setText($('sys-mem'), fmt(sys.mem_pct, 1, '%'));
         setText($('sys-load'), fmt(sys.loadavg, 2, ''));
         setText($('sys-temp'), sys.temp_c === null || sys.temp_c === undefined

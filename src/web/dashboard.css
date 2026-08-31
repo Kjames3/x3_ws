@@ -324,3 +324,25 @@ body:has(.dashboard) { overflow: hidden; }
 /* The Sweep tab pairs the lidar and 3D cards; keep the existing side-by-side
    row but stop it stretching past the pane. */
 .dashboard [data-panel="sweep"] .controls-row { margin-top: 0.5rem !important; }
+
+/* --- Header session clock ------------------------------------------------
+   Moved out of the Controls card: how long this tab has been connected is
+   session-scoped, like the connection state it now sits beside, not a robot
+   reading. */
+.header-session {
+    display: flex;
+    align-items: baseline;
+    gap: 0.35rem;
+    font-size: 0.78rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-secondary, #94a3b8);
+}
+
+.header-session-label {
+    font-size: 0.58rem;
+    letter-spacing: 0.09em;
+    font-weight: 700;
+    color: var(--text-muted, #64748b);
+}
+
+.header-session #stat-uptime { font-weight: 700; }

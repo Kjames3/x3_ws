@@ -39,6 +39,11 @@
                                         <span id="gamepad-status-text" class="status-text">No Controller</span>
                 </div>
 
+                <div class="header-session" title="Time since this tab connected">
+                    <span class="header-session-label">SESSION</span>
+                    <span id="stat-uptime">0:00</span>
+                </div>
+
                 <div class="status-indicator">
                     <span id="status-dot" class="status-dot"></span>
                     <span id="status-text">Disconnected</span>
@@ -472,34 +477,6 @@
 
                     <!-- Position Section -->
                     <div class="control-section-item">
-                        <h3 style="margin: 0 0 0.5rem 0; font-size: 0.9rem; color: var(--text-secondary);"> Position
-                        </h3>
-                        <div class="motor-grid" style="grid-template-columns: 1fr 1fr 1fr;">
-                            <div class="motor-card">
-                                <h3>Robot</h3>
-                                <div id="robot-x" class="motor-value" style="font-size: 0.9rem;">X: 0.0</div>
-                                <div id="robot-y" class="motor-value" style="font-size: 0.9rem;">Y: 0.0</div>
-                                <div id="robot-theta" class="motor-value"
-                                    style="font-size: 0.75rem; color: var(--text-secondary);">θ: 0.0°</div>
-                            </div>
-                            <div class="motor-card">
-                                <h3>Start</h3>
-                                <div id="start-x" class="motor-value"
-                                    style="font-size: 0.9rem; color: var(--text-muted);">X: --</div>
-                                <div id="start-y" class="motor-value"
-                                    style="font-size: 0.9rem; color: var(--text-muted);">Y: --</div>
-                                <div id="start-msg" class="motor-value"
-                                    style="font-size: 0.75rem; color: var(--text-muted);">Not Set</div>
-                            </div>
-                            <div class="motor-card">
-                                <h3>Target</h3>
-                                <div id="target-x" class="motor-value" style="font-size: 0.9rem;">X: --</div>
-                                <div id="target-y" class="motor-value" style="font-size: 0.9rem;">Y: --</div>
-                                <div id="target-dist" class="motor-value"
-                                    style="font-size: 0.75rem; color: var(--accent-green);">Dist: --</div>
-                            </div>
-                        </div>
-
                         <!-- Power Readout Section -->
                         <div
                             style="margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border-color);">
@@ -531,9 +508,6 @@
                                 <span><span style="color: var(--text-muted);">Est. Time:</span>
                                     <span id="power-time-remaining"
                                         style="font-weight: 700; color: var(--accent-green);">--</span></span>
-                                <span><span style="color: var(--text-muted);">Session:</span>
-                                    <span id="stat-uptime"
-                                        style="font-weight: 700; color: var(--text-secondary);">0:00</span></span>
                             </div>
                         </div>
                     </div>
@@ -802,6 +776,11 @@
                     <div id="sys-cores" class="corebars"></div>
                     <p class="hint">Per-core rather than averaged: one core pinned while five idle is
                        the failure worth seeing, and a 20% average hides it completely.</p>
+                    <p class="hint"><b>Reading "Server process":</b> 100% means one core fully busy, so on
+                       six cores the ceiling is 600%. A value above 100% is the process spanning several
+                       cores, not one core over-subscribed. Python's GIL caps <i>bytecode</i> execution at
+                       about one core no matter how many threads run, so anything past that is C extensions
+                       (cv2, numpy, torch, depthai) releasing the lock, or separate processes.</p>
                 </div>
             </div>
 

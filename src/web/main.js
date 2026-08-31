@@ -234,15 +234,6 @@ const elements = {
     fpsVideoWrapper: document.getElementById('fps-video-wrapper'),
 
     // Position Section
-    robotX: document.getElementById('robot-x'),
-    robotY: document.getElementById('robot-y'),
-    robotTheta: document.getElementById('robot-theta'),
-    startX: document.getElementById('start-x'),
-    startY: document.getElementById('start-y'),
-    startMsg: document.getElementById('start-msg'),
-    targetX: document.getElementById('target-x'),
-    targetY: document.getElementById('target-y'),
-    targetDist: document.getElementById('target-dist'),
 
     // Power (Detailed Section)
     powerVoltage: document.getElementById('power-voltage'),
@@ -2324,8 +2315,7 @@ function updateUI() {
         updateAutoDriveButton();
     }
 
-    // 6. Position & Power
-    updatePositionUI();
+    // 6. Power
     updatePowerUI();
 
     // 7. Velocity Estimates (EE244 Project)
@@ -2459,47 +2449,6 @@ function updateAbTestButtonsUI() {
             elements.abPredictiveBtn.style.color = '#000';
             elements.abPredictiveBtn.disabled = running;
             elements.abPredictiveBtn.style.opacity = (running && mode !== 'predictive') ? '0.45' : '1';
-        }
-    }
-}
-
-function updatePositionUI() {
-    // Robot
-    if (state.latestData.robotPose) {
-        const rp = state.latestData.robotPose;
-        if (elements.robotX) elements.robotX.textContent = `X: ${rp.x.toFixed(1)}`;
-        if (elements.robotY) elements.robotY.textContent = `Y: ${rp.y.toFixed(1)}`;
-        const thetaDeg = (rp.theta * 180 / Math.PI).toFixed(1);
-        if (elements.robotTheta) elements.robotTheta.textContent = `θ: ${thetaDeg}°`;
-    }
-
-    // Target
-    const tp = state.latestData.targetPose;
-    if (tp && tp.x !== null) {
-        if (elements.targetX) elements.targetX.textContent = `X: ${tp.x.toFixed(1)}`;
-        if (elements.targetY) elements.targetY.textContent = `Y: ${tp.y.toFixed(1)}`;
-
-        if (state.latestData.robotPose) {
-            const dx = tp.x - state.latestData.robotPose.x;
-            const dy = tp.y - state.latestData.robotPose.y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            const distIn = (dist / 2.54).toFixed(1);
-            if (elements.targetDist) elements.targetDist.textContent = `Dist: ${dist.toFixed(0)}cm (${distIn}in)`;
-        }
-    } else {
-        if (elements.targetX) elements.targetX.textContent = 'X: --';
-        if (elements.targetY) elements.targetY.textContent = 'Y: --';
-        if (elements.targetDist) elements.targetDist.textContent = 'Dist: --';
-    }
-
-    // Start
-    const sp = state.latestData.autoDriveStart;
-    if (sp) {
-        if (elements.startX) elements.startX.textContent = `X: ${sp.x.toFixed(1)}`;
-        if (elements.startY) elements.startY.textContent = `Y: ${sp.y.toFixed(1)}`;
-        if (elements.startMsg) {
-            elements.startMsg.textContent = 'Auto-Drive Origin';
-            elements.startMsg.style.color = 'var(--accent-green)';
         }
     }
 }
