@@ -117,7 +117,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'pub_odom_tf': False,       # EKF publishes odom→base_footprint TF
-            'linear_scale_x': -1.0,    # encoder convention: forward = negative ticks
+            'linear_scale_x': -0.686,  # measured 2026-09-01: 5.914 m odom / 4.055 m actual
             'linear_scale_y': 1.0,
             'angular_scale': 1.0,
         }]
