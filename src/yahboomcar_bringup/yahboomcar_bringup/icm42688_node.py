@@ -32,6 +32,23 @@ from sensor_msgs.msg import Imu
 WHO_AM_I, EXPECTED = 0x75, 0x47
 PWR_MGMT0, GYRO_CONFIG0, ACCEL_CONFIG0 = 0x4E, 0x4F, 0x50
 ACCEL_DATA_X1 = 0x1F
+REG_BANK_SEL = 0x76
+# Anti-alias filter. Bank 1 = gyro, bank 2 = accel. The AAF runs BEFORE
+# decimation to the output rate, so it is the only thing that can stop
+# out-of-band vibration folding into the passband; the UI filter is applied
+# after decimation and cannot.
+GYRO_CONFIG_STATIC2, GYRO_CONFIG_STATIC3 = 0x0B, 0x0C
+GYRO_CONFIG_STATIC4, GYRO_CONFIG_STATIC5 = 0x0D, 0x0E
+ACCEL_CONFIG_STATIC2, ACCEL_CONFIG_STATIC3, ACCEL_CONFIG_STATIC4 = 0x03, 0x04, 0x05
+# bandwidth Hz -> (DELT, DELTSQR, BITSHIFT), from the ICM-42688-P AAF table.
+AAF_TABLE = {
+    42:  (1, 1, 15),
+    84:  (2, 4, 13),
+    126: (3, 9, 12),
+    170: (4, 16, 11),
+    213: (5, 25, 10),
+    258: (6, 36, 10),      # part default -- far above a 200 Hz Nyquist
+}
 GYRO_LSB_PER_DPS, ACCEL_LSB_PER_G = 16.4, 2048.0
 DEG2RAD, G = math.pi / 180.0, 9.80665
 
@@ -50,6 +67,11 @@ class ICM42688Node(Node):
         self.declare_parameter('calibration_file', '')
         self.declare_parameter('apply_bias', True)
         self.declare_parameter('apply_accel_scale', True)
+        # Measured on this robot 2026-09-01 at 1 kHz: driving at 0.30 m/s puts
+        # 85.6% of gyro energy above 100 Hz (peak 177 Hz). Sampled at 200 Hz
+        # that folds to ~23 Hz and is indistinguishable from real rotation.
+        # 42 Hz is well under the 100 Hz Nyquist and ~10x any real robot yaw.
+        self.declare_parameter('aaf_bandwidth_hz', 42)
 
         p = self.get_parameter
         self.frame_id = p('frame_id').value
@@ -64,6 +86,10 @@ class ICM42688Node(Node):
             raise SystemExit(
                 f'WHO_AM_I 0x{wai:02X} != 0x{EXPECTED:02X} on i2c-'
                 f'{p("i2c_bus").value} @ 0x{self.addr:02X}')
+
+        # AAF first: the STATIC registers must be written while the sensors are
+        # still off, which is why PWR_MGMT0 is the last write in this block.
+        self._configure_aaf(int(p('aaf_bandwidth_hz').value))
 
         odr = ODR_CODES.get(rate, ODR_CODES[200.0])
         self.bus.write_byte_data(self.addr, GYRO_CONFIG0, odr)    # +/-2000 dps
@@ -80,6 +106,50 @@ class ICM42688Node(Node):
         self.get_logger().info(
             f'  gyro bias {"applied" if self.apply_bias else "NOT applied"}: '
             f'[{self.gbias[0]:+.5f}, {self.gbias[1]:+.5f}, {self.gbias[2]:+.5f}] rad/s')
+
+    def _configure_aaf(self, bw):
+        """Set the gyro+accel anti-alias filter to `bw` Hz (see AAF_TABLE)."""
+        if bw not in AAF_TABLE:
+            self.get_logger().warn(
+                f'aaf_bandwidth_hz={bw} not one of {sorted(AAF_TABLE)}; '
+                'leaving the part default (258 Hz) -- expect vibration aliasing')
+            return
+        delt, dsqr, shift = AAF_TABLE[bw]
+        try:
+            # ---- gyro AAF (bank 1) ----
+            self.bus.write_byte_data(self.addr, REG_BANK_SEL, 1)
+            cfg2 = self.bus.read_byte_data(self.addr, GYRO_CONFIG_STATIC2)
+            self.bus.write_byte_data(self.addr, GYRO_CONFIG_STATIC2,
+                                     cfg2 & ~0x02)          # clear GYRO_AAF_DIS
+            self.bus.write_byte_data(self.addr, GYRO_CONFIG_STATIC3, delt & 0x3F)
+            self.bus.write_byte_data(self.addr, GYRO_CONFIG_STATIC4, dsqr & 0xFF)
+            self.bus.write_byte_data(self.addr, GYRO_CONFIG_STATIC5,
+                                     ((shift & 0x0F) << 4) | ((dsqr >> 8) & 0x0F))
+            # ---- accel AAF (bank 2) ----
+            self.bus.write_byte_data(self.addr, REG_BANK_SEL, 2)
+            self.bus.write_byte_data(self.addr, ACCEL_CONFIG_STATIC2,
+                                     (delt & 0x3F) << 1)    # bit0 = AAF_DIS, 0
+            self.bus.write_byte_data(self.addr, ACCEL_CONFIG_STATIC3, dsqr & 0xFF)
+            self.bus.write_byte_data(self.addr, ACCEL_CONFIG_STATIC4,
+                                     ((shift & 0x0F) << 4) | ((dsqr >> 8) & 0x0F))
+        finally:
+            self.bus.write_byte_data(self.addr, REG_BANK_SEL, 0)
+
+        # read back, because a silently-ignored filter looks exactly like a
+        # working one until the robot drives
+        self.bus.write_byte_data(self.addr, REG_BANK_SEL, 1)
+        rb = (self.bus.read_byte_data(self.addr, GYRO_CONFIG_STATIC3) & 0x3F,
+              self.bus.read_byte_data(self.addr, GYRO_CONFIG_STATIC4),
+              self.bus.read_byte_data(self.addr, GYRO_CONFIG_STATIC5) >> 4)
+        dis = self.bus.read_byte_data(self.addr, GYRO_CONFIG_STATIC2) & 0x02
+        self.bus.write_byte_data(self.addr, REG_BANK_SEL, 0)
+        if rb == (delt, dsqr, shift) and not dis:
+            self.get_logger().info(f'AAF set to {bw} Hz (DELT={delt}, '
+                                   f'DELTSQR={dsqr}, BITSHIFT={shift}), enabled')
+        else:
+            self.get_logger().error(
+                f'AAF READBACK MISMATCH: wanted {(delt, dsqr, shift)} got {rb}, '
+                f'AAF_DIS={bool(dis)} -- vibration WILL alias')
 
     def _load_calibration(self):
         """Bias/scale from the calibration file; zeros if absent, never fatal."""
