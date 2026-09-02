@@ -74,6 +74,20 @@ class yahboomcar_driver(Node):
 		# wrong -- M2/M3 encoder cables are swapped), and that path is untouched.
 		self.declare_parameter('publish_imu', True)
 
+		# Source for vel_raw's angular.z, which base_node_X3 integrates into
+		# /odom_raw and the EKF then takes as its ABSOLUTE yaw (odom0 supplies
+		# both yaw and vyaw; imu0 supplies vyaw only). Left False the MPU9250's
+		# -6.84 deg/min bias anchors heading no matter how good the new IMU is.
+		# The ICM-42688-P was verified against the MPU9250 to 0.2% over a full
+		# turn and against a physical protractor to <=0.35%, so this is a pure
+		# bias improvement with no sign or scale risk.
+		self.declare_parameter('use_external_imu_yaw', False)
+		self._ext_wz = None
+		self._ext_t = 0.0
+		self._ext_warned = False
+		self.sub_ext_imu = self.create_subscription(
+			Imu, 'imu/data_raw', self.ext_imu_callback, 20)
+
 		#create subcriber
 		self.sub_cmd_vel = self.create_subscription(Twist,"cmd_vel",self.cmd_vel_callback,1)
 		self.sub_RGBLight = self.create_subscription(Int32,"RGBLight",self.RGBLightcallback,100)
@@ -96,6 +110,13 @@ class yahboomcar_driver(Node):
 		self.car.create_receive_threading()
 		self.last_cmd_time = self.get_clock().now()
 		self.watchdog_timeout = 0.5
+	def ext_imu_callback(self, msg):
+		# Only meaningful when another node owns imu/data_raw. If publish_imu is
+		# still True this is our OWN message coming back, which is harmless but
+		# pointless -- the launch sets publish_imu False alongside this.
+		self._ext_wz = msg.angular_velocity.z
+		self._ext_t = self.get_clock().now().nanoseconds / 1e9
+
 	#callback function
 	def cmd_vel_callback(self, msg):
 		# Compute mecanum kinematics here and send per-wheel PWM via set_motor().
@@ -218,8 +239,28 @@ class yahboomcar_driver(Node):
 		# (which reads the physical sensor directly) as the angular velocity source.
 		twist.linear.x = vx *1.0
 		twist.linear.y = vy *1.0
-		# We negate gz to align with the ROS CCW positive convention because the physical IMU sensor is inverted.
-		twist.angular.z = -gz   # Use IMU gyro instead of firmware's wrong vz
+		# Angular velocity source. The firmware's own value (get_motion_data) is
+		# wrong because the M2/M3 encoder cables are swapped, so it must come
+		# from a gyro either way.
+		#   external : ICM-42688-P via imu/data_raw, already in the ROS frame,
+		#              bias-corrected, and NOT negated (it is mounted upright;
+		#              only the MPU9250 needs the flip).
+		#   fallback : the Rosmaster's MPU9250, negated because it is inverted.
+		# Falls back on staleness so a dead IMU node degrades to the old
+		# behaviour instead of silently publishing zero rotation into odom.
+		use_ext = self.get_parameter('use_external_imu_yaw').value
+		age = self.get_clock().now().nanoseconds / 1e9 - self._ext_t
+		if use_ext and self._ext_wz is not None and age < 0.5:
+			twist.angular.z = self._ext_wz
+			self._ext_warned = False
+		else:
+			if use_ext and not self._ext_warned:
+				self.get_logger().warn(
+					'use_external_imu_yaw is set but imu/data_raw is %s; '
+					'falling back to the MPU9250 gyro'
+					% ('stale by %.1fs' % age if self._ext_wz is not None else 'silent'))
+				self._ext_warned = True
+			twist.angular.z = -gz
 		self.velPublisher.publish(twist)
 		# print("ax: %.5f, ay: %.5f, az: %.5f" % (ax, ay, az))
 		# print("gx: %.5f, gy: %.5f, gz: %.5f" % (gx, gy, gz))

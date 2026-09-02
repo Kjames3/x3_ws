@@ -123,6 +123,10 @@ def generate_launch_description():
             # the angular-velocity source for vel_raw, because the firmware's
             # own value is wrong (M2/M3 encoder cables swapped).
             'publish_imu': False,
+            # Take vel_raw's angular.z from the ICM too, so the MPU9250 leaves
+            # the heading loop entirely. Without this the EKF still anchors
+            # absolute yaw on the old sensor's bias via odom0.
+            'use_external_imu_yaw': True,
         }]
     )
 
