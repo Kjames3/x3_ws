@@ -14,10 +14,10 @@ Laptop browser
   ├── WebSocket (port 8081) ────► server_x3.py  (Jetson)
   │                                     │
   │                        ┌────────────┴────────────┐
-  │                 direct serial            ROS2 DDS
+  │                 hardware I/O             ROS2 DDS
   │                        │                         │
-  │              Rosmaster + YDLidar        /cmd_vel  /odom  /map
-  │                                         /camera   /voltage
+  │          Rosmaster + YDLidar + ICM      /cmd_vel  /odom  /map
+  │                                         /camera   /imu  /voltage
   │
   └── WebSocket (port 8765) ────► foxglove_bridge  (Jetson)
                                         │
@@ -54,10 +54,10 @@ sudo apt install \
   ros-humble-foxglove-bridge
 ```
 
-### Python (server_x3.py dependencies)
+### Python dependencies
 
 ```bash
-pip install websockets opencv-python ultralytics numpy
+pip install websockets opencv-python ultralytics numpy smbus2
 # On Jetson — also install the Yahboom Rosmaster library:
 cd ~/Downloads/X3-ROS2-source_code/For\ jetson\ orin\ super/yahboomcar_ros2_ws/software/py_install_V3.3.1
 sudo python3 setup.py install
@@ -189,7 +189,7 @@ python3 server_x3.py --sim
 
 | Feature | Direct hardware | ROS2 mode | `--sim` |
 |---------|----------------|-----------|---------|
-| Camera feed (RGB) | ✅ Astra Pro | ✅ Astra Pro | ❌ |
+| Camera feed (RGB) | ✅ OAK-D Lite | ✅ OAK-D Lite | ❌ |
 | Depth toggle | ✅ (if enabled) | ✅ (if enabled) | ❌ |
 | Lidar view | ✅ YDLidar (serial) | ✅ via Foxglove `/scan` | ❌ |
 | SLAM map | ❌ | ✅ via Foxglove `/map` | ✅ (Gazebo) |
@@ -289,6 +289,37 @@ sudo jetson_clocks      # lock clocks to max (current session)
 | Scan frequency | 8 Hz |
 | Frame ID | `laser_link` |
 
+## IMU and Odometry Calibration
+
+The navigation stack uses an **ICM-42688-P** connected directly to the Jetson,
+replacing the Rosmaster-connected MPU9250 as the primary ROS2 IMU. The old
+serial path was limited to 10 Hz and had a temperature-dependent yaw bias.
+
+| Parameter | Value |
+|-----------|-------|
+| Bus / address | I2C bus 7, `0x68` |
+| ROS topic | `/imu/data_raw` |
+| Frame | `icm_imu_link` |
+| Publish rate | 200 Hz |
+| Gyro/accel anti-alias bandwidth | 42 Hz |
+| Sensor-to-robot axes | `x=-sensor_y`, `y=+sensor_x`, `z=+sensor_z` |
+| Forward odometry scale | `linear_scale_x: -0.686` |
+
+The scale is negative because the Rosmaster encoder convention reports forward
+wheel motion with negative ticks. It was calibrated empirically: an initial
+4.055 m drive reported 5.914 m, while the corrected repeat reported 3.958 m
+for a measured 4.000 m run (1.1% error).
+
+Hardware validation completed so far:
+
+- Motor-vibration spectrum and anti-alias filtering
+- Full 360° rotation: gyro scale error no more than 0.35%
+- Straight 4 m drive: 1.1% distance error and 2.85° final odometry heading change
+
+The remaining end-to-end acceptance test is a 1.5–2.0 m square returning to
+the start. Pass criteria are final position error below 5% of total path length
+and final heading error below 5°.
+
 ---
 
 ## Project Structure
@@ -304,6 +335,9 @@ x3_ws/
 │   ├── trt_detector.py           # TensorRT YOLO wrapper
 │   ├── oakd_driver.py            # OAK-D Lite DepthAI driver (stereo/depth/IMU)
 │   ├── oakd_ros_publisher.py     # Republishes OAK-D streams as /oak/* ROS2 topics
+│   ├── icm42688_calibrate.py     # Stationary ICM gyro/accel calibration
+│   ├── imu_straight_passive.py   # Passive straight-drive validation
+│   ├── imu_rotation_test.py      # Driven rotation/gyro scale validation
 │   ├── Rosmaster_Lib.py          # Yahboom serial protocol library
 │   ├── x3_server.service         # systemd: control server
 │   ├── foxglove_bridge.service   # systemd: Foxglove WebSocket bridge
@@ -338,6 +372,15 @@ ros2 topic echo /scan --once
 
 # Monitor odometry
 ros2 topic echo /odom
+
+# Check the primary IMU rate (approximately 200 Hz)
+ros2 topic hz /imu/data_raw
+
+# Re-run a stationary ICM calibration
+python3 src/icm42688_calibrate.py --help
+
+# Observe a manually driven straight-line validation (publishes no commands)
+python3 src/imu_straight_passive.py --window 120
 
 # Send a test velocity command
 ros2 topic pub /cmd_vel geometry_msgs/msg/Twist \
