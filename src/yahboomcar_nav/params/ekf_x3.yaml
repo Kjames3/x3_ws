@@ -3,7 +3,10 @@
 ekf_filter_node:
     ros__parameters:
         use_sim_time: false
-        frequency: 30.0
+        # Raised 30 -> 50 with the ICM-42688-P (200 Hz on i2c-7) replacing the
+        # MPU9250 (10 Hz through the Rosmaster's 115200-baud serial bridge).
+        # At 30 Hz the filter was running faster than its own IMU input.
+        frequency: 50.0
         sensor_timeout: 0.1
         two_d_mode: true
         transform_time_offset: 0.0

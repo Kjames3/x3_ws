@@ -1,28 +1,30 @@
-complementary_filter_gain_node:
+# Params for imu_filter_madgwick_node (/imu/data_raw -> /imu/data).
+#
+# The node-name key MUST match the running node. This file was previously keyed
+# to `complementary_filter_gain_node` while the launch file starts
+# `imu_filter_madgwick_node` (node name `imu_filter_madgwick`), so ROS 2 matched
+# nothing and EVERY value here was silently ignored -- verified live: the node
+# reported gain=0.1 (the built-in default) and use_mag=True while this file
+# claimed otherwise. A wrong node-name key fails silently; there is no warning.
+imu_filter_madgwick:
   ros__parameters:
-    gain_acc: 0.01
-    gain_mag: 0.01
-    bias_alpha: 0.01
-    do_bias_estimation: true
-    do_adaptive_gain: true
-    use_mag: true
-    fixed_frame: "base_link"
-    publish_tf: false
+    # The ICM-42688-P is a 6-AXIS part -- it has no magnetometer. With use_mag
+    # true, madgwick blocks waiting for /imu/mag and publishes NOTHING, which
+    # starves the EKF of its only IMU input and breaks heading silently.
+    # /imu/mag only ever came from the Rosmaster's MPU9250.
+    use_mag: false
+
+    gain: 0.1              # madgwick filter gain; lower = trusts gyro more
+    zeta: 0.0              # gyro-bias drift rate; 0 = the node does no bias
+                           # estimation, which is correct here because
+                           # icm42688_node already subtracts a measured bias
+    world_frame: "enu"     # REP-103. NED/NWU here silently flips heading sign.
+    publish_tf: false      # the EKF owns odom->base_footprint; two publishers
+                           # on one transform is the map->odom fight all over
     reverse_tf: false
-    constant_dt: 0.0
+    fixed_frame: "base_link"
+    constant_dt: 0.0       # 0 = use message timestamps. The ICM node stamps on
+                           # the Jetson, so these are real, not serial-arrival
+                           # times like the MPU9250's were.
+    remove_gravity_vector: false
     publish_debug_topics: false
-
-    qos_overrides:
-      /imu/data_raw:
-        subscription:
-          depth: 10
-          durability: volatile
-          history: keep_last
-          reliability: reliable
-
-      /imu/mag:
-        subscription:
-          depth: 10
-          durability: volatile
-          history: keep_last
-          reliability: reliable

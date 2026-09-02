@@ -65,6 +65,15 @@ class yahboomcar_driver(Node):
 		self.declare_parameter('gain_rl', 1.00)
 		self.declare_parameter('gain_rr', 0.95)
 
+		# Publish the Rosmaster's on-board MPU9250 to imu/data_raw + imu/mag?
+		# Set False when the ICM-42688-P node (icm42688_node) owns imu/data_raw,
+		# so the two IMUs do not both publish to the same topic. Leaving this
+		# True and running both is the A/B configuration.
+		# NOTE: this gates ONLY the imu/mag topics. The MPU9250 gyro is also the
+		# angular-velocity source for vel_raw below (the firmware's own value is
+		# wrong -- M2/M3 encoder cables are swapped), and that path is untouched.
+		self.declare_parameter('publish_imu', True)
+
 		#create subcriber
 		self.sub_cmd_vel = self.create_subscription(Twist,"cmd_vel",self.cmd_vel_callback,1)
 		self.sub_RGBLight = self.create_subscription(Int32,"RGBLight",self.RGBLightcallback,100)
@@ -217,8 +226,9 @@ class yahboomcar_driver(Node):
 		# print("mx: %.5f, my: %.5f, mz: %.5f" % (mx, my, mz))
 		# rospy.loginfo("battery: {}".format(battery))
 		# rospy.loginfo("vx: {}, vy: {}, angular: {}".format(twist.linear.x, twist.linear.y, twist.angular.z))
-		self.imuPublisher.publish(imu)
-		self.magPublisher.publish(mag)
+		if self.get_parameter('publish_imu').value:
+			self.imuPublisher.publish(imu)
+			self.magPublisher.publish(mag)
 		self.volPublisher.publish(battery)
 		self.EdiPublisher.publish(edition)
 		

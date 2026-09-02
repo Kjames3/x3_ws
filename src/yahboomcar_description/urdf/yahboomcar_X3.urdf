@@ -50,6 +50,25 @@
         <child link="imu_link"/>
         <origin xyz="-0.06 0.01 0.01" rpy="0 3.1415 1.5707"/>
     </joint>
+
+    <!-- ICM-42688-P (i2c-7 @ 0x68), the 200 Hz replacement for the MPU9250
+         above. Measured 2026-09-01: 3 cm behind the chassis centre, on the
+         lidar mount base plane (0.170 m above ground; 0.170 + 0.153 tilt axis
+         + 0.022 seat = 0.345, matching the measured 0.340 laser height).
+
+         ROTATION IS DELIBERATELY IDENTITY. The physical chip sits at a +90 deg
+         yaw (gravity measured on sensor Z; nose-up drove sensor Y negative;
+         yaw-left gave sensor Z +105.9 deg), but icm42688_node ALREADY applies
+         that remap in software (ros_x=-sensor_y, ros_y=+sensor_x,
+         ros_z=+sensor_z) because imu_filter_madgwick does not consult TF and
+         would otherwise emit an orientation in the rotated frame. Putting
+         rpy="0 0 1.5708" here as well would apply the rotation TWICE. -->
+    <link name="icm_imu_link"/>
+    <joint name="base_icm_imu" type="fixed">
+        <parent link="base_link"/>
+        <child link="icm_imu_link"/>
+        <origin xyz="-0.03 0 0.0885" rpy="0 0 0"/>
+    </joint>
     <link name="front_right_wheel">
         <inertial>
             <origin xyz="1.9051E-06 -2.3183E-07 -0.00064079" rpy="0 0 0"/>

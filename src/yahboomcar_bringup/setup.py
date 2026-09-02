@@ -39,7 +39,11 @@ setup(
         'calibrate_linear_R2 = yahboomcar_bringup.calibrate_linear_R2:main',
         'calibrate_angular_R2 = yahboomcar_bringup.calibrate_angular_R2:main',
         'patrol_4ROS_R2 = yahboomcar_bringup.patrol_4ROS_R2:main',
-        'patrol_a1_R2 = yahboomcar_bringup.patrol_a1_R2:main',   
+        'patrol_a1_R2 = yahboomcar_bringup.patrol_a1_R2:main',
+        'lidar_3d_processor_node = yahboomcar_bringup.lidar_3d_processor_node:main',
+        'lidar_tilt_node = yahboomcar_bringup.lidar_tilt_node:main',
+        'octomap_throttle_node = yahboomcar_bringup.octomap_throttle_node:main',   
+        'icm42688_node = yahboomcar_bringup.icm42688_node:main',
         ],
     },
 )
