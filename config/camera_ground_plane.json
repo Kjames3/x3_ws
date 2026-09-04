@@ -1,7 +1,7 @@
 {
   "camera_height_m": 0.21,
-  "camera_pitch_deg": 1.157,
+  "camera_pitch_deg": 0.346,
   "min_obstacle_height_m": 0.15,
   "max_obstacle_height_m": 2.0,
-  "notes": "OAK-D Lite optical center is physically measured 0.21 m above the floor. camera_pitch_deg measured 2026-09-03 by src/floor_plane_validate.py on empty level floor: Theil-Sen fit of p16 floor height vs range over 4 clean bins gave +1.157 deg nose-down (fit RMS 0.0031 m, intercept -0.0001 m), corroborated independently by the OAK BMI270 gravity vector at +1.087 deg. Measured roll is -1.77 deg and is NOT modelled by the single-pitch height equation."
+  "notes": "OAK-D Lite optical center is physically measured 0.21 m above the floor. camera_pitch_deg is the angle between the camera axis and THE FLOOR IT IS REJECTING, so it absorbs both mount tolerance and floor slope and is NOT a pure mount constant -- re-run src/floor_plane_validate.py after any move to a new surface. Measured 2026-09-04 in the apartment: Theil-Sen fit of p16 floor height vs range over 7 clean bins (z-max 3.0 m, wall at 3.5-4.0 m) gave +0.346 deg nose-down, confirmed by a re-run whose residual was +0.007 deg with slope +0.00012 m/m and fit RMS 0.0030 m. The lab floor on 2026-09-03 gave +1.157 deg; the OAK BMI270 gravity vector barely moved between the two sites (+1.087 lab vs +0.971 apartment), so ~0.6 deg of the difference is the apartment floor not being level with gravity rather than a change in chassis attitude. Measured roll is -1.54 deg and is NOT modelled by the single-pitch height equation."
 }
