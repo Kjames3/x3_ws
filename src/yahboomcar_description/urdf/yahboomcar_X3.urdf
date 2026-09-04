@@ -5,29 +5,26 @@
 <robot name="yahboomcar">
     <link name="base_footprint"/>
     <link name="imu_link"/>
-    <!-- Chassis mesh is base_link_X3.STL with the display and its mount stripped
-         (2026-08): they were removed from the robot to clear space for the
-         tilting lidar mount. That drops 2340 of 69192 triangles - everything
-         above the deck at z=0.075 - so the chassis now tops out at z=0.071 and
-         no longer overhangs to x=-0.176 at the rear. Regenerate with the same
-         cut if the stock mesh is ever updated; the inertial below is still the
-         stock Yahboom value and has NOT been reduced for the removed hardware. -->
+    <!-- X3 Plus chassis geometry from Yahboom's ROSMASTER-X3Plus vendor model.
+         The physical robot is an X3 Plus, not the smaller X3 previously shown
+         here. Project-specific lidar and OAK-D assemblies remain separate links
+         below so their measured transforms can be calibrated independently. -->
     <link name="base_link">
         <inertial>
-            <origin xyz="0.00498197982182523 5.70233829969297E-05 -0.0121008098068578" rpy="0 0 0"/>
-            <mass value="0.486218814966626"/>
+            <origin xyz="-0.0304416859098744 4.23384368655101E-05 0.0448234503408059" rpy="0 0 0"/>
+            <mass value="1.0754239466482"/>
             <inertia
-                    ixx="0.00196277727666921"
-                    ixy="2.50447049446755E-07"
-                    ixz="0.000140534767811098"
-                    iyy="0.00457256033711368"
-                    iyz="2.68618064993882E-07"
-                    izz="0.00493927269870476"/>
+                    ixx="0.0208831789264125"
+                    ixy="2.4618093127858E-06"
+                    ixz="0.00616019290028669"
+                    iyy="0.0265621377486244"
+                    iyz="-1.10079499865282E-06"
+                    izz="0.0129535610833954"/>
         </inertial>
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="package://yahboomcar_description/meshes/base_link_X3_noscreen.STL"/>
+                <mesh filename="package://yahboomcar_description/meshes/X3plus/visual/base_link.STL"/>
             </geometry>
             <material name="">
                 <color rgba="0 0.7 0 1"/>
@@ -36,14 +33,14 @@
         <collision>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="package://yahboomcar_description/meshes/base_link_X3_noscreen.STL"/>
+                <mesh filename="package://yahboomcar_description/meshes/X3plus/collision/base_link.STL"/>
             </geometry>
         </collision>
     </link>
     <joint name="base_joint" type="fixed">
         <parent link="base_footprint"/>
         <child link="base_link"/>
-        <origin xyz="0.0 0.0 0.0815" rpy="0 0 0"/>
+        <origin xyz="0.0 0.0 0.076" rpy="0 0 0"/>
     </joint>
     <joint name="base_imu" type="fixed">
         <parent link="base_link"/>
@@ -477,9 +474,11 @@
     </joint>
 
     <!-- ==================== OAK-D Lite (2026) ====================
-         Luxonis OAK-D Lite stereo depth + RGB camera, mounted at the lidar's
-         previous front location: base_link-relative x=0.0435, y~0, z=0.185
-         (the old scan-plane height). Frame names follow the depthai_ros
+         Luxonis OAK-D Lite stereo depth + RGB camera. The optical centre was
+         physically measured 0.210 m above the floor. With the X3 Plus
+         base_footprint -> base_link height of 0.076 m, its provisional
+         base_link-relative z is therefore 0.134 m. Forward/lateral offsets and
+         pitch/roll still require physical measurement. Frame names follow the depthai_ros
          (depthai_ros_driver) convention with camera name "oak" so published
          image/pointcloud TF (oak_rgb_camera_optical_frame, etc.) resolves
          against these static frames. Set the driver's `camera.i_tf_prefix`
@@ -510,7 +509,7 @@
         </collision>
     </link>
     <joint name="oak_center_joint" type="fixed">
-        <origin xyz="0.0435 5.25826986680105E-05 0.185" rpy="0 0 0"/>
+        <origin xyz="0.0435 5.25826986680105E-05 0.134" rpy="0 0 0"/>
         <parent link="base_link"/>
         <child link="oak-d-base-frame"/>
     </joint>
