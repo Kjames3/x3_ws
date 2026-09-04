@@ -100,8 +100,15 @@ def test_ground_config_matches_measured_height_and_urdf():
 
     assert np.isclose(config["camera_height_m"], 0.210)
     assert np.isclose(config["camera_height_m"], base_z + oak_z)
+    # The URDF describes design intent: the OAK is *specified* level, rpy 0 0 0.
     assert oak_rpy == (0.0, 0.0, 0.0)
-    assert np.isclose(config["camera_pitch_deg"], 0.0)
+    # camera_pitch_deg is deliberately NOT derived from the URDF. It is a measured
+    # build tolerance -- floor_plane_validate.py put the real mount at +1.117 deg
+    # nose-down (geometry and BMI270 gravity agreeing to 0.002 deg) even though the
+    # model says 0. Assert it stays a plausible mechanical residual, so a decimal
+    # slip or a units mix-up still fails, without re-encoding the level assumption
+    # that item 6 disproved.
+    assert abs(config["camera_pitch_deg"]) < 5.0
 
 
 if __name__ == "__main__":

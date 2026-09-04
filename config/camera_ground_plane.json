@@ -1,7 +1,7 @@
 {
   "camera_height_m": 0.21,
-  "camera_pitch_deg": 0.0,
+  "camera_pitch_deg": 1.157,
   "min_obstacle_height_m": 0.15,
   "max_obstacle_height_m": 2.0,
-  "notes": "OAK-D Lite optical center is physically measured 0.21 m above the floor. Pitch 0 matches the level X3 Plus URDF mount; refine pitch with an empty-floor calibration if measurements show a slope."
+  "notes": "OAK-D Lite optical center is physically measured 0.21 m above the floor. camera_pitch_deg measured 2026-09-03 by src/floor_plane_validate.py on empty level floor: Theil-Sen fit of p16 floor height vs range over 4 clean bins gave +1.157 deg nose-down (fit RMS 0.0031 m, intercept -0.0001 m), corroborated independently by the OAK BMI270 gravity vector at +1.087 deg. Measured roll is -1.77 deg and is NOT modelled by the single-pitch height equation."
 }
