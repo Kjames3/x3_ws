@@ -170,6 +170,7 @@ class VelocityEstimator:
         self._thread    = None
         self._last_print_time = 0.0
         self._prev_estimates = {}
+        self._logged_missing_intrinsics = False
 
         # Pre-allocate input tensor shape (Idea 116)
         self.x_tensor_preallocated = torch.zeros((MAX_OBSTACLES, 40), dtype=torch.float32)
@@ -203,7 +204,21 @@ class VelocityEstimator:
         except Exception as e:
             logger.error(f"VelocityEstimator: failed to load model {self.model_path}: {e}")
 
-    def _extract_depth_centroids(self, depth_frame, raw_depth_frame=None):
+    @staticmethod
+    def _scale_intrinsics(intrinsics, shape):
+        """Scale ``(fx, fy, cx, cy, width, height)`` to an actual frame shape."""
+        if intrinsics is None:
+            return None
+        fx, fy, cx, cy, intr_w, intr_h = intrinsics
+        h, w = shape[:2]
+        if intr_w and intr_h and (w, h) != (intr_w, intr_h):
+            sx, sy = w / float(intr_w), h / float(intr_h)
+            fx, cx = fx * sx, cx * sx
+            fy, cy = fy * sy, cy * sy
+        return float(fx), float(fy), float(cx), float(cy)
+
+    def _extract_depth_centroids(self, depth_frame, raw_depth_frame=None,
+                                 depth_intrinsics=None):
         """
         Extract obstacle centroids. If raw_depth_frame is provided, we perform
         thresholding directly on the raw physical depth values in meters to avoid 
@@ -212,6 +227,17 @@ class VelocityEstimator:
 
         Returns list of (x_m, y_m, Z) relative to camera centre.
         """
+        source_frame = raw_depth_frame if raw_depth_frame is not None else depth_frame
+        intr_full = (self._scale_intrinsics(depth_intrinsics, source_frame.shape)
+                     if source_frame is not None else None)
+        if intr_full is None:
+            if not self._logged_missing_intrinsics:
+                logger.warning("VelocityEstimator: depth intrinsics unavailable; "
+                               "skipping centroid projection")
+                self._logged_missing_intrinsics = True
+            return []
+        self._logged_missing_intrinsics = False
+
         if raw_depth_frame is not None:
             # Dynamic Voxel Downsampling (Idea 143)
             # Partition the raw depth frame to extract clean close/far contours:
@@ -227,6 +253,11 @@ class VelocityEstimator:
             # Downsample first, then add the far-range region on the smaller frame.
             raw_depth_frame = raw_depth_frame[::2, ::2]
             mask = mask_orig[::2, ::2]
+            fx, fy, cx0, cy0 = intr_full
+            fx *= 0.5
+            fy *= 0.5
+            cx0 *= 0.5
+            cy0 *= 0.5
 
             # Far-range mask on the (already 2x downsampled) frame. NOTE: do NOT
             # zero out alternating rows/cols here — that leaves isolated, non-adjacent
@@ -281,11 +312,11 @@ class VelocityEstimator:
                 else:
                     Z = 1.0  # fallback if no valid depth
                 
-                # Convert pixel centroid to physical metres using camera model
-                # Astra Pro SC: 640x480, fx ≈ 554. Halved due to downsampling (Idea 81 & 136).
-                fx = 277.0
-                x_m = (cx - w / 2.0) * Z / fx
-                y_m = (cy - h / 2.0) * Z / fx
+                # Convert pixel centroid using the calibrated intrinsics of the
+                # active, depth-aligned OAK stream (already scaled to this 2x
+                # downsampled mask).
+                x_m = (cx - cx0) * Z / fx
+                y_m = (cy - cy0) * Z / fy
                 
                 # Visual-LiDAR Fusion Gating (Idea 146)
                 if self.detections_fn is not None:
@@ -294,12 +325,12 @@ class VelocityEstimator:
                         # Filter for 'person' boxes
                         person_boxes = [d.get("bbox") for d in detections if d.get("label") == "person"]
                         if person_boxes:
-                            # Project (x_m, y_m, Z) to full 640x480 resolution image space
-                            fx_full = 554.0
-                            cx_full = 320.0
-                            cy_full = 240.0
+                            # Project into the full-resolution depth image. This
+                            # gate remains disabled below, but keeping its geometry
+                            # calibrated prevents it regressing if re-enabled.
+                            fx_full, fy_full, cx_full, cy_full = intr_full
                             u = int(x_m * fx_full / Z + cx_full)
-                            v = int(y_m * fx_full / Z + cy_full)
+                            v = int(y_m * fy_full / Z + cy_full)
                             
                             inside_any = False
                             for x1, y1, x2, y2 in person_boxes:
@@ -323,6 +354,11 @@ class VelocityEstimator:
 
         # Downsample depth_frame (Idea 81 & 136)
         depth_frame = depth_frame[::2, ::2]
+        fx, fy, cx0, cy0 = intr_full
+        fx *= 0.5
+        fy *= 0.5
+        cx0 *= 0.5
+        cy0 *= 0.5
 
         # Convert to grayscale — bright pixels are near objects
         gray = cv2.cvtColor(depth_frame, cv2.COLOR_BGR2GRAY)
@@ -352,9 +388,8 @@ class VelocityEstimator:
 
             # Calculate actual Z (depth) in meters using the raw depth frame
             Z = 1.0
-            fx = 277.0
-            x_m = (cx - w / 2.0) * Z / fx
-            y_m = (cy - h / 2.0) * Z / fx
+            x_m = (cx - cx0) * Z / fx
+            y_m = (cy - cy0) * Z / fy
 
             centroids.append((x_m, y_m, Z))
 
@@ -428,6 +463,7 @@ class VelocityEstimator:
                 cam_src = self.camera() if callable(self.camera) else self.camera
                 depth_frame = cam_src.get_depth_frame() if (cam_src is not None and hasattr(cam_src, 'get_depth_frame')) else None
                 raw_depth_frame = cam_src.get_raw_depth_frame() if (cam_src is not None and hasattr(cam_src, 'get_raw_depth_frame')) else None
+                depth_intrinsics = cam_src.get_depth_intrinsics() if (cam_src is not None and hasattr(cam_src, 'get_depth_intrinsics')) else None
 
                 # Fast-path: skip all processing when no valid depth data exists
                 if raw_depth_frame is not None and raw_depth_frame.size > 0:
@@ -439,7 +475,8 @@ class VelocityEstimator:
                         continue
 
                 # 2. Extract local centroids (relative to camera/robot)
-                centroids_m = self._extract_depth_centroids(depth_frame, raw_depth_frame)
+                centroids_m = self._extract_depth_centroids(
+                    depth_frame, raw_depth_frame, depth_intrinsics)
 
                 # 3. Query robot pose for global mapping & slip compensation (Idea 1 & 11)
                 robot_data = None
@@ -618,12 +655,13 @@ class VelocityEstimator:
                 if "DISPLAY" in os.environ and depth_frame is not None:
                     debug_frame = depth_frame.copy()
                     h, w = debug_frame.shape[:2]
-                    fx = 554.0
+                    debug_intr = self._scale_intrinsics(depth_intrinsics, debug_frame.shape)
 
-                    for tid, track in tracks.items():
+                    for tid, track in tracks.items() if debug_intr is not None else ():
                         cx_m, cy_m, Z = track['centroid']
-                        img_x = int(cx_m * fx / Z + w / 2.0)
-                        img_y = int(cy_m * fx / Z + h / 2.0)
+                        fx, fy, cx0, cy0 = debug_intr
+                        img_x = int(cx_m * fx / Z + cx0)
+                        img_y = int(cy_m * fy / Z + cy0)
 
                         if 0 <= img_x < w and 0 <= img_y < h:
                             cv2.circle(debug_frame, (img_x, img_y), 6, (0, 0, 255), -1)
