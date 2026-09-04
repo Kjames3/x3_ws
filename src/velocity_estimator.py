@@ -52,6 +52,11 @@ DEFAULT_CAMERA_HEIGHT_M = 0.210
 DEFAULT_CAMERA_PITCH_DEG = 0.0
 DEFAULT_MIN_HEIGHT_M = 0.15
 DEFAULT_MAX_HEIGHT_M = 2.0
+# Tracks beyond this range report speed 0.0 without running the model. The MLP
+# was trained against this same 1.8 m gate, so raising it puts the model
+# out-of-distribution AND feeds more non-zero speeds to the CBF. Configurable so
+# a measurement run can widen it on a parked robot; the DEFAULT stays 1.8.
+DEFAULT_MAX_SPEED_RANGE_M = 1.8
 
 
 class ObstacleTracker:
@@ -211,6 +216,7 @@ class VelocityEstimator:
             "camera_pitch_deg": DEFAULT_CAMERA_PITCH_DEG,
             "min_obstacle_height_m": DEFAULT_MIN_HEIGHT_M,
             "max_obstacle_height_m": DEFAULT_MAX_HEIGHT_M,
+            "max_speed_range_m": DEFAULT_MAX_SPEED_RANGE_M,
         }
         try:
             with open(GROUND_PLANE_CONFIG_PATH, "r") as config_file:
@@ -226,9 +232,21 @@ class VelocityEstimator:
         self.camera_pitch_rad = math.radians(float(values["camera_pitch_deg"]))
         self.min_obstacle_height_m = float(values["min_obstacle_height_m"])
         self.max_obstacle_height_m = float(values["max_obstacle_height_m"])
+        self.max_speed_range_m = float(values["max_speed_range_m"])
         if not (self.camera_height_m > 0.0 and
                 0.0 <= self.min_obstacle_height_m < self.max_obstacle_height_m):
             raise ValueError("invalid camera ground-plane dimensions")
+        # 4.0 m is the depth extraction ceiling; a gate beyond it is meaningless,
+        # and one at or below 0 disables speed estimation entirely.
+        if not (0.0 < self.max_speed_range_m <= 4.0):
+            raise ValueError("max_speed_range_m must be in (0.0, 4.0]")
+        if self.max_speed_range_m > DEFAULT_MAX_SPEED_RANGE_M:
+            logger.warning(
+                "VelocityEstimator: max_speed_range_m=%.2f m exceeds the %.2f m "
+                "gate the model was trained at; estimates beyond %.2f m are "
+                "out-of-distribution and also reach the CBF",
+                self.max_speed_range_m, DEFAULT_MAX_SPEED_RANGE_M,
+                DEFAULT_MAX_SPEED_RANGE_M)
 
     def _height_band_mask(self, depth_m, fy, cy):
         """Return pixels inside the configured height band above the floor."""
@@ -421,8 +439,21 @@ class VelocityEstimator:
                                     inside_any = True
                                     break
                             if not inside_any:
-                                # Centroid does not match any person detection, discard
-                                # continue # [DISABLED FOR TESTING] - allow tracking of all objects
+                                # DELIBERATELY DISABLED -- and NOT because the
+                                # geometry is unverified. Verified 2026-09-04:
+                                # detections are scaled by oakd_driver nn_w/nn_h
+                                # (480x640) and get_raw_depth_frame() is the same
+                                # CAM_A-aligned 480x640 via stereo.setOutputSize,
+                                # so both live in one frame; the projection above
+                                # reduces to u = 2*cx of the 2x-downsampled mask,
+                                # which is correct.
+                                #
+                                # The blocker is scope, not calibration: these
+                                # centroids also feed the CBF, so discarding
+                                # everything that is not a person would make
+                                # collision avoidance blind to boxes, furniture
+                                # and the Roomba. Enabling this needs the
+                                # estimator and CBF consumers split first.
                                 pass
                     except Exception as ex:
                         logger.warning(f"VelocityEstimator: failed visual-lidar gating check: {ex}")
@@ -651,7 +682,7 @@ class VelocityEstimator:
                         continue
 
                     # Skip tracks that are beyond the proximity threshold — they contribute zero to speed scaling
-                    if track['centroid'][2] > 1.8:
+                    if track['centroid'][2] > self.max_speed_range_m:
                         cx, cy, cz = track['centroid']
                         estimates.append({
                             'id':    tid,

@@ -148,3 +148,51 @@ def test_absent_pose_fn_uses_robot_frame_without_warning():
 # hardening against a future change to how the mask is built -- e.g. the
 # percentile-depth or wall filters still on the item 8 list -- not a fix for
 # observed behaviour. A test here would pass identically before and after.
+
+
+# ------------------------------------------------------- configurable range gate
+
+def _config_estimator(tmp_path, monkeypatch, **overrides):
+    cfg = {
+        "camera_height_m": 0.21,
+        "camera_pitch_deg": 1.077,
+        "min_obstacle_height_m": 0.15,
+        "max_obstacle_height_m": 2.0,
+    }
+    cfg.update(overrides)
+    path = tmp_path / "camera_ground_plane.json"
+    path.write_text(__import__("json").dumps(cfg))
+    monkeypatch.setattr(ve, "GROUND_PLANE_CONFIG_PATH", str(path))
+    est = VelocityEstimator.__new__(VelocityEstimator)
+    est._load_ground_plane_config()
+    return est
+
+
+def test_speed_range_defaults_to_the_trained_gate(tmp_path, monkeypatch):
+    # Absent from config -> must fall back to the 1.8 m gate the MLP was
+    # trained at, never to the 4.0 m extraction ceiling.
+    est = _config_estimator(tmp_path, monkeypatch)
+    assert est.max_speed_range_m == ve.DEFAULT_MAX_SPEED_RANGE_M == 1.8
+
+
+def test_speed_range_is_configurable(tmp_path, monkeypatch):
+    est = _config_estimator(tmp_path, monkeypatch, max_speed_range_m=4.0)
+    assert est.max_speed_range_m == 4.0
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0, 4.5])
+def test_speed_range_out_of_bounds_is_rejected(tmp_path, monkeypatch, bad):
+    # 0 or negative silently disables all speed estimation; beyond 4.0 m is past
+    # the depth extraction ceiling and can never match a centroid.
+    with pytest.raises(ValueError):
+        _config_estimator(tmp_path, monkeypatch, max_speed_range_m=bad)
+
+
+def test_gate_reads_config_and_no_hardcoded_range_remains():
+    # The gate used to be the literal `track['centroid'][2] > 1.8`. Assert the
+    # comparison now reads the configured attribute, so raising the range in
+    # config cannot silently leave a second hardcoded gate behind.
+    import inspect
+    src = inspect.getsource(VelocityEstimator._inference_loop)
+    assert "self.max_speed_range_m" in src
+    assert "> 1.8" not in src

@@ -111,7 +111,7 @@ class OakDCamera:
     def __init__(self, mono_fps=30, nn_fps=12, usb2_mode=False, align_depth_to_left=True,
                  accel_hz=250, gyro_hz=200, left_right_check=True, sim_mode=False,
                  spatial_blob=None, spatial_config=None, auto_economy=True,
-                 conf_threshold=None):
+                 conf_threshold=None, speckle_filter=True, speckle_range=50):
         self.mono_fps = mono_fps
         self.nn_fps = nn_fps
         self.usb2_mode = usb2_mode
@@ -120,6 +120,8 @@ class OakDCamera:
         self.accel_hz = accel_hz
         self.gyro_hz = gyro_hz
         self.left_right_check = left_right_check
+        self.speckle_filter = speckle_filter
+        self.speckle_range = speckle_range
         self.sim_mode = sim_mode
 
         self.spatial_blob = spatial_blob
@@ -240,6 +242,32 @@ class OakDCamera:
         stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.DEFAULT)
         stereo.setLeftRightCheck(self.left_right_check)
         stereo.setSubpixel(False)
+
+        # Speckle removal. The pipeline previously ran with NO post-processing at
+        # all, so isolated mismatched-disparity blobs reached consumers as real
+        # geometry -- the exact shape that becomes a phantom obstacle. This runs
+        # on-device and is the least invasive filter available: it removes small
+        # disconnected regions and leaves genuine surfaces untouched.
+        #
+        # NOT enabling the temporal filter on purpose. It blends across frames,
+        # which suppresses noise but also smears genuinely moving objects -- the
+        # one signal the velocity estimator exists to measure.
+        #
+        # This feed is shared: /oak/points, the Nav2 oak_voxel_layer and octomap
+        # all consume the same depth, so verify 3D mapping after changing it.
+        if self.speckle_filter:
+            try:
+                cfg = stereo.initialConfig.get()
+                cfg.postProcessing.speckleFilter.enable = True
+                cfg.postProcessing.speckleFilter.speckleRange = self.speckle_range
+                stereo.initialConfig.set(cfg)
+                logger.info("OakDCamera: speckle filter on (range=%d)",
+                            self.speckle_range)
+            except Exception as exc:
+                # An older depthai may not expose postProcessing; depth without
+                # the filter is still correct, so do not take the camera down.
+                logger.warning("OakDCamera: speckle filter unavailable (%s); "
+                               "continuing without post-processing", exc)
 
         imu.enableIMUSensor(dai.IMUSensor.ACCELEROMETER_RAW, self.accel_hz)
         imu.enableIMUSensor(dai.IMUSensor.GYROSCOPE_RAW, self.gyro_hz)
