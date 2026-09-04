@@ -47,3 +47,16 @@ local_llm_runs/
 # Obsidian vault state: the repo root IS the vault, but this dir is per-machine
 # plugin data and editor layout.  The notes themselves are tracked as *.md.
 .obsidian/
+
+# Robot-local runtime and bulky artifacts.  Kept on the Jetson, out of git:
+# battery_state.json is live SoC state, the TensorRT engine is rebuilt per
+# machine and JetPack version, and webrtc_poc/ carries a 60 MB mediamtx binary
+# and a self-signed key pair.
+config/battery_state.json
+.rosmaster_backup_*/
+*.engine
+src/yolo_models/default/yolo26n.onnx
+src/yolo_models/default/bus.jpg
+src/webrtc_poc/mediamtx
+src/webrtc_poc/auto.crt
+src/webrtc_poc/auto.key

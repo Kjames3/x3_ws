@@ -1,0 +1,31 @@
+{
+  "_comment": "Servo counts for a level (horizontal) lidar scan plane. Captured with the mount physically level; re-run src/dynamixel_tilt.py --calibrate after any remount.",
+  "horizontal_counts": 2032,
+  "horizontal_deg": 178.59,
+  "servo_id": 1,
+  "port": "/dev/openrb150",
+  "counts_per_deg": 11.3778,
+  "tolerance_counts": 12,
+  "tilt_direction": null,
+  "_tilt_direction_comment": "+1 if increasing counts pitches the lidar nose-DOWN (the URDF's positive lidar_tilt_joint), -1 if nose-up. Unverified -- angle commands stay disabled until someone watches it move.",
+  "calibrated_utc": "2026-08-29T09:54:51Z",
+  "calibrated_on": "jetson-desktop",
+  "sample_spread_counts": 0,
+  "measured_counts_at_calibration": 2036,
+  "servo_state_at_calibration": {
+    "pos_counts": 2036,
+    "pos_deg": 178.95,
+    "temp_C": 32,
+    "vin_V": 11.2,
+    "load": 67,
+    "loaded": true,
+    "moving": false,
+    "hardware_error": 0,
+    "position_limit_counts": [
+      0,
+      4095
+    ]
+  },
+  "note": "Physically levelled mount measured at 2032 counts with zero sample spread on 2026-08-29.",
+  "_tolerance_comment": "12 counts = 1.05 deg: the XL430 settles 7-11 counts short of any goal (gearbox backlash, measured 2026-08-28). A tighter band warns on every boot."
+}
