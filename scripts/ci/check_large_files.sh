@@ -18,9 +18,11 @@
 
 set -euo pipefail
 
-# Largest tracked file today is ~17.9 MB (imu_link.STL). 25 MB leaves headroom
-# for a comparable asset while still catching anything bag-sized.
-MAX_MB="${MAX_MB:-25}"
+# Largest tracked file today is ~27.1 MB (the pre-strip vendor mesh
+# X3plus/visual/base_link_vendor.STL, kept as provenance for the accessory
+# stripping in scripts/strip_x3plus_mesh.py). 30 MB leaves headroom for a
+# comparable asset while still catching anything bag-sized.
+MAX_MB="${MAX_MB:-30}"
 MAX_BYTES=$((MAX_MB * 1024 * 1024))
 
 # Rosbag / recording artefacts are never welcome regardless of size — a freshly

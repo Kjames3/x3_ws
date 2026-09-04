@@ -11,7 +11,7 @@ report_dir="$repo_root/local_llm_runs/sweep_load_bench_$(date +%Y%m%d-%H%M%S)"
 
 mkdir -p "$report_dir"
 
-for attempt in $(seq 1 180); do
+for _ in $(seq 1 180); do
   if "$runner" list | awk 'NR > 1 { print $1 }' | grep -qx "$model"; then
     break
   fi
