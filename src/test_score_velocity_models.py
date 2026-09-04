@@ -1,5 +1,6 @@
 """Tests for the offline model-comparison replay chain."""
 import json
+import math
 import os
 import sys
 
@@ -60,10 +61,25 @@ def test_confidence_multiplier_scales_speed_down():
     assert np.isclose(half["raw"][0], full["raw"][0], rtol=1e-6)
 
 
-def test_acceleration_clamp_limits_frame_to_frame_change():
+def test_acceleration_clamp_is_per_component_not_per_speed():
+    # The deployed code clamps vx and vy INDEPENDENTLY and then recomputes
+    # speed, so the speed itself can move by up to sqrt(2)*max_delta in one
+    # frame. A scalar-speed clamp would wrongly cap it at max_delta and
+    # under-report every acceleration.
     rows = [_row(0, 1, feats=[0.0] * 40), _row(1, 1)]
     res = replay(_capture(rows), "v1", 10, 10)
-    assert abs(res["frame_max"][1] - res["frame_max"][0]) <= 3.0 / 10 + 1e-6
+    max_delta = 3.0 / 10
+    step = abs(res["frame_max"][1] - res["frame_max"][0])
+    assert step <= math.sqrt(2) * max_delta + 1e-6
+
+
+def test_gated_track_resets_the_clamp_history_to_zero():
+    # A track that is gated enters the clamp history at vx=vy=0, so on the
+    # frame it returns it can only ramp back to max_delta per component.
+    rows = [_row(0, 1, status="gated_range", feats=None), _row(1, 1)]
+    res = replay(_capture(rows), "v1", 10, 10)
+    assert res["frame_max"][0] == 0.0
+    assert res["frame_max"][1] <= math.sqrt(2) * (3.0 / 10) + 1e-6
 
 
 def test_capture_without_ungated_frames_is_an_error():

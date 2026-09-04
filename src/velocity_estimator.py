@@ -588,8 +588,17 @@ class VelocityEstimator:
             "status": status,
             "feats": (np.asarray(feats, dtype=np.float32).reshape(-1).tolist()
                       if feats is not None else None),
+            # Filled in after inference for status=="ok" rows. These are the
+            # DEPLOYED model's own numbers, which is what makes an exact
+            # per-window self-check possible: an offline replay of the same
+            # model must reproduce them. Comparing aggregate p95 against the
+            # CSV cannot work -- the CSV samples the ~7.5 Hz broadcast at
+            # 10 Hz, so it drops and duplicates inference frames.
+            "vx_model": None, "vy_model": None,
+            "vx_pub": None, "vy_pub": None,
         }
         self._feature_rows.append(row)
+        return len(self._feature_rows) - 1
 
     def _flush_feature_log(self):
         if self._feature_log_path is None or not self._feature_rows:
@@ -719,6 +728,7 @@ class VelocityEstimator:
                 estimates = []
                 eligible_tracks = []
                 features_list = []
+                recorded_rows = []
 
                 self._feature_frame += 1
                 # Periodic flush: the server is usually stopped with a signal, so
@@ -808,9 +818,10 @@ class VelocityEstimator:
                         })
                         continue
 
-                    self._record_track(tid, tracks[tid]['centroid'],
-                                       tracks[tid].get('visible_count', WINDOW_SIZE),
-                                       "ok", feats)
+                    row_idx = self._record_track(
+                        tid, tracks[tid]['centroid'],
+                        tracks[tid].get('visible_count', WINDOW_SIZE), "ok", feats)
+                    recorded_rows.append(row_idx)
                     eligible_tracks.append((tid, hist_local))
                     features_list.append(feats)
 
@@ -841,6 +852,12 @@ class VelocityEstimator:
                         cx, cy, cz = tracks[tid]['centroid']
                         visible_count = tracks[tid].get('visible_count', WINDOW_SIZE)
                         conf = min(1.0, visible_count / WINDOW_SIZE)
+                        if (self._feature_log_path is not None and
+                                idx < len(recorded_rows)):
+                            row = self._feature_rows[recorded_rows[idx]]
+                            row["vx_model"], row["vy_model"] = vx, vy
+                            row["vx_pub"] = round(vx * conf, 3)
+                            row["vy_pub"] = round(vy * conf, 3)
                         estimates.append({
                             'id':    tid,
                             'x':     round(cx, 3),

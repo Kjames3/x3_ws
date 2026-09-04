@@ -87,32 +87,40 @@ def replay(capture, name, window_size, infer_hz, gate=None):
     vel = np.clip(pred * sc["y_scale"] + sc["y_mean"], -CLIP_MS, CLIP_MS)
     raw_speed = np.hypot(vel[:, 0], vel[:, 1])
 
-    # stage 5: confidence multiply
+    # stage 5: confidence multiply, applied to the COMPONENTS (the deployed
+    # code scales vx and vy, then recomputes speed).
     conf = np.array([min(1.0, r["visible_count"] / window_size) for r in ok],
                     dtype=np.float32)
-    conf_speed = raw_speed * conf
+    vxy = vel * conf[:, None]
+    conf_speed = np.hypot(vxy[:, 0], vxy[:, 1])
 
-    # stage 6+7: per-frame max over ALL tracks, gated ones contributing 0.0,
-    # then the inter-frame acceleration clamp applied per track id.
-    by_frame = {}
-    for r, s in zip(ok, conf_speed):
-        by_frame.setdefault(r["frame"], {})[r["tid"]] = float(s)
+    # stage 6+7: the acceleration clamp is applied PER COMPONENT against the
+    # previous frame's estimate for that track id, and gated tracks enter that
+    # history at vx=vy=0. So a track that leaves the gate and returns must ramp
+    # back up at max_delta per frame -- a large rate limiter that a scalar-speed
+    # clamp does not reproduce.
+    per_frame = {}
+    for r, v in zip(ok, vxy):
+        per_frame.setdefault(r["frame"], {})[r["tid"]] = [float(v[0]), float(v[1])]
     for r in rows:
         if r["status"] != "ok":
-            by_frame.setdefault(r["frame"], {}).setdefault(r["tid"], 0.0)
+            per_frame.setdefault(r["frame"], {}).setdefault(r["tid"], [0.0, 0.0])
 
     max_delta = MAX_ACCEL_MS2 / infer_hz
     prev, frame_max = {}, []
-    for frame in sorted(by_frame):
-        clamped = {}
-        for tid, speed in by_frame[frame].items():
+    for frame in sorted(per_frame):
+        current = {}
+        for tid, (vx, vy) in per_frame[frame].items():
             if tid in prev:
-                delta = speed - prev[tid]
-                if abs(delta) > max_delta:
-                    speed = prev[tid] + math.copysign(max_delta, delta)
-            clamped[tid] = speed
-        prev = clamped
-        frame_max.append(max(clamped.values()) if clamped else 0.0)
+                pvx, pvy = prev[tid]
+                if abs(vx - pvx) > max_delta:
+                    vx = pvx + math.copysign(max_delta, vx - pvx)
+                if abs(vy - pvy) > max_delta:
+                    vy = pvy + math.copysign(max_delta, vy - pvy)
+            current[tid] = (vx, vy)
+        prev = current
+        frame_max.append(max((math.hypot(*v) for v in current.values()),
+                             default=0.0))
 
     return {
         "raw": raw_speed,
@@ -180,6 +188,36 @@ def main():
         print(line)
         if args.static and fm.max() > 0:
             print(f"{'':12s}  ^ static capture: every non-zero value is a phantom")
+
+    # Exact per-window self-check: replaying the DEPLOYED model must reproduce
+    # the numbers it actually produced at capture time. This is sampling
+    # independent, unlike comparing p95 against the CSV.
+    ref = [r for r in capture["rows"]
+           if r["status"] == "ok" and r.get("vx_model") is not None]
+    if ref:
+        deployed = os.path.basename(str(capture.get("model_path", "")))
+        name = {"velocity_mlp.torchscript": "v1"}.get(deployed)
+        if name in names:
+            model, sc = load_model(name)
+            X = np.array([r["feats"] for r in ref], dtype=np.float32)
+            with torch.no_grad():
+                pred = model(torch.from_numpy(
+                    (X - sc["x_mean"]) / sc["x_scale"])).numpy()
+            got = np.clip(pred * sc["y_scale"] + sc["y_mean"], -CLIP_MS, CLIP_MS)
+            want = np.array([[r["vx_model"], r["vy_model"]] for r in ref],
+                            dtype=np.float32)
+            err = float(np.abs(got - want).max())
+            ok_exact = err < 1e-3
+            print(f"\nself-check [{'OK' if ok_exact else 'FAILED'}]: replayed "
+                  f"{name} vs the {len(ref)} outputs it produced live -- "
+                  f"max component error {err:.2e}")
+            if not ok_exact:
+                print("  The replay chain does not reproduce the deployed "
+                      "model's own numbers; the comparison is not trustworthy.")
+                raise SystemExit(1)
+    else:
+        print("\nself-check [SKIPPED]: capture has no recorded deployed "
+              "outputs (recorded before output capture was added)")
 
     if args.expect_p95 is not None:
         delta = abs(first_p95 - args.expect_p95)
