@@ -395,9 +395,9 @@
     <!-- ==================== OAK-D Lite (2026) ====================
          Luxonis OAK-D Lite stereo depth + RGB camera. The optical centre was
          physically measured 0.210 m above the floor. With the X3 Plus
-         base_footprint -> base_link height of 0.076 m, its provisional
-         base_link-relative z is therefore 0.134 m. Forward/lateral offsets and
-         pitch/roll still require physical measurement. Frame names follow the depthai_ros
+         base_footprint -> base_link height of 0.076 m, its base_link-relative
+         z is therefore 0.134 m. It is centered laterally and directly above the
+         Astra camera; its mount is level. Frame names follow the depthai_ros
          (depthai_ros_driver) convention with camera name "oak" so published
          image/pointcloud TF (oak_rgb_camera_optical_frame, etc.) resolves
          against these static frames. Set the driver's `camera.i_tf_prefix`
@@ -428,7 +428,10 @@
         </collision>
     </link>
     <joint name="oak_center_joint" type="fixed">
-        <origin xyz="0.0435 5.25826986680105E-05 0.134" rpy="0 0 0"/>
+        <!-- The OAK-D Lite is centered laterally and mounted directly above the
+             Astra camera. Keep its verified height/orientation and align its
+             fore/aft center with camera_link. -->
+        <origin xyz="0.107315 1.7948E-05 0.134" rpy="0 0 0"/>
         <parent link="base_link"/>
         <child link="oak-d-base-frame"/>
     </joint>
