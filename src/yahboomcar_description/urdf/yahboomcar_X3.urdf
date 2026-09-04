@@ -68,7 +68,7 @@
 
     <!-- 12 V battery on the X3 Plus upper plate. Dimensions were physically
          measured as 61 mm fore/aft (X), 114 mm across (Y), and 75 mm tall.
-         battery_link is the center of its bottom face, 66 mm behind the ICM. -->
+         battery_link is the center of its bottom face, 61 mm behind the ICM. -->
     <link name="battery_link">
         <visual>
             <origin xyz="0 0 0.0375" rpy="0 0 0"/>
@@ -89,7 +89,7 @@
     <joint name="battery_joint" type="fixed">
         <parent link="base_link"/>
         <child link="battery_link"/>
-        <origin xyz="-0.096 0 0.062" rpy="0 0 0"/>
+        <origin xyz="-0.091 0 0.062" rpy="0 0 0"/>
     </joint>
 
     <!-- The X3 Plus chassis mesh already contains all four wheels. Keep these
