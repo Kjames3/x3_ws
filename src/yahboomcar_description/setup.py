@@ -3,6 +3,16 @@ import os
 from glob import glob
 package_name = 'yahboomcar_description'
 
+
+def package_tree(root):
+    """Install nested mesh directories while preserving package:// paths."""
+    entries = []
+    for directory, _, _ in os.walk(root):
+        files = glob(os.path.join(directory, '*.*'))
+        if files:
+            entries.append((os.path.join('share', package_name, directory), files))
+    return entries
+
 setup(
     name=package_name,
     version='0.0.0',
@@ -15,7 +25,7 @@ setup(
         (os.path.join('share',package_name,'urdf'),glob(os.path.join('urdf','*.*'))),
         #(os.path.join('share',package_name,'meshes/Ackermann'),glob(os.path.join('meshes/Ackermann','*.*'))),
         #(os.path.join('share',package_name,'meshes/mecanum'),glob(os.path.join('meshes/mecanum','*.*'))),
-        (os.path.join('share',package_name,'meshes'),glob(os.path.join('meshes','*.*'))),
+        *package_tree('meshes'),
         (os.path.join('share',package_name,'rviz'),glob(os.path.join('rviz','*.rviz*'))),
     ],
     install_requires=['setuptools'],

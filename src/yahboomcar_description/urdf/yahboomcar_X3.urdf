@@ -5,29 +5,26 @@
 <robot name="yahboomcar">
     <link name="base_footprint"/>
     <link name="imu_link"/>
-    <!-- Chassis mesh is base_link_X3.STL with the display and its mount stripped
-         (2026-08): they were removed from the robot to clear space for the
-         tilting lidar mount. That drops 2340 of 69192 triangles - everything
-         above the deck at z=0.075 - so the chassis now tops out at z=0.071 and
-         no longer overhangs to x=-0.176 at the rear. Regenerate with the same
-         cut if the stock mesh is ever updated; the inertial below is still the
-         stock Yahboom value and has NOT been reduced for the removed hardware. -->
+    <!-- X3 Plus chassis geometry from Yahboom's ROSMASTER-X3Plus vendor model.
+         The physical robot is an X3 Plus, not the smaller X3 previously shown
+         here. Project-specific lidar and OAK-D assemblies remain separate links
+         below so their measured transforms can be calibrated independently. -->
     <link name="base_link">
         <inertial>
-            <origin xyz="0.00498197982182523 5.70233829969297E-05 -0.0121008098068578" rpy="0 0 0"/>
-            <mass value="0.486218814966626"/>
+            <origin xyz="-0.0304416859098744 4.23384368655101E-05 0.0448234503408059" rpy="0 0 0"/>
+            <mass value="1.0754239466482"/>
             <inertia
-                    ixx="0.00196277727666921"
-                    ixy="2.50447049446755E-07"
-                    ixz="0.000140534767811098"
-                    iyy="0.00457256033711368"
-                    iyz="2.68618064993882E-07"
-                    izz="0.00493927269870476"/>
+                    ixx="0.0208831789264125"
+                    ixy="2.4618093127858E-06"
+                    ixz="0.00616019290028669"
+                    iyy="0.0265621377486244"
+                    iyz="-1.10079499865282E-06"
+                    izz="0.0129535610833954"/>
         </inertial>
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="package://yahboomcar_description/meshes/base_link_X3_noscreen.STL"/>
+                <mesh filename="package://yahboomcar_description/meshes/X3plus/visual/base_link.STL"/>
             </geometry>
             <material name="">
                 <color rgba="0 0.7 0 1"/>
@@ -36,14 +33,14 @@
         <collision>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="package://yahboomcar_description/meshes/base_link_X3_noscreen.STL"/>
+                <mesh filename="package://yahboomcar_description/meshes/X3plus/collision/base_link.STL"/>
             </geometry>
         </collision>
     </link>
     <joint name="base_joint" type="fixed">
         <parent link="base_footprint"/>
         <child link="base_link"/>
-        <origin xyz="0.0 0.0 0.0815" rpy="0 0 0"/>
+        <origin xyz="0.0 0.0 0.076" rpy="0 0 0"/>
     </joint>
     <joint name="base_imu" type="fixed">
         <parent link="base_link"/>
@@ -51,10 +48,9 @@
         <origin xyz="-0.06 0.01 0.01" rpy="0 3.1415 1.5707"/>
     </joint>
 
-    <!-- ICM-42688-P (i2c-7 @ 0x68), the 200 Hz replacement for the MPU9250
-         above. Measured 2026-09-01: 3 cm behind the chassis centre, on the
-         lidar mount base plane (0.170 m above ground; 0.170 + 0.153 tilt axis
-         + 0.022 seat = 0.345, matching the measured 0.340 laser height).
+    <!-- ICM-42688-P (i2c-7 @ 0x68), the 200 Hz replacement for the MPU9250.
+         It sits 3 cm behind the chassis centre directly on the X3 Plus upper
+         plate, whose top surface is z=0.062 m in base_link.
 
          ROTATION IS DELIBERATELY IDENTITY. The physical chip sits at a +90 deg
          yaw (gravity measured on sensor Z; nose-up drove sensor Y negative;
@@ -67,31 +63,39 @@
     <joint name="base_icm_imu" type="fixed">
         <parent link="base_link"/>
         <child link="icm_imu_link"/>
-        <origin xyz="-0.03 0 0.0885" rpy="0 0 0"/>
+        <origin xyz="-0.03 0 0.062" rpy="0 0 0"/>
     </joint>
-    <link name="front_right_wheel">
-        <inertial>
-            <origin xyz="1.9051E-06 -2.3183E-07 -0.00064079" rpy="0 0 0"/>
-            <mass value="0.051532"/>
-            <inertia ixx="1.4595E-05" ixy="-4.3975E-10" ixz="4.415E-10"
-                     iyy="1.4594E-05" iyz="-1.7476E-09" izz="2.4264E-05"/>
-        </inertial>
+
+    <!-- 12 V battery on the X3 Plus upper plate. Dimensions were physically
+         measured as 61 mm fore/aft (X), 114 mm across (Y), and 75 mm tall.
+         battery_link is the center of its bottom face, 61 mm behind the ICM. -->
+    <link name="battery_link">
         <visual>
-            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <origin xyz="0 0 0.0375" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="package://yahboomcar_description/meshes/front_right_wheel_X3.STL"/>
+                <box size="0.061 0.114 0.075"/>
             </geometry>
-            <material name="">
-                <color rgba="0.7 0.7 0.7 1"/>
+            <material name="battery_black">
+                <color rgba="0.08 0.08 0.08 1"/>
             </material>
         </visual>
         <collision>
-            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <origin xyz="0 0 0.0375" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="package://yahboomcar_description/meshes/front_right_wheel_X3.STL"/>
+                <box size="0.061 0.114 0.075"/>
             </geometry>
         </collision>
     </link>
+    <joint name="battery_joint" type="fixed">
+        <parent link="base_link"/>
+        <child link="battery_link"/>
+        <origin xyz="-0.091 0 0.062" rpy="0 0 0"/>
+    </joint>
+
+    <!-- The X3 Plus chassis mesh already contains all four wheels. Keep these
+         links and joints as frame/API compatibility shims for existing joint-state
+         publishers, but give them no duplicate X3 visual, collision, or inertia. -->
+    <link name="front_right_wheel"/>
     <joint name="front_right_joint" type="continuous">
         <origin xyz="0.08 -0.0845 -0.0389" rpy="-1.5703 0 3.14159"/>
         <parent link="base_link"/>
@@ -99,29 +103,7 @@
         <axis xyz="0 0 1" rpy="0 0 0"/>
         <limit effort="100" velocity="1"/>
     </joint>
-    <link name="front_left_wheel">
-        <inertial>
-            <origin xyz="2.3728E-06 -9.4228E-07 0.00064068" rpy="0 0 0"/>
-            <mass value="0.051543"/>
-            <inertia ixx="1.4597E-05" ixy="-4.7945E-10" ixz="-2.4786E-10"
-                     iyy="1.4598E-05" iyz="1.7972E-09" izz="2.4267E-05"/>
-        </inertial>
-        <visual>
-            <origin xyz="0 0 0" rpy="0 0 0"/>
-            <geometry>
-                <mesh filename="package://yahboomcar_description/meshes/front_left_wheel_X3.STL"/>
-            </geometry>
-            <material name="">
-                <color rgba="0.7 0.7 0.7 1"/>
-            </material>
-        </visual>
-        <collision>
-            <origin xyz="0 0 0" rpy="0 0 0"/>
-            <geometry>
-                <mesh filename="package://yahboomcar_description/meshes/front_left_wheel_X3.STL"/>
-            </geometry>
-        </collision>
-    </link>
+    <link name="front_left_wheel"/>
     <joint name="front_left_joint" type="continuous">
         <origin xyz="0.08 0.084492 -0.0389" rpy="1.5703 0 0"/>
         <parent link="base_link"/>
@@ -129,29 +111,7 @@
         <axis xyz="0 0 1" rpy="0 0 0"/>
         <limit effort="100" velocity="1"/>
     </joint>
-    <link name="back_right_wheel">
-        <inertial>
-            <origin xyz="-1.75924169923403E-06 1.28388821071107E-06 -0.000590549296238266" rpy="0 0 0"/>
-            <mass value="0.051540174053366"/>
-            <inertia ixx="1.45974152250002E-05" ixy="1.94850559178397E-10" ixz="-1.61846387282284E-09"
-                     iyy="1.4596501955693E-05" iyz="-6.27904057423818E-10" izz="2.42663091380451E-05"/>
-        </inertial>
-        <visual>
-            <origin xyz="0 0 0" rpy="0 0 0"/>
-            <geometry>
-                <mesh filename="package://yahboomcar_description/meshes/back_right_wheel_X3.STL"/>
-            </geometry>
-            <material name="">
-                <color rgba="0.7 0.7 0.7 1"/>
-            </material>
-        </visual>
-        <collision>
-            <origin xyz="0 0 0" rpy="0 0 0"/>
-            <geometry>
-                <mesh filename="package://yahboomcar_description/meshes/back_right_wheel_X3.STL"/>
-            </geometry>
-        </collision>
-    </link>
+    <link name="back_right_wheel"/>
     <joint name="back_right_joint" type="continuous">
         <origin xyz="-0.08 -0.0845 -0.03946" rpy="-1.57 0 3.14159"/>
         <parent link="base_link"/>
@@ -159,29 +119,7 @@
         <axis xyz="0 0 1" rpy="0 0 0"/>
         <limit effort="100" velocity="1"/>
     </joint>
-    <link name="back_left_wheel">
-        <inertial>
-            <origin xyz="-4.01213085227115E-07 2.04910264598596E-06 0.000590775697051377" rpy="0 0 0"/>
-            <mass value="0.0515309299357028"/>
-            <inertia ixx="1.45942986129926E-05" ixy="-3.19787215398093E-10" ixz="1.74943062058915E-09"
-                     iyy="1.45948727598913E-05" iyz="1.61769812110049E-10" izz="2.4263683888153E-05"/>
-        </inertial>
-        <visual>
-            <origin xyz="0 0 0" rpy="0 0 0"/>
-            <geometry>
-                <mesh filename="package://yahboomcar_description/meshes/back_left_wheel_X3.STL"/>
-            </geometry>
-            <material name="">
-                <color rgba="0.7 0.7 0.7 1"/>
-            </material>
-        </visual>
-        <collision>
-            <origin xyz="0 0 0" rpy="0 0 0"/>
-            <geometry>
-                <mesh filename="package://yahboomcar_description/meshes/back_left_wheel_X3.STL"/>
-            </geometry>
-        </collision>
-    </link>
+    <link name="back_left_wheel"/>
     <joint name="back_left_joint" type="continuous">
         <origin xyz="-0.08 0.084492 -0.03954" rpy="1.5703 0 0"/>
         <parent link="base_link"/>
@@ -251,13 +189,9 @@
          the robot turns, and slam_toolbox bakes the same error into any map it
          builds. REMAP after changing it.
 
-         z: +90 mm would have put this link's base at 0.106, visibly floating once
-         the display and its mount were stripped from the chassis mesh. Dropped
-         17.5 mm on 2026-08-21, so the base is z=0.0885 and the scan origin is
-         (0.0432, ~0, 0.2635) at tilt=0, i.e. +72.5 mm over the old lidar rather
-         than +90. lidar_mount_joint's z is the single number to trim: the chassis
-         mesh's standoffs top out at z=0.071 and its deck plate at z=0.062, so a
-         further 17.5 / 26.5 mm would make the bottom plate actually touch. -->
+         z: the X3 Plus upper plate top is z=0.062 in base_link. The mount's
+         bottom datum is therefore placed at z=0.062 so it rests on the plate
+         instead of floating above it. -->
     <link name="lidar_mount_link">
         <!-- adapter + bottom plate + 4x 608RS + servo bracket + LX-16A.
              Printed parts at ~0.55 g/cm^3 effective (PLA, ~45% fill); bearings
@@ -382,7 +316,7 @@
         </visual>
     </link>
     <joint name="lidar_mount_joint" type="fixed">
-        <origin xyz="0.0557 5.25826986680105E-05 0.0885" rpy="0 0 0"/>
+        <origin xyz="0.0557 5.25826986680105E-05 0.062" rpy="0 0 0"/>
         <parent link="base_link"/>
         <child link="lidar_mount_link"/>
     </joint>
@@ -471,15 +405,21 @@
         </collision>
     </link>
     <joint name="camera_joint" type="fixed">
-        <origin xyz="0.057105 1.7948E-05 0.03755" rpy="0 0 0"/>
+        <!-- X3 Plus chassis front is x=0.145400 in the vendor mesh. The Astra
+             mesh's front face is x=+0.020085 from camera_link, so placing the
+             joint at x=0.107315 leaves the measured 18 mm setback while keeping
+             the existing, physically correct camera height unchanged. -->
+        <origin xyz="0.107315 1.7948E-05 0.03755" rpy="0 0 0"/>
         <parent link="base_link"/>
         <child link="camera_link"/>
     </joint>
 
     <!-- ==================== OAK-D Lite (2026) ====================
-         Luxonis OAK-D Lite stereo depth + RGB camera, mounted at the lidar's
-         previous front location: base_link-relative x=0.0435, y~0, z=0.185
-         (the old scan-plane height). Frame names follow the depthai_ros
+         Luxonis OAK-D Lite stereo depth + RGB camera. The optical centre was
+         physically measured 0.210 m above the floor. With the X3 Plus
+         base_footprint -> base_link height of 0.076 m, its base_link-relative
+         z is therefore 0.134 m. It is centered laterally and directly above the
+         Astra camera; its mount is level. Frame names follow the depthai_ros
          (depthai_ros_driver) convention with camera name "oak" so published
          image/pointcloud TF (oak_rgb_camera_optical_frame, etc.) resolves
          against these static frames. Set the driver's `camera.i_tf_prefix`
@@ -510,7 +450,10 @@
         </collision>
     </link>
     <joint name="oak_center_joint" type="fixed">
-        <origin xyz="0.0435 5.25826986680105E-05 0.185" rpy="0 0 0"/>
+        <!-- The OAK-D Lite is centered laterally and mounted directly above the
+             Astra camera. Keep its verified height/orientation and align its
+             fore/aft center with camera_link. -->
+        <origin xyz="0.107315 1.7948E-05 0.134" rpy="0 0 0"/>
         <parent link="base_link"/>
         <child link="oak-d-base-frame"/>
     </joint>
