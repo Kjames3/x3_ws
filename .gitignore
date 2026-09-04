@@ -32,3 +32,18 @@ archive/
 # settings.local.json is per-machine. The skills/ dir is tracked.
 .claude/worktrees/
 .claude/settings.local.json
+
+# Editor-snapshot debris.  Both machines accumulate these from patch-and-verify
+# work; the real version is always the committed one.
+*.bak
+*.bak-*
+*.bak.*
+*.orig
+
+# Runtime output, not source.
+logs/
+local_llm_runs/
+
+# Obsidian vault state: the repo root IS the vault, but this dir is per-machine
+# plugin data and editor layout.  The notes themselves are tracked as *.md.
+.obsidian/
