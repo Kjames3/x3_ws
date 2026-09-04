@@ -249,7 +249,12 @@ _shutting_down  = False  # set on SIGINT/SIGTERM/cleanup so motion_loop stops pu
                          # to /cmd_vel before rclpy is torn down (avoids a publish-on-dead-
                          # context RCLError → C++ abort that orphaned the bringup stack)
 velocity_estimator = None  # VelocityEstimator instance (EE244 project)
-active_velocity_model_name = "velocity_mlp"  # currently loaded torchscript velocity model
+active_velocity_model_name = "velocity_mlp_v3"  # currently loaded torchscript velocity model
+# v3 deployed 2026-09-04. Measured against v1 on one recorded capture replayed
+# offline (src/score_velocity_models.py): closer to truth at range (+15% vs
+# +33% at a 4.0 m gate) and far fewer phantoms on a static scene (raw p95
+# 0.179 vs 0.728, 7 vs 69 frames >0.30 m/s). Its scaler is paired by name --
+# do NOT point this at a model whose scaler_params_<suffix>.json is missing.
 velocity_estimation_enabled = True  # A/B toggle: False = reactive, True = predictive
 _p2p_proc = None           # point-to-point test subprocess handle
 _ab_test_proc = None       # A/B comparison test subprocess handle
@@ -2468,7 +2473,8 @@ async def handle_client(websocket):
 
                 elif msg_type == "set_velocity_model":
                     model_name = data.get("model")
-                    if model_name in ("velocity_mlp", "velocity_mlp_finetuned"):
+                    if model_name in ("velocity_mlp", "velocity_mlp_finetuned",
+                                      "velocity_mlp_v2", "velocity_mlp_v3"):
                         new_path = str(Path(__file__).parent.resolve() / f"{model_name}.torchscript")
                         if os.path.exists(new_path):
                             logger.info(f"Switching velocity estimator model to {new_path}")

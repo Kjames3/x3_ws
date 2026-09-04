@@ -273,6 +273,21 @@ class VelocityEstimator:
         return ((height > self.min_obstacle_height_m) &
                 (height < self.max_obstacle_height_m))
 
+    @staticmethod
+    def _scaler_path_for(model_path):
+        """Return the scaler fitted with `model_path`.
+
+        velocity_mlp.torchscript      -> scaler_params.json
+        velocity_mlp_v3.torchscript   -> scaler_params_v3.json
+        """
+        stem = Path(model_path).stem
+        if stem == "velocity_mlp":
+            return SCALER_PARAMS_PATH
+        if stem.startswith("velocity_mlp_"):
+            suffix = stem[len("velocity_mlp_"):]
+            return str(Path(model_path).parent / f"scaler_params_{suffix}.json")
+        return SCALER_PARAMS_PATH
+
     def _load_model(self):
         try:
             self._model    = torch.jit.load(self.model_path, map_location='cpu')
@@ -286,8 +301,19 @@ class VelocityEstimator:
             except Exception as trace_err:
                 logger.warning(f"VelocityEstimator: JIT tracing failed (falling back to untraced): {trace_err}")
 
-            # Load scaler parameters directly from JSON (Idea 72)
-            with open(SCALER_PARAMS_PATH, "r") as f:
+            # Load scaler parameters directly from JSON (Idea 72).
+            # The scaler MUST be the one fitted with this model. The path used to
+            # be hardcoded, so selecting a different model silently kept v1's
+            # scaler -- and v1 uses a different feature convention (absolute
+            # rel_x/rel_y, mean 2.29/0.94) from v2/v3/compress25 (translation-
+            # normalized, mean 0 scale 1). That mismatch is invisible at runtime:
+            # the model still returns plausible numbers, just wrong ones.
+            scaler_path = self._scaler_path_for(self.model_path)
+            if not os.path.exists(scaler_path):
+                raise FileNotFoundError(
+                    f"no scaler for {os.path.basename(self.model_path)}: "
+                    f"expected {os.path.basename(scaler_path)}")
+            with open(scaler_path, "r") as f:
                 params = json.load(f)
             
             self.scaler_X_mean = np.array(params["scaler_X"]["mean"], dtype=np.float32)
@@ -296,7 +322,8 @@ class VelocityEstimator:
             self.scaler_y_mean = np.array(params["scaler_y"]["mean"], dtype=np.float32)
             self.scaler_y_scale = np.array(params["scaler_y"]["scale"], dtype=np.float32)
             
-            logger.info(f"VelocityEstimator: model {self.model_path} and scaler parameters loaded")
+            logger.info(f"VelocityEstimator: model {self.model_path} and "
+                        f"scaler {os.path.basename(scaler_path)} loaded")
         except Exception as e:
             logger.error(f"VelocityEstimator: failed to load model {self.model_path}: {e}")
 
