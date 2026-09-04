@@ -145,7 +145,11 @@ Two traps for any new X-series code:
   not moving" returns before motion starts and looks exactly like a stalled
   servo. Judge arrival on position error with a grace period.
 - The GUI 3D sweep is **ping-pong, not sawtooth** (`lidar_scan_loop` reverses
-  `sweep_dir` at the ends); `tilt_direction` is still null, so it assumes +1.
+  `sweep_dir` at the ends). `tilt_direction` is **-1**, verified on hardware
+  2026-09-04 (increasing counts = nose UP). It was null before that and the
+  code assumed +1, so **3D maps built on this mount before 2026-09-04 are
+  mirrored vertically**. The +1 recorded for the retired LX-16A does not
+  carry over.
 
 **The Rosmaster and the LX-16A bridge were both CH340s (`1a86:7523`) with no
 serial number**, so `/dev/ttyCH341USB0` and `USB1` swapped with enumeration
