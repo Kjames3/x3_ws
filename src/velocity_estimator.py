@@ -29,12 +29,22 @@ logger = logging.getLogger(__name__)
 _SRC_DIR           = Path(__file__).parent.resolve()
 MODEL_PATH         = str(_SRC_DIR / "velocity_mlp.torchscript")
 SCALER_PARAMS_PATH = str(_SRC_DIR / "scaler_params.json")
+GROUND_PLANE_CONFIG_PATH = str(_SRC_DIR.parent / "config" /
+                               "camera_ground_plane.json")
 
 WINDOW_SIZE   = 10          # frames of history (matches training T=10)
 INFER_HZ      = 10          # target inference rate
 MIN_BLOB_AREA = 500         # pixels — ignore tiny depth blobs
 MAX_OBSTACLES = 5           # track at most N obstacles simultaneously
 MAX_RANGE_M   = 5.0         # ignore detections beyond this distance
+
+# Safe defaults match the physically measured OAK optical-centre height and the
+# level mount represented in the X3 Plus URDF. The JSON file makes a later
+# empty-floor pitch calibration deployable without changing code.
+DEFAULT_CAMERA_HEIGHT_M = 0.210
+DEFAULT_CAMERA_PITCH_DEG = 0.0
+DEFAULT_MIN_HEIGHT_M = 0.15
+DEFAULT_MAX_HEIGHT_M = 2.0
 
 
 class ObstacleTracker:
@@ -171,11 +181,58 @@ class VelocityEstimator:
         self._last_print_time = 0.0
         self._prev_estimates = {}
         self._logged_missing_intrinsics = False
+        self._height_ray_cache = {}
+        self._load_ground_plane_config()
 
         # Pre-allocate input tensor shape (Idea 116)
         self.x_tensor_preallocated = torch.zeros((MAX_OBSTACLES, 40), dtype=torch.float32)
 
         self._load_model()
+
+    def _load_ground_plane_config(self):
+        values = {
+            "camera_height_m": DEFAULT_CAMERA_HEIGHT_M,
+            "camera_pitch_deg": DEFAULT_CAMERA_PITCH_DEG,
+            "min_obstacle_height_m": DEFAULT_MIN_HEIGHT_M,
+            "max_obstacle_height_m": DEFAULT_MAX_HEIGHT_M,
+        }
+        try:
+            with open(GROUND_PLANE_CONFIG_PATH, "r") as config_file:
+                values.update(json.load(config_file))
+        except FileNotFoundError:
+            logger.warning("VelocityEstimator: ground-plane config missing; using "
+                           "measured X3 Plus defaults")
+        except Exception as exc:
+            logger.error(f"VelocityEstimator: invalid ground-plane config: {exc}; "
+                         "using measured X3 Plus defaults")
+
+        self.camera_height_m = float(values["camera_height_m"])
+        self.camera_pitch_rad = math.radians(float(values["camera_pitch_deg"]))
+        self.min_obstacle_height_m = float(values["min_obstacle_height_m"])
+        self.max_obstacle_height_m = float(values["max_obstacle_height_m"])
+        if not (self.camera_height_m > 0.0 and
+                0.0 <= self.min_obstacle_height_m < self.max_obstacle_height_m):
+            raise ValueError("invalid camera ground-plane dimensions")
+
+    def _height_band_mask(self, depth_m, fy, cy):
+        """Return pixels inside the configured height band above the floor."""
+        h = depth_m.shape[0]
+        key = (h, round(float(fy), 6), round(float(cy), 6),
+               round(self.camera_pitch_rad, 8))
+        row_term = self._height_ray_cache.get(key)
+        if row_term is None:
+            rows = np.arange(h, dtype=np.float32)
+            # Optical Y is positive down. Positive pitch means the optical axis
+            # points down, adding Z*sin(pitch) to vertical distance below camera.
+            row_term = (((rows - np.float32(cy)) / np.float32(fy)) *
+                        np.float32(math.cos(self.camera_pitch_rad)) +
+                        np.float32(math.sin(self.camera_pitch_rad)))
+            if len(self._height_ray_cache) > 4:
+                self._height_ray_cache.clear()
+            self._height_ray_cache[key] = row_term
+        height = self.camera_height_m - row_term[:, None] * depth_m
+        return ((height > self.min_obstacle_height_m) &
+                (height < self.max_obstacle_height_m))
 
     def _load_model(self):
         try:
@@ -265,6 +322,11 @@ class VelocityEstimator:
             # making every obstacle beyond 1.5 m invisible. Keep the region contiguous.
             far_mask_ds = (raw_depth_frame >= 1.5) & (raw_depth_frame <= 4.0)
             mask[far_mask_ds] = 255
+
+            # Remove floor/ceiling pixels before morphology and contour creation.
+            # Once the floor joins a person's feet, no contour-level operation can
+            # separate them again.
+            mask[~self._height_band_mask(raw_depth_frame, fy, cy0)] = 0
             
             # Morphological cleanup
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))

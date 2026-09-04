@@ -1,0 +1,7 @@
+{
+  "camera_height_m": 0.21,
+  "camera_pitch_deg": 0.0,
+  "min_obstacle_height_m": 0.15,
+  "max_obstacle_height_m": 2.0,
+  "notes": "OAK-D Lite optical center is physically measured 0.21 m above the floor. Pitch 0 matches the level X3 Plus URDF mount; refine pitch with an empty-floor calibration if measurements show a slope."
+}
