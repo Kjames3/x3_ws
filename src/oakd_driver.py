@@ -54,11 +54,13 @@ except Exception as _exc:  # pragma: no cover - import guard
 DEPTH_MIN_M = 0.3
 DEPTH_MAX_M = 5.0
 
-# Static transform oak_rgb_camera_optical_frame -> base_link (from the URDF):
-# OAK mounts at base_link x=0.0435, z=0.185; optical convention X right, Y down,
-# Z forward. So base_x = MOUNT_X + z, base_y = -x, base_z = MOUNT_Z - y.
-OAK_MOUNT_X = 0.0435
-OAK_MOUNT_Z = 0.185
+# Static transform oak_rgb_camera_optical_frame -> base_link (from the measured
+# X3 Plus URDF): the OAK is directly above the Astra at x=0.107315 and its
+# optical centre is z=0.134 above base_link (0.210 m above the floor). Optical
+# convention is X right, Y down, Z forward, so base_x = MOUNT_X + z,
+# base_y = -x, base_z = MOUNT_Z - y.
+OAK_MOUNT_X = 0.107315
+OAK_MOUNT_Z = 0.134
 
 _COCO80 = [
     "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",

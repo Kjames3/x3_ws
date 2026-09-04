@@ -10,6 +10,8 @@ the stride indexing are off) and the intrinsics rescaling in OakDCamera.
 
 import os
 import sys
+import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import numpy as np
 
@@ -147,6 +149,26 @@ def test_driver_exposes_get_depth_intrinsics():
     """Guard the contract this module depends on."""
     from oakd_driver import OakDCamera
     assert callable(getattr(OakDCamera, "get_depth_intrinsics", None))
+
+
+def test_driver_oak_extrinsics_match_urdf():
+    """Prevent the driver's base-frame projection drifting from robot geometry."""
+    from oakd_driver import OAK_MOUNT_X, OAK_MOUNT_Z
+
+    urdf = Path(__file__).parent / "yahboomcar_description" / "urdf" / "yahboomcar_X3.urdf"
+    root = ET.parse(urdf).getroot()
+    joint = next(j for j in root.findall("joint") if j.get("name") == "oak_center_joint")
+    x, _y, z = map(float, joint.find("origin").get("xyz").split())
+
+    assert np.isclose(OAK_MOUNT_X, x)
+    assert np.isclose(OAK_MOUNT_Z, z)
+
+
+def test_oak_mount_uses_measured_x3plus_position():
+    from oakd_driver import OAK_MOUNT_X, OAK_MOUNT_Z
+
+    assert np.isclose(OAK_MOUNT_X, 0.107315)
+    assert np.isclose(OAK_MOUNT_Z, 0.134)
 
 
 def test_scaled_intrinsics_project_consistently():
