@@ -34,6 +34,13 @@ GROUND_PLANE_CONFIG_PATH = str(_SRC_DIR.parent / "config" /
 
 WINDOW_SIZE   = 10          # frames of history (matches training T=10)
 INFER_HZ      = 10          # target inference rate
+# A depth frame older than this is a stalled camera, not a slow one. The
+# estimator runs at INFER_HZ regardless of capture, so without this it happily
+# re-projects one frozen frame forever -- and because centroids are mapped into
+# a GLOBAL frame using live odometry, a moving robot turns a frozen frame into
+# fabricated obstacle motion. 0.5 s is 5 inference periods and ~15 frames at the
+# measured ~29 fps depth rate, so it only trips on a real stall.
+MAX_DEPTH_FRAME_AGE_S = 0.5
 MIN_BLOB_AREA = 500         # pixels — ignore tiny depth blobs
 MAX_OBSTACLES = 5           # track at most N obstacles simultaneously
 MAX_RANGE_M   = 5.0         # ignore detections beyond this distance
@@ -58,6 +65,13 @@ class ObstacleTracker:
         self.max_dist = max_distance   # metres
         self.max_age  = max_age        # frames before track is dropped
         self.alpha_z  = 0.7            # EMA filtering factor for depth Z (Idea 43)
+
+    def reset(self):
+        """Drop all tracks. Used when the input stream breaks (stalled depth or
+        missing odometry): resuming with the pre-gap tracks would splice frames
+        from either side of the gap into one velocity window, and the window
+        features assume uniformly spaced samples."""
+        self.tracks = {}
 
     def update(self, centroids_m, centroids_g):
         """
@@ -181,6 +195,8 @@ class VelocityEstimator:
         self._last_print_time = 0.0
         self._prev_estimates = {}
         self._logged_missing_intrinsics = False
+        self._logged_stale_depth = False
+        self._logged_missing_pose = False
         self._height_ray_cache = {}
         self._load_ground_plane_config()
 
@@ -366,13 +382,17 @@ class VelocityEstimator:
                 depth_vals = depth_slice[cnt_mask == 255]
                 valid_depths = depth_vals[(depth_vals >= 0.5) & (depth_vals <= 4.0) & (~np.isnan(depth_vals))]
                 
-                if len(valid_depths) > 0:
-                    # Decimate large depth arrays to speed up sorting (Idea 52)
-                    if len(valid_depths) > 200:
-                        valid_depths = valid_depths[::len(valid_depths) // 200]
-                    Z = float(np.median(valid_depths))
-                else:
-                    Z = 1.0  # fallback if no valid depth
+                if len(valid_depths) == 0:
+                    # No valid depth anywhere in the contour. The old behaviour
+                    # substituted Z = 1.0, which invents an obstacle at 1.0 m --
+                    # inside the 1.8 m gate, so it reached the model and the CBF
+                    # as a close object. A contour with no depth carries no
+                    # position; drop it.
+                    continue
+                # Decimate large depth arrays to speed up sorting (Idea 52)
+                if len(valid_depths) > 200:
+                    valid_depths = valid_depths[::len(valid_depths) // 200]
+                Z = float(np.median(valid_depths))
                 
                 # Convert pixel centroid using the calibrated intrinsics of the
                 # active, depth-aligned OAK stream (already scaled to this 2x
@@ -527,6 +547,33 @@ class VelocityEstimator:
                 raw_depth_frame = cam_src.get_raw_depth_frame() if (cam_src is not None and hasattr(cam_src, 'get_raw_depth_frame')) else None
                 depth_intrinsics = cam_src.get_depth_intrinsics() if (cam_src is not None and hasattr(cam_src, 'get_depth_intrinsics')) else None
 
+                # Reject a stalled camera. Without this the loop keeps
+                # re-projecting the last frame at INFER_HZ; the centroids are
+                # frozen but the odometry used to place them in the global frame
+                # is not, so a moving robot manufactures obstacle motion out of a
+                # dead camera. Drop the estimates rather than publish stale ones.
+                if cam_src is not None and hasattr(cam_src, 'get_depth_frame_age'):
+                    try:
+                        frame_age = cam_src.get_depth_frame_age()
+                    except Exception:
+                        frame_age = None
+                    if frame_age is not None and frame_age > MAX_DEPTH_FRAME_AGE_S:
+                        if not self._logged_stale_depth:
+                            logger.warning(
+                                "VelocityEstimator: depth frame is %.2f s old "
+                                "(> %.2f s); dropping estimates until it recovers",
+                                frame_age, MAX_DEPTH_FRAME_AGE_S)
+                            self._logged_stale_depth = True
+                        with self._lock:
+                            self._estimates = []
+                        self._tracker.reset()
+                        elapsed = time.monotonic() - t0
+                        time.sleep(max(0.001, dt - elapsed))
+                        continue
+                    if self._logged_stale_depth:
+                        logger.info("VelocityEstimator: depth frames recovered")
+                        self._logged_stale_depth = False
+
                 # Fast-path: skip all processing when no valid depth data exists
                 if raw_depth_frame is not None and raw_depth_frame.size > 0:
                     if not np.any((raw_depth_frame >= 0.5) & (raw_depth_frame <= 4.0)):
@@ -548,11 +595,34 @@ class VelocityEstimator:
                     except Exception as e:
                         logger.error(f"VelocityEstimator: failed to query robot pose: {e}")
 
-                if robot_data and "pose" in robot_data:
+                if self.robot_pose_fn is None:
+                    # No odometry source was ever configured: the global frame is
+                    # just the robot frame, fixed at the origin. That is a
+                    # consistent choice, not a fallback.
+                    rx_rob, ry_rob, rtheta_rob = 0.0, 0.0, 0.0
+                elif robot_data and "pose" in robot_data:
                     r_pose = robot_data["pose"]
                     rx_rob, ry_rob, rtheta_rob = r_pose["x"], r_pose["y"], r_pose["theta"]
                 else:
-                    rx_rob, ry_rob, rtheta_rob = 0.0, 0.0, 0.0
+                    # Odometry was configured but is unavailable this frame.
+                    # Substituting the origin silently teleports every centroid by
+                    # the robot's true displacement, which either destroys track
+                    # association or -- when the robot happens to be near the
+                    # origin -- survives association and is read as obstacle
+                    # motion. Skip the frame instead of inventing a pose.
+                    if not self._logged_missing_pose:
+                        logger.warning("VelocityEstimator: robot pose unavailable; "
+                                       "skipping frames until odometry returns")
+                        self._logged_missing_pose = True
+                    with self._lock:
+                        self._estimates = []
+                    self._tracker.reset()
+                    elapsed = time.monotonic() - t0
+                    time.sleep(max(0.001, dt - elapsed))
+                    continue
+                if self._logged_missing_pose:
+                    logger.info("VelocityEstimator: robot pose recovered")
+                    self._logged_missing_pose = False
 
                 # Compute global coordinates of centroids (Idea 1, 11, & 121)
                 centroids_g = []
