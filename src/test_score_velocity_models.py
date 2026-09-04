@@ -86,3 +86,24 @@ def test_capture_without_ungated_frames_is_an_error():
     rows = [_row(0, 1, status="gated_stopped", feats=None)]
     with pytest.raises(SystemExit):
         replay(_capture(rows), "v1", 10, 10)
+
+
+# ------------------------------------------------------- model/scaler pairing
+
+def test_scaler_path_follows_the_selected_model():
+    from velocity_estimator import VelocityEstimator as VE
+    assert VE._scaler_path_for("/x/src/velocity_mlp.torchscript").endswith(
+        "scaler_params.json")
+    assert VE._scaler_path_for("/x/src/velocity_mlp_v3.torchscript").endswith(
+        "scaler_params_v3.json")
+    assert VE._scaler_path_for("/x/src/velocity_mlp_v2.torchscript").endswith(
+        "scaler_params_v2.json")
+
+
+def test_v1_and_v3_scalers_are_not_interchangeable():
+    # If they were near-identical the hardcoded-path bug would have been
+    # harmless. They are not: v1 expects absolute rel_x/rel_y.
+    v1 = load_model("v1")[1]
+    v3 = load_model("v3")[1]
+    assert not np.allclose(v1["x_mean"], v3["x_mean"])
+    assert abs(v1["x_mean"][0] - v3["x_mean"][0]) > 1.0
