@@ -65,6 +65,33 @@
         <child link="icm_imu_link"/>
         <origin xyz="-0.03 0 0.062" rpy="0 0 0"/>
     </joint>
+
+    <!-- 12 V battery on the X3 Plus upper plate. Dimensions were physically
+         measured as 61 mm fore/aft (X), 114 mm across (Y), and 75 mm tall.
+         battery_link is the center of its bottom face, 66 mm behind the ICM. -->
+    <link name="battery_link">
+        <visual>
+            <origin xyz="0 0 0.0375" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.061 0.114 0.075"/>
+            </geometry>
+            <material name="battery_black">
+                <color rgba="0.08 0.08 0.08 1"/>
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0.0375" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.061 0.114 0.075"/>
+            </geometry>
+        </collision>
+    </link>
+    <joint name="battery_joint" type="fixed">
+        <parent link="base_link"/>
+        <child link="battery_link"/>
+        <origin xyz="-0.096 0 0.062" rpy="0 0 0"/>
+    </joint>
+
     <!-- The X3 Plus chassis mesh already contains all four wheels. Keep these
          links and joints as frame/API compatibility shims for existing joint-state
          publishers, but give them no duplicate X3 visual, collision, or inertia. -->
