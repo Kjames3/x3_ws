@@ -168,11 +168,12 @@ def _config_estimator(tmp_path, monkeypatch, **overrides):
     return est
 
 
-def test_speed_range_defaults_to_the_trained_gate(tmp_path, monkeypatch):
-    # Absent from config -> must fall back to the 1.8 m gate the MLP was
-    # trained at, never to the 4.0 m extraction ceiling.
+def test_speed_range_defaults_to_the_extraction_ceiling(tmp_path, monkeypatch):
+    # This asserted 1.8 while the safety gate lived inside the estimator.
+    # The gate moved to the CBF boundary, so the estimator now reports the full
+    # range it can measure and 1.8 would silently truncate telemetry again.
     est = _config_estimator(tmp_path, monkeypatch)
-    assert est.max_speed_range_m == ve.DEFAULT_MAX_SPEED_RANGE_M == 1.8
+    assert est.max_speed_range_m == ve.DEFAULT_MAX_SPEED_RANGE_M == 4.0
 
 
 def test_speed_range_is_configurable(tmp_path, monkeypatch):
@@ -196,3 +197,33 @@ def test_gate_reads_config_and_no_hardcoded_range_remains():
     src = inspect.getsource(VelocityEstimator._inference_loop)
     assert "self.max_speed_range_m" in src
     assert "> 1.8" not in src
+
+
+# ------------------------------------------- estimator vs CBF range separation
+
+def test_estimator_default_range_is_the_extraction_ceiling():
+    # The estimator reports everything it can measure. The 1.8 m limit is a
+    # SAFETY parameter and now lives at the CBF boundary, not here.
+    assert ve.DEFAULT_MAX_SPEED_RANGE_M == 4.0
+
+
+def test_cbf_gate_is_separate_and_still_defaults_to_1_8():
+    # Reading the constant from source keeps this test independent of importing
+    # server_x3, which pulls in ROS and hardware drivers.
+    import re
+    from pathlib import Path
+    src = (Path(__file__).parent / "server_x3.py").read_text()
+    match = re.search(r"^CBF_SPEED_RANGE_M\s*=\s*([\d.]+)", src, re.M)
+    assert match, "CBF_SPEED_RANGE_M must exist: it is the safety gate"
+    assert float(match.group(1)) == 1.8
+
+
+def test_cbf_rejects_far_obstacles_before_the_speed_test():
+    # The order matters. A far track now arrives with a REAL speed instead of
+    # 0.0, so the range check must come first or fast far-field noise would
+    # reach the CBF -- exactly what the old estimator-side gate prevented.
+    from pathlib import Path
+    src = (Path(__file__).parent / "server_x3.py").read_text()
+    body = src[src.index("estimates = velocity_estimator.get_estimates()"):]
+    body = body[:body.index("except Exception")]
+    assert body.index("CBF_SPEED_RANGE_M") < body.index("speed > 0.15")

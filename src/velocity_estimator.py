@@ -52,11 +52,19 @@ DEFAULT_CAMERA_HEIGHT_M = 0.210
 DEFAULT_CAMERA_PITCH_DEG = 0.0
 DEFAULT_MIN_HEIGHT_M = 0.15
 DEFAULT_MAX_HEIGHT_M = 2.0
-# Tracks beyond this range report speed 0.0 without running the model. The MLP
-# was trained against this same 1.8 m gate, so raising it puts the model
-# out-of-distribution AND feeds more non-zero speeds to the CBF. Configurable so
-# a measurement run can widen it on a parked robot; the DEFAULT stays 1.8.
-DEFAULT_MAX_SPEED_RANGE_M = 1.8
+# Tracks beyond this range report speed 0.0 without running the model.
+#
+# This used to default to 1.8 m, which existed for SAFETY -- to keep noisy
+# far-field speeds out of the CBF. But applying it here, where the estimate is
+# PRODUCED, also destroyed telemetry and every accuracy measurement: a walker in
+# a 1.5-3.5 m lane read -30% purely because 82% of its frames were forced to
+# 0.0. Measured on one replayed capture, the same frames read -61..-67% at 1.8 m
+# and +14..+33% at 4.0 m -- the gate flips the SIGN of the error.
+#
+# The safety gate now lives at the CBF boundary instead (CBF_SPEED_RANGE_M in
+# server_x3.py), so driving behaviour is unchanged while the estimator reports
+# the full range it can actually measure. 4.0 m is the depth extraction ceiling.
+DEFAULT_MAX_SPEED_RANGE_M = 4.0
 
 
 class ObstacleTracker:
