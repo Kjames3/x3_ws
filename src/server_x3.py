@@ -256,6 +256,12 @@ active_velocity_model_name = "velocity_mlp_v3"  # currently loaded torchscript v
 # 0.179 vs 0.728, 7 vs 69 frames >0.30 m/s). Its scaler is paired by name --
 # do NOT point this at a model whose scaler_params_<suffix>.json is missing.
 velocity_estimation_enabled = True  # A/B toggle: False = reactive, True = predictive
+# Range limit for obstacles fed to the CBF, in metres. Deliberately SEPARATE
+# from the estimator's own range: this one is a safety parameter and 1.8 m
+# preserves the behaviour the CBF was tuned against. Raising it is a driving
+# change and needs a driving test -- see F7, where a stale obstacle set drove
+# the robot into a wall.
+CBF_SPEED_RANGE_M = 1.8
 _p2p_proc = None           # point-to-point test subprocess handle
 _ab_test_proc = None       # A/B comparison test subprocess handle
 _ab_test_mode = None       # A/B comparison test mode ("reactive" or "predictive")
@@ -833,6 +839,17 @@ class ROS2Bridge:
                 estimates = velocity_estimator.get_estimates()
                 for est in estimates:
                     speed = est.get("speed", 0.0)
+                    # SAFETY GATE. This used to live inside the estimator, which
+                    # meant the range limit the CBF needs also silenced telemetry
+                    # and made every accuracy measurement wrong (a walker at
+                    # 1.5-3.5 m read -30% because 82% of its frames were forced
+                    # to 0.0). The estimator now reports its full range and the
+                    # limit is applied HERE, at the only safety-critical
+                    # consumer, so driving behaviour is unchanged: a track beyond
+                    # this range used to arrive with speed 0.0 and fail the 0.15
+                    # test, and now it is rejected outright. Same obstacles.
+                    if est.get("z", 0.0) > CBF_SPEED_RANGE_M:
+                        continue
                     if speed > 0.15:
                         ox = est.get("z", est.get("y", 0.0))
                         oy = -est.get("x", 0.0)
