@@ -12,6 +12,7 @@ import os
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -149,6 +150,87 @@ def test_driver_exposes_get_depth_intrinsics():
     """Guard the contract this module depends on."""
     from oakd_driver import OakDCamera
     assert callable(getattr(OakDCamera, "get_depth_intrinsics", None))
+
+
+class _FakeCalibration:
+    def __init__(self):
+        self.calls = []
+
+    def getCameraIntrinsics(self, socket, width, height):
+        self.calls.append((socket, width, height))
+        return [[301.0, 0.0, 241.0],
+                [0.0, 311.0, 201.0],
+                [0.0, 0.0, 1.0]]
+
+
+class _FakeDevice:
+    def __init__(self, calibration=None, error=None):
+        self.calibration = calibration
+        self.error = error
+
+    def readCalibration(self):
+        if self.error is not None:
+            raise self.error
+        return self.calibration
+
+
+def _patch_fake_dai(oakd_driver):
+    old_dai = oakd_driver.dai
+    sockets = SimpleNamespace(CAM_A="CAM_A", CAM_B="CAM_B", CAM_C="CAM_C")
+    oakd_driver.dai = SimpleNamespace(CameraBoardSocket=sockets)
+    return old_dai
+
+
+def test_driver_reads_cam_a_intrinsics_at_spatial_depth_size():
+    import oakd_driver
+
+    old_dai = _patch_fake_dai(oakd_driver)
+    try:
+        camera = oakd_driver.OakDCamera(sim_mode=True)
+        calibration = _FakeCalibration()
+        assert camera.get_depth_intrinsics() is None
+        camera._read_intrinsics(_FakeDevice(calibration), with_spatial=True)
+
+        assert calibration.calls == [("CAM_A", 480, 640)]
+        assert camera.get_depth_intrinsics() == (301.0, 311.0, 241.0, 201.0,
+                                                  480, 640)
+        assert (camera._fx, camera._fy, camera._cx, camera._cy) == \
+            (301.0, 311.0, 241.0, 201.0)
+    finally:
+        oakd_driver.dai = old_dai
+
+
+def test_driver_reads_selected_stereo_camera_at_640x400():
+    import oakd_driver
+
+    old_dai = _patch_fake_dai(oakd_driver)
+    try:
+        for align_left, expected_socket in ((True, "CAM_B"), (False, "CAM_C")):
+            camera = oakd_driver.OakDCamera(sim_mode=True,
+                                             align_depth_to_left=align_left)
+            calibration = _FakeCalibration()
+            camera._read_intrinsics(_FakeDevice(calibration), with_spatial=False)
+            assert calibration.calls == [(expected_socket, 640, 400)]
+            assert camera.get_depth_intrinsics() == \
+                (301.0, 311.0, 241.0, 201.0, 640, 400)
+    finally:
+        oakd_driver.dai = old_dai
+
+
+def test_driver_clears_stale_intrinsics_when_calibration_fails():
+    import oakd_driver
+
+    old_dai = _patch_fake_dai(oakd_driver)
+    try:
+        camera = oakd_driver.OakDCamera(sim_mode=True)
+        camera._read_intrinsics(_FakeDevice(_FakeCalibration()), with_spatial=True)
+        assert camera.get_depth_intrinsics() is not None
+
+        camera._read_intrinsics(_FakeDevice(error=RuntimeError("device lost")),
+                                with_spatial=False)
+        assert camera.get_depth_intrinsics() is None
+    finally:
+        oakd_driver.dai = old_dai
 
 
 def test_driver_oak_extrinsics_match_urdf():

@@ -53,6 +53,8 @@ except Exception as _exc:  # pragma: no cover - import guard
 
 DEPTH_MIN_M = 0.3
 DEPTH_MAX_M = 5.0
+MONO_W = 640
+MONO_H = 400
 
 # Static transform oak_rgb_camera_optical_frame -> base_link (from the measured
 # X3 Plus URDF): the OAK is directly above the Astra at x=0.107315 and its
@@ -146,6 +148,12 @@ class OakDCamera:
 
         # CAM_A intrinsics at (nn_w, nn_h), filled once the device is up.
         self._fx = self._fy = self._cx = self._cy = None
+        # Intrinsics for the stream emitted by the active depth pipeline. Spatial
+        # mode aligns to CAM_A at the NN size; stereo-only mode aligns to CAM_B/C
+        # at the native 400p mono size.
+        self._depth_fx = self._depth_fy = None
+        self._depth_cx = self._depth_cy = None
+        self._depth_intr_size = None
         self._logged_nn = False
         self._decode_mode = None          # locked (reshape, has_obj) once identified
 
@@ -306,8 +314,7 @@ class OakDCamera:
                     self.available = True
                     self.spatial_active = with_spatial
                     backoff = 1.0
-                    if with_spatial:
-                        self._read_intrinsics(device)
+                    self._read_intrinsics(device, with_spatial)
                     logger.info(f"OakDCamera: connected (USB {self.usb_speed}) — depth + imu"
                                 + ("" if economy else " + stereo")
                                 + (" + host-decoded detections" if with_spatial else "")
@@ -379,14 +386,41 @@ class OakDCamera:
         self.available = False
         self.spatial_active = False
 
-    def _read_intrinsics(self, device):
+    def _read_intrinsics(self, device, with_spatial=True):
+        # A reconnect may change pipeline mode. Invalidate first so callers can
+        # never consume calibration left over from the previous stream geometry.
+        with self._lock:
+            self._depth_fx = self._depth_fy = None
+            self._depth_cx = self._depth_cy = None
+            self._depth_intr_size = None
         try:
             calib = device.readCalibration()
-            M = calib.getCameraIntrinsics(dai.CameraBoardSocket.CAM_A, self.nn_w, self.nn_h)
-            self._fx, self._fy = float(M[0][0]), float(M[1][1])
-            self._cx, self._cy = float(M[0][2]), float(M[1][2])
-            logger.info(f"OakDCamera: CAM_A intrinsics @ {self.nn_w}x{self.nn_h} "
-                        f"fx={self._fx:.1f} fy={self._fy:.1f} cx={self._cx:.1f} cy={self._cy:.1f}")
+            if with_spatial:
+                socket = dai.CameraBoardSocket.CAM_A
+                width, height = self.nn_w, self.nn_h
+            else:
+                socket = (dai.CameraBoardSocket.CAM_B if self.align_depth_to_left
+                          else dai.CameraBoardSocket.CAM_C)
+                width, height = MONO_W, MONO_H
+
+            M = calib.getCameraIntrinsics(socket, width, height)
+            fx, fy = float(M[0][0]), float(M[1][1])
+            cx, cy = float(M[0][2]), float(M[1][2])
+            if not np.isfinite((fx, fy, cx, cy)).all() or fx <= 0.0 or fy <= 0.0:
+                raise ValueError("invalid camera intrinsic matrix")
+
+            with self._lock:
+                self._depth_fx, self._depth_fy = fx, fy
+                self._depth_cx, self._depth_cy = cx, cy
+                self._depth_intr_size = (width, height)
+                # Host-side NN localisation always operates in the CAM_A-aligned
+                # spatial stream, so retain its existing short field names.
+                if with_spatial:
+                    self._fx, self._fy, self._cx, self._cy = fx, fy, cx, cy
+
+            socket_name = getattr(socket, "name", str(socket))
+            logger.info(f"OakDCamera: {socket_name} depth intrinsics @ {width}x{height} "
+                        f"fx={fx:.1f} fy={fy:.1f} cx={cx:.1f} cy={cy:.1f}")
         except Exception as e:
             logger.error(f"OakDCamera: readCalibration failed: {e}")
 
@@ -605,6 +639,19 @@ class OakDCamera:
         """Live depth/stereo capture rate (Hz), updated on a ~1s window by the
         worker thread. Cheap read of a cached float — no capture-path impact."""
         return self.depth_fps
+
+    def get_depth_intrinsics(self):
+        """Return ``(fx, fy, cx, cy, width, height)`` for the emitted depth map.
+
+        The width and height identify the resolution at which calibration was
+        queried; consumers can safely rescale it if an actual frame differs.
+        """
+        with self._lock:
+            if self._depth_intr_size is None:
+                return None
+            width, height = self._depth_intr_size
+            return (self._depth_fx, self._depth_fy,
+                    self._depth_cx, self._depth_cy, width, height)
 
     def get_stereo_frames(self):
         with self._lock:
