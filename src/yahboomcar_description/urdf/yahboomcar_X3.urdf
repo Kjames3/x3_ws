@@ -48,10 +48,9 @@
         <origin xyz="-0.06 0.01 0.01" rpy="0 3.1415 1.5707"/>
     </joint>
 
-    <!-- ICM-42688-P (i2c-7 @ 0x68), the 200 Hz replacement for the MPU9250
-         above. Measured 2026-09-01: 3 cm behind the chassis centre, on the
-         lidar mount base plane (0.170 m above ground; 0.170 + 0.153 tilt axis
-         + 0.022 seat = 0.345, matching the measured 0.340 laser height).
+    <!-- ICM-42688-P (i2c-7 @ 0x68), the 200 Hz replacement for the MPU9250.
+         It sits 3 cm behind the chassis centre directly on the X3 Plus upper
+         plate, whose top surface is z=0.062 m in base_link.
 
          ROTATION IS DELIBERATELY IDENTITY. The physical chip sits at a +90 deg
          yaw (gravity measured on sensor Z; nose-up drove sensor Y negative;
@@ -64,7 +63,7 @@
     <joint name="base_icm_imu" type="fixed">
         <parent link="base_link"/>
         <child link="icm_imu_link"/>
-        <origin xyz="-0.03 0 0.0885" rpy="0 0 0"/>
+        <origin xyz="-0.03 0 0.062" rpy="0 0 0"/>
     </joint>
     <!-- The X3 Plus chassis mesh already contains all four wheels. Keep these
          links and joints as frame/API compatibility shims for existing joint-state
@@ -163,13 +162,9 @@
          the robot turns, and slam_toolbox bakes the same error into any map it
          builds. REMAP after changing it.
 
-         z: +90 mm would have put this link's base at 0.106, visibly floating once
-         the display and its mount were stripped from the chassis mesh. Dropped
-         17.5 mm on 2026-08-21, so the base is z=0.0885 and the scan origin is
-         (0.0432, ~0, 0.2635) at tilt=0, i.e. +72.5 mm over the old lidar rather
-         than +90. lidar_mount_joint's z is the single number to trim: the chassis
-         mesh's standoffs top out at z=0.071 and its deck plate at z=0.062, so a
-         further 17.5 / 26.5 mm would make the bottom plate actually touch. -->
+         z: the X3 Plus upper plate top is z=0.062 in base_link. The mount's
+         bottom datum is therefore placed at z=0.062 so it rests on the plate
+         instead of floating above it. -->
     <link name="lidar_mount_link">
         <!-- adapter + bottom plate + 4x 608RS + servo bracket + LX-16A.
              Printed parts at ~0.55 g/cm^3 effective (PLA, ~45% fill); bearings
@@ -294,7 +289,7 @@
         </visual>
     </link>
     <joint name="lidar_mount_joint" type="fixed">
-        <origin xyz="0.0557 5.25826986680105E-05 0.0885" rpy="0 0 0"/>
+        <origin xyz="0.0557 5.25826986680105E-05 0.062" rpy="0 0 0"/>
         <parent link="base_link"/>
         <child link="lidar_mount_link"/>
     </joint>
