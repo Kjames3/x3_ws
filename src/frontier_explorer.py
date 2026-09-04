@@ -114,6 +114,16 @@ class FrontierExplorer:
         logger.info("FrontierExplorer: started")
         return True
 
+    def is_exploring(self) -> bool:
+        """True while selecting a frontier or driving to one.
+
+        Used by the tilting-lidar interlock in server_x3.py: between goals the
+        explorer leaves Nav2 IDLE, so checking Nav2Client.is_busy() alone would
+        let a tilt sweep start in the gap and blind the very next goal.
+        """
+        with self._lock:
+            return self._state in (STATE_EXPLORING, STATE_SELECTING)
+
     def stop(self) -> None:
         """Stop exploration and cancel any active Nav2 goal."""
         with self._lock:

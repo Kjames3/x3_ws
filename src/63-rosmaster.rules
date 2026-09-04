@@ -1,0 +1,16 @@
+# Yahboom Rosmaster mainboard -> stable /dev/rosmaster
+#
+# Companion to 62-lx16a.rules. The mainboard and the LX16A servo debug board
+# are both CH340s (1a86:7523) with no USB serial number, so /dev/ttyCH341USB0
+# and USB1 swap according to which one the hub enumerates first. Anything that
+# picks a port by index is a coin flip that, when it loses, drives the motor
+# controller's protocol into a servo bus.
+#
+#   bcdDevice 8134 = Rosmaster mainboard      -> /dev/rosmaster
+#   bcdDevice 8133 = LX16A servo debug board  -> /dev/lx16a (62-lx16a.rules)
+#
+# Install: sudo cp src/63-rosmaster.rules /etc/udev/rules.d/ && \
+#          sudo udevadm control --reload && sudo udevadm trigger
+
+SUBSYSTEM=="tty", KERNEL=="ttyCH341USB*", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", ATTRS{bcdDevice}=="8134", SYMLINK+="rosmaster", GROUP="dialout", MODE="0660"
+SUBSYSTEM=="tty", KERNEL=="ttyUSB*",      ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", ATTRS{bcdDevice}=="8134", SYMLINK+="rosmaster", GROUP="dialout", MODE="0660"

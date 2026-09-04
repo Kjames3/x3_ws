@@ -28,6 +28,10 @@
 # Other knobs:
 #   RECORD_DURATION=60        stop automatically after N seconds (trial runs)
 #   BYPASS_TOPIC_CHECK=true   skip the pre-flight publisher check
+#   AUTO_SCP=false            don't auto-transfer; just print the scp command
+#   DEST_USER=kamren          laptop username (default: kamren)
+#   DEST_HOST=10.13.149.173   override the auto-detected client IP
+#   DEST_DIR=...              laptop-side destination (default EE_244_Final_Project/bags/)
 #
 # IMPORTANT — the /oak/* topics only exist if x3_server was started with
 # --oak-ros-publish. DepthAI opens the OAK-D exclusively, so the server process
@@ -45,8 +49,20 @@
 # ...then remove that drop-in and restart once the recording session is done, so
 # normal operation isn't paying for the extra publishing.
 #
-# After recording, transfer the bag to your laptop:
-#   scp -r <JETSON_IP>:~/bags/domain_adapt/ ~/EE_244_Final_Project/bags/
+# AUTO-TRANSFER — when the recording finishes, the bag is scp'd straight back to
+# the machine you SSH'd in from. That means the Jetson has to authenticate TO
+# your laptop, which it does with your own forwarded SSH agent, so no private key
+# is ever stored on the robot. Connect like this:
+#
+#   ssh -A jetson@<JETSON_IP>
+#
+# and make sure your laptop has a key loaded (`ssh-add -l` should list one) and
+# that laptop-side sshd is running (`systemctl status ssh`) with your own key in
+# ~/.ssh/authorized_keys. Forwarding only lives as long as the SSH session, which
+# is fine — the transfer happens while you're still connected.
+#
+# If agent forwarding isn't available the script skips the copy and prints the
+# scp command instead; nothing is lost, the bag is still on the Jetson.
 # =============================================================================
 
 set -euo pipefail
@@ -281,6 +297,10 @@ echo ""
 
 if [[ -d "${BAG_PATH}" ]]; then
     SIZE=$(du -sh "${BAG_PATH}" | cut -f1)
+    # Marker for the laptop-side puller (fetch_bag.sh) — more reliable than
+    # scraping this script's stdout through a tty, and correct even when
+    # OUTPUT_DIR was overridden or an earlier run left a stale dir behind.
+    echo "${BAG_PATH}" > "${HOME}/.x3_last_bag" 2>/dev/null || true
     echo "  Bag saved:   ${BAG_PATH}"
     echo "  Bag size:    ${SIZE}"
     echo ""
@@ -288,8 +308,57 @@ if [[ -d "${BAG_PATH}" ]]; then
     ros2 bag info "${BAG_PATH}" 2>/dev/null || echo "    [WARN] Could not parse bag info."
     echo "  ----------------------------"
     echo ""
+    # ── Auto-transfer back to the SSH client ───────────────────────────────────
+    # Destination host: explicit override, else the client IP of this SSH
+    # session, else any other logged-in SSH session. Note SSH_CONNECTION is
+    # captured at login, so inside a tmux/screen session that survived a
+    # reconnect it can point at a stale IP — set DEST_HOST to override.
+    AUTO_SCP="${AUTO_SCP:-true}"
+    DEST_USER="${DEST_USER:-kamren}"
+    DEST_DIR="${DEST_DIR:-EE_244_Final_Project/bags/}"
+
+    DEST_HOST="${DEST_HOST:-$(awk '{print $1}' <<<"${SSH_CONNECTION:-}")}"
+    if [[ -z "${DEST_HOST}" ]]; then
+        # `who` prints a hostname instead of an IP when sshd has UseDNS yes,
+        # so take whatever is in the parens rather than matching on digits.
+        # `|| true` matters under `set -e`: with no SSH session logged in, grep
+        # exits 1 and would otherwise abort the script after a good recording.
+        DEST_HOST=$(who | grep -oE '\([^)]+\)' | tr -d '()' | grep -v '^:' | head -n1 || true)
+    fi
+
+    TRANSFERRED=false
+    if [[ "${AUTO_SCP}" != "true" ]]; then
+        echo "  Auto-transfer disabled (AUTO_SCP=${AUTO_SCP})."
+    elif [[ -z "${DEST_HOST}" ]]; then
+        echo "  [WARN] Could not determine the SSH client address — skipping auto-transfer."
+        echo "         Set DEST_HOST=<LAPTOP_IP> to force it."
+    elif [[ -z "${SSH_AUTH_SOCK:-}" ]]; then
+        echo "  [WARN] No SSH agent forwarded (SSH_AUTH_SOCK unset) — skipping auto-transfer."
+        echo "         Reconnect with:  ssh -A ${DEST_USER}@${DEST_HOST}"
+        echo "         and check a key is loaded laptop-side with:  ssh-add -l"
+    else
+        echo "  [$(date +%H:%M:%S)] Transferring bag to ${DEST_USER}@${DEST_HOST}:~/${DEST_DIR}"
+        # BatchMode=yes is important: without it a failed auth drops to an
+        # interactive password prompt and hangs the script.
+        # accept-new is trust-on-first-use: the robot has never seen the laptop's
+        # host key, and BatchMode suppresses the interactive accept prompt, so a
+        # plain run dies with "Host key verification failed". accept-new still
+        # refuses if a known key ever CHANGES — unlike StrictHostKeyChecking=no.
+        SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
+        if ssh "${SSH_OPTS[@]}" "${DEST_USER}@${DEST_HOST}" "mkdir -p ~/${DEST_DIR}" &&
+           scp "${SSH_OPTS[@]}" -r "${BAG_PATH}" "${DEST_USER}@${DEST_HOST}:~/${DEST_DIR}"; then
+            echo "  ✓ Bag copied to ${DEST_USER}@${DEST_HOST}:~/${DEST_DIR}${BAG_NAME}"
+            TRANSFERRED=true
+        else
+            echo "  [WARN] Auto-transfer failed — the bag is still on the Jetson at ${BAG_PATH}"
+        fi
+    fi
+
+    echo ""
     echo "  Next steps:"
-    echo "    scp -r ${BAG_PATH} <YOUR_LAPTOP_USER>@<LAPTOP_IP>:~/EE_244_Final_Project/bags/"
+    if [[ "${TRANSFERRED}" != "true" ]]; then
+        echo "    scp -r ${BAG_PATH} ${DEST_USER}@${DEST_HOST:-<LAPTOP_IP>}:~/${DEST_DIR}"
+    fi
     echo "    Then on laptop: python3 preprocessing/05_process_rosbag.py --bag bags/${BAG_NAME}"
 else
     echo "  [WARN] Bag directory not found — recording may have failed."

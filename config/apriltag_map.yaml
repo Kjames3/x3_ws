@@ -1,0 +1,60 @@
+# AprilTag survey for the apartment.
+#
+# Single source of truth for tag geometry and map poses. Everything
+# downstream (detector config, solvePnP, the /initialpose seed) reads this
+# file -- nothing hardcodes a size, because the tags are being reprinted.
+
+tag_family: tag36h11
+
+# Outer edge of the BLACK SQUARE, in metres. NOT the paper, NOT including
+# the quiet zone. A wrong value here is a proportional range error and is
+# otherwise completely silent.
+#
+# 0.101 measured with calipers 2026-08-23 across all 10 mounted tags.
+#
+# Provenance RESOLVED 2026-08-23: printed from ~/Downloads/markers.pdf, an
+# online "AprilTag Generator" page saved via Microsoft Print To PDF. All 20
+# pages decode as genuine tag36h11, hamming 0, IDs 0-19 sequential -- the
+# family is confirmed, not assumed.
+#
+# Size lost scale TWICE: the generator's black square is 105.52 mm in the
+# PDF (browser print scaling), and the physical print is 101 mm (printer
+# fit-to-printable-area, 0.957x on top). The calipers are authoritative.
+tag_size: 0.101
+tag_size_source: "calipers, 10/10 mounted tags, 2026-08-23"
+# markers.pdf carries IDs 0-19; only 10 are mounted. WHICH 10 is unknown
+# until the wall photos are decoded -- see src/apriltag_verify.py.
+tag_ids_mounted: []   # populate from the photo pass before surveying
+
+# Reprint pending (~2026-08-26): use ~/apriltags_print/tag36h11_150mm_ids0-9.pdf,
+# a verified true 150.0 mm -- NOT markers.pdf, which has browser scaling baked
+# in. That source only covers IDs 0-9, so any mounted tag with ID >= 10 must be
+# regenerated at 150 mm. Restores trustworthy pose range, which restores
+# trustworthy pose range from ~1.55 m to ~2.30 m. Update tag_size and
+# re-survey when that happens: the poses below do not change, but the
+# solved ranges that produced them do.
+
+detector:
+  # Default is 4, which downsamples a 42 px tag to 10 px so it is never
+  # found. This one setting decides whether any of this works.
+  quad_decimate: 1
+  # No error correction. A false ID teleports the pose estimate.
+  # Verified necessary, not theoretical: at hamming<=2 a tag16h5 detector
+  # invented IDs on 7 of the 20 genuine tag36h11 pages in markers.pdf, at
+  # 300 DPI with no blur. Do not add families, do not raise this.
+  max_hamming_distance: 0
+  # Floor tuned in Phase 1 bench testing; placeholder until measured.
+  min_decision_margin: 30.0
+
+# Tag poses are valid ONLY against this map. Re-mapping the apartment
+# invalidates every entry below.
+map_name: newApartment1
+map_resolution: 0.05
+map_origin: [-3.0, -4.89, 0.0]
+
+# Surveyed poses, map frame. yaw = direction the tag face points.
+# viewpoint_spread = stddev across >=3 survey viewpoints; high spread means
+# a bowed tag, a bad size, or poor lighting -- not just noise.
+# Populated in Phase 3. Empty until then.
+tags: []
+# - {id: 0, x: 0.00, y: 0.00, z: 0.185, yaw: 0.00, viewpoint_spread: null}

@@ -166,6 +166,19 @@ Visualization Manager:
       Update Interval: 0
       Value: true
       Visual Enabled: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: PedestrianMarkers
+      Namespaces:
+        pedestrian_labels: true
+        pedestrian_velocities: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /pedestrian_markers
+      Value: true
     - Class: rviz_default_plugins/TF
       Enabled: true
       Frame Timeout: 15
@@ -318,7 +331,7 @@ Visualization Manager:
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Best Effort
-        Value: /particlecloud
+        Value: /particle_cloud
       Value: true
     - Alpha: 0.699999988079071
       Class: rviz_default_plugins/Map

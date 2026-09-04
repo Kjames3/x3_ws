@@ -27,6 +27,22 @@ Panels:
 Visualization Manager:
   Class: ""
   Displays:
+    - Alpha: 1.0
+      Autocompute Intensity Bounds: true
+      Class: rviz_default_plugins/PointCloud2
+      Color: 255; 255; 255
+      Color Transformer: FlatColor
+      Enabled: true
+      Name: "OctoMap 3D (PointCloud)"
+      Position Transformer: XYZ
+      Size (Pixels): 5
+      Style: Points
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /octomap_point_cloud_centers
     - Alpha: 0.5
       Cell Size: 1
       Class: rviz_default_plugins/Grid
@@ -217,6 +233,19 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /map_updates
       Use Timestamp: false
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: PedestrianMarkers
+      Namespaces:
+        pedestrian_labels: true
+        pedestrian_velocities: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /pedestrian_markers
       Value: true
     - Class: rviz_default_plugins/TF
       Enabled: true

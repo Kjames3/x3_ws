@@ -14,6 +14,8 @@
 amcl:
   ros__parameters:
     use_sim_time: False
+    set_initial_pose: true
+    initial_pose: [0.0, 0.0, 0.0, 0.0]
     alpha1: 0.2
     alpha2: 0.2
     alpha3: 0.2
@@ -140,7 +142,7 @@ controller_server:
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"
       time_steps: 56
-      model_dt: 0.05
+      model_dt: 0.10
       batch_size: 2000
       vx_std: 0.2
       vy_std: 0.2
@@ -202,7 +204,7 @@ controller_server:
         cost_power: 1
         cost_weight: 3.81
         critical_cost: 300.0
-        consider_footprint: true
+        consider_footprint: false
         collision_cost: 1000000.0
         near_goal_distance: 1.0
       PathAlignCritic:
@@ -231,7 +233,7 @@ smoother_server:
     use_sim_time: False
     smoother_plugins: ["simple_smoother"]
     simple_smoother:
-      plugin: "nav2_smoother::SavitzkyGolayFilterSmoother"
+      plugin: "nav2_smoother::SavitzkyGolaySmoother"
       num_iterations: 2
       do_refinement: true
       refinement_num: 2
@@ -278,7 +280,7 @@ local_costmap:
       plugins: ["obstacle_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.15
+        inflation_radius: 0.20
         cost_scaling_factor: 5.0
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -322,7 +324,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0
-        inflation_radius: 0.15
+        inflation_radius: 0.20
       always_send_full_costmap: True
 
 # ── Map Server ───────────────────────────────────────────────────────────────

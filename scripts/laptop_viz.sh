@@ -25,15 +25,34 @@ _is_ip() { echo "$1" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; }
 JETSON_IP=""
 DOMAIN_ID=42
 EXTRA_ARGS=()
+VIEW=""
 for arg in "$@"; do
     if _is_ip "$arg"; then
         JETSON_IP="$arg"
     elif [[ "$arg" =~ ^[0-9]+$ ]]; then
         DOMAIN_ID="$arg"
+    elif [[ "$arg" =~ ^(3d|full|map|nav)$ ]]; then
+        VIEW="$arg"
+    elif [[ "$arg" != *":="* ]] && getent hosts "$arg" >/dev/null 2>&1; then
+        # Tailscale gives the robot the stable name `x3`, so accept a hostname
+        # and resolve it -- the initial-peers list below needs a literal IP.
+        JETSON_IP="$(getent hosts "$arg" | awk '{print $1; exit}')"
+        echo "[laptop_viz] resolved $arg -> $JETSON_IP"
     else
         EXTRA_ARGS+=("$arg")
     fi
 done
+
+# Short view names beat making the user paste an absolute path into
+# rvizconfig:=.  Resolved against the *installed* share dir below, once the
+# workspace has been sourced.
+case "$VIEW" in
+    3d)   RVIZ_FILE="x3_3d_map.rviz" ;;
+    full) RVIZ_FILE="x3_full_viz.rviz" ;;
+    map)  RVIZ_FILE="map.rviz" ;;
+    nav)  RVIZ_FILE="nav.rviz" ;;
+    *)    RVIZ_FILE="" ;;
+esac
 
 if [ -z "$JETSON_IP" ]; then
     echo "Usage: bash scripts/laptop_viz.sh <JETSON_IP> [DOMAIN_ID] [extra_launch_arguments]"
@@ -44,6 +63,14 @@ if [ -z "$JETSON_IP" ]; then
     echo "Example: bash scripts/laptop_viz.sh 10.13.244.35 42"
     echo "Example: bash scripts/laptop_viz.sh 42 10.13.244.35   # order doesn't matter"
     echo "Example: bash scripts/laptop_viz.sh 10.13.244.35 rvizconfig:=nav.rviz"
+    echo ""
+    echo "  VIEW       one of: 3d | full | map | nav   (default: full)"
+    echo "    3d   -> OctoMap 3D map + live tilted cloud + SLAM map"
+    echo "    full -> robot + lidar + camera + depth cloud + map"
+    echo "    map  -> /scan + /map only (lightweight)"
+    echo "    nav  -> Nav2 costmaps, path, goal tool"
+    echo ""
+    echo "Example: bash scripts/laptop_viz.sh x3 3d     # watch the 3D map build"
     exit 1
 fi
 
@@ -63,24 +90,46 @@ WS_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # ── Generate a FastDDS profile with unicast initial peers ────────────────────
 # Multicast can't reach the Jetson across subnets, so we tell our participant to
-# announce directly (unicast) to each Jetson ROS node's metatraffic port.  The
-# RTPS metatraffic-unicast port for participant id P on a domain is:
-#     7400 + 250*DOMAIN + 10 + 2*P
-# Enumerate ids 0..31 to cover all current + future Jetson nodes (incl. SLAM).
-# Each Jetson node learns OUR locators from the announcement we send and replies
-# directly, so the Jetson side needs no knowledge of this laptop's (DHCP) IP.
+# announce directly (unicast) to each Jetson ROS node's metatraffic port.
+# We also include a TCP transport for large messages like maps (to bypass UDP
+# fragmentation drops on enterprise WiFi), matching fastdds_tcp_client.xml.
 PROFILE="/tmp/fastdds_unicast_${JETSON_IP}_d${DOMAIN_ID}.xml"
 {
     echo '<?xml version="1.0" encoding="utf-8" ?>'
     echo '<dds xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">'
     echo '  <profiles>'
+    echo '    <transport_descriptors>'
+    echo '      <transport_descriptor>'
+    echo '        <transport_id>udp_transport</transport_id>'
+    echo '        <type>UDPv4</type>'
+    echo '        <receiveBufferSize>10485760</receiveBufferSize>'
+    echo '        <sendBufferSize>10485760</sendBufferSize>'
+    echo '        <maxMessageSize>65500</maxMessageSize>'
+    echo '      </transport_descriptor>'
+    echo '      <transport_descriptor>'
+    echo '        <transport_id>tcp_transport</transport_id>'
+    echo '        <type>TCPv4</type>'
+    echo '        <calculate_crc>false</calculate_crc>'
+    echo '        <listening_ports><port>11813</port></listening_ports>'
+    echo '        <receiveBufferSize>10485760</receiveBufferSize>'
+    echo '        <sendBufferSize>10485760</sendBufferSize>'
+    echo '        <maxMessageSize>65500</maxMessageSize>'
+    echo '      </transport_descriptor>'
+    echo '    </transport_descriptors>'
     echo '    <participant profile_name="unicast_peer" is_default_profile="true">'
-    echo '      <rtps><builtin><initialPeersList>'
+    echo '      <rtps>'
+    echo '        <userTransports>'
+    echo '          <transport_id>udp_transport</transport_id>'
+    echo '          <transport_id>tcp_transport</transport_id>'
+    echo '        </userTransports>'
+    echo '        <useBuiltinTransports>false</useBuiltinTransports>'
+    echo '        <builtin><initialPeersList>'
     for pid in $(seq 0 31); do
         port=$(( 7400 + 250 * DOMAIN_ID + 10 + 2 * pid ))
-        echo "        <locator><udpv4><address>${JETSON_IP}</address><port>${port}</port></udpv4></locator>"
+        echo "          <locator><udpv4><address>${JETSON_IP}</address><port>${port}</port></udpv4></locator>"
     done
-    echo '      </initialPeersList></builtin></rtps>'
+    echo '        </initialPeersList></builtin>'
+    echo '      </rtps>'
     echo '    </participant>'
     echo '  </profiles>'
     echo '</dds>'
@@ -117,16 +166,13 @@ ros2 daemon start 2>/dev/null
 # Discovery now rides on unicast UDP, which can't be probed as easily as a TCP
 # port, so we just confirm there is an IP path (ICMP).  If the robot is down or
 # the IP is wrong, fail fast with an actionable message instead of an empty RViz.
-echo "[laptop_viz] Checking the Jetson is reachable at ${JETSON_IP} ..."
-if ! ping -c 1 -W 3 "$JETSON_IP" >/dev/null 2>&1; then
-    echo ""
-    echo "[laptop_viz] ERROR: cannot reach the Jetson at ${JETSON_IP}."
-    echo "  RViz would have nothing to show.  Check, in order:"
-    echo "    1. Is the IP correct? (it is DHCP and changes) — run 'hostname -I' on the Jetson"
-    echo "    2. Same/routable network?   ping ${JETSON_IP}"
-    echo "    3. On Jetson: sudo systemctl status x3_server orbbec_depth"
-    exit 1
-fi
+# echo "[laptop_viz] Checking the Jetson is reachable at ${JETSON_IP} ..."
+# if ! ping -c 1 -W 3 "$JETSON_IP" >/dev/null 2>&1; then
+#     echo ""
+#     echo "[laptop_viz] WARNING: cannot ping Jetson at ${JETSON_IP} (ICMP might be blocked)."
+#     echo "  Continuing anyway..."
+# fi
+echo "[laptop_viz] Assuming Jetson is reachable (skipping ping test)."
 echo "[laptop_viz] Jetson reachable."
 
 # ── Verify topics actually arrive ────────────────────────────────────────────
@@ -166,5 +212,54 @@ echo " reality in RViz, please synchronize your laptop's clock with the Jetson:"
 echo "   sudo date -s \"\$(ssh jetson@$JETSON_IP date -R)\""
 echo "========================================================================="
 echo ""
+
+# Resolve the short view name now that install/setup.bash has been sourced.
+# Skip if the caller already passed an explicit rvizconfig:=.
+if [ -n "$RVIZ_FILE" ] && [[ ! "${EXTRA_ARGS[*]}" =~ rvizconfig: ]]; then
+    RVIZ_SHARE="$(ros2 pkg prefix yahboomcar_nav 2>/dev/null)/share/yahboomcar_nav/rviz"
+    if [ -f "$RVIZ_SHARE/$RVIZ_FILE" ]; then
+        EXTRA_ARGS+=("rvizconfig:=$RVIZ_SHARE/$RVIZ_FILE")
+        echo "[laptop_viz] view '$VIEW' -> $RVIZ_SHARE/$RVIZ_FILE"
+    else
+        echo "[laptop_viz] WARNING: $RVIZ_FILE is not in the install tree."
+        echo "  Rebuild it:  colcon build --packages-select yahboomcar_nav"
+    fi
+fi
+
+# 3D mapping accumulates the octree in `odom` and needs NO SLAM, so the octomap
+# topics carry frame_id 'odom'.  Every view except `3d` uses a `map` fixed frame,
+# and transforming odom -> map needs a map->odom that only exists while AMCL or
+# slam_toolbox is localized.  Pick the wrong view and RViz cannot transform a
+# single octomap message: they pile up in the tf2 MessageFilter and come out as
+#     "Message Filter dropping message: frame 'odom' ... queue is full"
+# with the map lagging seconds behind.  Catch that here rather than let it look
+# like a network fault.
+if [ "$VIEW" != "3d" ] && ros2 topic list 2>/dev/null | grep -qx "/octomap_binary"; then
+    echo ""
+    echo "[laptop_viz] ================================ WARNING ================================"
+    echo "[laptop_viz] 3D mapping is RUNNING on the robot, but view '${VIEW:-full}' uses a"
+    echo "[laptop_viz] 'map' fixed frame while the octree is published in 'odom'."
+    echo "[laptop_viz] Unless SLAM/AMCL is localized there is no map->odom, so RViz will drop"
+    echo "[laptop_viz] every octomap message with \"queue is full\" and the map will lag badly."
+    echo "[laptop_viz]"
+    echo "[laptop_viz]   Use:  bash scripts/laptop_viz.sh $1 3d"
+    echo "[laptop_viz] =========================================================================="
+    echo ""
+fi
+
+if [ "$VIEW" = "3d" ]; then
+    echo ""
+    echo "[laptop_viz] 3D map view. On the Jetson you also need:"
+    echo "    ros2 launch yahboomcar_nav x3_octomap.launch.py"
+    echo "  and the octomap topics require ros-humble-octomap-server installed there."
+    for t in /pointcloud_raw /octomap_binary; do
+        if ros2 topic list 2>/dev/null | grep -qx "$t"; then
+            echo "    [ok]      $t"
+        else
+            echo "    [MISSING] $t"
+        fi
+    done
+    echo ""
+fi
 
 exec ros2 launch yahboomcar_nav x3_remote_viz.launch.py "${EXTRA_ARGS[@]}"

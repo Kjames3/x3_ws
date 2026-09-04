@@ -1,0 +1,15 @@
+# OpenRB-150 (XL430-W250-T lidar tilt controller) -> stable /dev/openrb150
+#
+# Read off the real board 2026-08-28 with src/openrb150_udev.sh. Unlike the two
+# CH340s (see 62-lx16a.rules, which had to key on bcdDevice because both bridges
+# share 1a86:7523 with no serial), the SAMD21 exposes a unique USB serial, so
+# this rule survives any enumeration order or USB port change.
+#
+# Regenerate for a different board with:
+#   bash src/openrb150_udev.sh --install
+#
+# Install by hand with:
+#   sudo cp src/64-openrb150.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2f5d", ATTRS{idProduct}=="2202", ATTRS{serial}=="6F5B223250323952582E3120FF072412", SYMLINK+="openrb150", GROUP="dialout", MODE="0660"

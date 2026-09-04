@@ -1,0 +1,58 @@
+# lidar_3d_processor_node — the tilting 2D->3D split.
+#
+#     /scan_raw ──┬─→ /scan            2D SLAM / Nav2, ONLY while level
+#                 └─→ /pointcloud_raw  3D projection for octomap_server
+#
+# Before this file existed the node was launched with no parameter block at
+# all, so every knob below was pinned at its code default and could only be
+# changed by editing source.  Keep the defaults and this file in agreement.
+
+lidar_3d_processor_node:
+  ros__parameters:
+
+    scan_in_topic: /scan_raw
+    scan_out_topic: /scan
+    cloud_out_topic: /pointcloud_raw
+
+    # Tilt must come from the mount's OWN topic, never the merged
+    # /joint_states -- joint_state_publisher emits `lidar_tilt_joint: 0.0` for
+    # every URDF joint nothing else claims, which reads as a fresh, level
+    # measurement forever.
+    tilt_topic: /lidar_tilt/joint_states
+    joint_name: lidar_tilt_joint
+
+    # 0.05 rad = 2.9 deg.  At 8 m that is 0.40 m of height error, which
+    # slam_toolbox absorbs as range noise; much beyond this and walls bend.
+    level_threshold_rad: 0.05
+
+    tilt_timeout_s: 2.0
+    # ONLY consulted when a tilt source has never been heard at all.  A source
+    # that is heard and then goes silent has its last angle LATCHED, because a
+    # mount that stops reporting has usually stopped reporting while tilted --
+    # assuming level there hands slam_toolbox and AMCL a pitched scan plane
+    # labelled horizontal and silently corrupts the map and the pose.
+    assume_level_if_no_source: false
+
+    # Step-and-stare is only distortion-free if the moving part of each step is
+    # discarded.  The processor waits a complete LaserScan acquisition window
+    # after the mount reports settled, rejecting the scan that straddles a move.
+    require_settled: true
+
+    # Chassis self-returns.  Applied ONLY when tilted, never to /scan.  The
+    # laser is at z=0.340 m above base_footprint (measured via TF 2026-08-23;
+    # the 0.191 m in older comments is the stale pre-tilting-mount height), so
+    # at the steepest sweep angle of 45 deg the floor intercept sits at
+    # 0.34/sin45 = 0.481 m -- outside this mask.  It only starts eating floor
+    # beyond 76 deg of tilt, which the sweep never reaches.
+    tilted_min_range_m: 0.35
+
+    # Beyond ~2.9 m the 1.0 deg sweep step (5.2 cm) is coarser than octomap's
+    # 5 cm voxel, so distant surfaces arrive as stripes rather than walls.
+    # Raycast cost is linear in max_range/resolution too.
+    cloud_max_range_m: 8.0
+
+    # FALSE where octomap runs for real: a level scan is a horizontal slice 2D
+    # SLAM already has, and re-projecting + re-inserting it every 125 ms costs
+    # continuous Jetson CPU and continuous DDS traffic for zero information.
+    # Set true only to get something on screen while bringing the stack up.
+    publish_cloud_when_level: false

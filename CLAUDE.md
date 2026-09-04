@@ -99,12 +99,62 @@ Default domain is 0. Scripts use domain ID 42 for Jetson/laptop isolation. Serve
 
 ## Hardware
 - **Robot**: Yahboom X3 (4-wheel mecanum drive)
-- **Controller**: Rosmaster board on `/dev/ttyCH341USB0`
-- **Lidar**: YDLidar X3 on `/dev/ttyUSB0` (TOF, 512000 baud, 8 Hz scan)
+- **Controller**: Rosmaster board on `/dev/rosmaster` (`src/63-rosmaster.rules`)
+- **Lidar**: YDLidar X3 on `/dev/ttyUSB0` (TOF, 512000 baud; the driver comments
+  say 8 Hz / ~1000 beams, the hardware actually does **7.2 Hz / 2795 beams**),
+  on a Dynamixel-tilted mount driven via `/dev/openrb150`
+  (`src/64-openrb150.rules`)
 - **Camera**: Orbbec Astra Pro (RGB + depth)
 - **Compute**: Jetson Orin Nano (JetPack 6.2)
 
+### Tilting Lidar Mount
+
+The tilt axis is a **Dynamixel XL430-W250-T (id 1, fw 50)** on an
+**OpenRB-150** (`2f5d:2202` → `/dev/openrb150`). It has its own supply; XL430
+stall current exceeds 800 mA, so it is never on the Orin 40-pin 5 V rail.
+
+> **The LX-16A is RETIRED.** It, `/dev/lx16a`, `src/62-lx16a.rules`,
+> `src/lidar_tilt.py`, `x3_lidar_home.service` and
+> `config/lidar_tilt_calibration.json` are all historical. Do not reason about
+> the tilt axis from them — the counts scale, the port, the units and the
+> calibration file are all different now. `src/lx16a_servo.py` is kept only for
+> the bench. Background in `notes/dynamixel_servo_history.md`.
+
+```bash
+python3 src/dynamixel_tilt.py --status      # read-only (does NOT drop torque)
+python3 src/dynamixel_tilt.py --calibrate   # store current position as level
+python3 src/dynamixel_tilt.py --home        # drive back to level
+python3 src/dynamixel_setup.py --commission # bench tool: identify/set-id/zero/sweep
+```
+
+Calibration lives in `config/lidar_tilt_calibration_dynamixel.json`.
+X-series position is **0–4095 over 360° (11.378 counts/deg)** — neither the
+LX-16A's 4.167 nor the YB-SD15M scale `Rosmaster_Lib.__arm_convert_angle`
+assumes. Zero is the user's **hand-levelled 2032, not 2048**; do not "fix" it.
+`tolerance_counts` is 12 because the residual ~10-count error is **backlash,
+not PID droop** — do not tune gains, approach from a consistent direction.
+Never set the EEPROM Homing Offset: Goal Position stays clamped to 0..4095 *in
+the offset frame*, silently halving the reachable arc.
+
+`x3_dynamixel_tilt_home.service` homes the mount at boot, ordered before
+`x3_server` (`x3_lidar_home.service` is disabled). `x3_server` also homes on
+startup, because a restart while tilted used to gate `/scan` off forever.
+
+Two traps for any new X-series code:
+- **The Moving flag (addr 122) lags the Goal Position write**, so "poll until
+  not moving" returns before motion starts and looks exactly like a stalled
+  servo. Judge arrival on position error with a grace period.
+- The GUI 3D sweep is **ping-pong, not sawtooth** (`lidar_scan_loop` reverses
+  `sweep_dir` at the ends); `tilt_direction` is still null, so it assumes +1.
+
+**The Rosmaster and the LX-16A bridge were both CH340s (`1a86:7523`) with no
+serial number**, so `/dev/ttyCH341USB0` and `USB1` swapped with enumeration
+order; the `/dev/rosmaster` symlink keys on chip revision (`bcdDevice` 8134 vs
+8133) to pin it. The OpenRB-150 has a real USB serial number and needs no such
+trick — but keep the rule in mind before adding any further CH340 device.
+
 ## Key Configuration Files
+- **[config/lidar_tilt_calibration_dynamixel.json](config/lidar_tilt_calibration_dynamixel.json)** — XL430 tilt zero (2032) + tolerance_counts (12). The older `lidar_tilt_calibration.json` is the retired LX-16A's and is dead.
 - **[src/yahboomcar_nav/params/nav2_params_x3.yaml](src/yahboomcar_nav/params/nav2_params_x3.yaml)** — Nav2 DWA planner/controller tuning
 - **[src/yahboomcar_nav/params/ekf_x3.yaml](src/yahboomcar_nav/params/ekf_x3.yaml)** — EKF fusion config
 - **[src/yahboomcar_nav/params/ydlidar_x3.yaml](src/yahboomcar_nav/params/ydlidar_x3.yaml)** — YDLidar driver params

@@ -13,6 +13,7 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
+import tf2_ros
 
 # --- Control Config ---
 TARGET_DISTANCE = 4.0  # meters
@@ -56,6 +57,9 @@ class PointToPointTest(Node):
         self.current_y = 0.0
         self.current_yaw = 0.0
         self.odom_received = False
+        self.using_amcl = False
+        self._tf_buffer = tf2_ros.Buffer()
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
 
         # State Machine
         # 0: INIT
@@ -105,8 +109,38 @@ class PointToPointTest(Node):
             self._cmd_pub.publish(twist)
 
     def _control_loop(self):
+        old_x, old_y, old_yaw = self.current_x, self.current_y, self.current_yaw
+        
+        try:
+            trans = self._tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+            new_x = trans.transform.translation.x
+            new_y = trans.transform.translation.y
+            q = trans.transform.rotation
+            siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+            cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+            new_yaw = math.atan2(siny_cosp, cosy_cosp)
+            
+            if not getattr(self, 'using_amcl', False):
+                dx_jump = new_x - old_x
+                dy_jump = new_y - old_y
+                dyaw_jump = new_yaw - old_yaw
+                self.start_x += dx_jump
+                self.start_y += dy_jump
+                self.start_yaw = normalize_angle(self.start_yaw + dyaw_jump)
+                self.target_yaw = normalize_angle(self.target_yaw + dyaw_jump)
+                self.using_amcl = True
+                self.get_logger().info("Switched localization from Odometry to AMCL (TF map->base_link)")
+            
+            self.current_x = new_x
+            self.current_y = new_y
+            self.current_yaw = new_yaw
+            self.odom_received = True
+            
+        except Exception:
+            pass
+
         if not self.odom_received:
-            self.get_logger().info("Waiting for /odom messages...", throttle_duration_sec=2.0)
+            self.get_logger().info("Waiting for /odom or TF messages...", throttle_duration_sec=2.0)
             return
 
         now = time.monotonic()

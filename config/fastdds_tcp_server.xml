@@ -50,7 +50,7 @@
         </listening_ports>
         <sendBufferSize>4194304</sendBufferSize>
         <receiveBufferSize>4194304</receiveBufferSize>
-        <maxMessageSize>4194304</maxMessageSize>
+        <maxMessageSize>65500</maxMessageSize>
       </transport_descriptor>
 
     </transport_descriptors>

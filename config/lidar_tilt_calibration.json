@@ -1,0 +1,52 @@
+{
+  "_comment": "Servo counts for a level (horizontal) lidar scan plane. Captured with the mount physically level; re-run src/lidar_tilt.py --calibrate after any remount.",
+  "horizontal_counts": 500,
+  "horizontal_deg": 120.0,
+  "servo_id": 3,
+  "port": "/dev/lx16a",
+  "counts_per_deg": 4.1667,
+  "tolerance_counts": 3,
+  "tilt_direction": 1,
+  "_tilt_direction_comment": "+1 = increasing counts pitches the lidar nose-DOWN (the URDF's positive lidar_tilt_joint). VERIFIED 2026-08-23, see direction_verification.",
+  "calibrated_utc": "2026-08-22T04:06:16Z",
+  "calibrated_on": "jetson-desktop",
+  "sample_spread_counts": 0,
+  "servo_state_at_calibration": {
+    "pos_counts": 500,
+    "pos_deg": 120.0,
+    "temp_C": 27,
+    "vin_V": 6.653,
+    "offset_counts": 0,
+    "loaded": false,
+    "angle_limit_counts": [
+      0,
+      750
+    ],
+    "_pos_counts_note": "was 12 (=2.88 deg) until 2026-08-23: a single corrupt read_pos on the half-duplex bus, written by read_state() seconds after calibrate() sampled 500 fifteen times with zero spread. Re-measured live at 500 with 300/300 clean reads (only 499-500 seen). Repaired to 500."
+  },
+  "note": "first calibration after the new tilting mount was installed",
+  "direction_verification": {
+    "utc": "2026-08-23T10:50:48Z",
+    "result": 1,
+    "method": "Raw /scan_raw only, no URDF and no TF. The floor is 0.340 m below the lidar and the ceiling ~2.1 m above, so a 30 deg tilt puts the downhill side on the floor at slant range 0.34/sin30 = 0.68 m while the uphill side reaches ~4.2 m. The SHORT return therefore marks the downhill bearing. Comparing +30 against -30 does NOT work: a global sign flip only swaps which physical station is labelled +30, so both look sensible either way (that first attempt returned 0.0% anomalies at every station).",
+    "measured_median_range_m": {
+      "level_500": {
+        "bearing_0": 1.13,
+        "bearing_180": 4.76
+      },
+      "raised_625": {
+        "bearing_0": 2.46,
+        "bearing_180": 0.65
+      },
+      "lowered_375": {
+        "bearing_0": 0.64,
+        "bearing_180": 3.9
+      }
+    },
+    "reasoning": "At raised counts the floor sits at laser bearing 180, so laser_link's +X pitched UP. laser_joint yaws laser_link 180 deg from lidar_tilt_link, so lidar_tilt_link's +X pitched DOWN, which for a rotation about +Y is a POSITIVE joint angle => direction = +1. The driver's inverted:=true flips the sign of the bearing and so cannot affect a 0-versus-180 test.",
+    "physical_confirmation": "Operator watched both runs: at raised counts the front of the mount (the OAK-D end) dipped down toward the floor ahead of the robot.",
+    "level_cross_check": "Floor slant range was 0.65 m raised vs 0.64 m lowered -- symmetric about 500 counts. At 30 deg, d(range)/d(tilt) = 0.021 m/deg, so that 1 cm difference confirms horizontal_counts=500 is level to ~0.25 deg.",
+    "measured_laser_height_m": 0.34,
+    "_height_note": "0.340 m above base_footprint, measured via TF: a level scan projected to a perfectly flat plane at z=+0.340 across 81872 points. The 0.191 m quoted in several code comments is the OLD pre-tilting-mount height and is stale."
+  }
+}

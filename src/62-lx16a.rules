@@ -1,0 +1,20 @@
+# LX16A bus servo debug board -> stable /dev/lx16a
+#
+# The LX16A debug board and the Yahboom Rosmaster mainboard both use the same
+# CH340 VID:PID (1a86:7523) and expose no USB serial number, so idVendor/
+# idProduct alone CANNOT tell them apart. They are distinguished here by chip
+# revision (bcdDevice), which is burned into the chip and is port-independent:
+#
+#   bcdDevice 8133 = LX16A servo debug board   -> /dev/lx16a
+#   bcdDevice 8134 = Rosmaster mainboard       -> (left to 61-rosmaster.rules)
+#
+# Yahboom's out-of-tree ch341 driver names these ttyCH341USB*; the mainline
+# ch341 driver would name them ttyUSB*. Both are matched so the symlink
+# survives a driver change.
+#
+# If the board is ever replaced with one of a different chip revision, update
+# bcdDevice below (find it with: cat /sys/bus/usb/devices/<port>/bcdDevice).
+# To pin by physical port instead, swap the bcdDevice key for: KERNELS=="1-2.2"
+
+SUBSYSTEM=="tty", KERNEL=="ttyCH341USB*", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", ATTRS{bcdDevice}=="8133", SYMLINK+="lx16a", GROUP="dialout", MODE="0660"
+SUBSYSTEM=="tty", KERNEL=="ttyUSB*",      ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", ATTRS{bcdDevice}=="8133", SYMLINK+="lx16a", GROUP="dialout", MODE="0660"

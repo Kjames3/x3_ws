@@ -1,0 +1,43 @@
+[Unit]
+Description=Return the tilting lidar mount (XL430/OpenRB-150) to its calibrated horizontal position
+Documentation=file:///home/jetson/x3_ws/src/dynamixel_tilt.py
+# Replaces x3_lidar_home.service, which drove the LX-16A to 500 counts. Only
+# one tilt unit may be enabled at a time; the LX-16A one was disabled with
+#   sudo systemctl disable --now x3_lidar_home.service
+# on 2026-08-28. Do not re-enable it while this unit is active.
+#
+# "Home" is the zero recorded in config/lidar_tilt_calibration_dynamixel.json,
+# which is 2048 counts -- position-mode centre, so the tilt axis boots with
+# +-180 deg of travel either side. --home reads that file rather than
+# hardcoding 2048 so a re-calibration after the mount is levelled takes effect
+# here automatically.
+Wants=dev-openrb150.device
+After=dev-openrb150.device local-fs.target
+# Level the scan plane before the lidar driver and Nav2 start consuming /scan.
+Before=x3_server.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=jetson
+Group=jetson
+# /dev/openrb150 is crw-rw---- root:dialout (see 64-openrb150.rules)
+SupplementaryGroups=dialout
+
+WorkingDirectory=/home/jetson/x3_ws/src
+ExecStart=/usr/bin/python3 /home/jetson/x3_ws/src/dynamixel_tilt.py --home --wait-device 30
+
+# The servo bus is not safety-critical: if the mount is unplugged or
+# unpowered, dynamixel_tilt.py logs and exits 0 rather than blocking
+# x3_server behind a retry loop. Pass --strict instead if a missing servo
+# should fail the boot.
+Restart=no
+TimeoutStartSec=90
+
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=x3_dynamixel_tilt_home
+
+[Install]
+WantedBy=multi-user.target

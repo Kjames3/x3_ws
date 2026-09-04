@@ -29,6 +29,7 @@ import websockets
 import json
 import threading
 import numpy as np
+import tf2_ros
 
 # ---------------------------------------------------------------------------
 # Waypoints (relative to the robot's starting pose at the tape mark).
@@ -161,6 +162,9 @@ class ABComparisonTest(Node):
         self.current_y   = 0.0
         self.current_yaw = 0.0
         self.odom_received = False
+        self.using_amcl = False
+        self._tf_buffer = tf2_ros.Buffer()
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
 
         self.state            = self.INIT
         self.state_start_time = 0.0
@@ -616,11 +620,25 @@ class ABComparisonTest(Node):
                 oz = est.get("z", est.get("y", 0.0))
                 rx = float(oz)
                 ry = -float(ox)
+                rvx = est.get("vx", 0.0)
+                rvy = est.get("vy", 0.0)
 
-                # Check if obstacle is in front and blocking the path
-                if 0.0 < rx < AVOIDANCE_FORWARD and abs(ry) < AVOIDANCE_LATERAL:
-                    blocking_obstacle = (rx, ry)
-                    break
+                if self._mode == "predictive":
+                    is_blocking = False
+                    for t in [0.0, 0.4, 0.8, 1.2]:
+                        proj_rx = rx + rvx * t
+                        proj_ry = ry + rvy * t
+                        if 0.0 < proj_rx < AVOIDANCE_FORWARD and abs(proj_ry) < AVOIDANCE_LATERAL:
+                            is_blocking = True
+                            break
+                    if is_blocking:
+                        blocking_obstacle = (rx, ry)
+                        break
+                else:
+                    # Check if obstacle is in front and blocking the path
+                    if 0.0 < rx < AVOIDANCE_FORWARD and abs(ry) < AVOIDANCE_LATERAL:
+                        blocking_obstacle = (rx, ry)
+                        break
 
         if blocking_obstacle is not None:
             self.is_paused = True
@@ -857,8 +875,45 @@ class ABComparisonTest(Node):
         return self.smooth_speed_scale
 
     def _control_loop(self):
+        old_x, old_y, old_yaw = self.current_x, self.current_y, self.current_yaw
+        
+        try:
+            trans = self._tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+            new_x = trans.transform.translation.x
+            new_y = trans.transform.translation.y
+            q = trans.transform.rotation
+            siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+            cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+            new_yaw = math.atan2(siny_cosp, cosy_cosp)
+            
+            if not getattr(self, 'using_amcl', False):
+                # Transitioning to AMCL! Translate our start coordinates by the jump
+                dx_jump = new_x - old_x
+                dy_jump = new_y - old_y
+                dyaw_jump = new_yaw - old_yaw
+                self.start_x += dx_jump
+                self.start_y += dy_jump
+                self.start_yaw = normalize_angle(self.start_yaw + dyaw_jump)
+                self.target_yaw = normalize_angle(self.target_yaw + dyaw_jump)
+                
+                # Also update ICP corrected coordinates if ab_test
+                if hasattr(self, 'corrected_x') and self.corrected_x is not None:
+                    self.corrected_x += dx_jump
+                    self.corrected_y += dy_jump
+                    self.corrected_yaw = normalize_angle(self.corrected_yaw + dyaw_jump)
+                self.using_amcl = True
+                self.get_logger().info("Switched localization from Odometry to AMCL (TF map->base_link)")
+            
+            self.current_x = new_x
+            self.current_y = new_y
+            self.current_yaw = new_yaw
+            self.odom_received = True
+            
+        except Exception:
+            pass # Continue using Odometry (which updates current_x etc. in _odom_cb)
+
         if not self.odom_received:
-            self.get_logger().info("Waiting for /odom...", throttle_duration_sec=2.0)
+            self.get_logger().info("Waiting for /odom or TF messages...", throttle_duration_sec=2.0)
             return
 
         now = time.monotonic()

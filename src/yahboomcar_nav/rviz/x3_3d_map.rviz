@@ -1,0 +1,317 @@
+Panels:
+  - Class: rviz_common/Displays
+    Help Height: 78
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+        - /OctoMap 3D1
+        - /Live Tilted Cloud1
+      Splitter Ratio: 0.6
+    Tree Height: 700
+  - Class: rviz_common/Selection
+    Name: Selection
+  - Class: rviz_common/Tool Properties
+    Expanded:
+      - /2D Goal Pose1
+    Name: Tool Properties
+    Splitter Ratio: 0.5886790156364441
+  - Class: rviz_common/Views
+    Expanded:
+      - /Current View1
+    Name: Views
+    Splitter Ratio: 0.5
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.5
+      Cell Size: 1
+      Class: rviz_default_plugins/Grid
+      Color: 160; 160; 164
+      Enabled: true
+      Line Style:
+        Line Width: 0.029999999329447746
+        Value: Lines
+      Name: Grid
+      Normal Cell Count: 0
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Plane: XY
+      Plane Cell Count: 20
+      Reference Frame: <Fixed Frame>
+      Value: true
+
+    # ── The 3D map itself ────────────────────────────────────────────────
+    # The THROTTLED octree (1 Hz).  Raw /octomap_binary republishes on every
+    # cloud insert: measured 72 kB x 8 Hz = 4.6 Mbit/s, enough to take the
+    # 2.4 GHz link down.  Switch the topic to /octomap_binary if you are
+    # running RViz on the robot itself.
+    - Alpha: 0.8
+      Class: octomap_rviz_plugins/OccupancyGrid
+      Enabled: true
+      Max. Height Display: 3.4028234663852886e+38
+      Max. Octree Depth: 16
+      Min. Height Display: -3.4028234663852886e+38
+      Name: OctoMap 3D
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /octomap_binary_throttled
+      Value: true
+      Voxel Coloring: Z-Axis
+      Voxel Rendering: Occupied Voxels
+
+    # Same map as raw points.  Cheaper to render than the octree on a weak
+    # GPU, and it survives a version mismatch in the octomap plugin.
+    - Alpha: 1.0
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 2.5
+        Min Value: 0.0
+        Value: true
+      Axis: Z
+      Class: rviz_default_plugins/PointCloud2
+      Color: 255; 255; 255
+      Color Transformer: AxisColor
+      Decay Time: 0
+      Enabled: false
+      Invert Rainbow: false
+      Name: OctoMap 3D (points)
+      Position Transformer: XYZ
+      Size (Pixels): 3
+      Size (m): 0.05
+      Style: Boxes
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /octomap_point_cloud_centers
+      Use rainbow: true
+      Value: true
+
+    # ── Live feedback while the mount sweeps ─────────────────────────────
+    # This tells you the sweep is working BEFORE octomap has anything to show:
+    # Decay Time leaves a trail of scan planes, so a working sweep looks like a
+    # fan opening up.
+    #
+    # OFF BY DEFAULT since 2026-08-23.  MEASURED at 56.4 kB per message at ~7 Hz
+    # = 3.2 Mbit/s, which is ~87% of everything this view pulls over WiFi (the
+    # octree next to it is throttled to 0.47 Mbit/s).  That is what made the 3D
+    # map lag seconds behind.  The octree is what actually draws the map; this
+    # is only confirmation the mount is moving.
+    #
+    # Tick "Live Tilted Cloud" in the Displays panel to turn it on for a few
+    # seconds when you need it -- no rebuild required.  Reliability is Best
+    # Effort so that when it IS on, a congested link drops frames instead of
+    # queueing retransmits.
+    - Alpha: 1.0
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 2.5
+        Min Value: -0.2
+        Value: false
+      Axis: Z
+      Class: rviz_default_plugins/PointCloud2
+      Color: 255; 170; 0
+      Color Transformer: AxisColor
+      Decay Time: 5
+      Enabled: false
+      Invert Rainbow: false
+      Name: Live Tilted Cloud
+      Position Transformer: XYZ
+      Size (Pixels): 2
+      Style: Points
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /pointcloud_raw
+      Use rainbow: true
+      Value: true
+
+    # ── 2D layers, for cross-checking the 3D one ─────────────────────────
+    # /projected_map is octomap's own flattening of the octree.  If it does
+    # not resemble /map, the 3D map is mis-registered.
+    - Alpha: 0.7
+      Class: rviz_default_plugins/Map
+      Color Scheme: map
+      Draw Behind: true
+      Enabled: true
+      Name: SLAM Map (/map)
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /map
+      Update Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /map_updates
+      Use Timestamp: false
+      Value: true
+    - Alpha: 0.7
+      Class: rviz_default_plugins/Map
+      Color Scheme: costmap
+      Draw Behind: false
+      Enabled: false
+      Name: OctoMap projected (2D)
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /projected_map
+      Use Timestamp: false
+      Value: true
+
+    # ── Sensor + robot ───────────────────────────────────────────────────
+    # /scan is the GATED scan: it only publishes while the mount is level, so
+    # during a sweep it correctly goes silent.  /scan_raw always flows — if
+    # raw is alive and /scan is not, the gate is doing its job.
+    - Alpha: 1.0
+      Autocompute Intensity Bounds: true
+      Class: rviz_default_plugins/LaserScan
+      Color: 0; 255; 0
+      Color Transformer: FlatColor
+      Decay Time: 0
+      Enabled: true
+      Name: LaserScan (/scan, gated)
+      Position Transformer: XYZ
+      Size (Pixels): 3
+      Style: Points
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /scan
+      Value: true
+    - Alpha: 1.0
+      Autocompute Intensity Bounds: true
+      Class: rviz_default_plugins/LaserScan
+      Color: 255; 0; 0
+      Color Transformer: FlatColor
+      Decay Time: 0
+      Enabled: false
+      Name: LaserScan (/scan_raw)
+      Position Transformer: XYZ
+      Size (Pixels): 2
+      Style: Points
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /scan_raw
+      Value: true
+    - Alpha: 1
+      Class: rviz_default_plugins/RobotModel
+      Collision Enabled: false
+      Description File: ""
+      Description Source: Topic
+      Description Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot_description
+      Enabled: true
+      Name: RobotModel
+      Update Interval: 0
+      Value: true
+      Visual Enabled: true
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Frame Timeout: 15
+      Frames:
+        All Enabled: false
+        laser_link:
+          Value: true
+        lidar_tilt_link:
+          Value: true
+        base_footprint:
+          Value: true
+      Marker Scale: 0.4
+      Name: TF
+      Show Arrows: false
+      Show Axes: true
+      Show Names: true
+      Tree Height: 200
+      Update Interval: 0
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: odom
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+      Hide Inactive Objects: true
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+      Line color: 128; 128; 0
+    - Class: rviz_default_plugins/SetInitialPose
+      Covariance x: 0.25
+      Covariance y: 0.25
+      Covariance yaw: 0.06853891909122467
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /initialpose
+    - Class: rviz_default_plugins/SetGoal
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /goal_pose
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 8
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.05999999865889549
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05000000074505806
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.009999999776482582
+      Pitch: 0.5
+      Target Frame: <Fixed Frame>
+      Value: Orbit (rviz_default_plugins)
+      Yaw: 3.9
+    Saved: ~
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 900
+  Hide Left Dock: false
+  Hide Right Dock: true
+  Width: 1600
+  X: 60
+  Y: 60

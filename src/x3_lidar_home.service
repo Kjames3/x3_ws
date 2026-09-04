@@ -1,0 +1,35 @@
+[Unit]
+Description=Return the tilting lidar mount to its calibrated horizontal position
+Documentation=file:///home/jetson/x3_ws/src/lidar_tilt.py
+# The LX-16A hangs off a CH340 bridge, so wait for udev to publish /dev/lx16a.
+# lidar_tilt.py --wait-device covers the rest: on a cold boot the USB hub
+# cascade can take another 10-20 s to enumerate.
+Wants=dev-lx16a.device
+After=dev-lx16a.device local-fs.target
+# Level the scan plane before the lidar driver and Nav2 start consuming /scan.
+Before=x3_server.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=jetson
+Group=jetson
+# /dev/lx16a is crw-rw---- root:dialout
+SupplementaryGroups=dialout
+
+WorkingDirectory=/home/jetson/x3_ws/src
+ExecStart=/usr/bin/python3 /home/jetson/x3_ws/src/lidar_tilt.py --goto-counts 500 --wait-device 30
+
+# The servo bus is not safety-critical: if the mount is unplugged or unpowered,
+# lidar_tilt.py logs and exits 0 rather than blocking x3_server behind a retry
+# loop. Pass --strict instead if a missing servo should fail the boot.
+Restart=no
+TimeoutStartSec=90
+
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=x3_lidar_home
+
+[Install]
+WantedBy=multi-user.target
