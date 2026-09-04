@@ -6,8 +6,8 @@
   "port": "/dev/openrb150",
   "counts_per_deg": 11.3778,
   "tolerance_counts": 12,
-  "tilt_direction": null,
-  "_tilt_direction_comment": "+1 if increasing counts pitches the lidar nose-DOWN (the URDF's positive lidar_tilt_joint), -1 if nose-up. Unverified -- angle commands stay disabled until someone watches it move.",
+  "tilt_direction": -1,
+  "_tilt_direction_comment": "-1: INCREASING counts pitches the lidar nose-UP. Verified on hardware 2026-09-04 -- see direction_verification. Was null (code assumed +1), so any 3D map built on the Dynamixel mount BEFORE this date is mirrored vertically.",
   "calibrated_utc": "2026-08-29T09:54:51Z",
   "calibrated_on": "jetson-desktop",
   "sample_spread_counts": 0,
@@ -27,5 +27,40 @@
     ]
   },
   "note": "Physically levelled mount measured at 2032 counts with zero sample spread on 2026-08-29.",
-  "_tolerance_comment": "12 counts = 1.05 deg: the XL430 settles 7-11 counts short of any goal (gearbox backlash, measured 2026-08-28). A tighter band warns on every boot."
+  "_tolerance_comment": "12 counts = 1.05 deg: the XL430 settles 7-11 counts short of any goal (gearbox backlash, measured 2026-08-28). A tighter band warns on every boot.",
+  "direction_verification": {
+    "verified_utc": "2026-09-04T22:13:00Z",
+    "result": -1,
+    "method": "Floor-asymmetry test during a live -45..+45 ping-pong sweep. Comparing a +30 station against a -30 station CANNOT find the sign: a global flip only swaps which physical station gets LABELLED +30, so both look sensible. The one real asymmetry is that the floor is 0.340 m below the laser and the ceiling ~2.1 m above, so only the nose-DOWN half produces a short forward return at 0.340/tan(pitch).",
+    "samples": 1045,
+    "forward_sector_deg": 24,
+    "median_forward_range_m": {
+      "reported_ge_plus20deg": 3.02,
+      "reported_le_minus20deg": 0.56
+    },
+    "floor_fit_measured_vs_predicted_m": {
+      "-20": [
+        0.86,
+        0.93
+      ],
+      "-25": [
+        0.7,
+        0.73
+      ],
+      "-30": [
+        0.58,
+        0.59
+      ],
+      "-35": [
+        0.5,
+        0.49
+      ],
+      "-40": [
+        0.44,
+        0.41
+      ]
+    },
+    "note": "Negative REPORTED angle is the half that sees the floor, and reported angle = (counts-horizontal)*assumed_direction, with the assumption +1 -- so the floor lies at counts BELOW horizontal and increasing counts is nose-up, i.e. -1. The measured returns track 0.340/tan(theta) to within 0.07 m across -20..-40 deg, which independently confirms the 0.340 m laser height. The +20..+45 half rises monotonically 2.72 -> 3.58 m, looking over the 2.2 m forward obstacle into open room.",
+    "supersedes": "The 2026-08-23 finding of +1 in config/lidar_tilt_calibration.json is the RETIRED LX-16A's and does not carry over -- different servo, different linkage, opposite sense."
+  }
 }
