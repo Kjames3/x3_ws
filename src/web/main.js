@@ -195,6 +195,7 @@ const elements = {
     detectionList: document.getElementById('detection-list'),
     autoDriveBtn: document.getElementById('auto-drive-btn'),
     motorToggleBtn: document.getElementById('motor-toggle-btn'),
+    gamepadMotorToggleBtn: document.getElementById('gamepad-motor-toggle-btn'),
     autoDriveWrapper: document.getElementById('auto-drive-wrapper'),
     demoModeBtn: document.getElementById('demo-mode-btn'),
     demoBanner: document.getElementById('demo-banner'),
@@ -2778,16 +2779,18 @@ function motorToggle() {
 }
 
 function updateMotorToggleButton() {
-    if (!elements.motorToggleBtn) return;
-    if (state.motorsEnabled) {
-        elements.motorToggleBtn.textContent = 'Disable Movement';
-        elements.motorToggleBtn.style.color = 'var(--accent-red)';
-        elements.motorToggleBtn.style.borderColor = 'var(--accent-red)';
-    } else {
-        elements.motorToggleBtn.textContent = 'Enable Movement';
-        elements.motorToggleBtn.style.color = 'var(--accent-green)';
-        elements.motorToggleBtn.style.borderColor = 'var(--accent-green)';
-    }
+    [elements.motorToggleBtn, elements.gamepadMotorToggleBtn].forEach((button) => {
+        if (!button) return;
+        if (state.motorsEnabled) {
+            button.textContent = 'Disable Movement';
+            button.style.color = 'var(--accent-red)';
+            button.style.borderColor = 'var(--accent-red)';
+        } else {
+            button.textContent = 'Enable Movement';
+            button.style.color = 'var(--accent-green)';
+            button.style.borderColor = 'var(--accent-green)';
+        }
+    });
 }
 
 function demoModeToggle() {
@@ -2937,6 +2940,7 @@ if (elements.rightSlider) {
 
 if (elements.autoDriveBtn) elements.autoDriveBtn.addEventListener('click', autoDriveToggle);
 if (elements.motorToggleBtn) elements.motorToggleBtn.addEventListener('click', motorToggle);
+if (elements.gamepadMotorToggleBtn) elements.gamepadMotorToggleBtn.addEventListener('click', motorToggle);
 if (elements.demoModeBtn) elements.demoModeBtn.addEventListener('click', demoModeToggle);
 
 if (elements.stopBtn) elements.stopBtn.addEventListener('click', () => {
