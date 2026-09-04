@@ -203,6 +203,11 @@ class VelocityEstimator:
         self._logged_stale_depth = False
         self._logged_missing_pose = False
         self._height_ray_cache = {}
+        # Optional feature capture for offline model comparison. Off unless
+        # VELOCITY_FEATURE_LOG is set, so the deployed path is untouched.
+        self._feature_log_path = os.environ.get("VELOCITY_FEATURE_LOG")
+        self._feature_rows = []
+        self._feature_frame = 0
         self._load_ground_plane_config()
 
         # Pre-allocate input tensor shape (Idea 116)
@@ -564,6 +569,45 @@ class VelocityEstimator:
 
         return np.array(features, dtype=np.float32).reshape(1, -1), is_stopped
 
+    def _record_track(self, tid, centroid, visible_count, status, feats=None):
+        """Append one track-frame to the feature capture buffer.
+
+        Records EVERY track, gated or not, with the reason it was gated. The
+        deployed speed for a frame is the max over its tracks, and gated tracks
+        contribute 0.0 -- so an offline scorer that only saw ungated tracks
+        would compute a different max and fail to reproduce the live numbers.
+        """
+        if self._feature_log_path is None:
+            return
+        row = {
+            "frame": self._feature_frame,
+            "t": time.monotonic(),
+            "tid": int(tid),
+            "z": float(centroid[2]),
+            "visible_count": int(visible_count),
+            "status": status,
+            "feats": (np.asarray(feats, dtype=np.float32).reshape(-1).tolist()
+                      if feats is not None else None),
+        }
+        self._feature_rows.append(row)
+
+    def _flush_feature_log(self):
+        if self._feature_log_path is None or not self._feature_rows:
+            return
+        try:
+            with open(self._feature_log_path, "w") as stream:
+                json.dump({
+                    "window_size": WINDOW_SIZE,
+                    "infer_hz": INFER_HZ,
+                    "max_speed_range_m": self.max_speed_range_m,
+                    "model_path": self.model_path,
+                    "rows": self._feature_rows,
+                }, stream)
+            logger.info("VelocityEstimator: wrote %d feature rows to %s",
+                        len(self._feature_rows), self._feature_log_path)
+        except Exception as exc:
+            logger.error("VelocityEstimator: failed writing feature log: %s", exc)
+
     def _inference_loop(self):
         dt = 1.0 / INFER_HZ
         logger.info("VelocityEstimator: inference loop started")
@@ -676,13 +720,25 @@ class VelocityEstimator:
                 eligible_tracks = []
                 features_list = []
 
+                self._feature_frame += 1
+                # Periodic flush: the server is usually stopped with a signal, so
+                # relying on stop() alone would lose a whole capture.
+                if (self._feature_log_path is not None and
+                        self._feature_frame % 300 == 0):
+                    self._flush_feature_log()
                 for tid, track in tracks.items():
                     # Filter out tracks that do not satisfy the track initiation gate (Idea 109)
                     if track.get('visible_count', 1) < 3:
+                        self._record_track(tid, track['centroid'],
+                                           track.get('visible_count', 1),
+                                           "gated_visible")
                         continue
 
                     # Skip tracks that are beyond the proximity threshold — they contribute zero to speed scaling
                     if track['centroid'][2] > self.max_speed_range_m:
+                        self._record_track(tid, track['centroid'],
+                                           track.get('visible_count', 1),
+                                           "gated_range")
                         cx, cy, cz = track['centroid']
                         estimates.append({
                             'id':    tid,
@@ -696,6 +752,9 @@ class VelocityEstimator:
                         continue
 
                     if len(track['history_global']) < 2:
+                        self._record_track(tid, track['centroid'],
+                                           track.get('visible_count', 1),
+                                           "gated_history")
                         cx, cy, cz = track['centroid']
                         estimates.append({
                             'id':    tid,
@@ -734,6 +793,9 @@ class VelocityEstimator:
 
                     feats, is_stopped = self._build_window_features(hist_local)
                     if is_stopped:  # Kinematic Stop-Trigger Gating (Idea 108)
+                        self._record_track(tid, tracks[tid]['centroid'],
+                                           tracks[tid].get('visible_count', 1),
+                                           "gated_stopped", feats)
                         cx, cy, cz = tracks[tid]['centroid']
                         estimates.append({
                             'id':    tid,
@@ -746,6 +808,9 @@ class VelocityEstimator:
                         })
                         continue
 
+                    self._record_track(tid, tracks[tid]['centroid'],
+                                       tracks[tid].get('visible_count', WINDOW_SIZE),
+                                       "ok", feats)
                     eligible_tracks.append((tid, hist_local))
                     features_list.append(feats)
 
@@ -881,6 +946,7 @@ class VelocityEstimator:
         self._running = False
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
+        self._flush_feature_log()
         logger.info("VelocityEstimator: stopped")
 
     def get_estimates(self):
