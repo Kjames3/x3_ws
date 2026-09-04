@@ -383,7 +383,11 @@
         </collision>
     </link>
     <joint name="camera_joint" type="fixed">
-        <origin xyz="0.057105 1.7948E-05 0.03755" rpy="0 0 0"/>
+        <!-- X3 Plus chassis front is x=0.145400 in the vendor mesh. The Astra
+             mesh's front face is x=+0.020085 from camera_link, so placing the
+             joint at x=0.107315 leaves the measured 18 mm setback while keeping
+             the existing, physically correct camera height unchanged. -->
+        <origin xyz="0.107315 1.7948E-05 0.03755" rpy="0 0 0"/>
         <parent link="base_link"/>
         <child link="camera_link"/>
     </joint>
