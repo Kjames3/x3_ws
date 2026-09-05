@@ -145,11 +145,18 @@ Two traps for any new X-series code:
   not moving" returns before motion starts and looks exactly like a stalled
   servo. Judge arrival on position error with a grace period.
 - The GUI 3D sweep is **ping-pong, not sawtooth** (`lidar_scan_loop` reverses
-  `sweep_dir` at the ends). `tilt_direction` is **-1**, verified on hardware
-  2026-09-04 (increasing counts = nose UP). It was null before that and the
-  code assumed +1, so **3D maps built on this mount before 2026-09-04 are
-  mirrored vertically**. The +1 recorded for the retired LX-16A does not
-  carry over.
+  `sweep_dir` at the ends). `tilt_direction` is **+1** (increasing counts =
+  nose DOWN). A -1 was briefly recorded on 2026-09-04 from a forward-sector
+  floor-range test that mistook raw laser +X for robot forward (`laser_joint`
+  has yaw=pi); it is **wrong**. The settling evidence is a single-run A/B in
+  `artifacts/deskew-2026-09-04/sign_comparison.npz`, which stores the same
+  returns transformed both ways: -1 puts 13.7% of returns up to **2.4 m
+  underground** and finds no ceiling, while +1 puts the floor at z~0 as the
+  scene's tightest plane (std 0.041 m) and a ceiling at +2.97 m. Do not
+  re-derive this sign by comparing a +30 station against a -30 one — a global
+  flip only swaps which physical station gets the label, so both look
+  sensible. The +1 recorded for the retired LX-16A is a coincidence, not
+  evidence; it does not carry over.
 
 **The Rosmaster and the LX-16A bridge were both CH340s (`1a86:7523`) with no
 serial number**, so `/dev/ttyCH341USB0` and `USB1` swapped with enumeration
