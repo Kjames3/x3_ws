@@ -1,0 +1,29 @@
+
+========================================================================
+BASELINE  — per-process CPU over 15 s (% of ONE core)
+========================================================================
+6 cores. ps %CPU is a lifetime average and reads low on a freshly booted box; these are /proc deltas.
+
+  PID     COMM                     %1core     %all6
+  2957    python3                    98.7      16.4
+  3230    ffmpeg                     45.9       7.7
+  3032    lidar_3d_proces            40.3       6.7
+  3020    Mcnamu_driver_X            39.1       6.5
+  3024    icm42688_node              31.5       5.2
+  3028    ekf_node                   13.8       2.3
+  3026    imu_filter_madg             9.2       1.5
+  678     sugov:0                     8.2       1.4
+  679     sugov:4                     6.9       1.1
+  698     tailscaled                  6.5       1.1
+  3169    mediamtx                    5.7       1.0
+  3030    ydlidar_ros2_dr             4.7       0.8
+  3018    robot_state_pub             2.5       0.4
+  4374    kworker/u13:2-uvcvideo      1.1       0.2
+  3022    base_node_X3                1.1       0.2
+  149     irq/168-c250000             0.8       0.1
+  3335    python3                     0.3       0.1
+  360     systemd-udevd               0.3       0.0
+
+  sum of sampled procs :  319.1 % of one core  (3.19 cores)
+  system busy (all 6)  :   56.0 %  => 2.64 cores idle
+  loadavg              : 5.70 5.37 3.25 4/586 4506

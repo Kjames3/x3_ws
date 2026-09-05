@@ -1,0 +1,239 @@
+{
+  "active_stamp_start": 1788597703.1023042,
+  "active_stamp_end": 1788597733.258225,
+  "end_latency_ms_p50_p95_max": [
+    60.05999445915222,
+    108.66902172565457,
+    221.52993083000183
+  ],
+  "cpu": {
+    "system_busy_percent": 60.7823012886304,
+    "elapsed": 30.188401952999982,
+    "processes": [
+      {
+        "percent_one_core": 89.07394317150266,
+        "pid": 2957,
+        "cmd": "python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --webrtc-camera "
+      },
+      {
+        "percent_one_core": 46.93855614504249,
+        "pid": 3032,
+        "cmd": "/usr/bin/python3 /home/jetson/x3_ws/install/yahboomcar_bringup/lib/yahboomcar_bringup/lidar_3d_processor_node --ros-args -r __node:=lidar_3d_processor_node --params-file /home/jetson/x3_ws/install/yahboomcar_nav/share/yahboomcar_nav/params/lidar_3d_processor.yaml "
+      },
+      {
+        "percent_one_core": 46.34230066825296,
+        "pid": 3588,
+        "cmd": "python3 /home/jetson/x3_ws/artifacts/continuous-2026-09-05/continuous_sweep_test.py 20 "
+      },
+      {
+        "percent_one_core": 38.88910720838383,
+        "pid": 3230,
+        "cmd": "ffmpeg -hide_banner -loglevel error -fflags nobuffer -flags low_delay -f v4l2 -input_format mjpeg -video_size 640x480 -framerate 30 -i /dev/video0 -c:v libx264 -preset ultrafast -tune zerolatency -b:v 4M -g 30 -bf 0 -pix_fmt yuv420p -f rtsp -rtsp_transport tcp rtsp://localhost:8554/astra "
+      },
+      {
+        "percent_one_core": 36.139706954298774,
+        "pid": 3020,
+        "cmd": "/usr/bin/python3 /home/jetson/x3_ws/install/yahboomcar_bringup/lib/yahboomcar_bringup/Mcnamu_driver_X3 --ros-args --params-file /tmp/launch_params_rkf2ex3y "
+      },
+      {
+        "percent_one_core": 29.68027262241219,
+        "pid": 3024,
+        "cmd": "/usr/bin/python3 /home/jetson/x3_ws/install/yahboomcar_bringup/lib/yahboomcar_bringup/icm42688_node --ros-args -r __node:=icm42688_node --params-file /tmp/launch_params_8vlmkyq2 "
+      },
+      {
+        "percent_one_core": 12.123861361387123,
+        "pid": 3028,
+        "cmd": "/opt/ros/humble/lib/robot_localization/ekf_node --ros-args -r __node:=ekf_filter_node --params-file /home/jetson/x3_ws/install/yahboomcar_nav/share/yahboomcar_nav/params/ekf_x3.yaml -r /odometry/filtered:=/odom "
+      },
+      {
+        "percent_one_core": 8.446952587851682,
+        "pid": 3026,
+        "cmd": "/opt/ros/humble/lib/imu_filter_madgwick/imu_filter_madgwick_node --ros-args --params-file /home/jetson/x3_ws/install/yahboomcar_bringup/share/yahboomcar_bringup/param/imu_filter_param.yaml -r /imu/data_raw:=/imu/data_raw "
+      },
+      {
+        "percent_one_core": 6.525684940418751,
+        "pid": 678,
+        "cmd": ""
+      },
+      {
+        "percent_one_core": 6.32693311482224,
+        "pid": 679,
+        "cmd": ""
+      },
+      {
+        "percent_one_core": 5.167547465509266,
+        "pid": 3169,
+        "cmd": "/home/jetson/x3_ws/src/webrtc_poc/mediamtx /home/jetson/x3_ws/src/webrtc_poc/mediamtx.yml "
+      },
+      {
+        "percent_one_core": 4.803169118582329,
+        "pid": 3030,
+        "cmd": "/home/jetson/x3_ws/install/ydlidar_ros2_driver/lib/ydlidar_ros2_driver/ydlidar_ros2_driver_node --ros-args -r __node:=ydlidar_ros2_driver_node --params-file /home/jetson/x3_ws/install/yahboomcar_nav/share/yahboomcar_nav/params/ydlidar_x3.yaml -r /scan:=/scan_raw "
+      }
+    ]
+  },
+  "speed_deg_s": 20.0,
+  "active_scans": 0,
+  "active_counts": {
+    "timed": 215,
+    "raw": 215,
+    "cloud": 209,
+    "transformed": 210
+  },
+  "active_seconds": 30.188362335999955,
+  "counts": {
+    "scan": 107,
+    "timed": 332,
+    "raw": 332,
+    "cloud": 222,
+    "transformed": 222
+  },
+  "scan_while_tilted": 0,
+  "max_cmd": 0.0,
+  "raw_metadata": [
+    [
+      2812,
+      4.9677095375955105e-05,
+      0.13969199359416962
+    ],
+    [
+      2814,
+      4.9702914111549035e-05,
+      0.1398639976978302
+    ],
+    [
+      2814,
+      4.968621215084568e-05,
+      0.1398169994354248
+    ],
+    [
+      2810,
+      4.9623842642176896e-05,
+      0.13944299519062042
+    ],
+    [
+      2809,
+      5.0407259550411254e-05,
+      0.14159399271011353
+    ],
+    [
+      2810,
+      4.8939502448774874e-05,
+      0.13752000033855438
+    ],
+    [
+      2811,
+      4.967556378687732e-05,
+      0.1396380066871643
+    ],
+    [
+      2812,
+      5.1615930715342984e-05,
+      0.1451440006494522
+    ],
+    [
+      2813,
+      4.7706362238386646e-05,
+      0.13419799506664276
+    ],
+    [
+      2813,
+      4.970387453795411e-05,
+      0.1398169994354248
+    ]
+  ],
+  "timed_metadata": [
+    [
+      2712,
+      0.0,
+      0.13964231312274933,
+      0.13964231312274933
+    ],
+    [
+      2723,
+      0.0,
+      0.13981430232524872,
+      0.13981430232524872
+    ],
+    [
+      2719,
+      0.0,
+      0.13976731896400452,
+      0.13976731896400452
+    ],
+    [
+      2710,
+      0.0,
+      0.1393933743238449,
+      0.1393933743238449
+    ],
+    [
+      2713,
+      0.0,
+      0.14154358208179474,
+      0.14154358208179474
+    ],
+    [
+      2712,
+      0.0,
+      0.1374710649251938,
+      0.1374710649251938
+    ],
+    [
+      2724,
+      0.0,
+      0.1395883411169052,
+      0.1395883411169052
+    ],
+    [
+      2719,
+      0.0,
+      0.14509238302707672,
+      0.14509238302707672
+    ],
+    [
+      2717,
+      0.0,
+      0.13415029644966125,
+      0.13415029644966125
+    ],
+    [
+      2712,
+      0.0,
+      0.13976728916168213,
+      0.13976728916168213
+    ]
+  ],
+  "tilt_deg_minmax": [
+    -44.12109375,
+    44.47265625
+  ],
+  "final_tilt_deg": 0.703125,
+  "joint_gap_ms_p50_p95_max": [
+    20.0655460357666,
+    57.833158969879136,
+    158.5686206817627
+  ],
+  "odom_max_displacement_m": 0.0,
+  "world_z_quantiles": [
+    -0.22888561029565224,
+    -0.10010619558519696,
+    -0.05532030204301415,
+    0.31416231513575377,
+    2.13526694610996,
+    2.6619999461015826,
+    2.95158014712868
+  ],
+  "floor_candidate_z_p10_p50_p90": [
+    -0.06499667082340205,
+    2.022406639393126e-05,
+    0.09115108165467017
+  ],
+  "floor_candidate_count": 177556,
+  "deskew_minus_rigid_m_p50_p95_p99_max": [
+    0.01690422326724356,
+    0.10301663974541654,
+    0.1310846017132725,
+    0.19203453864768272
+  ]
+}

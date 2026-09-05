@@ -1,0 +1,21 @@
+
+========================================================================
+OCTOMAP — the load that actually scales with sweep rate
+========================================================================
+  Private /bench octomap_server fed REAL /scan_raw geometry,
+  re-pitched through the sweep range so the raycasts are as long
+  and as varied as a real sweep.  The live octomap is untouched.
+
+  captured/reused 12 real scans (2788 beams each)
+  bank: 12 clouds, 2622 points mean, pitched -45..+45 deg
+  occupied endpoints within cap: 2622 / 2622 mean input points (100.0%)
+  far returns: retained for clipped free-space rays
+  raycast work per cloud ~ 2622 pts x 100 voxels = 0.26 M traversals
+  bench octomap pid [7109]
+
+  pub Hz           sent   inserted   keep up?  oct %core
+  7.2               6.8        6.8       100%       61.3
+
+  "keep up?" below ~95%% means octomap_server is dropping clouds: it is
+  single-threaded, so the message filter backs up and you get the
+  "queue is full" symptom rather than an error.

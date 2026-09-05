@@ -1,0 +1,239 @@
+{
+  "active_stamp_start": 1788597819.337366,
+  "active_stamp_end": 1788597849.6577356,
+  "end_latency_ms_p50_p95_max": [
+    60.27770787477493,
+    127.7298755943775,
+    364.7581785917282
+  ],
+  "cpu": {
+    "system_busy_percent": 61.23087423923555,
+    "elapsed": 30.345056584999952,
+    "processes": [
+      {
+        "percent_one_core": 89.27318993167084,
+        "pid": 2957,
+        "cmd": "python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --webrtc-camera "
+      },
+      {
+        "percent_one_core": 46.597375623249384,
+        "pid": 3854,
+        "cmd": "python3 /home/jetson/x3_ws/artifacts/continuous-2026-09-05/continuous_sweep_test.py 45 "
+      },
+      {
+        "percent_one_core": 46.564421326486126,
+        "pid": 3032,
+        "cmd": "/usr/bin/python3 /home/jetson/x3_ws/install/yahboomcar_bringup/lib/yahboomcar_bringup/lidar_3d_processor_node --ros-args -r __node:=lidar_3d_processor_node --params-file /home/jetson/x3_ws/install/yahboomcar_nav/share/yahboomcar_nav/params/lidar_3d_processor.yaml "
+      },
+      {
+        "percent_one_core": 38.95197877417311,
+        "pid": 3230,
+        "cmd": "ffmpeg -hide_banner -loglevel error -fflags nobuffer -flags low_delay -f v4l2 -input_format mjpeg -video_size 640x480 -framerate 30 -i /dev/video0 -c:v libx264 -preset ultrafast -tune zerolatency -b:v 4M -g 30 -bf 0 -pix_fmt yuv420p -f rtsp -rtsp_transport tcp rtsp://localhost:8554/astra "
+      },
+      {
+        "percent_one_core": 36.11790925253276,
+        "pid": 3020,
+        "cmd": "/usr/bin/python3 /home/jetson/x3_ws/install/yahboomcar_bringup/lib/yahboomcar_bringup/Mcnamu_driver_X3 --ros-args --params-file /tmp/launch_params_rkf2ex3y "
+      },
+      {
+        "percent_one_core": 29.790684273986873,
+        "pid": 3024,
+        "cmd": "/usr/bin/python3 /home/jetson/x3_ws/install/yahboomcar_bringup/lib/yahboomcar_bringup/icm42688_node --ros-args -r __node:=icm42688_node --params-file /tmp/launch_params_8vlmkyq2 "
+      },
+      {
+        "percent_one_core": 13.082855815014149,
+        "pid": 3028,
+        "cmd": "/opt/ros/humble/lib/robot_localization/ekf_node --ros-args -r __node:=ekf_filter_node --params-file /home/jetson/x3_ws/install/yahboomcar_nav/share/yahboomcar_nav/params/ekf_x3.yaml -r /odometry/filtered:=/odom "
+      },
+      {
+        "percent_one_core": 8.699934345500592,
+        "pid": 3026,
+        "cmd": "/opt/ros/humble/lib/imu_filter_madgwick/imu_filter_madgwick_node --ros-args --params-file /home/jetson/x3_ws/install/yahboomcar_bringup/share/yahboomcar_bringup/param/imu_filter_param.yaml -r /imu/data_raw:=/imu/data_raw "
+      },
+      {
+        "percent_one_core": 6.524950759125445,
+        "pid": 678,
+        "cmd": ""
+      },
+      {
+        "percent_one_core": 6.327224978545885,
+        "pid": 679,
+        "cmd": ""
+      },
+      {
+        "percent_one_core": 5.602230449754169,
+        "pid": 698,
+        "cmd": "/usr/sbin/tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock --port=41641 "
+      },
+      {
+        "percent_one_core": 5.042007404778753,
+        "pid": 3169,
+        "cmd": "/home/jetson/x3_ws/src/webrtc_poc/mediamtx /home/jetson/x3_ws/src/webrtc_poc/mediamtx.yml "
+      }
+    ]
+  },
+  "speed_deg_s": 45.0,
+  "active_scans": 0,
+  "active_counts": {
+    "raw": 218,
+    "timed": 218,
+    "cloud": 218,
+    "transformed": 218
+  },
+  "active_seconds": 30.345021832000043,
+  "counts": {
+    "scan": 106,
+    "raw": 347,
+    "timed": 347,
+    "cloud": 239,
+    "transformed": 239
+  },
+  "scan_while_tilted": 0,
+  "max_cmd": 0.0,
+  "raw_metadata": [
+    [
+      2793,
+      4.92785511596594e-05,
+      0.1376349925994873
+    ],
+    [
+      2793,
+      4.969065776094794e-05,
+      0.13878600299358368
+    ],
+    [
+      2796,
+      5.1070459448965266e-05,
+      0.14279299974441528
+    ],
+    [
+      2797,
+      4.824525967705995e-05,
+      0.13494199514389038
+    ],
+    [
+      2797,
+      4.969610381522216e-05,
+      0.13899999856948853
+    ],
+    [
+      2798,
+      4.964760591974482e-05,
+      0.13891400396823883
+    ],
+    [
+      2796,
+      4.984263068763539e-05,
+      0.1393599957227707
+    ],
+    [
+      2796,
+      4.952109884470701e-05,
+      0.13846099376678467
+    ],
+    [
+      2796,
+      4.9677397328196093e-05,
+      0.13889800012111664
+    ],
+    [
+      2795,
+      4.9713420594343916e-05,
+      0.13894900679588318
+    ]
+  ],
+  "timed_metadata": [
+    [
+      2698,
+      0.0,
+      0.13758571445941925,
+      0.13758571445941925
+    ],
+    [
+      2699,
+      0.0,
+      0.1387363225221634,
+      0.1387363225221634
+    ],
+    [
+      2699,
+      0.0,
+      0.14274193346500397,
+      0.14274193346500397
+    ],
+    [
+      2700,
+      0.0,
+      0.1348937451839447,
+      0.1348937451839447
+    ],
+    [
+      2704,
+      0.0,
+      0.13895030319690704,
+      0.13895030319690704
+    ],
+    [
+      2704,
+      0.0,
+      0.13886435329914093,
+      0.13886435329914093
+    ],
+    [
+      2700,
+      0.0,
+      0.13931015133857727,
+      0.13931015133857727
+    ],
+    [
+      2701,
+      0.0,
+      0.1384114772081375,
+      0.1384114772081375
+    ],
+    [
+      2701,
+      0.0,
+      0.13884831964969635,
+      0.13884831964969635
+    ],
+    [
+      2703,
+      0.0,
+      0.1388992965221405,
+      0.1388992965221405
+    ]
+  ],
+  "tilt_deg_minmax": [
+    -44.12109375,
+    44.47265625
+  ],
+  "final_tilt_deg": 0.703125,
+  "joint_gap_ms_p50_p95_max": [
+    20.09725570678711,
+    58.59396457672119,
+    132.7972412109375
+  ],
+  "odom_max_displacement_m": 0.0,
+  "world_z_quantiles": [
+    -0.2124944033562714,
+    -0.09648728859377019,
+    -0.05093916427820337,
+    0.31342438815419926,
+    2.144868890804214,
+    2.670135160661387,
+    2.9642106982498766
+  ],
+  "floor_candidate_z_p10_p50_p90": [
+    -0.06214289972584602,
+    0.00264741249235409,
+    0.08922852730767095
+  ],
+  "floor_candidate_count": 181264,
+  "deskew_minus_rigid_m_p50_p95_p99_max": [
+    0.032983912349593664,
+    0.2086911720685734,
+    0.27631586850957773,
+    0.43140746326794305
+  ]
+}

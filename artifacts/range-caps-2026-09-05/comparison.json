@@ -1,0 +1,30 @@
+{
+  "4": {
+    "sent_hz": 6.8,
+    "inserted_hz": 6.8,
+    "keep_percent": 100,
+    "cpu_percent_one_core": 56.6,
+    "occupied_endpoint_percent": 82.8
+  },
+  "5": {
+    "sent_hz": 6.8,
+    "inserted_hz": 6.8,
+    "keep_percent": 100,
+    "cpu_percent_one_core": 61.3,
+    "occupied_endpoint_percent": 100.0
+  },
+  "6": {
+    "sent_hz": 6.8,
+    "inserted_hz": 6.8,
+    "keep_percent": 100,
+    "cpu_percent_one_core": 61.1,
+    "occupied_endpoint_percent": 100.0
+  },
+  "8": {
+    "sent_hz": 6.9,
+    "inserted_hz": 6.9,
+    "keep_percent": 100,
+    "cpu_percent_one_core": 60.3,
+    "occupied_endpoint_percent": 100.0
+  }
+}
