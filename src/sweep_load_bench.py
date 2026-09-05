@@ -237,7 +237,7 @@ def stage_baseline(args):
 # ──────────────────────────── stage: rates ───────────────────────────────
 
 def stage_rates(args):
-    _hdr('RATES — what the deskew has to interpolate between')
+    _hdr('RATES — callback arrival rates and delivery jitter')
     import rclpy
     from rclpy.node import Node
     from rclpy.qos import qos_profile_sensor_data
@@ -283,7 +283,7 @@ def stage_rates(args):
     j = out.get('/lidar_tilt/joint_states')
     if j:
         hz, dmax, dstd = j
-        print('\n  Interpolation error budget for lidar_tilt_joint:')
+        print('\n  Illustrative angular travel across callback-arrival gaps:')
         print('    %-12s %10s %12s %12s' % ('sweep', 'deg/sample', 'worst gap', 'at 3 m'))
         for name, dps in (('6 s (15 deg/s)', 15.0), ('4 s (22.5)', 22.5),
                           ('2 s (45)', 45.0)):
@@ -292,10 +292,9 @@ def stage_rates(args):
             print('    %-12s %10.2f %12.2f %10.1f cm'
                   % (name, mean_gap, worst,
                      300.0 * math.tan(math.radians(worst / 2.0))))
-        print('    (worst gap = deg travelled across the LONGEST observed'
-              ' publish gap; the\n     3 m column is the mid-gap linear-'
-              'interpolation error, i.e. the deskew\n     floor unless the'
-              ' tilt publisher is made faster AND regular.)')
+        print('    (3 m column = range * tan(half the angular travel). This is'
+              '\n     NOT interpolation error or a deskew accuracy bound. These'
+              '\n     are callback-arrival gaps; inspect measurement stamps separately.)')
     return out
 
 
@@ -372,7 +371,7 @@ def stage_deskew(args):
             t0 = time.perf_counter()
             proj.projectLaser(msg, range_cutoff=8.0)
             t.append(time.perf_counter() - t0)
-        results['projectLaser (today)'] = np.array(t) * 1e3
+        results['legacy projectLaser'] = np.array(t) * 1e3
     except ImportError as e:
         print('  laser_geometry unavailable (%s) — skipping the baseline' % e)
 
@@ -396,9 +395,9 @@ def stage_deskew(args):
         print('  %-28s %9.3f %9.3f %9.3f   %8.2f'
               % (k, v.mean(), np.percentile(v, 95), v.max(),
                  v.mean() * 1e-3 * SCAN_HZ * 100))
-    print('\n  %d beams, %.1f ms scan window, %.1f Hz.  Deskew replaces'
-          ' projectLaser,\n  so the marginal cost is the difference between'
-          ' the two rows.' % (beams, SCAN_TIME_S * 1e3, SCAN_HZ))
+    print('\n  %d beams, %.1f ms scan window, %.1f Hz. Kernel microbenchmark only.'
+          '\n  Excludes timed-message deserialization, callbacks, buffering and'
+          '\n  the deployed TF path. This is not end-to-end processor CPU.' % (beams, SCAN_TIME_S * 1e3, SCAN_HZ))
     return {k: float(v.mean()) for k, v in results.items()}
 
 
@@ -535,27 +534,45 @@ def stage_octomap(args):
     rclpy.init(args=None)
     node = Node('sweep_bench_octomap')
 
-    # 1. grab real scans
+    # Reuse one capture across caps so scene changes cannot bias the comparison.
+    from types import SimpleNamespace
+    captured_path = getattr(args, 'scan_bank', None)
     grabbed = []
-    node.create_subscription(LaserScan, '/scan_raw',
-                             lambda m: grabbed.append(m), qos_profile_sensor_data)
-    t_end = time.monotonic() + 8.0
-    while time.monotonic() < t_end and len(grabbed) < 12:
-        rclpy.spin_once(node, timeout_sec=0.1)
+    if captured_path and os.path.exists(captured_path):
+        with np.load(captured_path) as data:
+            for k in range(len(data['angle_min'])):
+                grabbed.append(SimpleNamespace(ranges=data['ranges_%d' % k],
+                    angle_min=float(data['angle_min'][k]),
+                    angle_increment=float(data['angle_increment'][k])))
+    else:
+        node.create_subscription(LaserScan, '/scan_raw',
+                                 lambda m: grabbed.append(m), qos_profile_sensor_data)
+        t_end = time.monotonic() + 8.0
+        while time.monotonic() < t_end and len(grabbed) < 12:
+            rclpy.spin_once(node, timeout_sec=0.1)
+        if grabbed and captured_path:
+            data = {'angle_min': [m.angle_min for m in grabbed],
+                    'angle_increment': [m.angle_increment for m in grabbed]}
+            data.update({'ranges_%d' % k: np.asarray(m.ranges)
+                         for k, m in enumerate(grabbed)})
+            np.savez_compressed(captured_path, **data)
     if not grabbed:
-        print('  no /scan_raw — is the lidar up?  aborting this stage.')
+        print('  no /scan_raw — is the lidar up? aborting this stage.')
         node.destroy_node()
         rclpy.shutdown()
         return {}
-    print('  captured %d real scans (%d beams each)'
+    print('  captured/reused %d real scans (%d beams each)'
           % (len(grabbed), len(grabbed[0].ranges)))
 
     # 2. build a bank of pitched clouds from them
     bank = []
+    eligible = []
+    input_range = 8.0 if getattr(args, "keep_far_rays", False) else args.max_range
     for k, msg in enumerate(grabbed):
         r = np.asarray(msg.ranges, dtype=np.float64)
         a = msg.angle_min + np.arange(len(r)) * msg.angle_increment
-        good = np.isfinite(r) & (r > 0.35) & (r < args.max_range)
+        good = np.isfinite(r) & (r > 0.35) & (r < input_range)
+        eligible.append(int(np.sum(good & (r <= args.max_range))))
         r, a = r[good], a[good]
         v = np.stack([r * np.cos(a), r * np.sin(a), np.zeros_like(r)], axis=1)
         pitch = math.radians(-45.0 + 90.0 * (k / max(1, len(grabbed) - 1)))
@@ -564,6 +581,10 @@ def stage_octomap(args):
         bank.append((v @ R.T).astype(np.float32))
     npts = int(np.mean([len(b) for b in bank]))
     print('  bank: %d clouds, %d points mean, pitched -45..+45 deg' % (len(bank), npts))
+    print('  occupied endpoints within cap: %.0f / %d mean input points (%.1f%%)'
+          % (np.mean(eligible), npts, 100 * np.mean(eligible) / max(1, npts)))
+    print('  far returns: %s' % ('retained for clipped free-space rays'
+          if getattr(args, 'keep_far_rays', False) else 'discarded before insertion'))
     print('  raycast work per cloud ~ %d pts x %.0f voxels = %.2f M traversals'
           % (npts, args.max_range / 0.05, npts * (args.max_range / 0.05) / 1e6))
 
@@ -769,6 +790,9 @@ def main():
                     help='comma list; tfchain Hz or octomap cloud Hz')
     ap.add_argument('--max-range', type=float, default=8.0)
     ap.add_argument('--resolution', type=float, default=0.05)
+    ap.add_argument('--scan-bank', help='Save/reuse an NPZ scan bank for cap comparisons')
+    ap.add_argument('--keep-far-rays', action='store_true',
+                    help='Keep input to 8 m; only cap OctoMap ray insertion distance')
     ap.add_argument('--jsp-rate', type=float, default=10.0,
                     help="joint_state_publisher's own republish rate (its "
                          "`rate` param; ROS default 10)")

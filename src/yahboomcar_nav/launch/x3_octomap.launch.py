@@ -46,8 +46,11 @@ def generate_launch_description():
             'resolution', default_value='0.05',
             description='Voxel edge length in metres. Matches the 2D map.'),
         DeclareLaunchArgument(
-            'max_range', default_value='8.0',
-            description='Rays longer than this only clear, never mark.'),
+            'max_range', default_value='6.0',
+            description='Rays longer than this only clear, never mark. 6 m '
+                        'measured 2026-09-05: 5/6/8 m cost the same CPU at '
+                        'the continuous cloud rate and only 4 m loses '
+                        'endpoints. Keep in step with cloud_max_range_m.'),
         DeclareLaunchArgument(
             'cloud_topic', default_value='/pointcloud_raw',
             description='PointCloud2 input from lidar_3d_processor_node.'),

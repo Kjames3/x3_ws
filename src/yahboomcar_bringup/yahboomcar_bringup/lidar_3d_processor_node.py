@@ -6,8 +6,7 @@
 
 The gate matters: slam_toolbox and AMCL both assume a horizontal scan plane, so
 feeding them a tilted scan silently corrupts the map and the pose.  The gate is
-on |tilt|, which stays correct even though the servo's sign convention is still
-unverified (see lidar_tilt_node._resolve_direction).
+on |tilt|. The Dynamixel calibration uses direction +1 (full-frame verification 2026-09-04).
 
 Tilt comes from lidar_tilt_node on /lidar_tilt/joint_states, NOT from the
 merged /joint_states — joint_state_publisher happily publishes
@@ -27,13 +26,18 @@ level reading forever.  If no authoritative source is heard within
 """
 
 import math
+import time
+from collections import deque
+import numpy as np
 
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import LaserScan, PointCloud2, JointState
+from sensor_msgs.msg import LaserScan, PointCloud2, JointState, PointCloud, PointField
 from std_msgs.msg import Bool
-from laser_geometry import LaserProjection
+from rclpy.time import Time
+from tf2_ros import Buffer, TransformListener, TransformException
+from .lidar_deskew import interpolate_pitch, deskew
 
 
 class Lidar3dProcessorNode(Node):
@@ -70,7 +74,10 @@ class Lidar3dProcessorNode(Node):
         # starts eating floor beyond 76 deg of tilt, which the sweep never
         # reaches.  So this does NOT cost near-floor coverage.
         self.declare_parameter('tilted_min_range_m', 0.35)
-        self.declare_parameter('cloud_max_range_m', 8.0)
+        # 6 m: 5/6/8 m measured identical OctoMap CPU at the continuous
+        # cloud rate, and only 4 m lost endpoints (82.8% kept).  See
+        # params/lidar_3d_processor.yaml for the table.
+        self.declare_parameter('cloud_max_range_m', 6.0)
         self.declare_parameter('publish_cloud_when_level', True)
 
         self.joint_name = self.get_parameter('joint_name').value
@@ -79,8 +86,6 @@ class Lidar3dProcessorNode(Node):
         self.tilt_timeout = float(self.get_parameter('tilt_timeout_s').value)
         self.assume_level = bool(
             self.get_parameter('assume_level_if_no_source').value)
-        self.require_settled = bool(
-            self.get_parameter('require_settled').value)
         self.tilted_min_range = float(
             self.get_parameter('tilted_min_range_m').value)
         self.cloud_max_range = float(
@@ -88,7 +93,22 @@ class Lidar3dProcessorNode(Node):
         self.publish_cloud_when_level = bool(
             self.get_parameter('publish_cloud_when_level').value)
 
-        self.projector = LaserProjection()
+        self.declare_parameter('timed_cloud_topic', '/lidar/points_timed')
+        self.declare_parameter('deskew_max_gap_s', 0.12)
+        self.declare_parameter('deskew_wait_s', 0.3)
+        self.declare_parameter('deskew_mount_frame', 'lidar_mount_link')
+        self.declare_parameter('deskew_tilt_frame', 'lidar_tilt_link')
+        self.history = deque()
+        self.pending = deque(maxlen=8)
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self._deskew_ok = self._deskew_drop = 0
+        self._deskew_received = 0
+        self._deskew_last_error = "none"
+        self.create_subscription(PointCloud,
+            self.get_parameter('timed_cloud_topic').value,
+            self.timed_callback, qos_profile_sensor_data)
+        self.create_timer(0.02, self.process_pending)
         self.current_pitch = 0.0
         self.pitch_stamp = None
         self.settled = True
@@ -131,12 +151,30 @@ class Lidar3dProcessorNode(Node):
             % (self.get_parameter('tilt_topic').value, self.tilt_timeout,
                self.assume_level))
 
+    @property
+    def require_settled(self):
+        # Mode changes are applied through the ROS parameter service.
+        return bool(self.get_parameter("require_settled").value)
+
     def joint_callback(self, msg):
         if self.joint_name not in msg.name:
             return
         idx = msg.name.index(self.joint_name)
         if idx < len(msg.position):
-            self.current_pitch = msg.position[idx]
+            pitch = msg.position[idx]
+        else:
+            return
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        if not math.isfinite(pitch) or stamp <= 0:
+            return
+        self.current_pitch = pitch
+        if self.history and stamp <= self.history[-1][0]:
+            self.history.clear()
+            self.pending.clear()
+        self.history.append((stamp, self.current_pitch,
+                             not (idx < len(msg.velocity) and msg.velocity[idx] > 0.5)))
+        while self.history and stamp - self.history[0][0] > 2.0:
+            self.history.popleft()
         # lidar_tilt_node encodes "still moving" as velocity 1.0.
         was_settled = self.settled
         self.settled = not (idx < len(msg.velocity) and msg.velocity[idx] > 0.5)
@@ -211,57 +249,109 @@ class Lidar3dProcessorNode(Node):
         is_level = abs(pitch) < self.level_threshold
         self.level_pub.publish(Bool(data=bool(is_level)))
 
-        # ── 3D branch ───────────────────────────────────────────────────
-        # publish_cloud_when_level is FALSE wherever octomap runs for real (see
-        # params/lidar_3d_processor.yaml): a level scan is a horizontal slice
-        # 2D SLAM already covers, and re-projecting + re-inserting it every
-        # 125 ms costs continuous CPU and DDS traffic for zero information.
-        # Turn it on only to get something on screen during bringup.
-        want_cloud = ((not is_level) or self.publish_cloud_when_level) \
-            and state != 'stale'
-        if want_cloud and (captured_settled or not self.require_settled):
-            try:
-                scan = msg
-                if not is_level and self.tilted_min_range > msg.range_min:
-                    scan = self._mask_near(msg, self.tilted_min_range)
-                cloud = self.projector.projectLaser(
-                    scan, range_cutoff=self.cloud_max_range)
-                self.pc_pub.publish(cloud)
-            except Exception as e:
-                self.get_logger().warn("failed to project laser: %s" % e)
+        # 3D projection consumes acquisition-ordered points independently.
+        # LaserScan bins are angle ordered and cannot supply per-return times.
 
         # ── 2D branch ───────────────────────────────────────────────────
         # Do not leak a scan captured while the mount crossed level into 2D
         # SLAM.  That scan is pitched for most of its acquisition window even
         # if its callback-time angle happens to be inside the level threshold.
-        if is_level and (captured_settled or not self.require_settled):
+        if is_level and captured_settled:
             self.scan_pub.publish(msg)
         else:
             self._n_gated += 1
 
-    @staticmethod
-    def _mask_near(msg, min_range):
-        """Copy the scan with sub-`min_range` returns blanked to +inf.
+    def timed_callback(self, msg):
+        self._deskew_received += 1
+        if len(self.pending) == self.pending.maxlen:
+            self._deskew_drop += 1
+        self.pending.append((time.monotonic(), msg))
 
-        projectLaser drops anything below scan.range_min, so raising range_min
-        alone would be enough — except that Nav2 and slam_toolbox read
-        range_min off the same message elsewhere.  Blanking the ranges keeps
-        the message's own limits honest.
-        """
-        out = LaserScan()
-        out.header = msg.header
-        out.angle_min = msg.angle_min
-        out.angle_max = msg.angle_max
-        out.angle_increment = msg.angle_increment
-        out.time_increment = msg.time_increment
-        out.scan_time = msg.scan_time
-        out.range_min = msg.range_min
-        out.range_max = msg.range_max
-        out.intensities = msg.intensities
-        out.ranges = [r if r >= min_range else math.inf for r in msg.ranges]
-        return out
+    @staticmethod
+    def _pose(transform):
+        t, q = transform.transform.translation, transform.transform.rotation
+        return np.array([t.x, t.y, t.z]), np.array([q.x, q.y, q.z, q.w])
+
+    def process_pending(self):
+        while self.pending:
+            received, msg = self.pending[0]
+            try:
+                self._project_timed(msg)
+            except (ValueError, TransformException) as exc:
+                if time.monotonic() - received < self.get_parameter('deskew_wait_s').value:
+                    return
+                self._deskew_drop += 1
+                self._deskew_last_error = str(exc)
+                self.get_logger().debug('deskew withheld: %s' % exc)
+            self.pending.popleft()
+
+    def _project_timed(self, msg):
+        if not msg.points:
+            return
+        channels = {c.name: c.values for c in msg.channels}
+        offsets = np.asarray(channels.get('acquisition_time', []), dtype=float)
+        durations = np.asarray(channels.get('scan_duration', []), dtype=float)
+        n = len(msg.points)
+        if (len(offsets) != n or len(durations) != n
+                or not np.isfinite(offsets).all() or not np.isfinite(durations).all()):
+            raise ValueError('missing or invalid acquisition times')
+        duration = float(durations[0])
+        if (duration <= 0 or duration >= 1 or np.any(durations != duration)
+                or offsets[0] < 0 or offsets[-1] > duration + 1e-6
+                or np.any(np.diff(offsets) <= 0)):
+            raise ValueError('invalid acquisition window')
+        start_ns = msg.header.stamp.sec * 1000000000 + msg.header.stamp.nanosec
+        start = start_ns * 1e-9
+        if start_ns <= 0 or abs(self.get_clock().now().nanoseconds * 1e-9 - start) > 2:
+            raise ValueError('stale cloud or clock mismatch')
+        # Include the full scan window, even if first/last returns were invalid.
+        times = np.r_[start, start + offsets, start + duration]
+        pitches = interpolate_pitch(list(self.history), times,
+            self.get_parameter('deskew_max_gap_s').value, self.require_settled)
+        if not self.publish_cloud_when_level and np.all(np.abs(pitches) < self.level_threshold):
+            return
+        points = np.array([(p.x, p.y, p.z) for p in msg.points])
+        ranges = np.linalg.norm(points, axis=1)
+        minimum = np.where(np.abs(pitches[1:-1]) >= self.level_threshold,
+                           self.tilted_min_range, 0.0)
+        valid = np.isfinite(points).all(axis=1) & (ranges >= minimum)
+        valid &= (ranges > 0) & (ranges < self.cloud_max_range)
+        if not np.any(valid):
+            return
+        begin = Time(nanoseconds=start_ns, clock_type=self.get_clock().clock_type)
+        end = Time(nanoseconds=start_ns + round(duration * 1e9),
+                   clock_type=self.get_clock().clock_type)
+        mount = self.get_parameter('deskew_mount_frame').value
+        tilt = self.get_parameter('deskew_tilt_frame').value
+        lookup = self.tf_buffer.lookup_transform
+        m0 = self._pose(lookup('odom', mount, begin))
+        m1 = self._pose(lookup('odom', mount, end))
+        # X3's revolute joint origin has identity rotation and axis +Y.
+        # Read its translation from TF, avoiding duplicated URDF dimensions.
+        pivot = self._pose(lookup(mount, tilt, begin))[0]
+        laser = self._pose(lookup(tilt, msg.header.frame_id, begin))
+        reference = self._pose(lookup('odom', msg.header.frame_id, begin))
+        xyz = deskew(points[valid], offsets[valid] / duration,
+                     pitches[1:-1][valid], m0, m1, pivot, laser, reference)
+        if not np.isfinite(xyz).all():
+            raise ValueError('nonfinite transform result')
+        cloud = PointCloud2()
+        cloud.header = msg.header
+        cloud.height, cloud.width = 1, len(xyz)
+        cloud.fields = [PointField(name=name, offset=i * 4,
+                        datatype=PointField.FLOAT32, count=1)
+                        for i, name in enumerate(('x', 'y', 'z'))]
+        cloud.is_bigendian = False
+        cloud.point_step, cloud.row_step = 12, 12 * len(xyz)
+        cloud.is_dense = True
+        cloud.data = xyz.tobytes()
+        self.pc_pub.publish(cloud)
+        self._deskew_ok += 1
 
     def _report(self):
+        self.get_logger().info("deskew: %d received, %d published, %d withheld, %d pending; last: %s"
+                               % (self._deskew_received, self._deskew_ok, self._deskew_drop,
+                                  len(self.pending), self._deskew_last_error))
         if not self._n_scans:
             self.get_logger().warn(
                 "no scans on %s in the last 5s — is the ydlidar driver up and "

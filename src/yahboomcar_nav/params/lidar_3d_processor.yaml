@@ -49,10 +49,36 @@ lidar_3d_processor_node:
     # Beyond ~2.9 m the 1.0 deg sweep step (5.2 cm) is coarser than octomap's
     # 5 cm voxel, so distant surfaces arrive as stripes rather than walls.
     # Raycast cost is linear in max_range/resolution too.
-    cloud_max_range_m: 8.0
+    #
+    # 6 m, chosen 2026-09-05 from a measured cap sweep at the continuous
+    # 6.8 Hz cloud rate (artifacts/range-caps-2026-09-05/comparison.json):
+    #
+    #   cap   OctoMap CPU (% of one core)   occupied endpoints kept
+    #   4 m   56.6                          82.8%
+    #   5 m   61.3                          100%
+    #   6 m   61.1                          100%
+    #   8 m   60.3                          100%
+    #
+    # 5/6/8 m cost the same, so the CPU argument for a tighter cap evaporates
+    # above 4 m -- and 4 m is the one setting that actually loses returns.
+    # 6 m keeps every endpoint at no measured cost over 8 m while bounding
+    # raycast work per cloud. Keep this in step with the `max_range` default
+    # in x3_octomap.launch.py: the processor cap only controls which points
+    # are SENT, octomap's own cap controls which ones MARK.
+    cloud_max_range_m: 6.0
 
     # FALSE where octomap runs for real: a level scan is a horizontal slice 2D
     # SLAM already has, and re-projecting + re-inserting it every 125 ms costs
     # continuous Jetson CPU and continuous DDS traffic for zero information.
     # Set true only to get something on screen while bringing the stack up.
     publish_cloud_when_level: false
+
+    # Acquisition-ordered returns from the updated YDLidar driver. LaserScan
+    # angle bins cannot supply trustworthy per-return acquisition offsets.
+    timed_cloud_topic: /lidar/points_timed
+    deskew_mount_frame: lidar_mount_link
+    deskew_tilt_frame: lidar_tilt_link
+    # Reject larger interpolation gaps; this is an input bound, not a claim
+    # about achieved spatial accuracy. Keep require_settled true for rollout.
+    deskew_max_gap_s: 0.12
+    deskew_wait_s: 0.3

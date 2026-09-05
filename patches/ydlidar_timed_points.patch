@@ -1,0 +1,44 @@
+diff --git a/src/ydlidar_ros2_driver_node.cpp b/src/ydlidar_ros2_driver_node.cpp
+index ab12909..f42ee95 100755
+--- a/src/ydlidar_ros2_driver_node.cpp
++++ b/src/ydlidar_ros2_driver_node.cpp
+@@ -187,6 +187,9 @@ int main(int argc, char *argv[]) {
+   auto laser_pub = node->create_publisher<sensor_msgs::msg::LaserScan>("scan", rclcpp::SensorDataQoS());
+   auto pc_pub = node->create_publisher<sensor_msgs::msg::PointCloud>("point_cloud", rclcpp::SensorDataQoS());
+   
++  auto timed_pub = node->create_publisher<sensor_msgs::msg::PointCloud>(
++      "lidar/points_timed", rclcpp::SensorDataQoS());
++
+   auto stop_scan_service =
+     [&laser](const std::shared_ptr<rmw_request_id_t> request_header,
+   const std::shared_ptr<std_srvs::srv::Empty::Request> req,
+@@ -265,6 +268,29 @@ int main(int argc, char *argv[]) {
+       laser_pub->publish(*scan_msg);
+       pc_pub->publish(*pc_msg);
+ 
++      // Only advertise acquisition timing when the SDK preserved ALL raw
++      // slots. Cropping or fixed-resolution padding destroys i -> time.
++      // Invalid ranges still occupy SDK slots; filtering above preserves i.
++      const double dt = scan.config.time_increment;
++      const double duration = scan.config.scan_time;
++      const bool timing_valid = scan.stamp > 0 && std::isfinite(dt) && dt > 0 &&
++          std::isfinite(duration) && duration > 0 && duration < 1.0 &&
++          !node->get_parameter("fixed_resolution").as_bool() &&
++          node->get_parameter("angle_min").as_double() <= -180.0 &&
++          node->get_parameter("angle_max").as_double() >= 180.0 &&
++          std::abs(duration / dt - scan.points.size()) < 0.5;
++      if (timing_valid) {
++        pc_msg->channels[idx_timestamp].name = "acquisition_time";
++        sensor_msgs::msg::ChannelFloat32 window;
++        window.name = "scan_duration";
++        window.values.assign(pc_msg->points.size(), (scan.points.size() - 1) * dt);
++        pc_msg->channels.push_back(window);
++        timed_pub->publish(*pc_msg);
++      } else {
++        RCLCPP_WARN_THROTTLE(node->get_logger(), *node->get_clock(), 5000,
++            "Withholding timed cloud: need complete, unpadded scan and valid timing");
++      }
++
+     } else {
+       RCLCPP_ERROR(node->get_logger(), "Failed to get scan");
+     }

@@ -292,11 +292,9 @@ lidar_sweep_speed_deg_s = LIDAR_SWEEP_SPEED_DEG_S
 LIDAR_SWEEP_SPEED_MIN_DEG_S = 2.0
 LIDAR_SWEEP_SPEED_MAX_DEG_S = 90.0
 # lidar_3d_processor_node drops every cloud captured while the mount is
-# travelling (require_settled).  In continuous mode the mount is ALWAYS
-# travelling, so leaving that on yields an empty octree -- a silent, and very
-# convincing, "the hardware is broken".  See _set_processor_require_settled.
-_sweep_settled_bypass = False   # True = lie "settled" in joint_states because
-                                # the param could not be set on the node
+# travelling (require_settled). Runtime mode changes affect 3D only;
+# failures stop the sweep instead of falsifying measurement state.
+_sweep_settled_bypass = False   # Retained in telemetry for compatibility.
 
 # How old /scan-derived obstacles may be before the CBF stops trusting them.
 # /scan_raw measures ~6.4 Hz (156 ms), so 0.5 s allows ~3 missed scans.
@@ -397,10 +395,8 @@ async def _broadcast_sweep_config(note=None):
 async def _set_processor_require_settled(value):
     """Turn lidar_3d_processor_node's moving-scan gate on or off at runtime.
 
-    Returns (ok, detail).  `ok` False means the gate is still whatever it was,
-    and a continuous sweep would therefore produce NO cloud at all -- the
-    caller falls back to publishing a fake "settled" velocity so the test still
-    yields data rather than an empty octree that looks like dead hardware.
+    Returns (ok, detail). A failure stops the sweep; measurement state must
+    never be falsified to bypass a failed parameter update.
 
     Done over the CLI rather than an rclpy parameter client on purpose: the
     processor runs in the bringup stack as a separate process (sometimes
@@ -421,6 +417,8 @@ async def _set_processor_require_settled(value):
             return True, text
         return False, text or ("exit %s" % proc.returncode)
     except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
         return False, "timed out (is lidar_3d_processor_node running?)"
     except Exception as e:
         return False, str(e)
@@ -435,9 +433,14 @@ async def _apply_sweep_gate():
     (continuous) or suspiciously clean-looking (step with the gate stuck off).
     Returns (ok, detail).
     """
-    global _sweep_settled_bypass
+    global _sweep_settled_bypass, lidar_3d_scan_enabled, lidar_sweep_mode
     ok, detail = await _set_processor_require_settled(lidar_sweep_mode == "step")
-    _sweep_settled_bypass = (lidar_sweep_mode == "continuous" and not ok)
+    _sweep_settled_bypass = False
+    if not ok:
+        lidar_3d_scan_enabled = False
+        lidar_sweep_mode = "step"
+        logger.error("Sweep stopped: could not configure processor gate: %s", detail)
+        await _set_processor_require_settled(True)
     return ok, detail
 
 
@@ -2155,19 +2158,8 @@ async def handle_client(websocket):
                             # every later step-and-stare map.
                             ok, detail = await _apply_sweep_gate()
                             if not ok:
-                                logger.warning(
-                                    "set_sweep_config: could not set "
-                                    "require_settled on "
-                                    "lidar_3d_processor_node (%s). %s",
-                                    detail,
-                                    "Falling back to reporting the mount as "
-                                    "settled in /lidar_tilt/joint_states so "
-                                    "the continuous sweep still yields a "
-                                    "cloud."
-                                    if want_mode == "continuous"
-                                    else "The gate may still be OFF -- "
-                                         "step-and-stare clouds will include "
-                                         "smeared in-motion scans.")
+                                logger.warning("set_sweep_config failed: %s; "
+                                               "sweep stopped and step mode restored", detail)
                                 note = ("processor param not set (%s)"
                                         % detail)
                     logger.info("3D sweep config: mode=%s speed=%.1f deg/s "
@@ -3334,6 +3326,14 @@ def _move_locked(servo, servo_id, counts, profile_v):
         servo.move(servo_id, counts, profile_v)
 
 
+def _tilt_target_moving(target, position, hardware_moving, elapsed, continuous, tolerance):
+    """Continuous mode does not poll Moving; finish only near the encoder target."""
+    if target is None:
+        return False
+    return elapsed < LIDAR_SWEEP_SETTLE_S or (
+        abs(position - target) > tolerance if continuous else hardware_moving)
+
+
 def _tilt_sampler(servo, servo_id, counts_to_deg, rate_hz=TILT_SAMPLE_HZ):
     """Poll the tilt servo at a fixed period and publish the angle.
 
@@ -3347,6 +3347,7 @@ def _tilt_sampler(servo, servo_id, counts_to_deg, rate_hz=TILT_SAMPLE_HZ):
     """
     global _tilt_gate_moving
     from sensor_msgs.msg import JointState
+    from rclpy.duration import Duration
 
     period = 1.0 / max(1.0, rate_hz)
     next_t = time.monotonic()
@@ -3371,6 +3372,11 @@ def _tilt_sampler(servo, servo_id, counts_to_deg, rate_hz=TILT_SAMPLE_HZ):
         next_t += period
         try:
             with _servo_lock:
+                # Anchor the measurement to ROS time BEFORE the position read.
+                # Stamping at publication includes read_moving, lock contention
+                # and scheduling delays, which become false motion in deskew.
+                ros_read_start = (ros_bridge._node.get_clock().now()
+                                  if ros_bridge is not None else None)
                 t0 = time.monotonic()
                 pos = servo.read_pos(servo_id)
                 t1 = time.monotonic()
@@ -3405,9 +3411,11 @@ def _tilt_sampler(servo, servo_id, counts_to_deg, rate_hz=TILT_SAMPLE_HZ):
                                 t=t_meas)
             _tilt_sample["reads"] += 1
 
-        if ros_bridge is not None and hasattr(ros_bridge, 'joint_pub'):
+        if (ros_read_start is not None and ros_bridge is not None
+                and hasattr(ros_bridge, 'joint_pub')):
             try:
-                stamp = ros_bridge._node.get_clock().now().to_msg()
+                stamp = (ros_read_start + Duration(
+                    nanoseconds=round((t1 - t0) * 0.5e9))).to_msg()
                 tilt_rad = math.radians(deg)
                 gate = 1.0 if _tilt_gate_moving else 0.0
 
@@ -3645,9 +3653,9 @@ async def lidar_scan_loop():
                 # The XL430's Moving flag asserts a few milliseconds after a
                 # goal write. Keep a short grace period so an immediate false
                 # reading cannot make us skip straight to the next waypoint.
-                moving = (target_counts is not None and
-                          (hardware_moving or now - target_commanded_at <
-                           LIDAR_SWEEP_SETTLE_S))
+                moving = _tilt_target_moving(
+                    target_counts, pos, hardware_moving,
+                    now - target_commanded_at, active_mode == "continuous", home_tol)
                 if hardware_moving:
                     target_was_moving = True
                 if (target_counts is not None and not moving and
@@ -3663,15 +3671,9 @@ async def lidar_scan_loop():
                 # while a goal is outstanding in step mode.
                 _tilt_need_moving = (target_counts is not None and
                                      active_mode != "continuous")
-                # velocity on /lidar_tilt/joint_states is read by
-                # lidar_3d_processor_node purely as a "discard this scan" flag.
-                # In continuous mode the mount never stops, so if we could not
-                # turn that gate off on the node itself we report "settled"
-                # instead -- otherwise the whole continuous run captures
-                # nothing.
-                _tilt_gate_moving = moving and not (
-                    scanning and lidar_sweep_mode == "continuous"
-                    and _sweep_settled_bypass)
+                # Continuous sweeps never advertise a horizontal parked scan,
+                # including at reversals. The 3D deskew gate is independent.
+                _tilt_gate_moving = moving or (scanning and active_mode == "continuous")
 
                 # Abort arm of the interlock: a goal can arrive from RViz,
                 # the CLI, or navigation_fsm without ever passing through the
