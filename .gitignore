@@ -68,7 +68,11 @@ src/webrtc_poc/auto.key
 # Raw capture point clouds from hardware validation runs (tens of MB each).
 # The .json/.log/.py summaries beside them ARE tracked, so results stay
 # reproducible; the raw returns live on the laptop and the robot.
-# Exception: sign_comparison.npz is the cited tilt_direction evidence
-# (CLAUDE.md, notes/) and must survive a clean clone.
+# Exceptions, both small and load-bearing: sign_comparison.npz is the cited
+# tilt_direction evidence (CLAUDE.md, notes/), and drive_capture.npz is the
+# only multi-pose capture -- every real-data result in
+# notes/registration_feasibility.md, including the pose graph, derives from it
+# and cannot be reproduced without it.
 artifacts/**/*.npz
 !artifacts/deskew-2026-09-04/sign_comparison.npz
+!artifacts/registration-2026-09-05/drive_capture.npz

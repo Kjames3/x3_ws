@@ -1,0 +1,95 @@
+{
+ "bin_deg": 0.35,
+ "noise_m": 0.007,
+ "map_voxels": 31509,
+ "runs": [
+  {
+   "dx": 0.0,
+   "dy": 0.0,
+   "yaw_deg": 0,
+   "query_points": 78376,
+   "trans_err_m": 0.0018,
+   "rot_err_deg": 0.011,
+   "rmse_m": 0.0102,
+   "condition": 7.5,
+   "converged": true
+  },
+  {
+   "dx": 0.1,
+   "dy": 0.0,
+   "yaw_deg": 0,
+   "query_points": 79335,
+   "trans_err_m": 0.0017,
+   "rot_err_deg": 0.017,
+   "rmse_m": 0.0102,
+   "condition": 7.9,
+   "converged": true
+  },
+  {
+   "dx": 0.25,
+   "dy": 0.0,
+   "yaw_deg": 5,
+   "query_points": 79780,
+   "trans_err_m": 0.0014,
+   "rot_err_deg": 0.02,
+   "rmse_m": 0.0102,
+   "condition": 8.4,
+   "converged": true
+  },
+  {
+   "dx": 0.5,
+   "dy": 0.0,
+   "yaw_deg": 10,
+   "query_points": 82059,
+   "trans_err_m": 0.0009,
+   "rot_err_deg": 0.019,
+   "rmse_m": 0.01,
+   "condition": 9.2,
+   "converged": true
+  },
+  {
+   "dx": 0.5,
+   "dy": 0.5,
+   "yaw_deg": 15,
+   "query_points": 83828,
+   "trans_err_m": 0.0012,
+   "rot_err_deg": 0.018,
+   "rmse_m": 0.0101,
+   "condition": 9.1,
+   "converged": true
+  },
+  {
+   "dx": 1.0,
+   "dy": 0.0,
+   "yaw_deg": 20,
+   "query_points": 77195,
+   "trans_err_m": 0.001,
+   "rot_err_deg": 0.009,
+   "rmse_m": 0.01,
+   "condition": 12.0,
+   "converged": true
+  },
+  {
+   "dx": 1.0,
+   "dy": 1.0,
+   "yaw_deg": 30,
+   "query_points": 70347,
+   "trans_err_m": 0.0016,
+   "rot_err_deg": 0.023,
+   "rmse_m": 0.0101,
+   "condition": 14.1,
+   "converged": true
+  },
+  {
+   "dx": 1.5,
+   "dy": 0.0,
+   "yaw_deg": 30,
+   "query_points": 67395,
+   "trans_err_m": 0.0008,
+   "rot_err_deg": 0.014,
+   "rmse_m": 0.0101,
+   "condition": 17.2,
+   "converged": true
+  }
+ ]
+}

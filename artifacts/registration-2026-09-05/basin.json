@@ -1,0 +1,93 @@
+{
+ "query_points": 2970,
+ "map_voxels_3d": 31509,
+ "map_voxels_2d": 886,
+ "basin": [
+  {
+   "displacement_m": 0.2,
+   "yaw_deg": 5,
+   "trans_err_3d": 0.0017,
+   "rot_err_3d": 0.026,
+   "ok_3d": true,
+   "trans_err_2d": 0.0011,
+   "rot_err_2d": 0.017,
+   "ok_2d": true
+  },
+  {
+   "displacement_m": 0.5,
+   "yaw_deg": 10,
+   "trans_err_3d": 0.0012,
+   "rot_err_3d": 0.019,
+   "ok_3d": true,
+   "trans_err_2d": 0.0037,
+   "rot_err_2d": 0.037,
+   "ok_2d": true
+  },
+  {
+   "displacement_m": 0.8,
+   "yaw_deg": 15,
+   "trans_err_3d": 0.0015,
+   "rot_err_3d": 0.048,
+   "ok_3d": true,
+   "trans_err_2d": 0.0039,
+   "rot_err_2d": 0.06,
+   "ok_2d": true
+  },
+  {
+   "displacement_m": 1.0,
+   "yaw_deg": 20,
+   "trans_err_3d": 0.0016,
+   "rot_err_3d": 0.022,
+   "ok_3d": true,
+   "trans_err_2d": 0.0027,
+   "rot_err_2d": 0.076,
+   "ok_2d": true
+  },
+  {
+   "displacement_m": 1.2,
+   "yaw_deg": 25,
+   "trans_err_3d": 0.0012,
+   "rot_err_3d": 0.02,
+   "ok_3d": true,
+   "trans_err_2d": 2.3906,
+   "rot_err_2d": 44.562,
+   "ok_2d": false
+  },
+  {
+   "displacement_m": 1.4,
+   "yaw_deg": 30,
+   "trans_err_3d": 0.0015,
+   "rot_err_3d": 0.019,
+   "ok_3d": true,
+   "trans_err_2d": 2.3821,
+   "rot_err_2d": 28.707,
+   "ok_2d": false
+  },
+  {
+   "displacement_m": 2.0,
+   "yaw_deg": 40,
+   "trans_err_3d": 1.7033,
+   "rot_err_3d": 45.534,
+   "ok_3d": false,
+   "trans_err_2d": 2.9493,
+   "rot_err_2d": 55.636,
+   "ok_2d": false
+  },
+  {
+   "displacement_m": 2.5,
+   "yaw_deg": 50,
+   "trans_err_3d": 3.8792,
+   "rot_err_3d": 90.255,
+   "ok_3d": false,
+   "trans_err_2d": 3.3279,
+   "rot_err_2d": 76.925,
+   "ok_2d": false
+  }
+ ],
+ "timing_ms": {
+  "kdtree_build": 4.3,
+  "n_2970": 29.4,
+  "n_10668": 89.6,
+  "n_42673": 316.9
+ }
+}

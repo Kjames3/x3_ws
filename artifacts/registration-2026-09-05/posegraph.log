@@ -1,0 +1,25 @@
+edges accepted: 6 of 10 possible
+  0-1 overlap 83% rmse 0.039 m reverse 0.017 m
+  0-2 overlap 86% rmse 0.035 m reverse 0.004 m
+  0-4 overlap 81% rmse 0.036 m reverse 0.034 m
+  1-2 overlap 82% rmse 0.035 m reverse 0.021 m
+  1-4 overlap 70% rmse 0.043 m reverse 0.028 m
+  2-4 overlap 72% rmse 0.042 m reverse 0.036 m
+  REJECTED 0-3: reverse 0.101 m
+  REJECTED 1-3: overlap 0.44, rmse 0.082, reverse 0.296 m
+  REJECTED 2-3: overlap 0.48, rmse 0.062, reverse 0.134 m
+  REJECTED 3-4: overlap 0.36, rmse 0.077, reverse 1.370 m
+
+ station                   odometry                  optimised      moved
+       0      1.359  -0.773  12.5deg      1.359  -0.773  12.5deg     0.000 m
+       1      2.601  -1.663 -37.0deg      2.412  -1.710 -38.4deg     0.195 m
+       2      1.621  -2.104 -156.9deg      1.441  -1.986 -161.6deg     0.215 m
+       3      0.877  -3.611 -37.8deg      0.877  -3.611 -37.8deg     0.000 m
+       4     -0.376  -0.688 136.7deg      0.479  -0.490 125.0deg     0.877 m
+
+map sharpness (lower is sharper):
+  odometry  :   75611 voxels, median cross-station NN 0.0659 m
+  optimised :   66845 voxels, median cross-station NN 0.0250 m
+  change    : -11.6% voxels, -62.1% NN
+
+edge residual after optimisation: p50 0.0123 m, max 0.0186 m
