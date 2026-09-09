@@ -1,0 +1,31 @@
+{
+  "source_bag": "domain_adapt_20260529_192203",
+  "source_path": "/home/kamren/EE_244_Final_Project/bags/domain_adapt_20260529_192203",
+  "generated": "2026-08-08T08:17:36+00:00",
+  "generator": "scripts/make_fixtures.py",
+  "window_seconds": 30.0,
+  "skip_seconds": 5.0,
+  "topics": {
+    "scan": {
+      "range_min": 0.11999999731779099,
+      "range_max": 10.0,
+      "frame_id": "laser_link",
+      "count": 217,
+      "file": "scan.npz",
+      "bytes": 658698
+    },
+    "odom": {
+      "count": 300,
+      "file": "odom.npz",
+      "bytes": 11110
+    },
+    "depth": {
+      "encoding": "16UC1",
+      "topic": "/camera/depth/image_raw",
+      "frame_id": "camera_link",
+      "count": 12,
+      "file": "depth.npz",
+      "bytes": 323433
+    }
+  }
+}
