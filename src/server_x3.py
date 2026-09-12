@@ -87,7 +87,7 @@ logger = logging.getLogger(__name__)
 # Import X3 specific drivers
 from drivers_x3 import (
     Rosmaster, MecanumDrive, YDLidarDriver, AstraCamera, OLEDDisplay, SERIAL_PORT,
-    INA226BatteryMonitor
+    INA226BatteryMonitor, VL53L5CXArray, tof_valid_mask
 )
 from nav2_client import Nav2Client
 from frontier_explorer import FrontierExplorer
@@ -102,6 +102,11 @@ parser.add_argument('--sim', action='store_true', help='Run in simulation mode (
 parser.add_argument('--domain-id', type=int, default=42, dest='domain_id',
                     help='ROS_DOMAIN_ID for multi-machine ROS2 (must match laptop). '
                          'Overrides the ROS_DOMAIN_ID environment variable.')
+parser.add_argument('--no-tof', action='store_true', dest='no_tof',
+                    help='Disable the VL53L5CX 8x8 ToF array on i2c-1. Enabled by '
+                         'default; startup costs ~8 s of I2C firmware upload.')
+parser.add_argument('--tof-freq', type=int, default=10, dest='tof_freq',
+                    help='ToF ranging frequency in Hz (8x8 caps at 15). Default 10.')
 parser.add_argument('--no-oak', action='store_true', dest='no_oak',
                     help='Disable the OAK-D Lite driver (stereo + depth + IMU). '
                          'When enabled (default), the OAK-D is the depth source.')
@@ -142,6 +147,8 @@ args = parser.parse_args()
 SIM_MODE  = args.sim
 ROS2_MODE = not args.sim  # ROS2 hardware bridge is the default; only --sim disables it
 OAK_ENABLED = not args.no_oak  # OAK-D Lite supplies stereo/depth/imu unless --no-oak
+TOF_ENABLED = not args.no_tof   # VL53L5CX 8x8 ToF array on i2c-1 @ 0x29
+TOF_FREQ_HZ = args.tof_freq
 OAK_SPATIAL = not args.no_oak_spatial  # on-device YOLO spatial detection (if blob present)
 OAK_ROS_PUBLISH = args.oak_ros_publish      # republish OAK streams as ROS2 topics (bagging/RViz)
 OAK_ROS_RATE = args.oak_ros_rate
@@ -228,6 +235,8 @@ lidar = None
 camera = None
 oak = None          # OakDCamera instance (stereo + depth + IMU); depth source when present
 ina226 = None       # INA226 Battery Monitor
+tof_array = None    # VL53L5CX 8x8 ToF array (see VL53L5CXArray)
+_tof_state = None   # latest decoded ToF frame for the readout lane
 battery_estimator = None   # battery.BatteryEstimator — coulomb-counted SoC
 _batt_cache_a = None       # last measured pack current (A), None = no sensor
 _batt_cache_w = None       # last measured pack power (W)
@@ -1516,6 +1525,7 @@ def _encode_mapu(grid: dict) -> bytes | None:
 
 def initialize_hardware():
     global ros_board, ros_bridge, drive, lidar, camera, oak, ina226, oak_ros_pub, model, oled, _gazebo_proc
+    global tof_array
     global nav2_client, _ros2_stack_proc, frontier_explorer
     global velocity_estimator, active_velocity_model_name
     global _shared_bgr_shm, _shared_depth_shm, _shared_bgr_array, _shared_depth_array
@@ -1615,6 +1625,17 @@ def initialize_hardware():
         logger.info("Initializing INA226 Battery Monitor on bus 7...")
         ina226 = INA226BatteryMonitor(i2c_bus=7)
         _init_battery_estimator()
+
+    # VL53L5CX 8x8 ToF on i2c-1. Orientation verified by hand 2026-09-12 with
+    # no transpose/flip, so the defaults are the calibrated values -- do not
+    # "tidy" them into flips. Construction uploads 84 KB of firmware over I2C
+    # and takes ~8 s, which is why it is here at startup and never on a hot
+    # path. A missing sensor degrades to available=False, same as the INA226.
+    if not SIM_MODE and TOF_ENABLED:
+        logger.info("Initializing VL53L5CX ToF array on i2c-1 (~8 s firmware upload)...")
+        tof_array = VL53L5CXArray(i2c_bus=1, resolution=8, ranging_freq_hz=TOF_FREQ_HZ)
+        if not tof_array.available:
+            logger.warning("VL53L5CX unavailable — ToF panel will stay empty")
 
     # 3. Camera — direct USB in both direct-hardware and --ros2 modes.
     #    Only --sim uses ROS2Bridge.get_frame() (Gazebo publishes /camera/image_raw).
@@ -3084,6 +3105,7 @@ async def broadcast_loop():
                     "minutes_left": batt_minutes,
                 },
                 "tilt": tilt_state,
+                "tof": _tof_state,
             }
             # Fast orjson serialization with fallback (Idea 87)
             websockets.broadcast(connected_clients, orjson_dumps(msg))
@@ -3249,6 +3271,60 @@ async def motion_loop():
                 logger.warning(f"motion_loop: drive.move failed: {e}")
 
         await asyncio.sleep(0.033)  # ~30 Hz (Idea 111)
+
+
+async def tof_loop():
+    """Own task for the VL53L5CX, for the same reason the battery has one.
+
+    The I2C read blocks, so it runs in the executor and the broadcast lane only
+    ever reads a cached dict.  Doing this inline in broadcast_loop would put a
+    blocking bus transaction on the event loop at 20 Hz -- the exact class of
+    bug the perf audit found in motion_loop.
+
+    It also samples at the SENSOR's rate, not the broadcast rate: the array
+    ranges at 10 Hz, so polling it at 20 would just re-read the same frame.
+    """
+    global _tof_state
+    if tof_array is None or not tof_array.available:
+        return
+    loop = asyncio.get_running_loop()
+    seq = 0
+    # The first frame always reports target_status 6 ("wrap around not
+    # performed") in every zone, which is not a valid status. Publishing it
+    # would show a fully-rejected grid on a healthy sensor for one frame.
+    warmup = 2
+    while not _shutting_down:
+        try:
+            if not await loop.run_in_executor(None, tof_array.data_ready):
+                await asyncio.sleep(0.004)
+                continue
+            frame = await loop.run_in_executor(None, tof_array.read_frame)
+            if frame is None:
+                await asyncio.sleep(0.05)
+                continue
+            if warmup > 0:
+                warmup -= 1
+                continue
+            dist, status = frame
+            keep = tof_valid_mask(dist, status, 8,
+                                  max_range_m=tof_array.max_range_m)
+            k = np.asarray(keep, dtype=bool).ravel()
+            d = np.asarray(dist, dtype=np.int32).ravel()
+            seq += 1
+            _tof_state = {
+                "seq": seq,
+                "n": 8,
+                "dist": d.tolist(),
+                "keep": k.tolist(),
+                "status": np.asarray(status, dtype=np.int32).ravel().tolist(),
+                "valid": int(k.sum()),
+                "min": int(d[k].min()) if k.any() else 0,
+                "max": int(d[k].max()) if k.any() else 0,
+                "max_range_mm": int(tof_array.max_range_m * 1000),
+            }
+        except Exception as e:
+            logger.error(f"tof_loop error: {e}")
+            await asyncio.sleep(0.5)
 
 
 async def oled_loop():
@@ -3836,7 +3912,8 @@ async def main():
     # Disable websockets deflate compression to avoid blocking main thread zlib operations (Idea 117)
     async with websockets.serve(handle_client, "0.0.0.0", WS_PORT, compression=None):
         logger.info(f"Server started on ws://0.0.0.0:{WS_PORT}")
-        await asyncio.gather(broadcast_loop(), motion_loop(), oled_loop(), map_push_loop(), lidar_scan_loop())
+        await asyncio.gather(broadcast_loop(), motion_loop(), oled_loop(), map_push_loop(),
+                             lidar_scan_loop(), tof_loop())
 
 if __name__ == "__main__":
     try:

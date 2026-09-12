@@ -1525,3 +1525,51 @@ body {
     border-bottom-right-radius: 0;
     color: var(--text-primary);
 }
+/* ── VL53L5CX 8x8 ToF array ────────────────────────────────────────────────
+   Fixed 8 columns: the grid is the sensor's zone layout, not a responsive
+   list, so it must not reflow on narrow screens or the geometry lies. */
+.tof-grid {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    gap: 2px;
+    /* The control column is a flex item that shrink-wraps, so without an
+       explicit width the grid collapses to its text intrinsic width (~50px)
+       and the zones become unreadable slivers. */
+    width: 100%;
+    min-width: 168px;
+}
+.tof-cell {
+    aspect-ratio: 1 / 1;
+    border-radius: 3px;
+    background: var(--bg-tertiary, #161b22);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.5rem;
+    font-weight: 700;
+    color: #08090c;
+    overflow: hidden;
+    font-variant-numeric: tabular-nums;
+    transition: background-color 0.08s linear;
+}
+.tof-cell.tof-bad {
+    background: var(--bg-tertiary, #161b22);
+    color: var(--text-muted, #484f58);
+    font-weight: 400;
+}
+.tof-legend {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-top: 0.35rem;
+    font-size: 0.65rem;
+    color: var(--text-muted);
+}
+.tof-legend i {
+    flex: 1;
+    height: 5px;
+    border-radius: 3px;
+    background: linear-gradient(to right,
+        rgb(255,236,179), rgb(252,176,64), rgb(233,105,44),
+        rgb(186,53,90), rgb(104,52,139), rgb(38,54,120), rgb(14,26,48));
+}

@@ -2163,9 +2163,78 @@ function handleMessage(data) {
     }
 }
 
+// ── VL53L5CX 8x8 ToF array ────────────────────────────────────────────────
+// Same colour ramp as src/tof_viewer.py on purpose: near = warm, far = cool,
+// and monotonic in luminance so a screenshot still reads correctly in grey.
+const TOF_STOPS = [[255,236,179],[252,176,64],[233,105,44],[186,53,90],
+                   [104,52,139],[38,54,120],[14,26,48]];
+let tofCells = null;
+let tofSeq = -1;
+
+function tofColour(mm, maxMm) {
+    const t = Math.max(0, Math.min(1, mm / (maxMm || 2500)));
+    const x = t * (TOF_STOPS.length - 1);
+    const i = Math.min(TOF_STOPS.length - 2, Math.floor(x));
+    const f = x - i, a = TOF_STOPS[i], b = TOF_STOPS[i + 1];
+    return `rgb(${Math.round(a[0]+(b[0]-a[0])*f)},${Math.round(a[1]+(b[1]-a[1])*f)},${Math.round(a[2]+(b[2]-a[2])*f)})`;
+}
+
+function updateTof(tof) {
+    const grid = document.getElementById('tof-grid');
+    if (!grid) return;
+    const stats = document.getElementById('tof-stats');
+    if (!tof) {
+        // No sensor (or --no-tof). Say so once rather than leaving a dead grid
+        // that looks like a stalled feed.
+        if (stats && stats.textContent === '--') stats.textContent = 'not present';
+        return;
+    }
+    const n = tof.n || 8;
+    if (!tofCells || tofCells.length !== n * n) {
+        grid.innerHTML = '';
+        grid.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
+        tofCells = [];
+        for (let i = 0; i < n * n; i++) {
+            const d = document.createElement('div');
+            d.className = 'tof-cell';
+            grid.appendChild(d);
+            tofCells.push(d);
+        }
+    }
+    // The array ranges at 10 Hz but the readout lane is 20 Hz, so half the
+    // frames repeat. Skip the redundant repaint instead of thrashing 64 nodes.
+    if (tof.seq === tofSeq) return;
+    tofSeq = tof.seq;
+    for (let i = 0; i < n * n; i++) {
+        const cell = tofCells[i], ok = tof.keep[i];
+        if (ok) {
+            cell.className = 'tof-cell';
+            cell.style.backgroundColor = tofColour(tof.dist[i], tof.max_range_mm);
+            cell.textContent = tof.dist[i];
+            // The cells are ~20px in the drive column, so the label is tight.
+            // The tooltip carries the zone index and status for when it matters.
+            cell.title = `zone ${Math.floor(i / n)},${i % n}: ${tof.dist[i]} mm (status ${tof.status[i]})`;
+        } else {
+            cell.className = 'tof-cell tof-bad';
+            cell.style.backgroundColor = '';
+            cell.textContent = '\u2014';
+            cell.title = `zone ${Math.floor(i / n)},${i % n}: rejected (status ${tof.status[i]})`;
+        }
+    }
+    if (stats) {
+        stats.textContent = tof.valid
+            ? `${tof.valid}/${n * n} valid \u00b7 ${tof.min}\u2013${tof.max} mm`
+            : `0/${n * n} valid`;
+    }
+    const far = document.getElementById('tof-far');
+    if (far) far.textContent = `${((tof.max_range_mm || 2500) / 1000).toFixed(1)} m`;
+}
+
 function updateUI() {
     const data = state.latestData.readout;
     if (!data) return;
+
+    updateTof(data.tof);
 
     // 1. Motor Readouts
     // In ROS2/sim mode the server sends per-wheel velocity (m/s); in direct mode it sends encoder ticks.

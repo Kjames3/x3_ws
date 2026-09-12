@@ -478,6 +478,22 @@
                         </div>
                     </div>
 
+                    <!-- VL53L5CX ToF Array Section -->
+                    <div class="control-section-item" style="margin-top: 0.5rem;">
+                        <h3 style="margin: 0 0 0.5rem 0; font-size: 0.9rem; color: var(--text-secondary);">
+                            ToF Array <span id="tof-stats" class="fs-xs"
+                                style="float: right; color: var(--text-muted); font-weight: 400;">--</span>
+                        </h3>
+                        <!-- Built once by main.js. Top-left = UP and to the robot's LEFT;
+                             orientation verified by hand 2026-09-12, no flips needed. -->
+                        <div id="tof-grid" class="tof-grid"></div>
+                        <div class="tof-legend">
+                            <span>near</span>
+                            <i id="tof-ramp"></i>
+                            <span id="tof-far">far</span>
+                        </div>
+                    </div>
+
                     <!-- Position Section -->
                     <div class="control-section-item">
                         <!-- Power Readout Section -->

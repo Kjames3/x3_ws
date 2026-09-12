@@ -1,6 +1,7 @@
 
 import logging
 import threading
+import sys
 import os
 import math
 import time
@@ -738,3 +739,265 @@ class INA226BatteryMonitor:
         if self.bus:
             self.bus.close()
             self.bus = None
+
+
+# ---------------------------------------------------------------------------
+# VL53L5CX multizone time-of-flight array
+# ---------------------------------------------------------------------------
+# Wiring (decided 2026-09-09 from the live bus audit, see notes below):
+#   VIN  -> header pin 1  (3.3V).  NOT pins 2/4: those are 5V, the Orin header
+#           is not 5V tolerant, and several breakouts reference their level
+#           shifter to VIN.  Pin 1 is free now the OLED is unplugged.
+#   SDA/SCL -> header pins 27/28 = **i2c-1**, the quiet bus.  Do NOT put it on
+#           i2c-7 next to the ICM-42688-P: that part is read at 200 Hz and this
+#           one pulls a ~90 KB firmware blob at every init.
+#   Address 0x29, fixed in silicon and not strappable.  Two sensors therefore
+#   need separate LPn lines to re-address one at boot.
+#
+# The pure-smbus2 approach used for the INA226 and the ICM does NOT work here:
+# the VL53L5CX has no usable register map until the host uploads that firmware
+# image, so this wraps `vl53l5cx_ctypes` (the ST ULD C API via ctypes).
+_VL53L5CX_I2C_BUS = 1
+_VL53L5CX_I2C_ADDR = 0x29
+
+def _load_tof_geometry():
+    """Load tof_geometry.py BY PATH, not as `yahboomcar_bringup.tof_geometry`.
+
+    The colcon install space also provides a `yahboomcar_bringup` package, and
+    under systemd (which sources install/setup.bash) that installed copy SHADOWS
+    the source tree.  A stale install without tof_geometry then makes the import
+    fail with ModuleNotFoundError -- which the old `except ImportError: pass`
+    here swallowed, leaving frame_to_points=None and read_points() silently
+    returning None forever on the robot while working fine from a plain shell.
+    Loading the file directly sidesteps package precedence entirely.
+    """
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'yahboomcar_bringup', 'yahboomcar_bringup',
+                        'tof_geometry.py')
+    spec = importlib.util.spec_from_file_location('x3_tof_geometry', path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# Deliberately NOT wrapped in try/except: tof_geometry is pure numpy shipped in
+# this repo, so a failure here is a broken checkout, not an optional dependency.
+_tof_geom = _load_tof_geometry()
+frame_to_points = _tof_geom.frame_to_points
+tof_valid_mask = _tof_geom.valid_mask
+FOV_DEG = _tof_geom.FOV_DEG
+VALID_STATUS = _tof_geom.VALID_STATUS
+DEFAULT_MAX_RANGE_M = _tof_geom.DEFAULT_MAX_RANGE_M
+DEFAULT_MIN_RANGE_M = _tof_geom.DEFAULT_MIN_RANGE_M
+
+
+_vl53l5cx_patched = False
+
+
+def _patch_vl53l5cx_for_64bit():
+    """Make vl53l5cx_ctypes usable on 64-bit ARM.  Call before constructing.
+
+    vl53l5cx_ctypes 0.0.3 declares NO restype or argtypes anywhere, so ctypes
+    assumes every function returns a 32-bit int.  ``get_configuration()``
+    actually returns a malloc'd pointer, which is therefore truncated to 32
+    bits; the first dereference inside ``vl53l5cx_is_alive()`` then segfaults
+    the interpreter.  It fails BEFORE any I2C traffic, so it looks nothing like
+    a wiring fault -- an i2cdetect that finds 0x29 tells you nothing about it.
+
+    Upstream never hit this because a 32-bit Raspberry Pi OS pointer survives
+    the truncation.  Handing the configuration back as a c_void_p *instance*
+    (not a Python int) also makes ctypes pass all 64 bits on every later call,
+    which is why no argtypes are needed on the rest of the API.
+    """
+    global _vl53l5cx_patched
+    if _vl53l5cx_patched:
+        return
+    import ctypes
+    import vl53l5cx_ctypes
+    lib = vl53l5cx_ctypes._VL53
+    for name in ("get_configuration", "get_motion_configuration"):
+        fn = getattr(lib, name, None)
+        if fn is None:
+            continue
+        fn.restype = ctypes.c_void_p
+        setattr(lib, name,
+                (lambda f: lambda *a: ctypes.c_void_p(f(*a)))(fn))
+    _vl53l5cx_patched = True
+
+
+class VL53L5CXArray:
+    """VL53L5CX 4x4/8x8 ToF array on i2c-1 @ 0x29.
+
+    Covers the low blind band the Phase-0 numbers pin down exactly: the scan
+    plane sits at 0.340 m, the camera is floor-blind under ~0.57 m, and the
+    costmap's ``min_obstacle_height`` is 0.12 m -- so a box on the floor in
+    front of the wheels is invisible to every other sensor on the robot.
+
+    Degrades the same way INA226BatteryMonitor does: a missing module or a
+    missing sensor logs and leaves the object usable but empty, rather than
+    taking the server down.  ``read_frame()`` returns None when there is no
+    sensor, which is NOT the same as an all-invalid frame -- callers must not
+    collapse the two.
+    """
+
+    RESOLUTION_HZ_MAX = {4: 60, 8: 15}   # ULD ceiling; 8x8 above 15 Hz is rejected
+
+    def __init__(self, i2c_bus=_VL53L5CX_I2C_BUS, i2c_addr=_VL53L5CX_I2C_ADDR,
+                 resolution=8, ranging_freq_hz=10, sharpener_percent=5,
+                 max_range_m=None, sim_mode=False,
+                 transpose=False, flip_h=False, flip_v=False):
+        self.bus_num = i2c_bus
+        self.addr = i2c_addr
+        self.resolution = int(resolution)
+        self.ranging_freq_hz = int(ranging_freq_hz)
+        self.sharpener_percent = int(sharpener_percent)
+        self.max_range_m = DEFAULT_MAX_RANGE_M if max_range_m is None else float(max_range_m)
+        self.sim_mode = sim_mode
+        self.order = dict(transpose=transpose, flip_h=flip_h, flip_v=flip_v)
+        self.tof = None
+        self._sim_phase = 0.0
+
+        if self.resolution not in self.RESOLUTION_HZ_MAX:
+            raise ValueError("resolution must be 4 or 8")
+        if self.ranging_freq_hz > self.RESOLUTION_HZ_MAX[self.resolution]:
+            # The ULD silently clamps this; clamping loudly instead means a
+            # configured 30 Hz 8x8 does not quietly run at 15 and look like a
+            # dropped-frame bug somewhere downstream.
+            logger.warning(
+                f"VL53L5CX: {self.ranging_freq_hz} Hz is above the "
+                f"{self.RESOLUTION_HZ_MAX[self.resolution]} Hz ceiling for "
+                f"{self.resolution}x{self.resolution}; clamping")
+            self.ranging_freq_hz = self.RESOLUTION_HZ_MAX[self.resolution]
+
+        if sim_mode:
+            logger.info("VL53L5CX: simulation mode (synthetic floor + wall)")
+            return
+        try:
+            import vl53l5cx_ctypes
+            from smbus2 import SMBus
+            _patch_vl53l5cx_for_64bit()
+            # The library takes an OPEN SMBus, not a bus number -- there is no
+            # bus_id argument, and passing one raises TypeError inside the
+            # constructor AFTER __del__ is already live, which surfaces as a
+            # confusing "no attribute _configuration" traceback first.
+            self._bus = SMBus(self.bus_num)
+            # ~84 KB firmware upload, about 8 s on this bus.  Do not call this
+            # on a hot path and do not construct two of these for one sensor.
+            self.tof = vl53l5cx_ctypes.VL53L5CX(i2c_addr=self.addr,
+                                                i2c_dev=self._bus)
+            self.tof.set_resolution(self.resolution * self.resolution)
+            self.tof.set_ranging_frequency_hz(self.ranging_freq_hz)
+            self.tof.set_integration_time_ms(int(1000 / self.ranging_freq_hz) - 2)
+            self.tof.set_sharpener_percent(self.sharpener_percent)
+            self.tof.start_ranging()
+            logger.info(
+                f"VL53L5CX initialized on i2c-{self.bus_num} @ 0x{self.addr:02X}, "
+                f"{self.resolution}x{self.resolution} @ {self.ranging_freq_hz} Hz")
+        except ImportError:
+            logger.warning("vl53l5cx_ctypes not installed — ToF array unavailable "
+                           "(run: pip install vl53l5cx-ctypes)")
+        except Exception as e:
+            logger.error(f"VL53L5CX init failed on i2c-{self.bus_num}: {e}")
+            self.tof = None
+
+    @property
+    def available(self):
+        return self.sim_mode or self.tof is not None
+
+    def data_ready(self):
+        if self.sim_mode:
+            return True
+        if self.tof is None:
+            return False
+        try:
+            return bool(self.tof.data_ready())
+        except Exception as e:
+            logger.error(f"VL53L5CX data_ready error: {e}")
+            return False
+
+    def read_frame(self):
+        """Raw frame as ``(distance_mm, target_status)``, or None if no sensor.
+
+        Both arrays are length resolution^2 in the ULD's own zone order -- the
+        reordering lives in tof_geometry so the bench tool and the ROS node
+        cannot disagree about it.
+        """
+        if self.sim_mode:
+            return self._sim_frame()
+        if self.tof is None:
+            return None
+        try:
+            d = self.tof.get_data()
+            n2 = self.resolution * self.resolution
+            # These fields are (NB_TARGET_PER_ZONE, 64), so the FIRST index is
+            # the target, not the zone.  Slicing [:n2] takes whole target rows
+            # and silently yields a (1, 64) array that still prints as a grid
+            # -- index [0] to get the per-zone row.
+            return (np.asarray(d.distance_mm[0][:n2], dtype=np.float64),
+                    np.asarray(d.target_status[0][:n2], dtype=np.int32))
+        except Exception as e:
+            logger.error(f"VL53L5CX read error: {e}")
+            return None
+
+    def read_points(self, min_range_m=DEFAULT_MIN_RANGE_M):
+        """Valid returns as an ``(N, 3)`` float32 cloud in the SENSOR frame.
+
+        Returns None when there is no sensor at all, and an empty (0, 3) array
+        when the sensor is fine but nothing came back in range.  Keep those
+        distinct: an empty cloud means "nothing measured", never "nothing there".
+        """
+        frame = self.read_frame()
+        if frame is None:
+            return None
+        pts, _ = frame_to_points(frame[0], frame[1], resolution=self.resolution,
+                                 min_range_m=min_range_m,
+                                 max_range_m=self.max_range_m, **self.order)
+        return pts
+
+    def _sim_frame(self):
+        """Synthetic frame: a flat floor plus a wall, no hardware required.
+
+        Deliberately geometric rather than random -- a sim frame that produces
+        a recognisable plane is one you can actually validate the node against
+        before the part arrives.
+        """
+        n = self.resolution
+        if frame_to_points is None:                  # geometry import failed
+            return (np.full(n * n, 1000.0), np.full(n * n, 5, dtype=np.int32))
+        from yahboomcar_bringup.tof_geometry import ray_table
+        rays = ray_table(n)
+        self._sim_phase += 0.05
+        wall_x = 1.2 + 0.3 * math.sin(self._sim_phase)
+        mount_h, pitch = 0.055, math.radians(15.0)   # matches the default mount
+        cp, sp = math.cos(pitch), math.sin(pitch)
+        # Rotate each ray into the base frame (pitch down about +y) and find the
+        # nearer of the floor (z=0) and a wall at x=wall_x.
+        bx = rays[:, 0] * cp + rays[:, 2] * sp
+        bz = -rays[:, 0] * sp + rays[:, 2] * cp
+        with np.errstate(divide='ignore', invalid='ignore'):
+            t_floor = np.where(bz < -1e-9, -mount_h / bz, np.inf)
+            t_wall = np.where(bx > 1e-9, wall_x / bx, np.inf)
+        t = np.minimum(t_floor, t_wall)
+        dist = t * 1000.0
+        status = np.where(np.isfinite(dist) & (dist <= self.max_range_m * 1000.0),
+                          5, 255).astype(np.int32)
+        dist = np.where(status == 5, dist, 0.0)
+        return dist, status
+
+    def cleanup(self):
+        if self.tof is not None:
+            try:
+                self.tof.stop_ranging()
+            except Exception:
+                pass
+            self.tof = None
+        # Own the SMBus we opened for the library; leaving it open holds an fd
+        # on i2c-1 and blocks a re-init in the same process.
+        bus = getattr(self, "_bus", None)
+        if bus is not None:
+            try:
+                bus.close()
+            except Exception:
+                pass
+            self._bus = None
