@@ -237,11 +237,6 @@ const elements = {
     // Position Section
 
     // Power (Detailed Section)
-    powerVoltage: document.getElementById('power-voltage'),
-    powerCurrent: document.getElementById('power-current'),
-    powerWatts: document.getElementById('power-watts'),
-    powerBatteryPct: document.getElementById('power-battery-pct'),
-    powerTimeRemaining: document.getElementById('power-time-remaining'),
 
     // Lidar
     lidarToggle: document.getElementById('lidar-toggle'),
@@ -2524,58 +2519,14 @@ function updateAbTestButtonsUI() {
 }
 
 function updatePowerUI() {
+    // The Controls panel's power tiles were removed (the header shows power);
+    // only the low-battery controller rumble remains here.
     const pwr = state.latestData.power;
-    if (!pwr) return;
-
-    if (elements.powerVoltage) elements.powerVoltage.textContent = pwr.voltage.toFixed(2) + 'V';
-    if (elements.powerCurrent) elements.powerCurrent.textContent = pwr.current.toFixed(2) + 'A';
-    if (elements.powerWatts) elements.powerWatts.textContent = pwr.power.toFixed(1) + 'W';
-
-    if (elements.powerBatteryPct) {
-        const pct = pwr.battery_pct;
-        elements.powerBatteryPct.textContent = pct.toFixed(0) + '%';
-
-        if (pct > 50) elements.powerBatteryPct.style.color = 'var(--accent-green)';
-        else if (pct > 20) elements.powerBatteryPct.style.color = 'var(--accent-yellow)';
-        else {
-            elements.powerBatteryPct.style.color = 'var(--accent-red)';
-            // Rumble warning at most once every 30 s
-            const now = Date.now();
-            if (now - state.lastBatteryRumble > 30000) {
-                state.lastBatteryRumble = now;
-                rumble(0.8, 0.5, 400);
-            }
-        }
-    }
-
-    // Estimate Time / low-voltage critical countdown.
-    // Below LOW_VOLTAGE_THRESHOLD, show the red time-to-critical countdown (re-homed
-    // here from the removed header readout); otherwise show the runtime estimate.
-    const LOW_VOLTAGE_THRESHOLD = 12.2;
-    const CRITICAL_VOLTAGE = 11.8;
-    if (elements.powerTimeRemaining && pwr.voltage <= LOW_VOLTAGE_THRESHOLD) {
-        const pct = Math.max(0, pwr.voltage - CRITICAL_VOLTAGE) / (LOW_VOLTAGE_THRESHOLD - CRITICAL_VOLTAGE);
-        const secs = Math.floor(pct * 150); // ~2.5 min linear map to critical
-        const m = Math.floor(secs / 60);
-        const s = secs % 60;
-        elements.powerTimeRemaining.textContent = ` ${m}:${s.toString().padStart(2, '0')}`;
-        elements.powerTimeRemaining.style.color = 'var(--accent-red)';
-    } else if (elements.powerTimeRemaining && pwr.current > 0.1) {
-        const BATTERY_CAPACITY_AH = 6.0;
-        const remainingCapacity = (pwr.battery_pct / 100.0) * BATTERY_CAPACITY_AH;
-        const hoursRemaining = remainingCapacity / pwr.current;
-        const totalMinutes = Math.floor(hoursRemaining * 60);
-        const hours = Math.floor(totalMinutes / 60);
-        const mins = totalMinutes % 60;
-
-        if (hours > 0) elements.powerTimeRemaining.textContent = `${hours}h ${mins}m`;
-        else elements.powerTimeRemaining.textContent = `${mins} min`;
-
-        if (totalMinutes > 60) elements.powerTimeRemaining.style.color = 'var(--accent-green)';
-        else if (totalMinutes > 20) elements.powerTimeRemaining.style.color = 'var(--accent-yellow)';
-        else elements.powerTimeRemaining.style.color = 'var(--accent-red)';
-    } else if (elements.powerTimeRemaining) {
-        elements.powerTimeRemaining.textContent = '--';
+    if (!pwr || pwr.battery_pct > 20) return;
+    const now = Date.now();
+    if (now - state.lastBatteryRumble > 30000) {
+        state.lastBatteryRumble = now;
+        rumble(0.8, 0.5, 400);
     }
 }
 
