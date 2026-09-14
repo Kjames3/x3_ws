@@ -17,7 +17,7 @@
     const SCAN_STALE_MS = 1000;   // hide walls when /scan stops (e.g. 3D sweep gate)
 
     let lastPts = null, lastPtsAt = 0;
-    let renderer, scene, camera, walls, container, hint, _m, _dir, _org;
+    let renderer, scene, camera, container, hint, _m, _dir, _org;
     const people = new Map();     // track id -> {group, arrow, ghost}
 
     function init() {
@@ -32,6 +32,8 @@
         }
         _m = new THREE.Matrix4(); _dir = new THREE.Vector3(); _org = new THREE.Vector3();
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         container.appendChild(renderer.domElement);
 
         scene = new THREE.Scene();
@@ -44,12 +46,17 @@
 
         scene.add(new THREE.HemisphereLight(0xffffff, 0x9aa3ad, 0.9));
         const sun = new THREE.DirectionalLight(0xffffff, 0.5);
-        sun.position.set(2, 5, 3);
+        sun.position.set(2, 6, 3);
+        sun.castShadow = true;
+        sun.shadow.mapSize.set(1024, 1024);
+        sun.shadow.radius = 4;
+        Object.assign(sun.shadow.camera, { left: -7, right: 7, top: 7, bottom: -7, near: 0.5, far: 20 });
         scene.add(sun);
 
         const floor = new THREE.Mesh(new THREE.PlaneGeometry(30, 30),
             new THREE.MeshLambertMaterial({ color: 0xf8f9fa }));
         floor.rotation.x = -Math.PI / 2;
+        floor.receiveShadow = true;
         scene.add(floor);
 
         // 1 m range rings
@@ -66,16 +73,14 @@
         const body = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.12, 0.30),
             new THREE.MeshLambertMaterial({ color: 0x2b2f36 }));
         body.position.y = 0.08;
+        body.castShadow = true;
         const nose = new THREE.Mesh(new THREE.BoxGeometry(0.20, 0.02, 0.05),
             new THREE.MeshLambertMaterial({ color: 0x3b82f6 }));
         nose.position.set(0, 0.15, -0.12);
         robot.add(body, nose);
         scene.add(robot);
 
-        walls = new THREE.InstancedMesh(new THREE.BoxGeometry(0.06, WALL_H, 0.06),
-            new THREE.MeshLambertMaterial({ color: 0x9ca3af }), MAX_WALL_PTS);
-        walls.count = 0;
-        scene.add(walls);
+        initWalls();
 
         new ResizeObserver(resize).observe(container);
         resize();
@@ -95,21 +100,170 @@
         camera.updateProjectionMatrix();
     }
 
-    function updateWalls(pts) {
-        if (!pts || pts.length < 2) { walls.count = 0; return; }
-        const n = pts.length / 2;
-        const step = Math.max(1, Math.ceil(n / MAX_WALL_PTS));
-        let k = 0;
-        for (let i = 0; i < n && k < MAX_WALL_PTS; i += step) {
-            const lx = pts[2 * i], p1 = pts[2 * i + 1];
-            if (!isFinite(lx) || !isFinite(p1) || lx * lx + p1 * p1 > RANGE_M * RANGE_M) continue;
-            // laser (x, y=-p1) -> base_link: fwd = LASER_X - x, right = y = -p1
-            const fwd = LASER_X - lx, right = -p1;
-            _m.makeTranslation(right, WALL_H / 2, -fwd);
-            walls.setMatrixAt(k++, _m);
+    // ---- Wall post-processing (all browser-side) ---------------------------
+    // 1. Per-beam smoothing: scan points are binned by laser angle and each bin's
+    //    range is low-passed, except on jumps > SMOOTH_JUMP_M so movers stay live.
+    //    A bin missed by a scan survives BIN_HOLD_SCANS scans before it drops.
+    // 2. Line fitting: angular runs of nearby bins are split (end-point fit) into
+    //    straight pieces; long, well-supported pieces become wall panels and the
+    //    rest stay as posts (chair legs, clutter).
+    const BIN_DEG = 0.5;
+    const N_BINS = 360 / BIN_DEG;
+    const SMOOTH_ALPHA = 0.35;     // weight of the newest range
+    const SMOOTH_JUMP_M = 0.15;
+    const BIN_HOLD_SCANS = 2;
+    const SPLIT_TOL_M = 0.04;      // max point-to-line deviation inside a panel
+    const PANEL_MIN_PTS = 8;
+    const PANEL_MIN_LEN_M = 0.35;
+    const MAX_PANELS = 400;
+    const PANEL_T = 0.04;
+
+    const binRange = new Float32Array(N_BINS);    // 0 = empty
+    const binMiss = new Uint8Array(N_BINS);
+    const binHit = new Uint8Array(N_BINS);
+    let panels, posts, NEAR_COLOR, FAR_COLOR, _c, _q, _s, _p, _up;
+
+    function initWalls() {
+        NEAR_COLOR = new THREE.Color(0x8b95a1);
+        FAR_COLOR = new THREE.Color(0xd9dee3);
+        _c = new THREE.Color(); _q = new THREE.Quaternion(); _s = new THREE.Vector3();
+        _p = new THREE.Vector3(); _up = new THREE.Vector3(0, 1, 0);
+        const mat = () => new THREE.MeshLambertMaterial({ color: 0xffffff });
+        panels = new THREE.InstancedMesh(new THREE.BoxGeometry(1, WALL_H, PANEL_T), mat(), MAX_PANELS);
+        posts = new THREE.InstancedMesh(new THREE.BoxGeometry(0.05, WALL_H, 0.05), mat(), MAX_WALL_PTS);
+        for (const m of [panels, posts]) {
+            m.castShadow = true;
+            m.setColorAt(0, NEAR_COLOR);   // allocates instanceColor
+            m.count = 0;
+            scene.add(m);
         }
-        walls.count = k;
-        walls.instanceMatrix.needsUpdate = true;
+    }
+
+    function ingestScan(pts) {
+        binHit.fill(0);
+        for (let i = 0; i + 1 < pts.length; i += 2) {
+            const lx = pts[i], ly = -pts[i + 1];
+            if (!isFinite(lx) || !isFinite(ly)) continue;
+            const r = Math.hypot(lx, ly);
+            if (r > RANGE_M) continue;
+            let a = Math.atan2(ly, lx) * 180 / Math.PI;
+            if (a < 0) a += 360;
+            const b = Math.min(N_BINS - 1, Math.floor(a / BIN_DEG));
+            if (binHit[b]) { binRange[b] = Math.min(binRange[b], r); continue; }
+            const old = binRange[b];
+            binRange[b] = (old === 0 || Math.abs(r - old) > SMOOTH_JUMP_M)
+                ? r : old + SMOOTH_ALPHA * (r - old);
+            binHit[b] = 1;
+        }
+        for (let b = 0; b < N_BINS; b++) {
+            if (binHit[b]) binMiss[b] = 0;
+            else if (binRange[b] && ++binMiss[b] > BIN_HOLD_SCANS) binRange[b] = 0;
+        }
+    }
+
+    function clearBins() { binRange.fill(0); binMiss.fill(0); }
+
+    function fadeColor(dist) {
+        return _c.copy(NEAR_COLOR).lerp(FAR_COLOR, Math.min(1, dist / RANGE_M));
+    }
+
+    // Scene-frame (x=right, z=-forward) point list from the smoothed bins.
+    function binsToPoints() {
+        const xs = [], zs = [];
+        for (let b = 0; b < N_BINS; b++) {
+            const r = binRange[b];
+            if (!r) { xs.push(NaN); zs.push(NaN); continue; }
+            const a = (b + 0.5) * BIN_DEG * Math.PI / 180;
+            const lx = r * Math.cos(a), ly = r * Math.sin(a);
+            // laser_link yawed 180 deg: fwd = LASER_X - lx, right = ly
+            xs.push(ly); zs.push(-(LASER_X - lx));
+        }
+        return { xs, zs };
+    }
+
+    function rebuildWalls() {
+        const { xs, zs } = binsToPoints();
+        // Angular runs of spatially-close points
+        const runs = [];
+        let cur = [];
+        for (let i = 0; i < N_BINS; i++) {
+            if (isNaN(xs[i])) { if (cur.length) runs.push(cur); cur = []; continue; }
+            if (cur.length) {
+                const j = cur[cur.length - 1];
+                const gap = Math.hypot(xs[i] - xs[j], zs[i] - zs[j]);
+                const range = Math.hypot(xs[i], zs[i]);
+                if (gap > 0.08 + 0.03 * range) { runs.push(cur); cur = []; }
+            }
+            cur.push(i);
+        }
+        if (cur.length) runs.push(cur);
+
+        const pieces = [];
+        const split = (idx) => {
+            if (idx.length < 3) { pieces.push(idx); return; }
+            const a = idx[0], b = idx[idx.length - 1];
+            const dx = xs[b] - xs[a], dz = zs[b] - zs[a];
+            const len = Math.hypot(dx, dz) || 1e-6;
+            let worst = 0, wi = -1;
+            for (let k = 1; k < idx.length - 1; k++) {
+                const i = idx[k];
+                const d = Math.abs((xs[i] - xs[a]) * dz - (zs[i] - zs[a]) * dx) / len;
+                if (d > worst) { worst = d; wi = k; }
+            }
+            if (worst > SPLIT_TOL_M) { split(idx.slice(0, wi + 1)); split(idx.slice(wi)); }
+            else pieces.push(idx);
+        };
+        runs.forEach(split);
+
+        let np = 0, nq = 0;
+        for (const idx of pieces) {
+            const fit = idx.length >= PANEL_MIN_PTS && fitLine(idx, xs, zs);
+            if (fit && fit.len >= PANEL_MIN_LEN_M && np < MAX_PANELS) {
+                _p.set(fit.cx, WALL_H / 2, fit.cz);
+                _q.setFromAxisAngle(_up, -Math.atan2(fit.dz, fit.dx));
+                _s.set(fit.len, 1, 1);
+                _m.compose(_p, _q, _s);
+                panels.setMatrixAt(np, _m);
+                panels.setColorAt(np, fadeColor(Math.hypot(fit.cx, fit.cz)));
+                np++;
+            } else {
+                for (const i of idx) {
+                    if (nq >= MAX_WALL_PTS) break;
+                    _m.makeTranslation(xs[i], WALL_H / 2, zs[i]);
+                    posts.setMatrixAt(nq, _m);
+                    posts.setColorAt(nq, fadeColor(Math.hypot(xs[i], zs[i])));
+                    nq++;
+                }
+            }
+        }
+        panels.count = np; posts.count = nq;
+        for (const m of [panels, posts]) {
+            m.instanceMatrix.needsUpdate = true;
+            if (m.instanceColor) m.instanceColor.needsUpdate = true;
+        }
+    }
+
+    // Least-squares (PCA) line through the points; the panel spans the
+    // projections of the extreme points onto it.
+    function fitLine(idx, xs, zs) {
+        let mx = 0, mz = 0;
+        for (const i of idx) { mx += xs[i]; mz += zs[i]; }
+        mx /= idx.length; mz /= idx.length;
+        let sxx = 0, szz = 0, sxz = 0;
+        for (const i of idx) {
+            const x = xs[i] - mx, z = zs[i] - mz;
+            sxx += x * x; szz += z * z; sxz += x * z;
+        }
+        const th = 0.5 * Math.atan2(2 * sxz, sxx - szz);
+        const dx = Math.cos(th), dz = Math.sin(th);
+        let tmin = Infinity, tmax = -Infinity;
+        for (const i of idx) {
+            const t = (xs[i] - mx) * dx + (zs[i] - mz) * dz;
+            if (t < tmin) tmin = t;
+            if (t > tmax) tmax = t;
+        }
+        const mid = (tmin + tmax) / 2;
+        return { cx: mx + dx * mid, cz: mz + dz * mid, dx, dz, len: tmax - tmin };
     }
 
     function makePerson() {
@@ -117,6 +271,7 @@
         const bodyMat = new THREE.MeshLambertMaterial({ color: 0xf59e0b });
         const cyl = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 1.2, 24), bodyMat);
         cyl.position.y = 0.6;
+        cyl.castShadow = true;
         group.add(cyl);
         const ghost = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 1.2, 24),
             new THREE.MeshLambertMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.25 }));
@@ -175,10 +330,15 @@
         if (!visible) return;   // Drive tab hidden: skip rendering
         const d = state.latestData;
         const now = performance.now();
-        if (d.lidarPoints !== lastPts) { lastPts = d.lidarPoints; lastPtsAt = now; }
-        const scanFresh = lastPts && now - lastPtsAt < SCAN_STALE_MS;
         try {
-        updateWalls(scanFresh ? lastPts : null);
+        if (d.lidarPoints !== lastPts) {
+            lastPts = d.lidarPoints; lastPtsAt = now;
+            if (lastPts) { ingestScan(lastPts); rebuildWalls(); }
+        }
+        const scanFresh = lastPts && now - lastPtsAt < SCAN_STALE_MS;
+        if (!scanFresh && (panels.count || posts.count)) {
+            clearBins(); panels.count = 0; posts.count = 0;
+        }
         updatePeople(d.velocityEstimates);
         if (hint) {
             const msgs = [];
