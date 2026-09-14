@@ -102,3 +102,27 @@ def test_runtime_mode_changes_only_3d_gate(processor):
     node.set_parameters([Parameter('require_settled', value=True)])
     with pytest.raises(ValueError, match='moved'):
         node._project_timed(msg)
+
+
+def test_runtime_cloud_filters_change_output(processor):
+    from rclpy.parameter import Parameter
+    node, msg, output = processor
+    def set_param(name, value):
+        assert node.set_parameters([Parameter(name, value=value)])[0].successful
+    set_param('publish_cloud_when_level', False)
+    node._project_timed(msg)
+    assert not output
+    set_param('publish_cloud_when_level', True)
+    set_param('cloud_max_range_m', 1.5)
+    node._project_timed(msg)
+    assert output[-1].width == 1
+    set_param('cloud_max_range_m', 6.0)
+    node._project_timed(msg)
+    assert output[-1].width == 2
+    node.history = [(t, .2, settled) for t, _, settled in node.history]
+    set_param('tilted_min_range_m', 1.5)
+    node._project_timed(msg)
+    assert output[-1].width == 1
+    set_param('tilted_min_range_m', .35)
+    node._project_timed(msg)
+    assert output[-1].width == 2

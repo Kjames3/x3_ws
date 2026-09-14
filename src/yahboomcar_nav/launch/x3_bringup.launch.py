@@ -139,7 +139,7 @@ def generate_launch_description():
         parameters=[{
             'pub_odom_tf': False,
             'linear_scale_x': -0.686, # measured 2026-09-01: 5.914 m odom / 4.055 m actual
-            'linear_scale_y': 1.0,
+            'linear_scale_y': -0.5,  # provisional 2026-09-10: both 1 m strafes reported ~2 m opposite
             'angular_scale': 1.0,
         }]
     )

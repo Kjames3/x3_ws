@@ -86,12 +86,12 @@ class Lidar3dProcessorNode(Node):
         self.tilt_timeout = float(self.get_parameter('tilt_timeout_s').value)
         self.assume_level = bool(
             self.get_parameter('assume_level_if_no_source').value)
-        self.tilted_min_range = float(
-            self.get_parameter('tilted_min_range_m').value)
-        self.cloud_max_range = float(
-            self.get_parameter('cloud_max_range_m').value)
-        self.publish_cloud_when_level = bool(
-            self.get_parameter('publish_cloud_when_level').value)
+        # NOTE: the knobs below are deliberately NOT cached here -- see the
+        # properties further down.  Caching a parameter in __init__ makes
+        # `ros2 param set` a SILENT NO-OP: the service reports "Set parameter
+        # successful" and the node keeps using the old value.  That cost a
+        # whole 90 s motion capture on 2026-09-05, which recorded zero clouds
+        # because publish_cloud_when_level had been set true and ignored.
 
         self.declare_parameter('timed_cloud_topic', '/lidar/points_timed')
         self.declare_parameter('deskew_max_gap_s', 0.12)
@@ -155,6 +155,18 @@ class Lidar3dProcessorNode(Node):
     def require_settled(self):
         # Mode changes are applied through the ROS parameter service.
         return bool(self.get_parameter("require_settled").value)
+
+    @property
+    def publish_cloud_when_level(self):
+        return bool(self.get_parameter('publish_cloud_when_level').value)
+
+    @property
+    def cloud_max_range(self):
+        return float(self.get_parameter('cloud_max_range_m').value)
+
+    @property
+    def tilted_min_range(self):
+        return float(self.get_parameter('tilted_min_range_m').value)
 
     def joint_callback(self, msg):
         if self.joint_name not in msg.name:

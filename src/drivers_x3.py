@@ -888,7 +888,13 @@ class VL53L5CXArray:
                                                 i2c_dev=self._bus)
             self.tof.set_resolution(self.resolution * self.resolution)
             self.tof.set_ranging_frequency_hz(self.ranging_freq_hz)
-            self.tof.set_integration_time_ms(int(1000 / self.ranging_freq_hz) - 2)
+            # CONTINUOUS, not the ULD's default AUTONOMOUS. Measured 2026-09-14,
+            # 8x8 on the 100 kHz i2c-1: autonomous with a 64 ms integration
+            # time made the sensor itself withhold data-ready for ~132 ms per
+            # frame (3.8 Hz); continuous removes that wait entirely (7.4 Hz).
+            # Integration time only applies in autonomous mode, so it is not set.
+            # What remains is the bus: ~133 ms to read 1621 bytes at 100 kHz.
+            self.tof.set_ranging_mode(vl53l5cx_ctypes.RANGING_MODE_CONTINUOUS)
             self.tof.set_sharpener_percent(self.sharpener_percent)
             self.tof.start_ranging()
             logger.info(

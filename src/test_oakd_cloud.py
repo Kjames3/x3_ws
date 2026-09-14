@@ -250,7 +250,7 @@ def test_oak_mount_uses_measured_x3plus_position():
     from oakd_driver import OAK_MOUNT_X, OAK_MOUNT_Z
 
     assert np.isclose(OAK_MOUNT_X, 0.107315)
-    assert np.isclose(OAK_MOUNT_Z, 0.134)
+    assert np.isclose(OAK_MOUNT_Z, 0.1285)
 
 
 def test_scaled_intrinsics_project_consistently():

@@ -314,6 +314,8 @@ OBSTACLE_STALE_S = 0.5
 # sweep can be orphaned (crashed client, lost disable, forgotten tab).
 _sweep_owner = None
 _sweep_started_at = 0.0
+_sweep_request_id = 0
+_sweep_gate_lock = asyncio.Lock()
 LIDAR_SWEEP_MAX_S = 600.0
 
 # ── Tilt sampler: the servo's read path, owned by ONE thread ───────────────
@@ -442,15 +444,17 @@ async def _apply_sweep_gate():
     (continuous) or suspiciously clean-looking (step with the gate stuck off).
     Returns (ok, detail).
     """
-    global _sweep_settled_bypass, lidar_3d_scan_enabled, lidar_sweep_mode
-    ok, detail = await _set_processor_require_settled(lidar_sweep_mode == "step")
-    _sweep_settled_bypass = False
-    if not ok:
-        lidar_3d_scan_enabled = False
-        lidar_sweep_mode = "step"
-        logger.error("Sweep stopped: could not configure processor gate: %s", detail)
-        await _set_processor_require_settled(True)
-    return ok, detail
+    global _sweep_settled_bypass, lidar_3d_scan_enabled
+    async with _sweep_gate_lock:
+        ok, detail = await _set_processor_require_settled(lidar_sweep_mode == "step")
+        _sweep_settled_bypass = False
+        if not ok:
+            lidar_3d_scan_enabled = False
+            # Preserve the requested style: a transient DDS failure must not
+            # silently turn all subsequent continuous stations into step mode.
+            logger.error("Sweep stopped: could not configure processor gate: %s", detail)
+            await _set_processor_require_settled(True)
+        return ok, detail
 
 
 def _tilt_nav_conflict():
@@ -2011,6 +2015,7 @@ async def handle_client(websocket):
     global detection_enabled, depth_enabled, stereo_enabled, lidar_enabled, is_auto_driving
     global velocity_estimator, active_velocity_model_name, velocity_estimation_enabled
     global motors_enabled
+    global lidar_sweep_mode, lidar_sweep_speed_deg_s
     global _p2p_proc, _ab_test_proc, _ab_test_mode
 
     logger.info("Client connected")
@@ -2127,8 +2132,26 @@ async def handle_client(websocket):
 
                 elif msg_type == "toggle_3d_scan":
                     global lidar_3d_scan_enabled
+                    global _sweep_request_id
+                    _sweep_request_id += 1
+                    request_id = _sweep_request_id
                     want_scan = data.get("enabled", False)
                     conflict = _tilt_nav_conflict() if want_scan else None
+                    if want_scan and not conflict:
+                        expected_mode = data.get("mode", lidar_sweep_mode)
+                        if expected_mode != lidar_sweep_mode:
+                            conflict = "requested sweep mode does not match server configuration"
+                        else:
+                            # Await configuration in this client handler, never in
+                            # the encoder publisher, and never after servo motion.
+                            ok, detail = await _apply_sweep_gate()
+                            conflict = None if ok else "processor gate: " + detail
+                            if request_id != _sweep_request_id:
+                                conflict = "sweep request superseded while configuring processor"
+                            elif expected_mode != lidar_sweep_mode:
+                                conflict = "sweep mode changed while configuring processor"
+                            elif not conflict:
+                                conflict = _tilt_nav_conflict()
                     if conflict:
                         logger.warning(
                             "3D scan REFUSED: %s. Tilting the lidar gates "
@@ -2156,7 +2179,6 @@ async def handle_client(websocket):
                     # Testing knob: swap the 3D sweep between step-and-stare
                     # and a constant-speed nod, and set that speed, so the
                     # mapping degradation can be watched side by side.
-                    global lidar_sweep_mode, lidar_sweep_speed_deg_s
                     note = None
                     if "speed_deg_s" in data:
                         try:
@@ -2171,6 +2193,7 @@ async def handle_client(websocket):
                                      if data.get("mode") == "continuous"
                                      else "step")
                         if want_mode != lidar_sweep_mode:
+                            _sweep_request_id += 1
                             lidar_sweep_mode = want_mode
                             # Continuous means never settled, so the
                             # processor's moving-scan gate has to come off or
@@ -2180,7 +2203,7 @@ async def handle_client(websocket):
                             ok, detail = await _apply_sweep_gate()
                             if not ok:
                                 logger.warning("set_sweep_config failed: %s; "
-                                               "sweep stopped and step mode restored", detail)
+                                               "sweep stopped; requested mode preserved", detail)
                                 note = ("processor param not set (%s)"
                                         % detail)
                     logger.info("3D sweep config: mode=%s speed=%.1f deg/s "
@@ -3819,10 +3842,8 @@ async def lidar_scan_loop():
                         active_mode = lidar_sweep_mode
                         logger.info("lidar_scan_loop: style=%s at %.1f deg/s",
                                     active_mode, lidar_sweep_speed_deg_s)
-                        # Fire-and-forget: an 8 s `ros2 param set` must not
-                        # stall the 10 Hz joint publisher the /scan gate
-                        # depends on.
-                        asyncio.create_task(_apply_sweep_gate())
+                        # The start handler has already configured the processor
+                        # before enabling this sweep. No background mode fallback.
                     if active_mode != lidar_sweep_mode:
                         # Switched mid-sweep from the GUI.  Re-plan from the
                         # next waypoint rather than finishing the old style's
