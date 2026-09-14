@@ -124,13 +124,20 @@ def test_reordering_moves_the_point_it_should():
 
 # ------------------------------------------------------------------- points
 
-def test_points_are_radial_not_cartesian_z():
-    """The VL53L5CX reports distance ALONG the zone axis, so every point sits
-    at exactly that range from the origin. A depth-camera-style z-conversion
-    here would shorten the edge zones."""
+def test_points_are_boresight_depth_not_radial():
+    """The VL53L5CX reports DEPTH along its boresight, not range along each
+    zone ray: a uniform reading is a flat plane facing the sensor, so every
+    point has the same x and the edge zones sit FURTHER from the origin.
+
+    This test used to assert the opposite (radial). It was wrong, and a
+    2026-09-14 wall test at 0.3/0.6/1.0 m settled it: the depth model fit all
+    64 on-target zones to 3.2 mm rms, the radial one to 22.4 mm. Do not flip
+    this back without new hardware data."""
     pts, keep = frame_to_points(*frame(dist_mm=1500.0), resolution=N)
     assert keep.all() and len(pts) == N2
-    assert np.allclose(np.linalg.norm(pts, axis=1), 1.5, atol=1e-5)
+    assert np.allclose(pts[:, 0], 1.5, atol=1e-5)
+    norms = np.linalg.norm(pts, axis=1)
+    assert norms.min() > 1.5 and norms.max() > norms.min()
 
 
 def test_points_are_float32_and_sensor_frame():

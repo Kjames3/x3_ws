@@ -62,9 +62,10 @@ def ray_table(resolution: int = 8, fov_deg: float = FOV_DEG) -> np.ndarray:
     Returns ``(resolution**2, 3)`` float64, row-major over (row, col) with
     row 0 = TOP of the field of view and col 0 = LEFT (+y, robot-left).
 
-    The VL53L5CX reports distance ALONG the zone axis, so a point is simply
-    ``distance * ray`` -- there is no z-vs-radial conversion to do here, unlike
-    a depth camera.
+    NOTE the sensor does NOT report distance along these rays -- it reports
+    DEPTH along the boresight (sensor +x), like a depth camera.  Use
+    ``frame_to_points`` rather than ``distance * ray``; see its docstring for
+    the wall test that settled this.
     """
     if resolution not in (4, 8):
         raise ValueError(f"resolution must be 4 or 8, got {resolution}")
@@ -146,15 +147,21 @@ def frame_to_points(distance_mm, target_status, resolution: int = 8,
     n2 = resolution * resolution
     dist_m = reorder(np.asarray(distance_mm, dtype=np.float64).reshape(n2),
                      resolution, **reorder_kw) / 1000.0
-    pts = ray_table(resolution, fov_deg)[keep] * dist_m[keep, None]
+    # distance_mm is DEPTH along the sensor boresight, not range along the zone
+    # ray.  Settled 2026-09-14 against a flat door at 0.3/0.6/1.0 m: the depth
+    # model fit all 64 on-target zones to 3.2 mm rms (yaw -0.05 deg), the radial
+    # model to 22.4 mm rms with errors up to 78 mm.  So scale each ray to reach
+    # x = depth, which stretches the outer zones by up to ~1/cos(corner angle).
+    rays = ray_table(resolution, fov_deg)[keep]
+    pts = rays * (dist_m[keep] / rays[:, 0])[:, None]
     return pts.astype(np.float32), keep
 
 
 def floor_slant_ranges(mount_height_m: float, pitch_deg: float,
                        resolution: int = 8, fov_deg: float = FOV_DEG):
-    """Range each zone row READS off a flat floor, as the sensor reports it.
+    """What each zone row READS off a flat floor, as the sensor reports it.
 
-    This is the SLANT range along the ray.  ``floor_coverage`` returns the
+    That is boresight DEPTH, derived from the slant range along the ray.  ``floor_coverage`` returns the
     horizontal ground distance instead, which is the right number for "how far
     ahead does this mount see" but is ~20 deg worth of cosine SHORT of what the
     sensor actually measures -- comparing a live frame against it shows a
@@ -168,7 +175,9 @@ def floor_slant_ranges(mount_height_m: float, pitch_deg: float,
         if down_deg <= 1e-6:
             continue
         rows.append(r)
-        ranges.append(mount_height_m / math.sin(math.radians(down_deg)))
+        slant = mount_height_m / math.sin(math.radians(down_deg))
+        # The sensor reports depth along its boresight, not slant range.
+        ranges.append(slant * math.cos(math.radians(down_deg - pitch_deg)))
     return np.asarray(rows, dtype=int), np.asarray(ranges, dtype=float)
 
 
