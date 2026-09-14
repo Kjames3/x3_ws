@@ -76,3 +76,6 @@ src/webrtc_poc/auto.key
 artifacts/**/*.npz
 !artifacts/deskew-2026-09-04/sign_comparison.npz
 !artifacts/registration-2026-09-05/drive_capture.npz
+
+# Experiment logs stay on the machines that produced them
+artifacts/**/*.log

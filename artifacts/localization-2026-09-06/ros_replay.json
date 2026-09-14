@@ -1,0 +1,257 @@
+{
+  "clouds_sent": 12,
+  "poses_received": 12,
+  "states": {
+    "awaiting_initial_pose": 2,
+    "initialized": 1,
+    "accepted": 12,
+    "rejected": 1,
+    "no_recent_clouds": 1
+  },
+  "localizer_publishers": [
+    [
+      "/lidar_localizer/pose",
+      [
+        "geometry_msgs/msg/PoseStamped"
+      ]
+    ],
+    [
+      "/lidar_localizer/status",
+      [
+        "std_msgs/msg/String"
+      ]
+    ],
+    [
+      "/parameter_events",
+      [
+        "rcl_interfaces/msg/ParameterEvent"
+      ]
+    ],
+    [
+      "/rosout",
+      [
+        "rcl_interfaces/msg/Log"
+      ]
+    ]
+  ],
+  "status_messages": [
+    {
+      "state": "awaiting_initial_pose",
+      "replaced": 0
+    },
+    {
+      "state": "awaiting_initial_pose",
+      "replaced": 0
+    },
+    {
+      "state": "initialized",
+      "replaced": 0
+    },
+    {
+      "state": "accepted",
+      "replaced": 0,
+      "age_s": 0.055439903000000006,
+      "accepted": true,
+      "reasons": [],
+      "iterations": 7,
+      "query_points": 2791,
+      "overlap": 0.9967753493371552,
+      "plane_rmse_m": 0.022625630682769838,
+      "nn_rmse_m": 0.035827766524007175,
+      "correction_m": 0.12140736086804199,
+      "correction_yaw_rad": 0.02133734576068197,
+      "condition": 2.0630027352444085,
+      "runtime_s": 0.0410999359996822
+    },
+    {
+      "state": "accepted",
+      "replaced": 0,
+      "age_s": 0.044450523000000006,
+      "accepted": true,
+      "reasons": [],
+      "iterations": 7,
+      "query_points": 2753,
+      "overlap": 0.9916454776607337,
+      "plane_rmse_m": 0.027909279624284567,
+      "nn_rmse_m": 0.04474745270501067,
+      "correction_m": 0.02218250425512256,
+      "correction_yaw_rad": 0.0003066132430688817,
+      "condition": 2.317755972940656,
+      "runtime_s": 0.03025293300015619
+    },
+    {
+      "state": "accepted",
+      "replaced": 0,
+      "age_s": 0.071376389,
+      "accepted": true,
+      "reasons": [],
+      "iterations": 6,
+      "query_points": 2720,
+      "overlap": 0.9996323529411765,
+      "plane_rmse_m": 0.020331988861132667,
+      "nn_rmse_m": 0.03548255918329064,
+      "correction_m": 0.009044768070981386,
+      "correction_yaw_rad": 0.006550350424321727,
+      "condition": 2.943059216588048,
+      "runtime_s": 0.04742365400034032
+    },
+    {
+      "state": "accepted",
+      "replaced": 0,
+      "age_s": 0.051985563000000005,
+      "accepted": true,
+      "reasons": [],
+      "iterations": 7,
+      "query_points": 2840,
+      "overlap": 1.0,
+      "plane_rmse_m": 0.018222567693765547,
+      "nn_rmse_m": 0.04014631652234754,
+      "correction_m": 0.027678281680362248,
+      "correction_yaw_rad": 0.004266033139135594,
+      "condition": 5.9262255488629405,
+      "runtime_s": 0.03545256799998242
+    },
+    {
+      "state": "accepted",
+      "replaced": 0,
+      "age_s": 0.040017101,
+      "accepted": true,
+      "reasons": [],
+      "iterations": 5,
+      "query_points": 2852,
+      "overlap": 1.0,
+      "plane_rmse_m": 0.006869746747137069,
+      "nn_rmse_m": 0.01803932606777031,
+      "correction_m": 0.02537116062764034,
+      "correction_yaw_rad": 0.0034781221165467997,
+      "condition": 4.979878758586637,
+      "runtime_s": 0.023628655000266008
+    },
+    {
+      "state": "accepted",
+      "replaced": 0,
+      "age_s": 0.081241677,
+      "accepted": true,
+      "reasons": [],
+      "iterations": 12,
+      "query_points": 2819,
+      "overlap": 0.9822632139056403,
+      "plane_rmse_m": 0.01992678986921058,
+      "nn_rmse_m": 0.03697168758999566,
+      "correction_m": 0.03386077493423188,
+      "correction_yaw_rad": 0.0010847777378590051,
+      "condition": 4.5477596307231,
+      "runtime_s": 0.05504032799990455
+    },
+    {
+      "state": "accepted",
+      "replaced": 0,
+      "age_s": 0.055607906000000006,
+      "accepted": true,
+      "reasons": [],
+      "iterations": 7,
+      "query_points": 2718,
+      "overlap": 0.9996320824135394,
+      "plane_rmse_m": 0.02322607134221893,
+      "nn_rmse_m": 0.043074105434738115,
+      "correction_m": 0.009731967426076996,
+      "correction_yaw_rad": 0.0061258658100066254,
+      "condition": 2.7690636746729744,
+      "runtime_s": 0.037445875000230444
+    },
+    {
+      "state": "accepted",
+      "replaced": 0,
+      "age_s": 0.046672097,
+      "accepted": true,
+      "reasons": [],
+      "iterations": 6,
+      "query_points": 2826,
+      "overlap": 0.9996461429582448,
+      "plane_rmse_m": 0.02806884216474582,
+      "nn_rmse_m": 0.038896105637000716,
+      "correction_m": 0.02203684738106377,
+      "correction_yaw_rad": 0.004027256296534165,
+      "condition": 2.356582235781857,
+      "runtime_s": 0.03130488399983733
+    },
+    {
+      "state": "accepted",
+      "replaced": 0,
+      "age_s": 0.049806353000000005,
+      "accepted": true,
+      "reasons": [],
+      "iterations": 5,
+      "query_points": 2767,
+      "overlap": 0.9996385977593061,
+      "plane_rmse_m": 0.015246332484737604,
+      "nn_rmse_m": 0.027503458945159657,
+      "correction_m": 0.007067871506710962,
+      "correction_yaw_rad": 0.0004946704235439248,
+      "condition": 1.9493660835726407,
+      "runtime_s": 0.03119572599962339
+    },
+    {
+      "state": "accepted",
+      "replaced": 0,
+      "age_s": 0.048629722,
+      "accepted": true,
+      "reasons": [],
+      "iterations": 5,
+      "query_points": 2823,
+      "overlap": 0.9890187743535246,
+      "plane_rmse_m": 0.025912496645839958,
+      "nn_rmse_m": 0.0405997390919726,
+      "correction_m": 0.008488535550398678,
+      "correction_yaw_rad": 0.0023984893458635914,
+      "condition": 2.036279253094462,
+      "runtime_s": 0.022812999000052514
+    },
+    {
+      "state": "accepted",
+      "replaced": 0,
+      "age_s": 0.063293061,
+      "accepted": true,
+      "reasons": [],
+      "iterations": 10,
+      "query_points": 2827,
+      "overlap": 1.0,
+      "plane_rmse_m": 0.016689340167019874,
+      "nn_rmse_m": 0.030543614942076344,
+      "correction_m": 0.016156460503923765,
+      "correction_yaw_rad": 0.002518810400527649,
+      "condition": 1.9779053430055609,
+      "runtime_s": 0.049158803000409534
+    },
+    {
+      "state": "accepted",
+      "replaced": 0,
+      "age_s": 0.091493,
+      "accepted": true,
+      "reasons": [],
+      "iterations": 17,
+      "query_points": 2820,
+      "overlap": 0.9964539007092199,
+      "plane_rmse_m": 0.015603630400195414,
+      "nn_rmse_m": 0.03140366414028514,
+      "correction_m": 0.011313537365444146,
+      "correction_yaw_rad": 0.003078520669093726,
+      "condition": 2.1234169158403615,
+      "runtime_s": 0.07436167299965746
+    },
+    {
+      "state": "rejected",
+      "replaced": 0,
+      "reasons": [
+        "stale_or_out_of_order"
+      ],
+      "age_s": 5.00863877
+    },
+    {
+      "state": "no_recent_clouds",
+      "replaced": 0
+    }
+  ],
+  "passed": true,
+  "note": "Isolated DDS replay, current synthetic timestamps and graph-derived initial pose; not an accuracy/latency capture."
+}

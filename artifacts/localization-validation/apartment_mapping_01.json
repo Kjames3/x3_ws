@@ -1,0 +1,214 @@
+{
+  "points": 2097824,
+  "clouds": 776,
+  "stations": [
+    {
+      "station": 1,
+      "clouds": 62,
+      "duration_s": 8.8475341796875,
+      "max_gap_s": 0.4189119338989258,
+      "tilt_range_deg": [
+        -44.12109375,
+        44.47265625
+      ],
+      "translation_span_m": 3.406817807263861e-11,
+      "yaw_span_deg": 0.8263882345573947
+    },
+    {
+      "station": 2,
+      "clouds": 76,
+      "duration_s": 10.531076192855835,
+      "max_gap_s": 0.14310812950134277,
+      "tilt_range_deg": [
+        -44.12109375,
+        44.47265625
+      ],
+      "translation_span_m": 3.550999490822115e-05,
+      "yaw_span_deg": 1.1187928669866383
+    },
+    {
+      "station": 3,
+      "clouds": 76,
+      "duration_s": 10.525758981704712,
+      "max_gap_s": 0.14308571815490723,
+      "tilt_range_deg": [
+        -44.12109375,
+        44.47265625
+      ],
+      "translation_span_m": 4.386895752117207e-05,
+      "yaw_span_deg": 0.9995319304806146
+    },
+    {
+      "station": 4,
+      "clouds": 64,
+      "duration_s": 8.833829879760742,
+      "max_gap_s": 0.14439797401428223,
+      "tilt_range_deg": [
+        -44.12109375,
+        44.47265625
+      ],
+      "translation_span_m": 1.9770556530845695e-05,
+      "yaw_span_deg": 0.8307430313884281
+    },
+    {
+      "station": 5,
+      "clouds": 44,
+      "duration_s": 7.96674108505249,
+      "max_gap_s": 0.6987330913543701,
+      "tilt_range_deg": [
+        -44.12109375,
+        -31.46484375
+      ],
+      "translation_span_m": 1.701821398245382e-05,
+      "yaw_span_deg": 0.7266655727574667
+    },
+    {
+      "station": 6,
+      "clouds": 38,
+      "duration_s": 9.774903774261475,
+      "max_gap_s": 1.2569689750671387,
+      "tilt_range_deg": [
+        -44.208984375,
+        0.0
+      ],
+      "translation_span_m": 5.428786089606365e-05,
+      "yaw_span_deg": 0.948481894130302
+    },
+    {
+      "station": 7,
+      "clouds": 47,
+      "duration_s": 9.635411977767944,
+      "max_gap_s": 1.3962290287017822,
+      "tilt_range_deg": [
+        -44.208984375,
+        -2.63671875
+      ],
+      "translation_span_m": 2.5919588564002775e-05,
+      "yaw_span_deg": 1.0264072613886035
+    },
+    {
+      "station": 8,
+      "clouds": 38,
+      "duration_s": 8.195440292358398,
+      "max_gap_s": 0.5583679676055908,
+      "tilt_range_deg": [
+        -44.208984375,
+        -33.3984375
+      ],
+      "translation_span_m": 2.452349294693811e-05,
+      "yaw_span_deg": 0.7761167376092052
+    },
+    {
+      "station": 9,
+      "clouds": 38,
+      "duration_s": 9.265592098236084,
+      "max_gap_s": 1.1204049587249756,
+      "tilt_range_deg": [
+        -44.208984375,
+        -0.17578125
+      ],
+      "translation_span_m": 2.852940244315748e-05,
+      "yaw_span_deg": 0.8915022962276835
+    },
+    {
+      "station": 10,
+      "clouds": 46,
+      "duration_s": 8.42604398727417,
+      "max_gap_s": 0.5628311634063721,
+      "tilt_range_deg": [
+        -44.12109375,
+        -32.607421875
+      ],
+      "translation_span_m": 2.3647756451098066e-05,
+      "yaw_span_deg": 0.8300059958972347
+    },
+    {
+      "station": 11,
+      "clouds": 39,
+      "duration_s": 8.423316955566406,
+      "max_gap_s": 0.5605952739715576,
+      "tilt_range_deg": [
+        -44.208984375,
+        -31.46484375
+      ],
+      "translation_span_m": 2.813407075503359e-05,
+      "yaw_span_deg": 0.7847115685884963
+    },
+    {
+      "station": 12,
+      "clouds": 44,
+      "duration_s": 9.825030088424683,
+      "max_gap_s": 1.1217772960662842,
+      "tilt_range_deg": [
+        -44.208984375,
+        -2.4609375
+      ],
+      "translation_span_m": 3.6539617483886814e-05,
+      "yaw_span_deg": 0.9707357021131352
+    },
+    {
+      "station": 13,
+      "clouds": 42,
+      "duration_s": 8.28405213356018,
+      "max_gap_s": 0.5614070892333984,
+      "tilt_range_deg": [
+        -44.208984375,
+        -32.607421875
+      ],
+      "translation_span_m": 2.7235308987708272e-05,
+      "yaw_span_deg": 0.7885612933814616
+    },
+    {
+      "station": 14,
+      "clouds": 44,
+      "duration_s": 9.683364868164062,
+      "max_gap_s": 1.5437052249908447,
+      "tilt_range_deg": [
+        -44.208984375,
+        -1.142578125
+      ],
+      "translation_span_m": 6.899043952572617e-05,
+      "yaw_span_deg": 0.8621494029515677
+    },
+    {
+      "station": 15,
+      "clouds": 40,
+      "duration_s": 9.54597806930542,
+      "max_gap_s": 1.26578688621521,
+      "tilt_range_deg": [
+        -44.208984375,
+        -0.439453125
+      ],
+      "translation_span_m": 3.4505920866225405e-05,
+      "yaw_span_deg": 0.9563310423676982
+    },
+    {
+      "station": 16,
+      "clouds": 38,
+      "duration_s": 8.423578977584839,
+      "max_gap_s": 0.7035760879516602,
+      "tilt_range_deg": [
+        -44.208984375,
+        -31.46484375
+      ],
+      "translation_span_m": 2.0323920741852758e-05,
+      "yaw_span_deg": 0.7911500106744829
+    }
+  ],
+  "capture_sha256": "9547134fcc35953ea0b62ebf24e9dd7af539684dd83105fa3520c60aaa7c5336",
+  "tentative_room_labels": {
+    "restroom": [
+      5,
+      6,
+      7
+    ],
+    "bedroom": [
+      12,
+      13,
+      14,
+      15,
+      16
+    ]
+  },
+  "label_note": "User recalled bedroom 12-17, but file contains exactly 16 stations; labels are tentative."
+}

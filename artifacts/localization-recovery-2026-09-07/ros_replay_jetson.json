@@ -1,0 +1,376 @@
+{
+  "clouds_sent": 12,
+  "poses_received": 9,
+  "states": {
+    "awaiting_initial_pose": 2,
+    "initialized": 1,
+    "withheld": 3,
+    "accepted": 9,
+    "rejected": 1,
+    "no_recent_clouds": 2,
+    "paused": 1,
+    "resumed": 1
+  },
+  "localizer_publishers": [
+    [
+      "/lidar_localizer/pose",
+      [
+        "geometry_msgs/msg/PoseStamped"
+      ]
+    ],
+    [
+      "/lidar_localizer/status",
+      [
+        "std_msgs/msg/String"
+      ]
+    ],
+    [
+      "/parameter_events",
+      [
+        "rcl_interfaces/msg/ParameterEvent"
+      ]
+    ],
+    [
+      "/rosout",
+      [
+        "rcl_interfaces/msg/Log"
+      ]
+    ]
+  ],
+  "status_messages": [
+    {
+      "state": "awaiting_initial_pose",
+      "localization_state": "UNINITIALIZED",
+      "replaced": 0
+    },
+    {
+      "state": "awaiting_initial_pose",
+      "localization_state": "UNINITIALIZED",
+      "replaced": 0
+    },
+    {
+      "state": "initialized",
+      "localization_state": "SUSPECT",
+      "replaced": 0
+    },
+    {
+      "state": "withheld",
+      "localization_state": "SUSPECT",
+      "replaced": 0,
+      "age_s": 0.067493643,
+      "accepted": false,
+      "reason": "waiting_for_consensus",
+      "failures": 1,
+      "hypotheses": 0,
+      "search_scope": "local_only",
+      "match": {
+        "accepted": true,
+        "reasons": [],
+        "iterations": 7,
+        "query_points": 2791,
+        "overlap": 0.9967753493371552,
+        "plane_rmse_m": 0.022625630992201932,
+        "nn_rmse_m": 0.03582776573975401,
+        "correction_m": 0.12140736585158418,
+        "correction_yaw_rad": 0.021337348413306256,
+        "condition": 2.0630027379696365,
+        "runtime_s": 0.03272673200012832
+      }
+    },
+    {
+      "state": "withheld",
+      "localization_state": "SUSPECT",
+      "replaced": 0,
+      "age_s": 0.122959016,
+      "accepted": false,
+      "reason": "waiting_for_consensus",
+      "failures": 2,
+      "hypotheses": 0,
+      "search_scope": "local_only",
+      "match": {
+        "accepted": true,
+        "reasons": [],
+        "iterations": 10,
+        "query_points": 2753,
+        "overlap": 0.9916454776607337,
+        "plane_rmse_m": 0.027883803221538245,
+        "nn_rmse_m": 0.04475015098360773,
+        "correction_m": 0.14285103041548375,
+        "correction_yaw_rad": 0.021511048308206077,
+        "condition": 2.321753181076178,
+        "runtime_s": 0.07024660499996571
+      }
+    },
+    {
+      "state": "withheld",
+      "localization_state": "SUSPECT",
+      "replaced": 0,
+      "age_s": 0.12436401100000001,
+      "accepted": false,
+      "reason": "waiting_for_consensus",
+      "failures": 3,
+      "hypotheses": 0,
+      "search_scope": "local_only",
+      "match": {
+        "accepted": true,
+        "reasons": [],
+        "iterations": 13,
+        "query_points": 2720,
+        "overlap": 0.9996323529411765,
+        "plane_rmse_m": 0.020543795430414222,
+        "nn_rmse_m": 0.03564971355621658,
+        "correction_m": 0.1480213118911842,
+        "correction_yaw_rad": 0.028585348875983546,
+        "condition": 2.954295261176211,
+        "runtime_s": 0.08716612900002474
+      }
+    },
+    {
+      "state": "accepted",
+      "localization_state": "TRACKING",
+      "replaced": 0,
+      "age_s": 0.146816536,
+      "accepted": true,
+      "reason": "temporal_consensus",
+      "failures": 0,
+      "hypotheses": 0,
+      "search_scope": "local_only",
+      "match": {
+        "accepted": true,
+        "reasons": [],
+        "iterations": 21,
+        "query_points": 2840,
+        "overlap": 1.0,
+        "plane_rmse_m": 0.01828664962861607,
+        "nn_rmse_m": 0.04040275550732945,
+        "correction_m": 0.12111032369346571,
+        "correction_yaw_rad": 0.032572133665430686,
+        "condition": 5.791403729834703,
+        "runtime_s": 0.10304780299998129
+      }
+    },
+    {
+      "state": "accepted",
+      "localization_state": "TRACKING",
+      "replaced": 0,
+      "age_s": 0.062383850000000005,
+      "accepted": true,
+      "reason": "temporal_consensus",
+      "failures": 0,
+      "hypotheses": 0,
+      "search_scope": "local_only",
+      "match": {
+        "accepted": true,
+        "reasons": [],
+        "iterations": 5,
+        "query_points": 2852,
+        "overlap": 1.0,
+        "plane_rmse_m": 0.006863660799840369,
+        "nn_rmse_m": 0.018047453729937588,
+        "correction_m": 0.04475052559141458,
+        "correction_yaw_rad": 0.014400932274127918,
+        "condition": 4.980511712106102,
+        "runtime_s": 0.023433541000031255
+      }
+    },
+    {
+      "state": "accepted",
+      "localization_state": "TRACKING",
+      "replaced": 0,
+      "age_s": 0.086822152,
+      "accepted": true,
+      "reason": "temporal_consensus",
+      "failures": 0,
+      "hypotheses": 0,
+      "search_scope": "local_only",
+      "match": {
+        "accepted": true,
+        "reasons": [],
+        "iterations": 7,
+        "query_points": 2819,
+        "overlap": 0.9822632139056403,
+        "plane_rmse_m": 0.019926792415416183,
+        "nn_rmse_m": 0.03697169017332599,
+        "correction_m": 0.009711909994031463,
+        "correction_yaw_rad": 0.0022815389043329415,
+        "condition": 4.54775963173839,
+        "runtime_s": 0.03957627699992372
+      }
+    },
+    {
+      "state": "accepted",
+      "localization_state": "TRACKING",
+      "replaced": 0,
+      "age_s": 0.060300119000000006,
+      "accepted": true,
+      "reason": "temporal_consensus",
+      "failures": 0,
+      "hypotheses": 0,
+      "search_scope": "local_only",
+      "match": {
+        "accepted": true,
+        "reasons": [],
+        "iterations": 4,
+        "query_points": 2718,
+        "overlap": 0.9996320824135394,
+        "plane_rmse_m": 0.0231969351220139,
+        "nn_rmse_m": 0.0430014377556381,
+        "correction_m": 0.00275452689664023,
+        "correction_yaw_rad": 0.0033013854803006504,
+        "condition": 2.779128587784198,
+        "runtime_s": 0.0229366010000831
+      }
+    },
+    {
+      "state": "accepted",
+      "localization_state": "TRACKING",
+      "replaced": 0,
+      "age_s": 0.065233264,
+      "accepted": true,
+      "reason": "temporal_consensus",
+      "failures": 0,
+      "hypotheses": 0,
+      "search_scope": "local_only",
+      "match": {
+        "accepted": true,
+        "reasons": [],
+        "iterations": 5,
+        "query_points": 2826,
+        "overlap": 0.9996461429582448,
+        "plane_rmse_m": 0.028093586015125308,
+        "nn_rmse_m": 0.038900027436277754,
+        "correction_m": 0.02175846440832992,
+        "correction_yaw_rad": 0.0001422739610403012,
+        "condition": 2.355875711972687,
+        "runtime_s": 0.02604714100016281
+      }
+    },
+    {
+      "state": "accepted",
+      "localization_state": "TRACKING",
+      "replaced": 0,
+      "age_s": 0.06941391100000001,
+      "accepted": true,
+      "reason": "temporal_consensus",
+      "failures": 0,
+      "hypotheses": 0,
+      "search_scope": "local_only",
+      "match": {
+        "accepted": true,
+        "reasons": [],
+        "iterations": 5,
+        "query_points": 2767,
+        "overlap": 0.9996385977593061,
+        "plane_rmse_m": 0.015246333822583627,
+        "nn_rmse_m": 0.027503457977182077,
+        "correction_m": 0.007033632191452477,
+        "correction_yaw_rad": 0.00045405916799926005,
+        "condition": 1.9493660426482355,
+        "runtime_s": 0.03327762399999301
+      }
+    },
+    {
+      "state": "accepted",
+      "localization_state": "TRACKING",
+      "replaced": 0,
+      "age_s": 0.066331755,
+      "accepted": true,
+      "reason": "temporal_consensus",
+      "failures": 0,
+      "hypotheses": 0,
+      "search_scope": "local_only",
+      "match": {
+        "accepted": true,
+        "reasons": [],
+        "iterations": 4,
+        "query_points": 2823,
+        "overlap": 0.9890187743535246,
+        "plane_rmse_m": 0.02591850612132012,
+        "nn_rmse_m": 0.04060413074156294,
+        "correction_m": 0.00238004628168766,
+        "correction_yaw_rad": 0.0019084177346320177,
+        "condition": 2.036817460175571,
+        "runtime_s": 0.024922248999928343
+      }
+    },
+    {
+      "state": "accepted",
+      "localization_state": "TRACKING",
+      "replaced": 0,
+      "age_s": 0.08698359400000001,
+      "accepted": true,
+      "reason": "temporal_consensus",
+      "failures": 0,
+      "hypotheses": 0,
+      "search_scope": "local_only",
+      "match": {
+        "accepted": true,
+        "reasons": [],
+        "iterations": 10,
+        "query_points": 2827,
+        "overlap": 1.0,
+        "plane_rmse_m": 0.016689338235209628,
+        "nn_rmse_m": 0.030543610987733998,
+        "correction_m": 0.013638477452017591,
+        "correction_yaw_rad": 0.004463337009809137,
+        "condition": 1.97790544546333,
+        "runtime_s": 0.0516403189999437
+      }
+    },
+    {
+      "state": "accepted",
+      "localization_state": "TRACKING",
+      "replaced": 0,
+      "age_s": 0.07867394700000001,
+      "accepted": true,
+      "reason": "temporal_consensus",
+      "failures": 0,
+      "hypotheses": 0,
+      "search_scope": "local_only",
+      "match": {
+        "accepted": true,
+        "reasons": [],
+        "iterations": 9,
+        "query_points": 2820,
+        "overlap": 0.9964539007092199,
+        "plane_rmse_m": 0.015214389718665018,
+        "nn_rmse_m": 0.030995143277397254,
+        "correction_m": 0.02003157969640085,
+        "correction_yaw_rad": 0.003475880741829501,
+        "condition": 2.090752986958424,
+        "runtime_s": 0.04214664300002369
+      }
+    },
+    {
+      "state": "rejected",
+      "localization_state": "SUSPECT",
+      "replaced": 0,
+      "reasons": [
+        "stale_or_out_of_order"
+      ],
+      "age_s": 5.029098288
+    },
+    {
+      "state": "no_recent_clouds",
+      "localization_state": "LOST",
+      "replaced": 0
+    },
+    {
+      "state": "no_recent_clouds",
+      "localization_state": "LOST",
+      "replaced": 0
+    },
+    {
+      "state": "paused",
+      "localization_state": "PAUSED",
+      "replaced": 0
+    },
+    {
+      "state": "resumed",
+      "localization_state": "SUSPECT",
+      "replaced": 0
+    }
+  ],
+  "passed": true,
+  "note": "Isolated DDS replay, current synthetic timestamps and graph-derived initial pose; not an accuracy/latency capture."
+}

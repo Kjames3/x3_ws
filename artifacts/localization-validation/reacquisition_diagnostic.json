@@ -1,0 +1,263 @@
+[
+  {
+    "station": 5,
+    "search_admitted": 54,
+    "best": {
+      "pose": [
+        [
+          -0.3483014435668515,
+          0.9373825816651637,
+          0.0,
+          0.4327039160536567
+        ],
+        [
+          -0.9373825816651637,
+          -0.3483014435668515,
+          0.0,
+          -2.994979000652561
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "accepted": true,
+      "reasons": [],
+      "iterations": 28,
+      "query_points": 3000,
+      "overlap": 0.7706666666666667,
+      "plane_rmse_m": 0.05523228568058347,
+      "nn_rmse_m": 0.06919163238364005,
+      "correction_m": 1.0769197177414702,
+      "correction_yaw_rad": 0.6914390794393632,
+      "condition": 2.6738736477704617,
+      "runtime_s": 0.11963301998912357
+    },
+    "search_seconds": 49.800372420984786,
+    "warning": "Whole-station offline search; consumes all clouds here, not independent truth or online tracking",
+    "disagreement_from_initial_odom_alignment_m": 0.843534053710213,
+    "alternative_clusters": [
+      {
+        "pose": [
+          [
+            -0.6976157181460986,
+            -0.7164721277171242,
+            0.0,
+            0.3956548013513512
+          ],
+          [
+            0.7164721277171242,
+            -0.6976157181460986,
+            0.0,
+            0.4127114948711685
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "accepted": true,
+        "reasons": [],
+        "iterations": 41,
+        "query_points": 3000,
+        "overlap": 0.7113333333333334,
+        "plane_rmse_m": 0.04598982966073313,
+        "nn_rmse_m": 0.06255341951746445,
+        "correction_m": 1.1023095373130636,
+        "correction_yaw_rad": 0.24846549761493186,
+        "condition": 2.616805098108346,
+        "runtime_s": 0.1727304749947507
+      }
+    ]
+  },
+  {
+    "station": 7,
+    "search_admitted": 59,
+    "best": {
+      "pose": [
+        [
+          -0.9975077463063408,
+          -0.07055704117127524,
+          0.0,
+          -0.3386793508553723
+        ],
+        [
+          0.07055704117127524,
+          -0.9975077463063408,
+          0.0,
+          -0.13074292853189634
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "accepted": true,
+      "reasons": [],
+      "iterations": 15,
+      "query_points": 3000,
+      "overlap": 0.857,
+      "plane_rmse_m": 0.04238170286803776,
+      "nn_rmse_m": 0.059467469214715026,
+      "correction_m": 0.8731368901864507,
+      "correction_yaw_rad": 0.07061571501631025,
+      "condition": 2.031265351797509,
+      "runtime_s": 0.054465149994939566
+    },
+    "search_seconds": 48.083110979991034,
+    "warning": "Whole-station offline search; consumes all clouds here, not independent truth or online tracking",
+    "disagreement_from_initial_odom_alignment_m": 0.5700952542852288,
+    "alternative_clusters": [
+      {
+        "pose": [
+          [
+            0.9964864248007075,
+            0.08375443384026851,
+            0.0,
+            1.1057702330919308
+          ],
+          [
+            -0.08375443384026851,
+            0.9964864248007075,
+            0.0,
+            -0.6678771264939187
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "accepted": true,
+        "reasons": [],
+        "iterations": 34,
+        "query_points": 3000,
+        "overlap": 0.6873333333333334,
+        "plane_rmse_m": 0.044809308720373815,
+        "nn_rmse_m": 0.05744381920395322,
+        "correction_m": 0.9095043825778071,
+        "correction_yaw_rad": 0.6074514400091612,
+        "condition": 2.426925598376079,
+        "runtime_s": 0.2047475439903792
+      }
+    ]
+  },
+  {
+    "station": 8,
+    "search_admitted": 12,
+    "best": {
+      "pose": [
+        [
+          0.08164324474022219,
+          0.99666161789661,
+          0.0,
+          -0.673815585097399
+        ],
+        [
+          -0.99666161789661,
+          0.08164324474022219,
+          0.0,
+          0.3843510277382579
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "accepted": true,
+      "reasons": [],
+      "iterations": 44,
+      "query_points": 3000,
+      "overlap": 0.6903333333333334,
+      "plane_rmse_m": 0.058927762185232914,
+      "nn_rmse_m": 0.07888078510268659,
+      "correction_m": 1.0098870205882156,
+      "correction_yaw_rad": 0.08173421834938877,
+      "condition": 2.951082651654078,
+      "runtime_s": 0.17613642002106644
+    },
+    "search_seconds": 46.59238364599878,
+    "warning": "Whole-station offline search; consumes all clouds here, not independent truth or online tracking",
+    "disagreement_from_initial_odom_alignment_m": 3.828916541272062,
+    "alternative_clusters": [
+      {
+        "pose": [
+          [
+            -0.896908963560616,
+            -0.4422152316289226,
+            0.0,
+            2.2937114171906448
+          ],
+          [
+            0.4422152316289226,
+            -0.896908963560616,
+            0.0,
+            -1.3460415250683533
+          ],
+          [
+            0.0,
+            0.0,
+            1.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "accepted": true,
+        "reasons": [],
+        "iterations": 22,
+        "query_points": 3000,
+        "overlap": 0.6223333333333333,
+        "plane_rmse_m": 0.054419067637547475,
+        "nn_rmse_m": 0.06945163526607248,
+        "correction_m": 0.8515292812016257,
+        "correction_yaw_rad": 0.06553175055024242,
+        "condition": 2.3218982855185257,
+        "runtime_s": 0.12752776200068183
+      }
+    ]
+  }
+]

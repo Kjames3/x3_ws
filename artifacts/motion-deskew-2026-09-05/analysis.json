@@ -1,0 +1,50 @@
+{
+ "bins": [
+  {
+   "bin": "parked",
+   "clouds": 122,
+   "deskew_p25_mm": 75.27,
+   "rigid_p25_mm": 75.28,
+   "deskew_med_mm": 138.01,
+   "rigid_med_mm": 138.02,
+   "ratio": 1.0
+  },
+  {
+   "bin": "slow",
+   "clouds": 118,
+   "deskew_p25_mm": 23.28,
+   "rigid_p25_mm": 23.61,
+   "deskew_med_mm": 114.81,
+   "rigid_med_mm": 117.19,
+   "ratio": 1.01
+  },
+  {
+   "bin": "medium",
+   "clouds": 125,
+   "deskew_p25_mm": 30.38,
+   "rigid_p25_mm": 30.07,
+   "deskew_med_mm": 113.22,
+   "rigid_med_mm": 116.33,
+   "ratio": 0.99
+  },
+  {
+   "bin": "fast",
+   "clouds": 249,
+   "deskew_p25_mm": 46.47,
+   "rigid_p25_mm": 46.98,
+   "deskew_med_mm": 136.19,
+   "rigid_med_mm": 134.14,
+   "ratio": 1.01
+  },
+  {
+   "bin": "turning (yaw>0.3)",
+   "clouds": 236,
+   "deskew_p25_mm": 23.67,
+   "rigid_p25_mm": 23.77,
+   "deskew_med_mm": 119.83,
+   "rigid_med_mm": 121.91,
+   "ratio": 1.0
+  }
+ ],
+ "n_clouds": 658
+}

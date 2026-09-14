@@ -1,0 +1,53 @@
+{
+  "points": 172458,
+  "clouds": 63,
+  "stations": [
+    [
+      0.0,
+      2.8816648081205902,
+      -0.593413671862718,
+      -1.2274777630904805
+    ]
+  ],
+  "finite_points": true,
+  "distinct_cloud_payloads": 63,
+  "cloud_counts_match": true,
+  "cloud_ids_match_odom": true,
+  "cloud_stamps_match_odom": true,
+  "stamp_strictly_increasing": true,
+  "duration_s": 8.641376972198486,
+  "cloud_gap_s_p50_p95_max": [
+    0.13902068138122559,
+    0.14239342212677003,
+    0.14521503448486328
+  ],
+  "points_per_cloud_min_median_max": [
+    2380.0,
+    2760.0,
+    2822.0
+  ],
+  "base_translation_span_m": 0.0,
+  "base_yaw_span_deg": 0.6022076972846181,
+  "cloud_stamp_bounds": [
+    1788690253.3063042,
+    1788690261.9476812
+  ],
+  "odom_stamp_bounds": [
+    1788690247.3294408,
+    1788690265.2046452
+  ],
+  "joint_tilt_degrees_min_max": [
+    -44.208984375,
+    44.384765625
+  ],
+  "nearest_odom_timestamp_s_p50_p95_max": [
+    0.004195451736450195,
+    0.009371805191040038,
+    0.011327505111694336
+  ],
+  "z_m_p1_p50_p99": [
+    -0.06828512690961361,
+    0.3110606223344803,
+    2.7151824784278866
+  ]
+}

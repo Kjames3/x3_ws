@@ -1,0 +1,47 @@
+{
+ "bins": [
+  {
+   "bin": "parked",
+   "pairs": 121,
+   "deskew_mm": 3.23,
+   "rigid_mm": 3.25,
+   "ratio": 1.007
+  },
+  {
+   "bin": "slow",
+   "pairs": 114,
+   "deskew_mm": 10.63,
+   "rigid_mm": 20.64,
+   "ratio": 1.942
+  },
+  {
+   "bin": "medium",
+   "pairs": 124,
+   "deskew_mm": 10.43,
+   "rigid_mm": 16.5,
+   "ratio": 1.582
+  },
+  {
+   "bin": "fast",
+   "pairs": 247,
+   "deskew_mm": 9.57,
+   "rigid_mm": 11.54,
+   "ratio": 1.205
+  },
+  {
+   "bin": "turning yaw>0.3",
+   "pairs": 230,
+   "deskew_mm": 10.38,
+   "rigid_mm": 17.56,
+   "ratio": 1.692
+  },
+  {
+   "bin": "turning yaw>0.6",
+   "pairs": 95,
+   "deskew_mm": 9.94,
+   "rigid_mm": 17.21,
+   "ratio": 1.73
+  }
+ ],
+ "pairs": 652
+}

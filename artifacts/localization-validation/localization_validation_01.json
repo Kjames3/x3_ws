@@ -1,0 +1,105 @@
+{
+  "finite_points": true,
+  "cloud_odom_ids_match": true,
+  "cloud_odom_stamps_match": true,
+  "odom_ros_brackets_capture": true,
+  "user_context": "User clarified on 2026-09-07: stations 5 and 8 entered different rooms. Apartment: restroom, living room/kitchen, bedroom. Exact assignments/map coverage unconfirmed. Furniture unchanged; user moved twice; final pose differed from start, no loop-closure ground truth.",
+  "stations": [
+    {
+      "station": 1,
+      "clouds": 70,
+      "distinct_clouds": 70,
+      "counts_match": true,
+      "max_gap_s": 0.1444389820098877,
+      "tilt_degrees_min_max": [
+        -44.208984375,
+        44.47265625
+      ],
+      "translation_span_m": 4.440892098500626e-16
+    },
+    {
+      "station": 2,
+      "clouds": 76,
+      "distinct_clouds": 76,
+      "counts_match": true,
+      "max_gap_s": 0.5575461387634277,
+      "tilt_degrees_min_max": [
+        -44.208984375,
+        44.384765625
+      ],
+      "translation_span_m": 5.781894675692566e-05
+    },
+    {
+      "station": 3,
+      "clouds": 75,
+      "distinct_clouds": 75,
+      "counts_match": true,
+      "max_gap_s": 0.14240789413452148,
+      "tilt_degrees_min_max": [
+        -44.208984375,
+        44.47265625
+      ],
+      "translation_span_m": 6.163109976100319e-05
+    },
+    {
+      "station": 4,
+      "clouds": 76,
+      "distinct_clouds": 76,
+      "counts_match": true,
+      "max_gap_s": 0.14335083961486816,
+      "tilt_degrees_min_max": [
+        -44.208984375,
+        44.47265625
+      ],
+      "translation_span_m": 7.982902166336229e-06
+    },
+    {
+      "station": 5,
+      "clouds": 79,
+      "distinct_clouds": 79,
+      "counts_match": true,
+      "max_gap_s": 0.1422419548034668,
+      "tilt_degrees_min_max": [
+        -44.208984375,
+        44.47265625
+      ],
+      "translation_span_m": 6.806054590086224e-05
+    },
+    {
+      "station": 6,
+      "clouds": 78,
+      "distinct_clouds": 78,
+      "counts_match": true,
+      "max_gap_s": 0.14279699325561523,
+      "tilt_degrees_min_max": [
+        -44.208984375,
+        44.47265625
+      ],
+      "translation_span_m": 8.605806779501688e-05
+    },
+    {
+      "station": 7,
+      "clouds": 78,
+      "distinct_clouds": 78,
+      "counts_match": true,
+      "max_gap_s": 0.1440739631652832,
+      "tilt_degrees_min_max": [
+        -44.208984375,
+        44.47265625
+      ],
+      "translation_span_m": 6.314108370552597e-05
+    },
+    {
+      "station": 8,
+      "clouds": 77,
+      "distinct_clouds": 77,
+      "counts_match": true,
+      "max_gap_s": 0.14283204078674316,
+      "tilt_degrees_min_max": [
+        -44.208984375,
+        44.47265625
+      ],
+      "translation_span_m": 9.515206457719858e-05
+    }
+  ]
+}
