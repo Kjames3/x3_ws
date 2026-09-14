@@ -68,7 +68,8 @@
             scene.add(ring);
         }
 
-        // Robot: body + blue nose so heading is obvious
+        // Robot: URDF model baked by src/build_web_robot_model.py, with a
+        // box + blue nose standing in until (or if) it loads.
         const robot = new THREE.Group();
         const body = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.12, 0.30),
             new THREE.MeshLambertMaterial({ color: 0x2b2f36 }));
@@ -79,12 +80,57 @@
         nose.position.set(0, 0.15, -0.12);
         robot.add(body, nose);
         scene.add(robot);
+        loadRobotModel(robot);
 
         initWalls();
 
         new ResizeObserver(resize).observe(container);
         resize();
         requestAnimationFrame(loop);
+    }
+
+    // URDF frame (x fwd, y left, z up) -> scene (x right, y up, z back)
+    const BASE_Z = 0.0815;        // base_joint: base_link above base_footprint
+    let tiltNode = null, tiltRest = null, _tq = null;
+
+    function loadRobotModel(placeholder) {
+        if (!THREE.GLTFLoader) return;
+        new THREE.GLTFLoader().load('models/x3_robot.glb?v=1', (gltf) => {
+            const wrap = new THREE.Group();
+            wrap.matrixAutoUpdate = false;
+            wrap.matrix.set(0, -1, 0, 0,
+                            0, 0, 1, 0,
+                            -1, 0, 0, 0,
+                            0, 0, 0, 1);
+            const model = gltf.scene;
+            model.position.z = BASE_Z;
+            model.traverse((o) => {
+                if (o.isMesh) {
+                    o.castShadow = true;
+                    // trimesh exports a metallic PBR material, which renders
+                    // near-black without an environment map
+                    o.material.metalness = 0;
+                    o.material.roughness = 0.8;
+                    o.material.side = THREE.DoubleSide;
+                }
+                if (o.name === 'tilt') tiltNode = o;
+            });
+            if (tiltNode) {
+                tiltRest = tiltNode.quaternion.clone();
+                _tq = new THREE.Quaternion();
+            }
+            wrap.add(model);
+            scene.remove(placeholder);
+            scene.add(wrap);
+        }, undefined, (e) => console.warn('[scene-view] robot model failed, keeping box:', e));
+    }
+
+    // lidar_tilt_joint = radians(readout.tilt.deg), about the joint's +Y
+    const _yAxis = { x: 0, y: 1, z: 0 };
+    function updateTilt(readout) {
+        if (!tiltNode || !readout || !readout.tilt || !isFinite(readout.tilt.deg)) return;
+        _tq.setFromAxisAngle(_yAxis, readout.tilt.deg * Math.PI / 180);
+        tiltNode.quaternion.copy(tiltRest).multiply(_tq);
     }
 
     function fail(msg) {
@@ -340,6 +386,7 @@
             clearBins(); panels.count = 0; posts.count = 0;
         }
         updatePeople(d.velocityEstimates);
+        updateTilt(d.readout);
         if (hint) {
             const msgs = [];
             if (!scanFresh) msgs.push('No lidar scan');
