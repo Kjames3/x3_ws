@@ -164,6 +164,23 @@ order; the `/dev/rosmaster` symlink keys on chip revision (`bcdDevice` 8134 vs
 8133) to pin it. The OpenRB-150 has a real USB serial number and needs no such
 trick — but keep the rule in mind before adding any further CH340 device.
 
+### Settled hardware facts (do not re-derive)
+- `base_joint` z = **0.0815 m**, caliper-measured 2026-09-13 (plate 27.5 mm off
+  the floor). Sensor joints were adjusted to keep their measured floor heights.
+- Rosmaster S1–S4 are PWM-only with **no read-back**; a bus servo there is
+  unreachable. `Rosmaster_Lib.__arm_convert_angle` is calibrated for the YB-SD15M
+  only. The Orin 40-pin GPIO is **not 5 V tolerant**.
+- The 2 ms write gap in `Rosmaster_Lib` is load-bearing; don't delete it. The
+  `/cmd_vel` watchdog stops the motors after 500 ms, so scripts must resend at 20 Hz.
+- IMU heading comes from the **ICM-42688-P** on i2c-7 @ 0x68 (shares pins 3/5 with
+  the INA226 @ 0x40), `use_external_imu_yaw: True`. Keep `aaf_bandwidth_hz` at 42,
+  or wheel vibration aliases in. Its SPI path is defective on that breakout; don't retry it.
+- The battery is a 4S **LiFePO4** 8.07 Ah pack. SoC is coulomb-counted because OCV
+  is nearly flat.
+- `ROS2Bridge.stop()` publishes a zero Twist directly and bypasses the CBF. Never
+  route a stop through `move(0,0,0)`: the CBF's proactive repulsion can produce motion.
+- The OLED is unplugged on purpose, so `OLED init failed 0x3C` at boot is expected.
+
 ## Key Configuration Files
 - **[config/lidar_tilt_calibration_dynamixel.json](config/lidar_tilt_calibration_dynamixel.json)** — XL430 tilt zero (2032) + tolerance_counts (12). The older `lidar_tilt_calibration.json` is the retired LX-16A's and is dead.
 - **[src/yahboomcar_nav/params/nav2_params_x3.yaml](src/yahboomcar_nav/params/nav2_params_x3.yaml)** — Nav2 DWA planner/controller tuning
