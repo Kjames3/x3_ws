@@ -268,9 +268,9 @@
          only the bracket and the breakout (no chassis), so the bracket-to-sensor
          transform below is exact CAD, while tof_mount_joint is fitted to the
          measured aperture height of 63.5 mm above the floor. Re-measure and
-         adjust tof_mount_joint's xyz if the bracket moves. NOTE the two files
-         disagree on base_joint (0.076 here vs 0.0815 in the other), a
-         pre-existing 5.5 mm split; this xyz is base_link-relative in both.
+         adjust tof_mount_joint's xyz if the bracket moves. Fitted against
+         base_joint 0.0815 (bottom plate caliper-measured 27.5 mm above the
+         floor, 2026-09-13); change both together.
 
          tof_mount_link is the bracket's own CAD frame (+Z out the front,
          +Y up, +X to the robot's left); the joint does the axis remap. -->
@@ -304,7 +304,7 @@
             <material name="Green"/>
         </visual>
     </link>
-    <fixed_joint name="tof_mount_joint" parent="base_link" child="tof_mount_link" xyz="0.1320 0.0 -0.028049" rpy="1.5707963 0 1.5707963"/>
+    <fixed_joint name="tof_mount_joint" parent="base_link" child="tof_mount_link" xyz="0.1320 0.0 -0.033549" rpy="1.5707963 0 1.5707963"/>
 
     <!-- Sensing frame at the VL53L5CX package face, REP-103: +X is the
          optical axis (forward, 15 deg down), +Z up. -->
@@ -313,4 +313,49 @@
     <!-- Optical convention (+Z along the optical axis, +X right, +Y down) -->
     <link name="${ns}/tof_optical_frame"/>
     <fixed_joint name="tof_optical_joint" parent="tof_link" child="tof_optical_frame" xyz="0 0 0" rpy="-1.5707963 0 -1.5707963"/>
+    <!-- ============ PAA5100JE optical flow sensor (2026-09) ============
+         Downward-looking flow sensor on a printed plate under the chassis
+         bottom edge. Geometry from stls/pa5100je_assembly.STEP, which holds
+         only the plate and the breakout: the plate-to-sensor transform below
+         is exact CAD (sensor at plate (0, -6, 29.906) mm, yawed 180 deg), while
+         paa5100je_mount_joint is a FIRST GUESS to be corrected in
+         `laptop_sim.sh view` against the real robot.
+
+         paa5100je_mount_link is the plate's CAD frame (+X across the robot,
+         +Y up away from the sensor, +Z along the robot's +X). Both STLs were
+         exported translated into positive space; the visual origins undo it. -->
+    <link name="${ns}/paa5100je_mount_link">
+        <inertial>
+            <origin xyz="0 0.002 0.040" rpy="0 0 0"/>
+            <mass value="0.130"/>
+            <inertia ixx="2.0E-04" ixy="0" ixz="0" iyy="5.0E-04" iyz="0" izz="3.0E-04"/>
+        </inertial>
+        <visual>
+            <origin xyz="-0.081 -0.006 -0.030" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://yahboomcar_description/meshes/paa5100je_bottom_mount.STL" scale="0.001 0.001 0.001"/>
+            </geometry>
+            <material name="White"/>
+        </visual>
+        <collision>
+            <origin xyz="-0.081 -0.006 -0.030" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://yahboomcar_description/meshes/paa5100je_bottom_mount.STL" scale="0.001 0.001 0.001"/>
+            </geometry>
+        </collision>
+        <visual>
+            <origin xyz="0.012 -0.006 0.017906" rpy="0 0 3.1415927"/>
+            <geometry>
+                <mesh filename="package://yahboomcar_description/meshes/PAA5100JE_sensor.STL" scale="0.001 0.001 0.001"/>
+            </geometry>
+            <material name="Green"/>
+        </visual>
+    </link>
+    <fixed_joint name="paa5100je_mount_joint" parent="base_link" child="paa5100je_mount_link" xyz="-0.038 0.0 -0.060" rpy="1.5707963 0 1.5707963"/>
+
+    <!-- Sensing frame at the centre of the breakout's floor-facing face,
+         axes aligned with base_link (+X forward, +Z up; the lens looks -Z).
+         Its z in base_footprint is the sensor's height above the floor. -->
+    <link name="${ns}/paa5100je_link"/>
+    <fixed_joint name="paa5100je_joint" parent="paa5100je_mount_link" child="paa5100je_link" xyz="0 -0.011 0.029906" rpy="-1.5707963 -1.5707963 0"/>
 </robot>
