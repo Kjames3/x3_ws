@@ -580,40 +580,48 @@
         <child link="tof_optical_frame"/>
         <origin xyz="0 0 0" rpy="-1.5707963 0 -1.5707963"/>
     </joint>
-    <!-- ============ PAA5100JE optical flow sensor (2026-09) ============
-         Downward-looking flow sensor on a printed plate under the chassis
-         bottom edge. Geometry from stls/pa5100je_assembly.STEP, which holds
-         only the plate and the breakout: the plate-to-sensor transform below
-         is exact CAD (sensor at plate (0, -6, 29.906) mm, yawed 180 deg), while
-         paa5100je_mount_joint is a FIRST GUESS to be corrected in
-         `laptop_sim.sh view` against the real robot.
+    <!-- ============ PAA5100JE optical flow sensor (2026-09-16) ============
+         Downward-looking flow sensor that sits in a cut-out of a modified X3
+         Plus bottom plate, held by a printed mount on top of the plate.
+         Geometry from stls/paa5100je_assembly3.STEP, whose placements are all
+         relative to the plate, so everything below the plate joint is exact
+         CAD: mount at plate (-1, 14, 27.5) mm, sensor at (-0.5, 4, 21) mm
+         flipped 180 deg about X. The lens face ends up 1 mm below the plate
+         underside, i.e. ~26.5 mm above the floor with base_joint 0.0815.
 
-         paa5100je_mount_link is the plate's CAD frame (+X across the robot,
-         +Y up away from the sensor, +Z along the robot's +X). Both STLs were
-         exported translated into positive space; the visual origins undo it. -->
-    <link name="paa5100je_mount_link">
+         paa5100je_plate_link is the plate's CAD frame: +X across the robot,
+         +Y up (y=0 is the underside), +Z along the robot's +X. Its joint puts
+         the underside on the chassis bottom (base_link z=-0.054); the fore/aft
+         x and which end faces forward are NOT verified against the robot.
+         The plate and mount STLs were converted from STEP in their part
+         frames (metres); the sensor STL is the SolidWorks export (mm,
+         translated into positive space, undone by its visual origin). -->
+    <link name="paa5100je_plate_link">
         <inertial>
-            <origin xyz="0 0.002 0.040" rpy="0 0 0"/>
-            <mass value="0.130"/>
-            <inertia ixx="2.0E-04" ixy="0" ixz="0" iyy="5.0E-04" iyz="0" izz="3.0E-04"/>
+            <origin xyz="0 0.005 0" rpy="0 0 0"/>
+            <mass value="0.150"/>
+            <inertia ixx="5.5E-04" ixy="0" ixz="0" iyy="8.8E-04" iyz="0" izz="3.3E-04"/>
         </inertial>
         <visual>
-            <origin xyz="-0.081 -0.006 -0.030" rpy="0 0 0"/>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="package://yahboomcar_description/meshes/paa5100je_bottom_mount.STL" scale="0.001 0.001 0.001"/>
+                <mesh filename="package://yahboomcar_description/meshes/X3plus_bottom_plate_modified.STL"/>
+            </geometry>
+            <material name="">
+                <color rgba="0.20 0.20 0.22 1"/>
+            </material>
+        </visual>
+        <visual>
+            <origin xyz="-0.001 0.014 0.0275" rpy="1.5707963 0 0"/>
+            <geometry>
+                <mesh filename="package://yahboomcar_description/meshes/paa5100je_left_centered_mount.STL"/>
             </geometry>
             <material name="">
                 <color rgba="0.75 0.75 0.78 1"/>
             </material>
         </visual>
-        <collision>
-            <origin xyz="-0.081 -0.006 -0.030" rpy="0 0 0"/>
-            <geometry>
-                <mesh filename="package://yahboomcar_description/meshes/paa5100je_bottom_mount.STL" scale="0.001 0.001 0.001"/>
-            </geometry>
-        </collision>
         <visual>
-            <origin xyz="0.012 -0.006 0.017906" rpy="0 0 3.1415927"/>
+            <origin xyz="-0.0125 0.004 0.033" rpy="3.1415927 0 0"/>
             <geometry>
                 <mesh filename="package://yahboomcar_description/meshes/PAA5100JE_sensor.STL" scale="0.001 0.001 0.001"/>
             </geometry>
@@ -622,19 +630,19 @@
             </material>
         </visual>
     </link>
-    <joint name="paa5100je_mount_joint" type="fixed">
+    <joint name="paa5100je_plate_joint" type="fixed">
         <parent link="base_link"/>
-        <child link="paa5100je_mount_link"/>
-        <origin xyz="-0.038 0.0 -0.060" rpy="1.5707963 0 1.5707963"/>
+        <child link="paa5100je_plate_link"/>
+        <origin xyz="-0.0344 0.0 -0.054" rpy="1.5707963 0 1.5707963"/>
     </joint>
 
-    <!-- Sensing frame at the centre of the breakout's floor-facing face,
-         axes aligned with base_link (+X forward, +Z up; the lens looks -Z).
-         Its z in base_footprint is the sensor's height above the floor. -->
+    <!-- Sensing frame at the centre of the lens face, axes aligned with
+         base_link (+X forward, +Z up; the lens looks -Z). Its z in
+         base_footprint is the sensor's height above the floor. -->
     <link name="paa5100je_link"/>
     <joint name="paa5100je_joint" type="fixed">
-        <parent link="paa5100je_mount_link"/>
+        <parent link="paa5100je_plate_link"/>
         <child link="paa5100je_link"/>
-        <origin xyz="0 -0.011 0.029906" rpy="-1.5707963 -1.5707963 0"/>
+        <origin xyz="-0.0005 -0.001 0.021" rpy="-1.5707963 -1.5707963 0"/>
     </joint>
 </robot>
