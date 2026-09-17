@@ -48,10 +48,10 @@ def test_parse_rejects_wrong_length():
 
 
 def test_measured_pushes_map_to_robot_axes():
-    # 20 cm forward read dy ~ +5200; 20 cm left read dx ~ +5100 (2026-09-16).
-    vx, vy = counts_to_sensor_velocity(0, 5200, 1.0)
+    # Forward pushes read +dy, left pushes read +dx (2026-09-16).
+    vx, vy = counts_to_sensor_velocity(0, 4880, 1.0)
     assert vx == pytest.approx(0.2, rel=0.01) and vy == 0.0
-    vx, vy = counts_to_sensor_velocity(5200, 0, 1.0)
+    vx, vy = counts_to_sensor_velocity(4880, 0, 1.0)
     assert vy == pytest.approx(0.2, rel=0.01) and vx == 0.0
 
 
