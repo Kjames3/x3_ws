@@ -46,6 +46,7 @@ setup(
         'octomap_throttle_node = yahboomcar_bringup.octomap_throttle_node:main',   
         'icm42688_node = yahboomcar_bringup.icm42688_node:main',
         'tof_node = yahboomcar_bringup.tof_node:main',
+        'flow_node = yahboomcar_bringup.flow_node:main',
         ],
     },
 )
