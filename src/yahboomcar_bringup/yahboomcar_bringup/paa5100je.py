@@ -11,6 +11,8 @@ REG_ORIENTATION (set_rotation was never called).
 
 Wiring: /dev/spidev0.1 (pin 26 CS1), 3.3 V on pin 17, mode 0, 400 kHz.
 """
+import fcntl
+import os
 import time
 
 try:
@@ -32,6 +34,19 @@ class PAA5100JE:
     def __init__(self, spi_bus=0, spi_cs=1, speed_hz=400000):
         if spidev is None:
             raise RuntimeError('spidev is not installed')
+        # Exclusive advisory lock on the device node.  Every motion-burst read
+        # CLEARS the chip's delta counters, so two readers split the counts
+        # between them and each publishes roughly half the true velocity --
+        # which happened (2026-09-16: a stale node plus a new one made a 3 m
+        # drive integrate to ~2 m).  Fail loudly instead.
+        self._lock_fd = os.open(f'/dev/spidev{spi_bus}.{spi_cs}', os.O_RDWR)
+        try:
+            fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(self._lock_fd)
+            raise RuntimeError(
+                f'/dev/spidev{spi_bus}.{spi_cs} is already in use by another PAA5100JE '
+                'reader (another flow_node?); two readers split the motion counts') from None
         self.spi_dev = spidev.SpiDev()
         self.spi_dev.open(spi_bus, spi_cs)
         self.spi_dev.mode = 0
@@ -63,6 +78,10 @@ class PAA5100JE:
     def close(self):
         try:
             self.spi_dev.close()
+        except Exception:
+            pass
+        try:
+            os.close(self._lock_fd)      # releases the flock
         except Exception:
             pass
 

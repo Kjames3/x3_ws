@@ -157,8 +157,8 @@ def main():
     ap.add_argument('--tape-left', type=float, help='measured leftward distance, m')
     ap.add_argument('--counts-per-m', type=float, default=DEFAULT_COUNTS_PER_M,
                     help='value flow_node is running with')
-    args = ap.parse_args()
-    rclpy.init()
+    args, ros_args = ap.parse_known_args()    # pass --ros-args remaps through
+    rclpy.init(args=['flow_odom_compare'] + ros_args)
     node = Compare()
     try:
         rclpy.spin(node)
