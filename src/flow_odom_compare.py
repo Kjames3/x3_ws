@@ -4,7 +4,7 @@
 Integrates /flow/twist and differences /odom_raw from the moment this starts,
 both expressed in the robot's STARTING frame (forward / left), with heading
 from /imu/data.  Drive a measured distance, stop, Ctrl+C, and it prints the
-totals plus the counts_per_m that would make flow match the tape.
+totals plus the counts_per_m, from raw sensor counts, that matches the tape.
 
     ros2 run flow_node first, then:
     python3 src/flow_odom_compare.py --tape-fwd 1.0          # forward run
@@ -13,17 +13,16 @@ totals plus the counts_per_m that would make flow match the tape.
 import argparse
 import json
 import math
-import time
 
 import rclpy
 from geometry_msgs.msg import TwistWithCovarianceStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import Imu
 from std_msgs.msg import String
 
-DEFAULT_COUNTS_PER_M = 24400.0
+DEFAULT_COUNTS_PER_M = 23850.0
 
 
 def yaw_of(q):
@@ -49,10 +48,13 @@ class Compare(Node):
         self.moving_dist = 0.0
         self.squal_min = 255
         self.low_squal = self.rejected = self.reads = 0
+        self.raw_dx = self.raw_dy = 0     # sensor counts, from /flow/status
         self.create_subscription(String, '/flow/status', self.on_status, 10)
         self.create_subscription(Imu, '/imu/data', self.on_imu, qos_profile_sensor_data)
+        # Best effort to match the publisher, but a deep queue: with the default
+        # sensor-data depth of 5, bursts of /flow/twist overflowed it mid-drive.
         self.create_subscription(TwistWithCovarianceStamped, '/flow/twist', self.on_flow,
-                                 qos_profile_sensor_data)
+                                 QoSProfile(depth=500, reliability=ReliabilityPolicy.BEST_EFFORT))
         self.create_subscription(Odometry, '/odom_raw', self.on_odom, 10)
         self.create_timer(0.5, self.show)
 
@@ -62,12 +64,15 @@ class Compare(Node):
             self.yaw0 = self.yaw
 
     def on_flow(self, msg):
-        now = time.monotonic()
+        # Integrate on the PUBLISHER's stamps, not arrival time: DDS delivers
+        # /flow/twist in bursts (gaps of 0.3 s then clumps), and arrival-time
+        # integration silently dropped a third of a 3 m drive.
+        now = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         if self.flow_t is None or self.yaw is None:
             self.flow_t = now
             return
         dt, self.flow_t = now - self.flow_t, now
-        if dt > 0.2:                     # a gap: don't integrate across it
+        if dt <= 0.0 or dt > 0.5:        # reordered, or a real publisher gap
             return
         h = wrap(self.yaw - self.yaw0)
         vx, vy = msg.twist.twist.linear.x, msg.twist.twist.linear.y
@@ -86,6 +91,8 @@ class Compare(Node):
         self.low_squal += st['low_squal']
         self.rejected += st['rejected']
         self.squal_min = min(self.squal_min, st['squal_min'])
+        self.raw_dx += st['counts_dx']
+        self.raw_dy += st['counts_dy']
 
     def on_odom(self, msg):
         p = msg.pose.pose
@@ -113,7 +120,13 @@ class Compare(Node):
 
 def report(node, args):
     print('\n==== totals (start frame) ====')
-    print(f'flow : fwd {node.fx:+.4f} m  left {node.fy:+.4f} m')
+    # raw is the calibration reference: summed sensor counts from /flow/status,
+    # immune to message loss, but in the ROBOT frame and only whole 2 s status
+    # windows (wait >= 3 s after stopping), so it suits straight runs, not arcs.
+    # flow integrates /flow/twist and loses distance if messages are dropped.
+    print(f'flow : fwd {node.fx:+.4f} m  left {node.fy:+.4f} m  ({node.n_flow} msgs; unreliable if low)')
+    print(f'raw  : fwd {node.raw_dy / args.counts_per_m:+.4f} m  left {node.raw_dx / args.counts_per_m:+.4f} m'
+          f'  ({node.raw_dy} dy / {node.raw_dx} dx counts)')
     o = node.odom_delta()
     if o:
         print(f'odom : fwd {o[0]:+.4f} m  left {o[1]:+.4f} m  yaw {o[2]:+.2f} deg')
@@ -130,8 +143,9 @@ def report(node, args):
         if tape is None:
             continue
         line = f'{name}: tape {tape:.3f} m | flow error {100 * (flow - tape) / tape:+.1f}%'
-        if abs(flow) > 1e-3:
-            line += f' -> counts_per_m {args.counts_per_m * abs(flow) / tape:.0f}'
+        raw = node.raw_dy if name == 'fwd' else node.raw_dx
+        if raw:
+            line += f' | raw counts_per_m {abs(raw) / tape:.0f}'
         if od is not None:
             line += f' | odom error {100 * (od - tape) / tape:+.1f}%'
         print(line)

@@ -4,14 +4,15 @@ Calibration (2026-09-16, sensor lens 26.5 mm above the floor):
 
   * axes: robot forward = +dy, robot left = +dx.  No mirror, no swap beyond
     that, with the vendored init (which never writes REG_ORIENTATION).
-  * scale: 24,400 counts/m, from four 1 m forward drives under power against
-    tape (23,919-24,757, +-1.7%) at 0.13-0.20 m/s mean with SQUAL >= 193.
-    Earlier 20 cm hand pushes gave ~26,000, probably because the tester
-    pressed down on the chassis (lower sensor, more counts); use driven
-    numbers.  Left strafes read lower (22,186-23,020 over four runs) but three
-    of the four arced 16-21 deg, so the endpoint was ambiguous; the left axis
-    is NOT separately calibrated until strafes run straight.  The scale is
-    height-dependent: re-measure after any mount change.
+  * scale: 23,850 counts/m, from summed raw sensor counts on a 3.000 m
+    forward drive on carpet (71,533 counts, tape endpoint within 1 cm,
+    0.15 m/s mean, SQUAL >= 189).  24,400 from earlier 1 m drives is void: it
+    integrated /flow/twist in a compare script whose subscriber dropped
+    messages.  ~26,000 from 20 cm hand pushes WAS raw counts, but short and
+    probably with the chassis pressed down (lower sensor, more counts).
+    The left axis is NOT separately calibrated: strafes arced 16-21 deg.
+    The scale is height-dependent (and may differ between carpet and hard
+    floor): re-measure after any mount change.
 
 The trap this module exists to guard: on shiny / low-texture strips the chip
 keeps asserting data-ready and keeps counting, but UNDER-counts by 15-20%.
@@ -22,7 +23,7 @@ import math
 import struct
 from dataclasses import dataclass
 
-DEFAULT_COUNTS_PER_M = 24400.0
+DEFAULT_COUNTS_PER_M = 23850.0
 
 # Pimoroni's own reject rule: very low SQUAL with the shutter pegged means the
 # chip has no usable image at all (lifted off the floor, or pitch black).
