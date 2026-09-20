@@ -24,7 +24,8 @@ the bracket's rear plane changed from local z=-24.5 to -21.5 mm. That initially 
 the rear mating plane; the lateral attachment origin remains. The user requested a 3 mm upward
 refinement after the first RViz preview, confirmed that height, then requested
 a further 16 mm forward translation.
-This is a starting alignment, not a measurement of the newly installed mount.
+The user confirmed this placement in RViz on 2026-09-19. Physical installation
+and measurement are still pending.
 
 | Frame | Robot X | Robot Y | Floor height | Downward pitch |
 |---|---:|---:|---:|---:|
@@ -53,7 +54,8 @@ Humble; its mecanum mesh references now select the existing _X3 filenames.
 
 ## Next: dual-sensor wiring and firmware
 
-Proposed separate buses: upper SDA=18/SCL=19 (Wire), lower SDA=17/SCL=16
-(Wire1). Both can retain 7-bit address 0x29. LPn remains high; INT is optional
-for polling. Combined sensor power needs checking before final wiring.
-This arrangement and a two-sensor benchmark have not yet been hardware-tested.
+Firmware uses separate buses: upper SDA=18/SCL=19 (Wire), lower SDA=17/SCL=16
+(Wire1). Both retain 7-bit address 0x29. LPn remains high; INT is optional
+for polling. See `scripts/teensy_tof_test/README.md` for the external 3.3 V
+power recommendation, wiring, and the Jetson USB receiver. This arrangement
+and the two-sensor benchmark have not yet been hardware-tested.
