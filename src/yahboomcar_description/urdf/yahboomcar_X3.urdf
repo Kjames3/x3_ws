@@ -508,77 +508,87 @@
         <child link="oak_imu_frame"/>
     </joint>
 
-    <!-- ============ VL53L5CX front ToF array (2026-09) ============
-         8x8 multizone ToF on a printed front bracket bolted to the chassis
-         front face. The bracket stands 24.5 mm proud of its mating face and
-         carries the breakout on a tab tilted 15 deg nose-down, so the array
-         looks forward and 15 deg down: it sees the floor and the low
-         obstacles that sit under the 0.340 m lidar plane.
-
-         Geometry from cad/VL53L5CX_test_assembly.STEP. That assembly holds
-         only the bracket and the breakout (no chassis), so the bracket-to-sensor
-         transform below is exact CAD, while tof_mount_joint is fitted to the
-         measured aperture height of 63.5 mm above the floor. Re-measure and
-         adjust tof_mount_joint's xyz if the bracket moves. Fitted against
-         base_joint 0.0815 (bottom plate caliper-measured 27.5 mm above the
-         floor, 2026-09-13); change both together.
-
-         tof_mount_link is the bracket's own CAD frame (+Z out the front,
-         +Y up, +X to the robot's left); the joint does the axis remap. -->
+    <!-- ============ Dual VL53L5CX front ToF arrays (2026-09-19) ============
+         Source: stls/VL53LCX_mount.STEP. Upper adapter 15 deg, lower 40 deg.
+         Meshes are tessellated in CAD part frames, METRES (no 0.001 scale).
+         Mount CAD axes: +X robot-left, +Y up, +Z forward.
+         Starting attachment uses the old bracket's height/lateral origin.
+         Rear mating face moved from CAD z=-24.5 to -21.5 mm, so mount x
+         shifts back 3 mm to preserve that face's chassis position.
+         Refine ONLY tof_mount_joint for whole-assembly placement in RViz.
+         Sensor/adapter relative placements come from the STEP assembly.
+         Sensing origin uses the existing package-face point in board CAD:
+         (0, 2.45, -1.97) mm. Re-measure installed poses before perception use.
+         These are fixed adapter settings, not actuated joints.
+         Legacy tof_link aliases the upper sensor; dual Teensy ingestion and
+         downstream geometry configuration still require a separate update. -->
     <link name="tof_mount_link">
-        <inertial>
-            <origin xyz="0 0.005 -0.005" rpy="0 0 0"/>
-            <mass value="0.030"/>
-            <inertia ixx="1.0E-05" ixy="0" ixz="0" iyy="1.5E-05" iyz="0" izz="1.0E-05"/>
-        </inertial>
-        <visual>
-            <origin xyz="0 0 0" rpy="0 0 0"/>
-            <geometry>
-                <mesh filename="package://yahboomcar_description/meshes/VL53L5CX_alt_front_mount.STL" scale="0.001 0.001 0.001"/>
-            </geometry>
-            <material name="">
-                <color rgba="0.75 0.75 0.78 1"/>
-            </material>
+        <visual><origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry><mesh filename="package://yahboomcar_description/meshes/tof_dual_bracket.stl"/></geometry><material name=""><color rgba="0.75 0.75 0.78 1"/></material>
         </visual>
-        <collision>
-            <origin xyz="0 0 0" rpy="0 0 0"/>
-            <geometry>
-                <mesh filename="package://yahboomcar_description/meshes/VL53L5CX_alt_front_mount.STL" scale="0.001 0.001 0.001"/>
-            </geometry>
-        </collision>
-        <!-- Breakout board. SolidWorks exported this STL translated into
-             positive space, so the visual origin carries the CAD part origin
-             back to (0,0,0) before the assembly transform is applied. -->
-        <visual>
-            <origin xyz="-0.012433 0.023431 0.020028" rpy="-2.8797982 -0.0016335 0.0060965"/>
-            <geometry>
-                <mesh filename="package://yahboomcar_description/meshes/VL53L5CX_sensor.STL" scale="0.001 0.001 0.001"/>
-            </geometry>
-            <material name="">
-                <color rgba="0.05 0.35 0.12 1"/>
-            </material>
+        <collision><origin xyz="0 0 0" rpy="0 0 0"/><geometry><mesh filename="package://yahboomcar_description/meshes/tof_dual_bracket.stl"/></geometry></collision>
+        <visual><origin xyz="0.000000000 0.114000000 0.003500000" rpy="0.000000000 -0.000000000 0.000000000"/>
+            <geometry><mesh filename="package://yahboomcar_description/meshes/tof_adapter_15.stl"/></geometry><material name=""><color rgba="0.75 0.75 0.78 1"/></material>
         </visual>
+        <collision><origin xyz="0.000000000 0.114000000 0.003500000" rpy="0.000000000 -0.000000000 0.000000000"/><geometry><mesh filename="package://yahboomcar_description/meshes/tof_adapter_15.stl"/></geometry></collision>
+        <visual><origin xyz="0.000000000 0.020000000 0.003500000" rpy="0.000000000 -0.000000000 0.000000000"/>
+            <geometry><mesh filename="package://yahboomcar_description/meshes/tof_adapter_40.stl"/></geometry><material name=""><color rgba="0.75 0.75 0.78 1"/></material>
+        </visual>
+        <collision><origin xyz="0.000000000 0.020000000 0.003500000" rpy="0.000000000 -0.000000000 0.000000000"/><geometry><mesh filename="package://yahboomcar_description/meshes/tof_adapter_40.stl"/></geometry></collision>
     </link>
     <joint name="tof_mount_joint" type="fixed">
-        <parent link="base_link"/>
-        <child link="tof_mount_link"/>
-        <origin xyz="0.1320 0.0 -0.033549" rpy="1.5707963 0 1.5707963"/>
+        <parent link="base_link"/><child link="tof_mount_link"/>
+        <origin xyz="0.1450 0.0 -0.030549" rpy="1.570796326795 0 1.570796326795"/>
     </joint>
-
-    <!-- Sensing frame at the VL53L5CX package face, REP-103: +X is the
-         optical axis (forward, 15 deg down), +Z up. -->
+    <link name="tof_upper_board_link">
+        <visual><origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry><mesh filename="package://yahboomcar_description/meshes/tof_breakout.stl"/></geometry><material name=""><color rgba="0.05 0.35 0.12 1"/></material>
+        </visual>
+        <collision><origin xyz="0 0 0" rpy="0 0 0"/><geometry><mesh filename="package://yahboomcar_description/meshes/tof_breakout.stl"/></geometry></collision>
+    </link>
+    <joint name="tof_upper_board_joint" type="fixed">
+        <parent link="tof_mount_link"/><child link="tof_upper_board_link"/>
+        <origin xyz="-0.000100000 0.113745168 0.016700834" rpy="-2.879793264 -0.000000000 0.000000000"/>
+    </joint>
+    <link name="tof_upper_link"/>
+    <joint name="tof_upper_joint" type="fixed">
+        <parent link="tof_mount_link"/><child link="tof_upper_link"/>
+        <origin xyz="-0.000100000 0.110868776 0.017969601" rpy="0.000000000 -1.308996939 -1.570796327"/>
+    </joint>
+    <link name="tof_upper_optical_frame"/>
+    <joint name="tof_upper_optical_joint" type="fixed">
+        <parent link="tof_upper_link"/><child link="tof_upper_optical_frame"/>
+        <origin xyz="0 0 0" rpy="-1.570796326795 0 -1.570796326795"/>
+    </joint>
+    <link name="tof_lower_board_link">
+        <visual><origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry><mesh filename="package://yahboomcar_description/meshes/tof_breakout.stl"/></geometry><material name=""><color rgba="0.05 0.35 0.12 1"/></material>
+        </visual>
+        <collision><origin xyz="0 0 0" rpy="0 0 0"/><geometry><mesh filename="package://yahboomcar_description/meshes/tof_breakout.stl"/></geometry></collision>
+    </link>
+    <joint name="tof_lower_board_joint" type="fixed">
+        <parent link="tof_mount_link"/><child link="tof_lower_board_link"/>
+        <origin xyz="-0.000100000 0.018035352 0.019528620" rpy="-2.443460930 -0.000000000 -0.000000000"/>
+    </joint>
+    <link name="tof_lower_link"/>
+    <joint name="tof_lower_joint" type="fixed">
+        <parent link="tof_mount_link"/><child link="tof_lower_link"/>
+        <origin xyz="-0.000100000 0.014892252 0.019462898" rpy="0.000000000 -0.872664626 -1.570796327"/>
+    </joint>
+    <link name="tof_lower_optical_frame"/>
+    <joint name="tof_lower_optical_joint" type="fixed">
+        <parent link="tof_lower_link"/><child link="tof_lower_optical_frame"/>
+        <origin xyz="0 0 0" rpy="-1.570796326795 0 -1.570796326795"/>
+    </joint>
     <link name="tof_link"/>
     <joint name="tof_joint" type="fixed">
-        <parent link="tof_mount_link"/>
-        <child link="tof_link"/>
-        <origin xyz="0.000115 0.016049 0.017941" rpy="0 -1.3089969 -1.5707963"/>
+        <parent link="tof_upper_link"/><child link="tof_link"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
     </joint>
-    <!-- Optical convention (+Z along the optical axis, +X right, +Y down) -->
     <link name="tof_optical_frame"/>
     <joint name="tof_optical_joint" type="fixed">
-        <parent link="tof_link"/>
-        <child link="tof_optical_frame"/>
-        <origin xyz="0 0 0" rpy="-1.5707963 0 -1.5707963"/>
+        <parent link="tof_link"/><child link="tof_optical_frame"/>
+        <origin xyz="0 0 0" rpy="-1.570796326795 0 -1.570796326795"/>
     </joint>
     <!-- ============ PAA5100JE optical flow sensor (2026-09-16) ============
          Downward-looking flow sensor that sits in a cut-out of a modified X3
