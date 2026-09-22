@@ -157,6 +157,30 @@ def frame_to_points(distance_mm, target_status, resolution: int = 8,
     return pts.astype(np.float32), keep
 
 
+def zone_low_edge_points(points, resolution: int = 8, fov_deg: float = FOV_DEG):
+    """Each sensor-frame point re-cast along the LOWEST ray of its own zone.
+
+    A zone that meets the floor at a grazing angle covers a long strip of it,
+    and the sensor reports the NEAR end of that strip.  Cast along the zone's
+    centre ray, that short depth lands ABOVE the floor.  Measured 2026-09-22
+    on the upper (15 deg) array: its row-3 zones, reading bare floor, came out
+    as a 6 cm edge at 0.64 m in 47 of 111 frames.
+
+    A point is only safely "above the floor" if it is above it along the
+    lowest ray too, so obstacle tests should threshold THESE heights.  Same
+    depth (x) and azimuth; elevation lowered by half a zone.  A real vertical
+    face loses only depth*tan(half zone), ~5 cm per metre at 8x8.
+    """
+    p = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    half = math.radians(fov_deg) / resolution / 2.0
+    x = p[:, 0]
+    az = np.arctan2(p[:, 1], x)
+    el = np.arctan(p[:, 2] * np.cos(az) / x)
+    out = p.copy()
+    out[:, 2] = x * np.tan(el - half) / np.cos(az)
+    return out
+
+
 def floor_slant_ranges(mount_height_m: float, pitch_deg: float,
                        resolution: int = 8, fov_deg: float = FOV_DEG):
     """What each zone row READS off a flat floor, as the sensor reports it.

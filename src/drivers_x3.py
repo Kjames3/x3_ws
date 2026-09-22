@@ -785,6 +785,7 @@ def _load_tof_geometry():
 # this repo, so a failure here is a broken checkout, not an optional dependency.
 _tof_geom = _load_tof_geometry()
 frame_to_points = _tof_geom.frame_to_points
+tof_zone_low_edge_points = _tof_geom.zone_low_edge_points
 tof_valid_mask = _tof_geom.valid_mask
 FOV_DEG = _tof_geom.FOV_DEG
 VALID_STATUS = _tof_geom.VALID_STATUS

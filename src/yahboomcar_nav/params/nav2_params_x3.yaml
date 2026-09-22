@@ -295,15 +295,17 @@ local_costmap:
           clearing: True
           marking: True
           data_type: "LaserScan"
-        # Mark-only.  Floor returns land at z = -0.015..0 m through TF, so 0.04
-        # rejects them; they are height-filtered before clearing too, so the
+        # Mark-only.  /tof/*/obstacles is already floor-filtered by server_x3
+        # (per-zone lowest-ray test; the raw clouds fake a 6 cm edge where a
+        # zone grazes the floor).  Floor returns land at z = -0.015..0 m, so 0.04
+        # also rejects them here; they are height-filtered before clearing too, so the
         # ToF could never clear anyway.  A removed box is cleared by /scan rays
         # passing over its cell -- the layer clears before it marks, so a box
         # the ToF still sees survives every scan pass.  Do not raise
         # min_obstacle_height to the 0.12 used elsewhere: that discards exactly
         # the low obstacles these sensors exist for.
         tof_upper:
-          topic: /tof/upper/points
+          topic: /tof/upper/obstacles
           data_type: "PointCloud2"
           marking: True
           clearing: False
@@ -313,7 +315,7 @@ local_costmap:
           obstacle_max_range: 1.5
           observation_persistence: 0.0
         tof_lower:
-          topic: /tof/lower/points
+          topic: /tof/lower/obstacles
           data_type: "PointCloud2"
           marking: True
           clearing: False

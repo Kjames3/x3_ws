@@ -88,7 +88,7 @@ logger = logging.getLogger(__name__)
 from drivers_x3 import (
     Rosmaster, MecanumDrive, YDLidarDriver, AstraCamera, OLEDDisplay, SERIAL_PORT,
     INA226BatteryMonitor, TeensyToFArrays, TEENSY_TOF_PORT, tof_valid_mask,
-    frame_to_points
+    frame_to_points, tof_zone_low_edge_points
 )
 from nav2_client import Nav2Client
 from frontier_explorer import FrontierExplorer
@@ -308,6 +308,37 @@ _sweep_settled_bypass = False   # Retained in telemetry for compatibility.
 # How old /scan-derived obstacles may be before the CBF stops trusting them.
 # /scan_raw measures ~6.4 Hz (156 ms), so 0.5 s allows ~3 missed scans.
 OBSTACLE_STALE_S = 0.5
+# ToF points fed to the CBF.  Only points ABOVE the floor cutoff count (the floor
+# lands at z = -0.015..0 m through TF, same 0.04 the costmap uses), judged along
+# each zone's LOWEST ray (tof_geometry.zone_low_edge_points: grazing zones read
+# the near end of their floor strip and otherwise fake a 6 cm edge), inside the
+# same 1.0 m the /scan feed uses.  Dropped after TOF_CBF_STALE_S so a Teensy
+# dropout can never freeze a phantom obstacle (F7); scan protection is
+# unaffected either way.  Deduplicated on a TOF_CBF_GRID_M grid: coincident
+# points are identical SLSQP constraints, so this bounds solver cost without
+# pruning any direction (never sector-prune the CBF).
+TOF_CBF_MIN_Z_M = 0.04
+TOF_CBF_MAX_RANGE_M = 1.0
+TOF_CBF_STALE_S = 0.3
+TOF_CBF_GRID_M = 0.05
+# A zone must pass the above-floor test in this many CONSECUTIVE frames.  The
+# upper array throws single-frame ghosts (row-3 depths shorter than any floor
+# it can see; likely crosstalk from the unsynchronised lower array): measured
+# 2026-09-22 on bare floor, 57 hit runs in 60 s, of lengths 1 x54, 2 x2, 3 x1.
+# Costs (N-1) frames of latency, ~133 ms at 15 Hz.
+TOF_CBF_PERSIST_FRAMES = 3
+# ...and once confirmed, a grid cell is HELD this long after its last sighting.
+# The drive test lost the box for single frames as it crossed zone boundaries,
+# and each dropout released the brake.  Same horizon as TOF_CBF_STALE_S, so a
+# held cell can never outlive the freshness rule.
+TOF_CBF_HOLD_S = 0.3
+# Speed the base driver adds to ANY nonzero wheel command: Mcnamu_driver_X3
+# adds min_pwm = 28 to overcome static friction, at SCALE = 200 PWM per m/s.
+# Executed speed is therefore ~|cmd| + 0.14 m/s, and a CBF that shrinks 0.02
+# to 0.005 changes nothing on the floor.  Measured 2026-09-22: cmd 0.01-0.02
+# drove at ~0.11 m/s, and the robot hit a box the CBF was tracking.  Keep in
+# step with the driver's min_pwm / SCALE.
+CMD_DEADBAND_MPS = 28.0 / 200.0
 
 # Which websocket asked for the running sweep, so it can be cancelled when
 # that client goes away, and a wall-clock backstop for every other way a
@@ -617,6 +648,14 @@ class ROS2Bridge:
         # When that list was last REFRESHED.  Without this the CBF cannot
         # tell a live obstacle from one frozen by a /scan dropout.
         self._obstacles_stamp = 0.0
+        # ToF obstacles for the CBF: name -> (Nx2 base-frame xy, monotonic).
+        self._tof_obstacles = {}
+        self._tof_streak = {}   # name -> per-zone consecutive-pass counts
+        self._tof_cells = {}    # name -> {grid cell: last monotonic sighting}
+        # Static TF only (child -> (parent, R, t)).  A full TransformListener
+        # would run every high-rate /tf message through Python on this node.
+        self._static_tf = {}
+        self._tof_extrinsics = {}
 
         # SLAM Toolbox publishes /map as TRANSIENT_LOCAL; match so late-joining still gets the map
         _map_qos = QoSProfile(depth=1,
@@ -636,6 +675,11 @@ class ROS2Bridge:
         self._node.create_subscription(OccupancyGrid,  '/map',              self._map_cb,    _map_qos)
         from rclpy.qos import qos_profile_sensor_data
         self._node.create_subscription(LaserScan,      '/scan',             self._scan_cb,   qos_profile_sensor_data)
+        from tf2_msgs.msg import TFMessage
+        self._node.create_subscription(
+            TFMessage, '/tf_static', self._tf_static_cb,
+            QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self._cmd_vel_pub = self._node.create_publisher(Twist, '/cmd_vel', 10)
 
         # Publishers for pedestrian tracking (EE244 Project)
@@ -652,9 +696,11 @@ class ROS2Bridge:
         # reliable and best-effort subscribers, and RViz2's PointCloud2 display
         # defaults to reliable -- with best effort here it silently showed
         # nothing.  At <=64 points (~800 B) reliability costs nothing.
+        # /tof/<name>/points is every valid return; /tof/<name>/obstacles is the
+        # subset that passes the CBF's above-floor test, for the costmap.
         self._tof_pubs = {
-            name: self._node.create_publisher(PointCloud2, f'/tof/{name}/points', 5)
-            for name in ('upper', 'lower')}
+            (name, kind): self._node.create_publisher(PointCloud2, f'/tof/{name}/{kind}', 5)
+            for name in ('upper', 'lower') for kind in ('points', 'obstacles')}
 
         # Staleness tracking for odom (Idea 225) and depth (Idea 230)
         self._odom_stamp = 0.0
@@ -853,6 +899,98 @@ class ROS2Bridge:
                 "theta": self._pose_m["theta"],
             }
 
+    def _tf_static_cb(self, msg):
+        for tf in msg.transforms:
+            q, t = tf.transform.rotation, tf.transform.translation
+            x, y, z, w = q.x, q.y, q.z, q.w
+            R = np.array([
+                [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+            child = tf.child_frame_id.lstrip('/')
+            self._static_tf[child] = (tf.header.frame_id.lstrip('/'), R,
+                                      np.array([t.x, t.y, t.z]))
+        self._tof_extrinsics.clear()   # recompute against the new tree
+
+    def _tof_extrinsic(self, name):
+        """(R, t) mapping tof_<name>_link points into base_footprint, from the
+        URDF via /tf_static, or None until the whole chain has arrived."""
+        ext = self._tof_extrinsics.get(name)
+        if ext is not None:
+            return ext
+        frame, R, t = f'tof_{name}_link', np.eye(3), np.zeros(3)
+        for _ in range(16):
+            if frame == 'base_footprint':
+                self._tof_extrinsics[name] = (R, t)
+                return R, t
+            link = self._static_tf.get(frame)
+            if link is None:
+                return None
+            parent, Rp, tp = link
+            R, t = Rp @ R, Rp @ t + tp
+            frame = parent
+        return None
+
+    def set_tof_obstacles(self, name, points, zones):
+        """Sensor-frame ToF points -> above-floor CBF obstacles (base xy).
+
+        ``zones`` is each point's zone index, for the per-zone persistence
+        test.  Returns the keep mask over ``points`` (None until TF has
+        arrived) so the same selection can be published for the costmap.
+        """
+        ext = self._tof_extrinsic(name)
+        if ext is None:
+            return None
+        R, t = ext
+        p = np.asarray(points, dtype=np.float64) @ R.T + t
+        z_low = (tof_zone_low_edge_points(points) @ R.T + t)[:, 2]
+        xy = p[:, :2]
+        passed = (z_low > TOF_CBF_MIN_Z_M) & \
+                 (np.hypot(xy[:, 0], xy[:, 1]) < TOF_CBF_MAX_RANGE_M)
+        streak = self._tof_streak.setdefault(name, np.zeros(64, dtype=np.int32))
+        hit = np.zeros(64, dtype=bool)
+        hit[zones[passed]] = True
+        streak[:] = np.where(hit, streak + 1, 0)   # invalid zones reset too
+        keep = passed & (streak[zones] >= TOF_CBF_PERSIST_FRAMES)
+        now = time.monotonic()
+        held = self._tof_cells.setdefault(name, {})
+        for cell in map(tuple, np.round(xy[keep] / TOF_CBF_GRID_M).astype(np.int64).tolist()):
+            held[cell] = now
+        for cell in [c for c, t in held.items() if now - t > TOF_CBF_HOLD_S]:
+            del held[cell]
+        xy = np.array(list(held), dtype=np.float64).reshape(-1, 2) * TOF_CBF_GRID_M
+        with self._lock:
+            self._tof_obstacles[name] = (xy, now)
+        return keep
+
+    def _limit_for_deadband(self, vx, vy, obstacles):
+        """Re-check the CBF output at the speed the base will EXECUTE.
+
+        The driver runs direction d at speed s + CMD_DEADBAND_MPS for a command
+        of speed s.  Each CBF constraint is linear in u, a.u + gamma*h >= 0 with
+        a = -2*(o - r), so along d it bounds s from above wherever a.d < 0.
+        Returns the command shortened to the tightest bound, or zero when even
+        the bare deadband speed would breach one.  Never lengthens it, never
+        turns it, so it cannot add motion the CBF did not allow.
+        """
+        s = math.hypot(vx, vy)
+        if s < 1e-6 or not obstacles:
+            return vx, vy
+        dx, dy = vx / s, vy / s
+        o = np.asarray(obstacles, dtype=np.float64)
+        a_dot_d = -2.0 * (o[:, 0] * dx + o[:, 1] * dy)
+        h = (o * o).sum(axis=1) - self.cbf.safe_distance ** 2
+        limiting = a_dot_d < 0
+        if not limiting.any():
+            return vx, vy
+        s_max = float(np.min(self.cbf.gamma * h[limiting] / -a_dot_d[limiting])) \
+            - CMD_DEADBAND_MPS
+        if s_max <= 0.0:
+            return 0.0, 0.0
+        if s_max < s:
+            return dx * s_max, dy * s_max
+        return vx, vy
+
     def move(self, vx: float, vy: float, omega: float):
         from geometry_msgs.msg import Twist
         global velocity_estimation_enabled, velocity_estimator
@@ -860,6 +998,10 @@ class ROS2Bridge:
         with self._lock:
             obstacles = list(self._latest_obstacles)
             obst_age = time.monotonic() - self._obstacles_stamp
+            now = time.monotonic()
+            for xy, stamp in self._tof_obstacles.values():
+                if now - stamp < TOF_CBF_STALE_S:
+                    obstacles.extend(map(tuple, xy.tolist()))
             
         if velocity_estimation_enabled and velocity_estimator is not None:
             try:
@@ -917,6 +1059,7 @@ class ROS2Bridge:
             self._warned_stale_obst = False
             # Robot is at (0,0) in its local frame, matching the obstacle coords.
             safe_vx, safe_vy = self.cbf.filter_velocity(vx, vy, (0.0, 0.0), obstacles)
+            safe_vx, safe_vy = self._limit_for_deadband(safe_vx, safe_vy, obstacles)
 
         msg = Twist()
         msg.linear.x  = float(safe_vx)    * self.LINEAR_SCALE
@@ -924,8 +1067,8 @@ class ROS2Bridge:
         msg.angular.z = float(omega) * self.ANGULAR_SCALE
         self._cmd_vel_pub.publish(msg)
 
-    def publish_tof_cloud(self, name, points):
-        """(N,3) float32 sensor-frame points -> /tof/<name>/points.
+    def publish_tof_cloud(self, name, points, kind='points'):
+        """(N,3) float32 sensor-frame points -> /tof/<name>/<kind>.
 
         N == 0 is published, not skipped: consumers must be able to tell
         "measured nothing" from "publisher died" (the F7 frozen-obstacle trap).
@@ -943,7 +1086,7 @@ class ROS2Bridge:
         msg.row_step = 12 * len(points)
         msg.is_dense = True
         msg.data = np.ascontiguousarray(points, dtype='<f4').tobytes()
-        self._tof_pubs[name].publish(msg)
+        self._tof_pubs[(name, kind)].publish(msg)
 
     def stop(self):
         """A REAL stop: a zero Twist straight to /cmd_vel, bypassing the CBF.
@@ -3337,9 +3480,12 @@ def _publish_tof_cloud(name, seq, dist, status):
     """
     if ros_bridge is None or tof_array is None:   # first frames can beat the assignment
         return
-    pts, _ = frame_to_points(dist, status, resolution=8,
-                             max_range_m=tof_array.max_range_m)
+    pts, zone_mask = frame_to_points(dist, status, resolution=8,
+                                     max_range_m=tof_array.max_range_m)
     ros_bridge.publish_tof_cloud(name, pts)
+    keep = ros_bridge.set_tof_obstacles(name, pts, np.flatnonzero(zone_mask))
+    if keep is not None:
+        ros_bridge.publish_tof_cloud(name, pts[keep], kind='obstacles')
 
 
 async def tof_loop():

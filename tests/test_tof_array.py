@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT / 'src'))
 
 from yahboomcar_bringup.tof_geometry import (  # noqa: E402
     DEFAULT_MAX_RANGE_M, FOV_DEG, VALID_STATUS, floor_coverage,
-    frame_to_points, ray_table, reorder, valid_mask)
+    frame_to_points, ray_table, reorder, valid_mask, zone_low_edge_points)
 
 N = 8
 N2 = N * N
@@ -251,3 +251,62 @@ def test_mount_tf_pitches_the_x_axis_downward():
         node.destroy_node()
     finally:
         rclpy.shutdown()
+
+
+# ------------------------------------------------- grazing-zone floor test
+def _to_base(p, height, pitch_deg):
+    """Sensor frame -> floor frame for a mount pitched nose-down."""
+    c, s_ = math.cos(math.radians(pitch_deg)), math.sin(math.radians(pitch_deg))
+    return np.c_[p[:, 0] * c + p[:, 2] * s_, p[:, 1], -p[:, 0] * s_ + p[:, 2] * c + height]
+
+
+def test_low_edge_lowers_every_zone_by_half_a_zone_and_keeps_depth():
+    p, _ = frame_to_points(*frame(1000.0))
+    lo = zone_low_edge_points(p)
+    assert np.allclose(lo[:, :2], p[:, :2])
+    def el(q):
+        return np.arctan(q[:, 2] * np.cos(np.arctan2(q[:, 1], q[:, 0])) / q[:, 0])
+    assert np.allclose(el(p) - el(lo), math.radians(FOV_DEG / N / 2))
+
+
+def test_grazing_zone_reading_its_near_floor_edge_is_not_an_obstacle():
+    # The 2026-09-22 failure: a zone that grazes the floor reports the NEAR
+    # end of its floor strip.  Cast along the centre ray that reads as a raised
+    # edge; along the zone's lowest ray it is floor again.
+    height, pitch = 0.162, 15.0
+    rays = ray_table(N)
+    half = math.radians(FOV_DEG / N / 2)
+    z_centre, z_low = [], []
+    for i in range(N2):
+        ray = rays[i]
+        el = math.asin(ray[2])
+        low = np.array([math.cos(el - half) * ray[0] / math.cos(el),
+                        ray[1] * math.cos(el - half) / math.cos(el),
+                        math.sin(el - half)])
+        down = _to_base(low[None], 0.0, pitch)[0, 2]
+        if down >= 0:
+            continue                               # low edge never meets the floor
+        depth = (height / -down) * low[0]          # boresight depth of that hit
+        pt = rays[i] * (depth / rays[i, 0])
+        z_centre.append(_to_base(pt[None], height, pitch)[0, 2])
+        z_low.append(_to_base(zone_low_edge_points(pt[None]), height, pitch)[0, 2])
+    assert max(z_centre) > 0.04                    # the phantom is real
+    assert np.allclose(z_low, 0.0, atol=1e-9)      # and the test removes it
+
+
+def test_real_vertical_face_still_clears_the_cutoff():
+    # A 10 cm box face at 0.6 m, seen by the upper mount: its top zones must
+    # stay above 0.04 m even along their lowest ray.
+    height, pitch = 0.162, 15.0
+    rays = ray_table(N)
+    base_rays = _to_base(rays, 0.0, pitch)
+    hits = []
+    for i in range(N2):
+        if base_rays[i, 0] <= 0:
+            continue
+        t = 0.6 / base_rays[i, 0]
+        z = height + t * base_rays[i, 2]
+        if 0.0 < z < 0.10:
+            pt = rays[i] * t
+            hits.append(_to_base(zone_low_edge_points(pt[None]), height, pitch)[0, 2])
+    assert hits and max(hits) > 0.04
