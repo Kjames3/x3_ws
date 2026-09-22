@@ -1,5 +1,13 @@
 # Generated Ideas for Performance & Efficiency
 
+> [!info] This log is also published as one note per idea
+> This file stays the source of truth. `scripts/split_ideas.py` derives one note per
+> idea in [`ideas/notes/`](notes/) with a namespaced id (`JP-`, covering 1–120) and a
+> resolved **Implemented / candidate** status; browse them from [`ideas/INDEX.md`](INDEX.md).
+> Edit *this* file and re-run the script — never edit the generated notes.
+>
+> **Heads up:** `June_architectural_ideas.md` numbers a *different* set of ideas 1–340, so a bare "Idea 81" is ambiguous between the two logs. Note that the ROI analysis and the `Idea N` comments in source both use the *architectural* numbering, not this one.
+
 **Date:** 2026-06-17 01:48 AM
 
 ### 1. Optimize Depth Map Downsampling
