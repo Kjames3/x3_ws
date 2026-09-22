@@ -182,7 +182,13 @@ publishes `/tof/{upper,lower}/points` (raw) and `/tof/{upper,lower}/obstacles`
 - **The base driver adds ~0.14 m/s** (`min_pwm` 28 at 200 PWM per m/s) to any
   nonzero command. The CBF output is re-checked at the executed speed
   (`_limit_for_deadband`); shrinking a small command otherwise does nothing.
-- Known gap: a low box ~0.25–0.40 m from centre is flagged by neither array.
+- Coverage is a **height** gap, not a distance band: objects >= 6 cm are caught
+  from the bumper out to 0.5 m (the upper array sees their tops). The lower
+  array sees only the bottom ~3 cm of anything, so it has its own 1.5 cm
+  cutoff. Even so, its 5.6° zones blend a small object with the floor around
+  it: a 3 cm block reads 1–1.7 cm tall, is missed at 10 cm from the bumper,
+  and is flagged in only ~40% of frames at 5 cm. Height thresholding cannot
+  catch objects under ~5 cm reliably.
 
 ### Settled hardware facts (do not re-derive)
 - `base_joint` z = **0.0815 m**, caliper-measured 2026-09-13 (plate 27.5 mm off

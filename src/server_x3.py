@@ -309,7 +309,7 @@ _sweep_settled_bypass = False   # Retained in telemetry for compatibility.
 # /scan_raw measures ~6.4 Hz (156 ms), so 0.5 s allows ~3 missed scans.
 OBSTACLE_STALE_S = 0.5
 # ToF points fed to the CBF.  Only points ABOVE the floor cutoff count (the floor
-# lands at z = -0.015..0 m through TF, same 0.04 the costmap uses), judged along
+# lands at z = -0.015..0 m through TF; per-array cutoffs below), judged along
 # each zone's LOWEST ray (tof_geometry.zone_low_edge_points: grazing zones read
 # the near end of their floor strip and otherwise fake a 6 cm edge), inside the
 # same 1.0 m the /scan feed uses.  Dropped after TOF_CBF_STALE_S so a Teensy
@@ -317,7 +317,17 @@ OBSTACLE_STALE_S = 0.5
 # unaffected either way.  Deduplicated on a TOF_CBF_GRID_M grid: coincident
 # points are identical SLSQP constraints, so this bounds solver cost without
 # pruning any direction (never sector-prune the CBF).
-TOF_CBF_MIN_Z_M = 0.04
+# Per-array floor cutoff.  The lower array (40 deg, 6.6 cm up) only ever sees the
+# bottom ~3 cm of anything, so at 0.04 it could flag nothing and objects 3-5 cm
+# tall were caught by neither array.  At 0.025 a 3 cm block was still driven
+# into (drive test 2026-09-22): its top row reaches 3 cm only within ~10 cm of
+# the bumper.  0.015 extends that to ~13 cm (simulated).  Its bare floor is
+# clean: over 48,041 lowest-ray points (60 s) the maximum was -0.004 m, 1.9 cm
+# below this cutoff -- but rug edges, thresholds and cables >= 1.5 cm within
+# ~13 cm of the bumper WILL brake.  Its steep view ends ~0.34 m from centre, so
+# it cannot brake on anything further out.  The upper keeps 0.04: its grazing
+# rows are the ones that fake floor edges.
+TOF_CBF_MIN_Z_M = {'upper': 0.04, 'lower': 0.015}
 TOF_CBF_MAX_RANGE_M = 1.0
 TOF_CBF_STALE_S = 0.3
 TOF_CBF_GRID_M = 0.05
@@ -945,7 +955,7 @@ class ROS2Bridge:
         p = np.asarray(points, dtype=np.float64) @ R.T + t
         z_low = (tof_zone_low_edge_points(points) @ R.T + t)[:, 2]
         xy = p[:, :2]
-        passed = (z_low > TOF_CBF_MIN_Z_M) & \
+        passed = (z_low > TOF_CBF_MIN_Z_M[name]) & \
                  (np.hypot(xy[:, 0], xy[:, 1]) < TOF_CBF_MAX_RANGE_M)
         streak = self._tof_streak.setdefault(name, np.zeros(64, dtype=np.int32))
         hit = np.zeros(64, dtype=bool)
