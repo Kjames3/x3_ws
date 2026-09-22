@@ -2163,8 +2163,9 @@ function handleMessage(data) {
 // and monotonic in luminance so a screenshot still reads correctly in grey.
 const TOF_STOPS = [[255,236,179],[252,176,64],[233,105,44],[186,53,90],
                    [104,52,139],[38,54,120],[14,26,48]];
-let tofCells = null;
-let tofSeq = -1;
+// Per-panel state: suffix '' is the upper sensor (original element ids),
+// '-lower' the lower one.
+const tofPanels = {};
 
 function tofColour(mm, maxMm) {
     const t = Math.max(0, Math.min(1, mm / (maxMm || 2500)));
@@ -2174,34 +2175,37 @@ function tofColour(mm, maxMm) {
     return `rgb(${Math.round(a[0]+(b[0]-a[0])*f)},${Math.round(a[1]+(b[1]-a[1])*f)},${Math.round(a[2]+(b[2]-a[2])*f)})`;
 }
 
-function updateTof(tof) {
-    const grid = document.getElementById('tof-grid');
+function updateTofPanel(tof, suffix) {
+    const grid = document.getElementById('tof-grid' + suffix);
     if (!grid) return;
-    const stats = document.getElementById('tof-stats');
+    const stats = document.getElementById('tof-stats' + suffix);
+    const p = tofPanels[suffix] || (tofPanels[suffix] = { cells: null, seq: -1, stale: null });
     if (!tof) {
-        // No sensor (or --no-tof). Say so once rather than leaving a dead grid
-        // that looks like a stalled feed.
+        // No frames yet (Teensy unplugged, sensor inactive, or --no-tof). Say so
+        // rather than leaving a dead grid that looks like a stalled feed.
         if (stats && stats.textContent === '--') stats.textContent = 'not present';
         return;
     }
     const n = tof.n || 8;
-    if (!tofCells || tofCells.length !== n * n) {
+    if (!p.cells || p.cells.length !== n * n) {
         grid.innerHTML = '';
         grid.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
-        tofCells = [];
+        p.cells = [];
         for (let i = 0; i < n * n; i++) {
             const d = document.createElement('div');
             d.className = 'tof-cell';
             grid.appendChild(d);
-            tofCells.push(d);
+            p.cells.push(d);
         }
     }
-    // The array ranges at 10 Hz but the readout lane is 20 Hz, so half the
-    // frames repeat. Skip the redundant repaint instead of thrashing 64 nodes.
-    if (tof.seq === tofSeq) return;
-    tofSeq = tof.seq;
+    // The readout lane is faster than the 15 Hz sensor, so frames repeat.
+    // Skip the redundant repaint instead of thrashing 64 nodes.
+    if (tof.seq === p.seq && tof.stale === p.stale) return;
+    p.seq = tof.seq;
+    p.stale = tof.stale;
+    grid.style.opacity = tof.stale ? '0.35' : '';
     for (let i = 0; i < n * n; i++) {
-        const cell = tofCells[i], ok = tof.keep[i];
+        const cell = p.cells[i], ok = tof.keep[i];
         if (ok) {
             cell.className = 'tof-cell';
             cell.style.backgroundColor = tofColour(tof.dist[i], tof.max_range_mm);
@@ -2212,17 +2216,22 @@ function updateTof(tof) {
         } else {
             cell.className = 'tof-cell tof-bad';
             cell.style.backgroundColor = '';
-            cell.textContent = '\u2014';
+            cell.textContent = '—';
             cell.title = `zone ${Math.floor(i / n)},${i % n}: rejected (status ${tof.status[i]})`;
         }
     }
     if (stats) {
-        stats.textContent = tof.valid
-            ? `${tof.valid}/${n * n} valid \u00b7 ${tof.min}\u2013${tof.max} mm`
+        stats.textContent = tof.stale ? 'stale (no frames)'
+            : tof.valid ? `${tof.valid}/${n * n} valid · ${tof.min}–${tof.max} mm`
             : `0/${n * n} valid`;
     }
     const far = document.getElementById('tof-far');
     if (far) far.textContent = `${((tof.max_range_mm || 2500) / 1000).toFixed(1)} m`;
+}
+
+function updateTof(tof) {
+    updateTofPanel(tof && tof.upper, '');
+    updateTofPanel(tof && tof.lower, '-lower');
 }
 
 function updateUI() {

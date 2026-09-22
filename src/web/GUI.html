@@ -485,15 +485,20 @@
                         </div>
                     </div>
 
-                    <!-- VL53L5CX ToF Array Section -->
+                    <!-- Dual VL53L5CX ToF Arrays (Teensy over USB) -->
                     <div class="control-section-item" style="margin-top: 0.5rem;">
                         <h3 style="margin: 0 0 0.5rem 0; font-size: 0.9rem; color: var(--text-secondary);">
-                            ToF Array <span id="tof-stats" class="fs-xs"
+                            ToF Upper (15&deg;) <span id="tof-stats" class="fs-xs"
                                 style="float: right; color: var(--text-muted); font-weight: 400;">--</span>
                         </h3>
                         <!-- Built once by main.js. Top-left = UP and to the robot's LEFT;
-                             orientation verified by hand 2026-09-12, no flips needed. -->
+                             both dual-mount sensors verified by hand 2026-09-22, no flips. -->
                         <div id="tof-grid" class="tof-grid"></div>
+                        <h3 style="margin: 0.5rem 0 0.5rem 0; font-size: 0.9rem; color: var(--text-secondary);">
+                            ToF Lower (40&deg;) <span id="tof-stats-lower" class="fs-xs"
+                                style="float: right; color: var(--text-muted); font-weight: 400;">--</span>
+                        </h3>
+                        <div id="tof-grid-lower" class="tof-grid"></div>
                         <div class="tof-legend">
                             <span>near</span>
                             <i id="tof-ramp"></i>

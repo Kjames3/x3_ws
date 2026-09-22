@@ -1007,3 +1007,94 @@ class VL53L5CXArray:
             except Exception:
                 pass
             self._bus = None
+
+
+TEENSY_TOF_PORT = '/dev/teensy_tof'   # src/65-teensy-tof.rules
+
+
+class TeensyToFArrays:
+    """Upper + lower VL53L5CX 8x8 arrays streamed by a Teensy over USB serial.
+
+    Firmware: scripts/teensy_tof_test/teensy_tof_test.ino (8x8, 15 Hz,
+    continuous, sharpener 5%, one I2C bus per sensor).  Frames are NDJSON,
+    validated by src/teensy_tof_serial.py so the bench tool and the server
+    parse the protocol identically.
+
+    A reader thread owns the port and keeps only the newest frame per sensor;
+    ``latest()`` never blocks.  Unplugging the Teensy (or the hub) is survived
+    by reopening every 2 s.  ``/dev/ttyACMn`` numbering swaps with the
+    OpenRB-150 between boots, so use /dev/teensy_tof (65-teensy-tof.rules).
+    """
+
+    SENSORS = ('upper', 'lower')
+
+    def __init__(self, port=TEENSY_TOF_PORT, max_range_m=None):
+        from teensy_tof_serial import LineDecoder
+        self.port = port
+        self.max_range_m = DEFAULT_MAX_RANGE_M if max_range_m is None else float(max_range_m)
+        self.connected = False
+        self._decoder_cls = LineDecoder
+        self._lock = threading.Lock()
+        self._frames = {}      # name -> (seq, dist ndarray, status ndarray, monotonic)
+        self._active = {}      # name -> bool from the firmware's status/stats records
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name='teensy-tof', daemon=True)
+        self._thread.start()
+
+    @property
+    def available(self):
+        return True   # the thread keeps retrying; per-sensor freshness is in latest()
+
+    def latest(self, name):
+        """``(seq, distance_mm, target_status, age_s)`` or None if never received."""
+        with self._lock:
+            f = self._frames.get(name)
+        if f is None:
+            return None
+        return f[0], f[1], f[2], time.monotonic() - f[3]
+
+    def sensor_active(self, name):
+        return self._active.get(name)
+
+    def _run(self):
+        try:
+            import serial
+        except ImportError:
+            logger.warning("pyserial not installed — Teensy ToF unavailable")
+            return
+        logged_missing = False
+        while not self._stop.is_set():
+            try:
+                with serial.Serial(self.port, 115200, timeout=0.2,
+                                   write_timeout=1, exclusive=True) as ser:
+                    ser.write(b'r')   # raw frames, in case a monitor left benchmark mode on
+                    self.connected = True
+                    logged_missing = False
+                    logger.info(f"Teensy ToF connected on {self.port}")
+                    decoder = self._decoder_cls()
+                    while not self._stop.is_set():
+                        chunk = ser.read(max(ser.in_waiting, 1))
+                        for rec in decoder.feed(chunk):
+                            self._handle(rec)
+            except Exception as e:
+                if self.connected or not logged_missing:
+                    logger.warning(f"Teensy ToF on {self.port}: {e}; retrying every 2 s")
+                    logged_missing = True
+            self.connected = False
+            self._stop.wait(2.0)
+
+    def _handle(self, rec):
+        name = rec['sensor']
+        if rec['type'] == 'frame':
+            dist = np.asarray(rec['distance_mm'], dtype=np.float64)
+            status = np.asarray(rec['target_status'], dtype=np.int32)
+            with self._lock:
+                self._frames[name] = (rec['seq'], dist, status, time.monotonic())
+        elif 'active' in rec:
+            if self._active.get(name) != rec['active'] and not rec['active']:
+                logger.warning(f"Teensy ToF: {name} sensor reported inactive")
+            self._active[name] = bool(rec['active'])
+
+    def cleanup(self):
+        self._stop.set()
+        self._thread.join(timeout=1.0)

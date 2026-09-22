@@ -1,0 +1,12 @@
+# Teensy 4.1 (dual VL53L5CX ToF streamer) -> stable /dev/teensy_tof
+#
+# The Teensy and the OpenRB-150 are both CDC-ACM devices, so /dev/ttyACM0 and
+# ttyACM1 swap between them with enumeration order. The Teensy has a unique
+# USB serial (20329070), so like 64-openrb150.rules this survives any port or
+# hub change. Only the Serial interface (bInterfaceNumber 00) is matched.
+#
+# Install by hand with:
+#   sudo cp src/65-teensy-tof.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+
+SUBSYSTEM=="tty", ATTRS{idVendor}=="16c0", ATTRS{idProduct}=="0483", ATTRS{serial}=="20329070", SYMLINK+="teensy_tof", GROUP="dialout", MODE="0660"

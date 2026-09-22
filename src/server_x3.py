@@ -87,7 +87,7 @@ logger = logging.getLogger(__name__)
 # Import X3 specific drivers
 from drivers_x3 import (
     Rosmaster, MecanumDrive, YDLidarDriver, AstraCamera, OLEDDisplay, SERIAL_PORT,
-    INA226BatteryMonitor, VL53L5CXArray, tof_valid_mask
+    INA226BatteryMonitor, TeensyToFArrays, TEENSY_TOF_PORT, tof_valid_mask
 )
 from nav2_client import Nav2Client
 from frontier_explorer import FrontierExplorer
@@ -103,10 +103,10 @@ parser.add_argument('--domain-id', type=int, default=42, dest='domain_id',
                     help='ROS_DOMAIN_ID for multi-machine ROS2 (must match laptop). '
                          'Overrides the ROS_DOMAIN_ID environment variable.')
 parser.add_argument('--no-tof', action='store_true', dest='no_tof',
-                    help='Disable the VL53L5CX 8x8 ToF array on i2c-1. Enabled by '
-                         'default; startup costs ~8 s of I2C firmware upload.')
-parser.add_argument('--tof-freq', type=int, default=10, dest='tof_freq',
-                    help='ToF ranging frequency in Hz (8x8 caps at 15). Default 10.')
+                    help='Disable the dual VL53L5CX ToF arrays (Teensy over USB).')
+parser.add_argument('--tof-port', default=TEENSY_TOF_PORT, dest='tof_port',
+                    help='Serial port of the ToF Teensy. Default /dev/teensy_tof from '
+                         'src/65-teensy-tof.rules; /dev/ttyACMn swaps with the OpenRB-150.')
 parser.add_argument('--no-oak', action='store_true', dest='no_oak',
                     help='Disable the OAK-D Lite driver (stereo + depth + IMU). '
                          'When enabled (default), the OAK-D is the depth source.')
@@ -147,8 +147,7 @@ args = parser.parse_args()
 SIM_MODE  = args.sim
 ROS2_MODE = not args.sim  # ROS2 hardware bridge is the default; only --sim disables it
 OAK_ENABLED = not args.no_oak  # OAK-D Lite supplies stereo/depth/imu unless --no-oak
-TOF_ENABLED = not args.no_tof   # VL53L5CX 8x8 ToF array on i2c-1 @ 0x29
-TOF_FREQ_HZ = args.tof_freq
+TOF_ENABLED = not args.no_tof   # dual VL53L5CX 8x8 arrays via the Teensy
 OAK_SPATIAL = not args.no_oak_spatial  # on-device YOLO spatial detection (if blob present)
 OAK_ROS_PUBLISH = args.oak_ros_publish      # republish OAK streams as ROS2 topics (bagging/RViz)
 OAK_ROS_RATE = args.oak_ros_rate
@@ -235,8 +234,8 @@ lidar = None
 camera = None
 oak = None          # OakDCamera instance (stereo + depth + IMU); depth source when present
 ina226 = None       # INA226 Battery Monitor
-tof_array = None    # VL53L5CX 8x8 ToF array (see VL53L5CXArray)
-_tof_state = None   # latest decoded ToF frame for the readout lane
+tof_array = None    # upper + lower VL53L5CX arrays (see TeensyToFArrays)
+_tof_state = None   # {"upper": frame|None, "lower": frame|None} for the readout lane
 battery_estimator = None   # battery.BatteryEstimator — coulomb-counted SoC
 _batt_cache_a = None       # last measured pack current (A), None = no sensor
 _batt_cache_w = None       # last measured pack power (W)
@@ -1630,16 +1629,12 @@ def initialize_hardware():
         ina226 = INA226BatteryMonitor(i2c_bus=7)
         _init_battery_estimator()
 
-    # VL53L5CX 8x8 ToF on i2c-1. Orientation verified by hand 2026-09-12 with
-    # no transpose/flip, so the defaults are the calibrated values -- do not
-    # "tidy" them into flips. Construction uploads 84 KB of firmware over I2C
-    # and takes ~8 s, which is why it is here at startup and never on a hot
-    # path. A missing sensor degrades to available=False, same as the INA226.
+    # Dual VL53L5CX 8x8 arrays, read by a Teensy (firmware uploads and I2C
+    # happen there) and streamed over USB. Non-blocking: a reader thread
+    # retries every 2 s, so a missing Teensy just leaves the panels empty.
     if not SIM_MODE and TOF_ENABLED:
-        logger.info("Initializing VL53L5CX ToF array on i2c-1 (~8 s firmware upload)...")
-        tof_array = VL53L5CXArray(i2c_bus=1, resolution=8, ranging_freq_hz=TOF_FREQ_HZ)
-        if not tof_array.available:
-            logger.warning("VL53L5CX unavailable — ToF panel will stay empty")
+        logger.info(f"Starting Teensy ToF reader on {args.tof_port}")
+        tof_array = TeensyToFArrays(port=args.tof_port)
 
     # 3. Camera — direct USB in both direct-hardware and --ros2 modes.
     #    Only --sim uses ROS2Bridge.get_frame() (Gazebo publishes /camera/image_raw).
@@ -1871,6 +1866,7 @@ def cleanup():
     if camera: camera.cleanup()
     if not (SIM_MODE or ROS2_MODE) and lidar: lidar.cleanup()
     if oled: oled.cleanup()
+    if tof_array: tof_array.cleanup()
 
 
 # =============================================================================
@@ -3178,6 +3174,7 @@ def _step_toward(current: float, target: float, accel: float, decel: float) -> f
 
 _standalone_test_cache = (False, 0.0)   # (last_result, last_scan_monotonic)
 _STANDALONE_TEST_SCAN_INTERVAL = 1.0    # seconds between full /proc scans
+_STANDALONE_TESTS = ('ab_comparison_test.py', 'point_to_point_test.py', 'strafe_drift_test.py')
 
 def _is_standalone_test_running() -> bool:
     # Scanning every process' cmdline is expensive (~260 /proc reads). motion_loop
@@ -3196,7 +3193,10 @@ def _is_standalone_test_running() -> bool:
             cmd = proc.info.get('cmdline')
             if cmd:
                 cmd_str = ' '.join(cmd)
-                if 'ab_comparison_test.py' in cmd_str or 'point_to_point_test.py' in cmd_str:
+                # Standalone drivers that publish /cmd_vel themselves.  The
+                # heartbeat below must yield to them or its zero commands (routed
+                # through the CBF when motors are enabled) fight every command.
+                if any(t in cmd_str for t in _STANDALONE_TESTS):
                     if 'server_x3.py' not in cmd_str:
                         result = True
                         break
@@ -3297,57 +3297,51 @@ async def motion_loop():
 
 
 async def tof_loop():
-    """Own task for the VL53L5CX, for the same reason the battery has one.
+    """Turn the Teensy reader's newest frames into the cached readout dict.
 
-    The I2C read blocks, so it runs in the executor and the broadcast lane only
-    ever reads a cached dict.  Doing this inline in broadcast_loop would put a
-    blocking bus transaction on the event loop at 20 Hz -- the exact class of
-    bug the perf audit found in motion_loop.
-
-    It also samples at the SENSOR's rate, not the broadcast rate: the array
-    ranges at 10 Hz, so polling it at 20 would just re-read the same frame.
+    The serial read lives in TeensyToFArrays' own thread, so this only does
+    numpy on 64 zones and never blocks the event loop. Polls at 50 Hz, above
+    the 15 Hz sensor rate, and rebuilds a sensor's entry only on a new seq.
     """
     global _tof_state
-    if tof_array is None or not tof_array.available:
+    if tof_array is None:
         return
-    loop = asyncio.get_running_loop()
-    seq = 0
-    # The first frame always reports target_status 6 ("wrap around not
-    # performed") in every zone, which is not a valid status. Publishing it
-    # would show a fully-rejected grid on a healthy sensor for one frame.
-    warmup = 2
+    last_seq = {}
+    state = {name: None for name in TeensyToFArrays.SENSORS}
     while not _shutting_down:
         try:
-            if not await loop.run_in_executor(None, tof_array.data_ready):
-                await asyncio.sleep(0.004)
-                continue
-            frame = await loop.run_in_executor(None, tof_array.read_frame)
-            if frame is None:
-                await asyncio.sleep(0.05)
-                continue
-            if warmup > 0:
-                warmup -= 1
-                continue
-            dist, status = frame
-            keep = tof_valid_mask(dist, status, 8,
-                                  max_range_m=tof_array.max_range_m)
-            k = np.asarray(keep, dtype=bool).ravel()
-            d = np.asarray(dist, dtype=np.int32).ravel()
-            seq += 1
-            _tof_state = {
-                "seq": seq,
-                "n": 8,
-                "dist": d.tolist(),
-                "keep": k.tolist(),
-                "status": np.asarray(status, dtype=np.int32).ravel().tolist(),
-                "valid": int(k.sum()),
-                "min": int(d[k].min()) if k.any() else 0,
-                "max": int(d[k].max()) if k.any() else 0,
-                "max_range_mm": int(tof_array.max_range_m * 1000),
-            }
+            for name in TeensyToFArrays.SENSORS:
+                f = tof_array.latest(name)
+                if f is None:
+                    continue
+                seq, dist, status, age = f
+                stale = age > 1.0
+                if seq == last_seq.get(name) and (state[name] or {}).get('stale') == stale:
+                    continue
+                last_seq[name] = seq
+                keep = tof_valid_mask(dist, status, 8,
+                                      max_range_m=tof_array.max_range_m)
+                k = np.asarray(keep, dtype=bool).ravel()
+                d = np.asarray(dist, dtype=np.int32).ravel()
+                state[name] = {
+                    "seq": seq,
+                    "n": 8,
+                    "dist": d.tolist(),
+                    "keep": k.tolist(),
+                    "status": status.ravel().tolist(),
+                    "valid": int(k.sum()),
+                    "min": int(d[k].min()) if k.any() else 0,
+                    "max": int(d[k].max()) if k.any() else 0,
+                    "max_range_mm": int(tof_array.max_range_m * 1000),
+                    # Teensy unplugged or sensor dropped out: keep the last
+                    # grid but let the GUI say it is frozen.
+                    "stale": stale,
+                }
+            _tof_state = dict(state)
         except Exception as e:
             logger.error(f"tof_loop error: {e}")
             await asyncio.sleep(0.5)
+        await asyncio.sleep(0.02)
 
 
 async def oled_loop():
