@@ -648,9 +648,12 @@ class ROS2Bridge:
 
         # Dual ToF clouds, in the URDF's tof_{upper,lower}_link (x out of the
         # cover glass), so the mount pitch/height live only in the TF tree.
+        # RELIABLE, not sensor-data QoS: a reliable publisher matches both
+        # reliable and best-effort subscribers, and RViz2's PointCloud2 display
+        # defaults to reliable -- with best effort here it silently showed
+        # nothing.  At <=64 points (~800 B) reliability costs nothing.
         self._tof_pubs = {
-            name: self._node.create_publisher(PointCloud2, f'/tof/{name}/points',
-                                              qos_profile_sensor_data)
+            name: self._node.create_publisher(PointCloud2, f'/tof/{name}/points', 5)
             for name in ('upper', 'lower')}
 
         # Staleness tracking for odom (Idea 225) and depth (Idea 230)
