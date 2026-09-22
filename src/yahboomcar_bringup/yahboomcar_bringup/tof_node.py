@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """VL53L5CX ToF array publisher: /tof/points + the tof_link static TF.
 
+SINGLE-SENSOR i2c-1 BENCH PATH -- not how the robot runs.  Since 2026-09-22
+the dual arrays are read by a Teensy over USB and server_x3.py publishes
+/tof/{upper,lower}/points in the URDF's tof_{upper,lower}_link.  The server
+holds the Teensy port exclusively, and nothing launches this node.
+
 Fills the low blind band no other sensor on this robot covers -- the scan plane
 is 0.340 m, the camera is floor-blind under ~0.57 m, and the costmap's
 min_obstacle_height is 0.12 m, so a low box in front of the wheels is invisible

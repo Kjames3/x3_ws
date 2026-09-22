@@ -267,10 +267,11 @@
          Refine ONLY tof_mount_joint for whole-assembly placement in RViz.
          Sensor/adapter relative placements come from the STEP assembly.
          Sensing origin uses the existing package-face point in board CAD:
-         (0, 2.45, -1.97) mm. Re-measure installed poses before perception use.
+         (0, 2.45, -1.97) mm. Checked installed 2026-09-22: through this TF the
+         lower array's floor returns land at z = -0.011 m, upper's at ~0.
          These are fixed adapter settings, not actuated joints.
-         Legacy tof_link aliases the upper sensor; dual Teensy ingestion and
-         downstream geometry configuration still require a separate update. -->
+         server_x3 publishes /tof/{upper,lower}/points in tof_{upper,lower}_link
+         (x out of the cover glass). Legacy tof_link aliases the upper sensor. -->
     <link name="${ns}/tof_mount_link">
         <visual><origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry><mesh filename="package://yahboomcar_description/meshes/tof_dual_bracket.stl"/></geometry><material name=""><color rgba="0.75 0.75 0.78 1"/></material>

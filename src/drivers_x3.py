@@ -828,7 +828,8 @@ def _patch_vl53l5cx_for_64bit():
 
 
 class VL53L5CXArray:
-    """VL53L5CX 4x4/8x8 ToF array on i2c-1 @ 0x29.
+    """VL53L5CX 4x4/8x8 ToF array on i2c-1 @ 0x29 (bench path; the robot now
+    uses TeensyToFArrays below).
 
     Covers the low blind band the Phase-0 numbers pin down exactly: the scan
     plane sits at 0.340 m, the camera is floor-blind under ~0.57 m, and the

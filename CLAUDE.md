@@ -164,6 +164,26 @@ order; the `/dev/rosmaster` symlink keys on chip revision (`bcdDevice` 8134 vs
 8133) to pin it. The OpenRB-150 has a real USB serial number and needs no such
 trick — but keep the rule in mind before adding any further CH340 device.
 
+### Dual ToF arrays (VL53L5CX, front bumper)
+
+Upper array pitched **15°** down, lower **40°**, one I2C bus each on a
+**Teensy 4.1** (`scripts/teensy_tof_test/teensy_tof_test.ino`, 8x8 @ 15 Hz)
+that streams NDJSON over USB to **`/dev/teensy_tof`** (`src/65-teensy-tof.rules`;
+`ttyACMn` swaps with the OpenRB-150). Sensors run off a separate 3.3 V buck with
+a common ground. `server_x3.py` owns the port (`TeensyToFArrays`), feeds the GUI,
+publishes `/tof/{upper,lower}/points` (raw) and `/tof/{upper,lower}/obstacles`
+(what the CBF and the local costmap use), and adds the obstacles to the CBF.
+`tof_node.py` / `tof_array.py` are the old single-sensor i2c-1 bench path.
+
+- **Heights are judged along each zone's LOWEST ray**
+  (`tof_geometry.zone_low_edge_points`). A zone grazing the floor reports the
+  near end of its floor strip; on the centre ray the upper array's row 3 fakes
+  a 6 cm edge at ~0.64 m. Plus 3-frame per-zone persistence for crosstalk ghosts.
+- **The base driver adds ~0.14 m/s** (`min_pwm` 28 at 200 PWM per m/s) to any
+  nonzero command. The CBF output is re-checked at the executed speed
+  (`_limit_for_deadband`); shrinking a small command otherwise does nothing.
+- Known gap: a low box ~0.25–0.40 m from centre is flagged by neither array.
+
 ### Settled hardware facts (do not re-derive)
 - `base_joint` z = **0.0815 m**, caliper-measured 2026-09-13 (plate 27.5 mm off
   the floor). Sensor joints were adjusted to keep their measured floor heights.

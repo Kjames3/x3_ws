@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Bench tool for the VL53L5CX ToF array — the first thing to run on install.
 
+SINGLE SENSOR ON i2c-1 ONLY.  The robot's dual arrays now go through a Teensy
+over USB (/dev/teensy_tof); use src/teensy_tof_serial.py to check those, with
+x3_server stopped because the server holds the port.  The --coverage table
+below is still valid for either mount.
+
 No ROS, no DDS, no server restart, the same way src/dynamixel_setup.py is the
 bench tool for the tilt axis.  Everything here works against --sim too, so the
 tool itself is debugged before the part is on the robot.
