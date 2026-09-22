@@ -87,7 +87,8 @@ logger = logging.getLogger(__name__)
 # Import X3 specific drivers
 from drivers_x3 import (
     Rosmaster, MecanumDrive, YDLidarDriver, AstraCamera, OLEDDisplay, SERIAL_PORT,
-    INA226BatteryMonitor, TeensyToFArrays, TEENSY_TOF_PORT, tof_valid_mask
+    INA226BatteryMonitor, TeensyToFArrays, TEENSY_TOF_PORT, tof_valid_mask,
+    frame_to_points
 )
 from nav2_client import Nav2Client
 from frontier_explorer import FrontierExplorer
@@ -553,7 +554,8 @@ class ROS2Bridge:
         from geometry_msgs.msg import Twist
         from nav_msgs.msg import Odometry, OccupancyGrid
         from std_msgs.msg import Float32
-        from sensor_msgs.msg import LaserScan
+        from sensor_msgs.msg import LaserScan, PointCloud2, PointField
+        self._PointCloud2, self._PointField = PointCloud2, PointField
 
         import sys
         import os
@@ -643,6 +645,13 @@ class ROS2Bridge:
         self._pedestrian_pub = self._node.create_publisher(PoseArray, '/pedestrian_poses', 10)
         self._pedestrian_marker_pub = self._node.create_publisher(MarkerArray, '/pedestrian_markers', 10)
         self._pedestrian_state_pub = self._node.create_publisher(PedestrianArray, '/pedestrian_states', 10)
+
+        # Dual ToF clouds, in the URDF's tof_{upper,lower}_link (x out of the
+        # cover glass), so the mount pitch/height live only in the TF tree.
+        self._tof_pubs = {
+            name: self._node.create_publisher(PointCloud2, f'/tof/{name}/points',
+                                              qos_profile_sensor_data)
+            for name in ('upper', 'lower')}
 
         # Staleness tracking for odom (Idea 225) and depth (Idea 230)
         self._odom_stamp = 0.0
@@ -911,6 +920,27 @@ class ROS2Bridge:
         msg.linear.y  = float(safe_vy)    * self.LINEAR_SCALE
         msg.angular.z = float(omega) * self.ANGULAR_SCALE
         self._cmd_vel_pub.publish(msg)
+
+    def publish_tof_cloud(self, name, points):
+        """(N,3) float32 sensor-frame points -> /tof/<name>/points.
+
+        N == 0 is published, not skipped: consumers must be able to tell
+        "measured nothing" from "publisher died" (the F7 frozen-obstacle trap).
+        """
+        msg = self._PointCloud2()
+        msg.header.frame_id = f'tof_{name}_link'
+        msg.header.stamp = self._node.get_clock().now().to_msg()
+        msg.height = 1
+        msg.width = len(points)
+        msg.fields = [self._PointField(name=n, offset=i * 4,
+                                       datatype=self._PointField.FLOAT32, count=1)
+                      for i, n in enumerate(('x', 'y', 'z'))]
+        msg.is_bigendian = False
+        msg.point_step = 12
+        msg.row_step = 12 * len(points)
+        msg.is_dense = True
+        msg.data = np.ascontiguousarray(points, dtype='<f4').tobytes()
+        self._tof_pubs[name].publish(msg)
 
     def stop(self):
         """A REAL stop: a zero Twist straight to /cmd_vel, bypassing the CBF.
@@ -1634,7 +1664,7 @@ def initialize_hardware():
     # retries every 2 s, so a missing Teensy just leaves the panels empty.
     if not SIM_MODE and TOF_ENABLED:
         logger.info(f"Starting Teensy ToF reader on {args.tof_port}")
-        tof_array = TeensyToFArrays(port=args.tof_port)
+        tof_array = TeensyToFArrays(port=args.tof_port, on_frame=_publish_tof_cloud)
 
     # 3. Camera — direct USB in both direct-hardware and --ros2 modes.
     #    Only --sim uses ROS2Bridge.get_frame() (Gazebo publishes /camera/image_raw).
@@ -3294,6 +3324,19 @@ async def motion_loop():
                 logger.warning(f"motion_loop: drive.move failed: {e}")
 
         await asyncio.sleep(0.033)  # ~30 Hz (Idea 111)
+
+
+def _publish_tof_cloud(name, seq, dist, status):
+    """Reader-thread callback: every Teensy frame -> /tof/<name>/points.
+
+    Runs off the event loop on purpose.  Publishing from tof_loop measured
+    6.5 Hz with 0.5 s gaps, because the loop only got scheduled every ~100 ms.
+    """
+    if ros_bridge is None or tof_array is None:   # first frames can beat the assignment
+        return
+    pts, _ = frame_to_points(dist, status, resolution=8,
+                             max_range_m=tof_array.max_range_m)
+    ros_bridge.publish_tof_cloud(name, pts)
 
 
 async def tof_loop():

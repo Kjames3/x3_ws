@@ -1028,8 +1028,13 @@ class TeensyToFArrays:
 
     SENSORS = ('upper', 'lower')
 
-    def __init__(self, port=TEENSY_TOF_PORT, max_range_m=None):
+    def __init__(self, port=TEENSY_TOF_PORT, max_range_m=None, on_frame=None):
+        """``on_frame(name, seq, dist, status)`` runs on the reader thread for
+        EVERY frame -- use it for consumers that must not drop frames when the
+        asyncio loop is busy (the ROS clouds).  Exceptions are logged, not raised.
+        """
         from teensy_tof_serial import LineDecoder
+        self.on_frame = on_frame
         self.port = port
         self.max_range_m = DEFAULT_MAX_RANGE_M if max_range_m is None else float(max_range_m)
         self.connected = False
@@ -1090,6 +1095,11 @@ class TeensyToFArrays:
             status = np.asarray(rec['target_status'], dtype=np.int32)
             with self._lock:
                 self._frames[name] = (rec['seq'], dist, status, time.monotonic())
+            if self.on_frame is not None:
+                try:
+                    self.on_frame(name, rec['seq'], dist, status)
+                except Exception as e:
+                    logger.error(f"Teensy ToF on_frame({name}): {e}")
         elif 'active' in rec:
             if self._active.get(name) != rec['active'] and not rec['active']:
                 logger.warning(f"Teensy ToF: {name} sensor reported inactive")
