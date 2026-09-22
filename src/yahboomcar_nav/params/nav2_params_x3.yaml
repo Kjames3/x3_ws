@@ -285,7 +285,9 @@ local_costmap:
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
-        observation_sources: scan
+        # tof_*: dual VL53L5CX arrays (Teensy -> server_x3) covering the low band
+        # in front of the wheels that the 0.34 m scan plane passes over.
+        observation_sources: scan tof_upper tof_lower
         scan:
           topic: /scan
           max_obstacle_height: 2.0
@@ -293,6 +295,33 @@ local_costmap:
           clearing: True
           marking: True
           data_type: "LaserScan"
+        # Mark-only.  Floor returns land at z = -0.015..0 m through TF, so 0.04
+        # rejects them; they are height-filtered before clearing too, so the
+        # ToF could never clear anyway.  A removed box is cleared by /scan rays
+        # passing over its cell -- the layer clears before it marks, so a box
+        # the ToF still sees survives every scan pass.  Do not raise
+        # min_obstacle_height to the 0.12 used elsewhere: that discards exactly
+        # the low obstacles these sensors exist for.
+        tof_upper:
+          topic: /tof/upper/points
+          data_type: "PointCloud2"
+          marking: True
+          clearing: False
+          min_obstacle_height: 0.04
+          max_obstacle_height: 2.0
+          obstacle_min_range: 0.0
+          obstacle_max_range: 1.5
+          observation_persistence: 0.0
+        tof_lower:
+          topic: /tof/lower/points
+          data_type: "PointCloud2"
+          marking: True
+          clearing: False
+          min_obstacle_height: 0.04
+          max_obstacle_height: 2.0
+          obstacle_min_range: 0.0
+          obstacle_max_range: 1.5
+          observation_persistence: 0.0
       always_send_full_costmap: True
 
 global_costmap:
