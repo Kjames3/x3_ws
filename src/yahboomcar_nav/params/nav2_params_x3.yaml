@@ -319,7 +319,7 @@ local_costmap:
           data_type: "PointCloud2"
           marking: True
           clearing: False
-          min_obstacle_height: 0.015   # = server TOF_CBF_MIN_Z_M['lower']
+          min_obstacle_height: -0.05   # server already decided (height OR floor-deficit test); deficit hits can sit ~1 cm up
           max_obstacle_height: 2.0
           obstacle_min_range: 0.0
           obstacle_max_range: 1.5

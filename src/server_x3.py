@@ -328,6 +328,18 @@ OBSTACLE_STALE_S = 0.5
 # it cannot brake on anything further out.  The upper keeps 0.04: its grazing
 # rows are the ones that fake floor edges.
 TOF_CBF_MIN_Z_M = {'upper': 0.04, 'lower': 0.015}
+# Lower array only: a zone is ALSO an obstacle when it reads this much shorter
+# than its own bare-floor depth (config/tof_floor_baseline.json, recorded with
+# src/tof_floor_baseline.py).  Catches what the height test cannot: a 3 cm
+# block shortened its zones by 16-41 mm, while on bare floor no zone came
+# within 6 mm of the baseline over 268 frames (2026-09-22).
+TOF_FLOOR_DEFICIT_MM = 12.0
+# If the MEDIAN zone is off the baseline by this much, the whole view has
+# shifted -- the chassis is tilting over a bump or onto a ramp -- so the deficit
+# test sits that frame out and only the height test runs.  Bare floor: +-0.2 mm.
+TOF_FLOOR_TILT_MM = 10.0
+TOF_FLOOR_BASELINE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                       '..', 'config', 'tof_floor_baseline.json')
 TOF_CBF_MAX_RANGE_M = 1.0
 TOF_CBF_STALE_S = 0.3
 TOF_CBF_GRID_M = 0.05
@@ -941,11 +953,12 @@ class ROS2Bridge:
             frame = parent
         return None
 
-    def set_tof_obstacles(self, name, points, zones):
+    def set_tof_obstacles(self, name, points, zones, extra_pass=None):
         """Sensor-frame ToF points -> above-floor CBF obstacles (base xy).
 
         ``zones`` is each point's zone index, for the per-zone persistence
-        test.  Returns the keep mask over ``points`` (None until TF has
+        test.  ``extra_pass`` (per point) marks points already judged obstacles
+        by another test (the lower array's floor deficit).  Returns the keep mask over ``points`` (None until TF has
         arrived) so the same selection can be published for the costmap.
         """
         ext = self._tof_extrinsic(name)
@@ -955,8 +968,10 @@ class ROS2Bridge:
         p = np.asarray(points, dtype=np.float64) @ R.T + t
         z_low = (tof_zone_low_edge_points(points) @ R.T + t)[:, 2]
         xy = p[:, :2]
-        passed = (z_low > TOF_CBF_MIN_Z_M[name]) & \
-                 (np.hypot(xy[:, 0], xy[:, 1]) < TOF_CBF_MAX_RANGE_M)
+        above = z_low > TOF_CBF_MIN_Z_M[name]
+        if extra_pass is not None:
+            above |= extra_pass
+        passed = above & (np.hypot(xy[:, 0], xy[:, 1]) < TOF_CBF_MAX_RANGE_M)
         streak = self._tof_streak.setdefault(name, np.zeros(64, dtype=np.int32))
         hit = np.zeros(64, dtype=bool)
         hit[zones[passed]] = True
@@ -3482,6 +3497,39 @@ async def motion_loop():
         await asyncio.sleep(0.033)  # ~30 Hz (Idea 111)
 
 
+def _load_tof_floor_baseline():
+    try:
+        with open(TOF_FLOOR_BASELINE_PATH) as f:
+            rec = json.load(f)
+        depth = np.array([np.nan if v is None else v for v in rec['depth_mm']],
+                         dtype=np.float64)
+        logger.info(f"ToF floor baseline: {int(np.isfinite(depth).sum())}/64 lower "
+                    f"zones, recorded {rec.get('recorded')}")
+        return depth
+    except FileNotFoundError:
+        logger.warning("No ToF floor baseline (run src/tof_floor_baseline.py); the "
+                       "lower array falls back to its height test only")
+    except Exception as e:
+        logger.error(f"ToF floor baseline unreadable: {e}")
+    return None
+
+
+_tof_floor_depth = _load_tof_floor_baseline()
+
+
+def _tof_floor_deficit(dist, status):
+    """Per-zone mask: lower-array zones reading well short of bare floor."""
+    if _tof_floor_depth is None:
+        return None
+    ok = np.isin(status, (5, 9)) & np.isfinite(_tof_floor_depth)
+    if not ok.any():
+        return None
+    deficit = _tof_floor_depth - np.asarray(dist, dtype=np.float64)
+    if abs(float(np.median(deficit[ok]))) > TOF_FLOOR_TILT_MM:
+        return None                      # whole view shifted: chassis tilt
+    return ok & (deficit > TOF_FLOOR_DEFICIT_MM)
+
+
 def _publish_tof_cloud(name, seq, dist, status):
     """Reader-thread callback: every Teensy frame -> /tof/<name>/points.
 
@@ -3493,7 +3541,15 @@ def _publish_tof_cloud(name, seq, dist, status):
     pts, zone_mask = frame_to_points(dist, status, resolution=8,
                                      max_range_m=tof_array.max_range_m)
     ros_bridge.publish_tof_cloud(name, pts)
-    keep = ros_bridge.set_tof_obstacles(name, pts, np.flatnonzero(zone_mask))
+    zones = np.flatnonzero(zone_mask)
+    extra = None
+    if name == 'lower':
+        # Zone indices are the Teensy's order; frame_to_points' reorder is the
+        # identity (orientation verified 2026-09-22), so they line up.
+        short = _tof_floor_deficit(dist, status)
+        if short is not None:
+            extra = short[zones]
+    keep = ros_bridge.set_tof_obstacles(name, pts, zones, extra)
     if keep is not None:
         ros_bridge.publish_tof_cloud(name, pts[keep], kind='obstacles')
 
