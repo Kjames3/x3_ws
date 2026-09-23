@@ -105,6 +105,11 @@ parser.add_argument('--domain-id', type=int, default=42, dest='domain_id',
                          'Overrides the ROS_DOMAIN_ID environment variable.')
 parser.add_argument('--no-tof', action='store_true', dest='no_tof',
                     help='Disable the dual VL53L5CX ToF arrays (Teensy over USB).')
+parser.add_argument('--tof-baseline', default=None, dest='tof_baseline',
+                    help='Bare-floor baseline for the lower ToF array, recorded by '
+                         'src/tof_floor_baseline.py. Default config/tof_floor_baseline.json; '
+                         'point it at a per-floor copy (e.g. ..._lab_carpet.json) instead of '
+                         'copying files around. Missing file = height test only.')
 parser.add_argument('--tof-port', default=TEENSY_TOF_PORT, dest='tof_port',
                     help='Serial port of the ToF Teensy. Default /dev/teensy_tof from '
                          'src/65-teensy-tof.rules; /dev/ttyACMn swaps with the OpenRB-150.')
@@ -338,8 +343,8 @@ TOF_FLOOR_DEFICIT_MM = 12.0
 # shifted -- the chassis is tilting over a bump or onto a ramp -- so the deficit
 # test sits that frame out and only the height test runs.  Bare floor: +-0.2 mm.
 TOF_FLOOR_TILT_MM = 10.0
-TOF_FLOOR_BASELINE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                       '..', 'config', 'tof_floor_baseline.json')
+TOF_FLOOR_BASELINE_PATH = args.tof_baseline or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), '..', 'config', 'tof_floor_baseline.json')
 TOF_CBF_MAX_RANGE_M = 1.0
 TOF_CBF_STALE_S = 0.3
 TOF_CBF_GRID_M = 0.05
@@ -3503,12 +3508,14 @@ def _load_tof_floor_baseline():
             rec = json.load(f)
         depth = np.array([np.nan if v is None else v for v in rec['depth_mm']],
                          dtype=np.float64)
-        logger.info(f"ToF floor baseline: {int(np.isfinite(depth).sum())}/64 lower "
-                    f"zones, recorded {rec.get('recorded')}")
+        logger.info(f"ToF floor baseline {os.path.basename(TOF_FLOOR_BASELINE_PATH)}: "
+                    f"{int(np.isfinite(depth).sum())}/64 lower zones, recorded "
+                    f"{rec.get('recorded')}")
         return depth
     except FileNotFoundError:
-        logger.warning("No ToF floor baseline (run src/tof_floor_baseline.py); the "
-                       "lower array falls back to its height test only")
+        logger.warning(f"No ToF floor baseline at {TOF_FLOOR_BASELINE_PATH} (run "
+                       f"src/tof_floor_baseline.py); the lower array falls back to "
+                       f"its height test only")
     except Exception as e:
         logger.error(f"ToF floor baseline unreadable: {e}")
     return None

@@ -193,7 +193,11 @@ publishes `/tof/{upper,lower}/points` (raw) and `/tof/{upper,lower}/obstacles`
   Drive-tested: a 3 cm block, sandals, shoes and a folded towel all stopped
   the robot short. **Re-record the baseline** with `src/tof_floor_baseline.py`
   (robot still, clear floor) after touching the bracket or on a very
-  different floor.
+  different floor; `--tof-baseline PATH` selects a per-floor copy
+  (`tof_floor_baseline_{apartment_wood,lab_carpet}.json`) and a missing file
+  degrades to the height test. Wood vs lab carpet differ by only 1–4 mm
+  (under the 12 mm threshold), but carpet returns all 64 zones where wood
+  loses the far row, so it detects slightly earlier.
 
 ### Settled hardware facts (do not re-derive)
 - `base_joint` z = **0.0815 m**, caliper-measured 2026-09-13 (plate 27.5 mm off
