@@ -24,6 +24,13 @@ def parse_record(line):
         raise ValueError('invalid JSON') from exc
     if not isinstance(record, dict) or type(record.get('v')) is not int or record['v'] != 1:
         raise ValueError('unsupported protocol version')
+    if record.get('type') == 'sync':
+        if record.get('sensor') != 'teensy':
+            raise ValueError('sync source')
+        for name in ('token', 'rx_ms', 'tx_ms'):
+            if type(record.get(name)) is not int or not 0 <= record[name] <= 0xffffffff:
+                raise ValueError('invalid sync field ' + name)
+        return record
     if record.get('sensor') not in ('upper', 'lower'):
         raise ValueError('unknown sensor')
     if record.get('type') not in ('frame', 'stats', 'status'):

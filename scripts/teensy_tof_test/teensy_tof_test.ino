@@ -31,8 +31,12 @@ struct Channel {
   size_t length = 0, offset = 0;
   Channel(const char *name, TwoWire &wire) : id(name), bus(&wire) {}
 };
-Channel upper("upper", Wire), lower("lower", Wire1);
+Channel upper("upper", Wire), lower("lower", Wire1), clockReply("teensy", Wire);
 Channel *channels[] = {&upper, &lower};
+Channel *usbChannels[] = {&clockReply, &upper, &lower};
+bool readingSync = false, syncPending = false;
+uint32_t syncToken = 0, syncRxMs = 0;
+unsigned syncDigits = 0;
 bool streamFrames = true;
 
 // Two callbacks keep transport errors attributed to the correct sensor.
@@ -149,12 +153,12 @@ void report(Channel &c) {
 void pumpUSB() {
   static Channel *sending = nullptr;
   if (!Serial) {
-    for (Channel *c : channels) c->length = c->offset = 0;
+    for (Channel *c : usbChannels) c->length = c->offset = 0;
     sending = nullptr;
     return;
   }
   if (!sending) {
-    for (Channel *c : channels) if (c->length) { sending = c; break; }
+    for (Channel *c : usbChannels) if (c->length) { sending = c; break; }
   }
   if (!sending) return;
   for (unsigned k = 0; k < 8 && sending; ++k) {
@@ -171,8 +175,21 @@ void pumpUSB() {
 void loop() {
   while (Serial.available()) {
     char c = Serial.read();
-    if (c == 'b') streamFrames = false;
-    if (c == 'r') streamFrames = true;
+    if (c == 's') { readingSync = true; syncDigits = 0; syncToken = 0; }
+    else if (readingSync && c >= '0' && c <= '9' && syncDigits < 9) {
+      syncToken = syncToken * 10 + (c - '0'); ++syncDigits;
+    } else if (readingSync && c == '\n' && syncDigits) {
+      syncRxMs = millis(); syncPending = true; readingSync = false;
+    } else {
+      readingSync = false;
+      if (c == 'b') streamFrames = false;
+      if (c == 'r') streamFrames = true;
+    }
+  }
+  if (syncPending && !clockReply.length) {
+    append(clockReply, "{\"v\":1,\"type\":\"sync\",\"sensor\":\"teensy\",\"token\":%lu,\"rx_ms\":%lu,\"tx_ms\":%lu}\n",
+           (unsigned long)syncToken, (unsigned long)syncRxMs, (unsigned long)millis());
+    finishLine(clockReply); syncPending = false;
   }
   pumpUSB();
   for (Channel *c : channels) { report(*c); sample(*c); }
