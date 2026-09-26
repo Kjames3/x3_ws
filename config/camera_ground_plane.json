@@ -1,5 +1,5 @@
 {
-  "camera_height_m": 0.21,
+  "camera_height_m": 0.209,
   "camera_pitch_deg": 1.077,
   "min_obstacle_height_m": 0.15,
   "max_obstacle_height_m": 2.0,

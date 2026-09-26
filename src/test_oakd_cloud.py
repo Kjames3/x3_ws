@@ -249,8 +249,8 @@ def test_driver_oak_extrinsics_match_urdf():
 def test_oak_mount_uses_measured_x3plus_position():
     from oakd_driver import OAK_MOUNT_X, OAK_MOUNT_Z
 
-    assert np.isclose(OAK_MOUNT_X, 0.107315)
-    assert np.isclose(OAK_MOUNT_Z, 0.1285)
+    assert np.isclose(OAK_MOUNT_X, 0.107815)
+    assert np.isclose(OAK_MOUNT_Z, 0.1275)
 
 
 def test_scaled_intrinsics_project_consistently():

@@ -414,46 +414,55 @@
         <child link="camera_link"/>
     </joint>
 
-    <!-- ==================== OAK-D Lite (2026) ====================
-         Luxonis OAK-D Lite stereo depth + RGB camera. The optical centre was
-         physically measured 0.210 m above the floor. With the X3 Plus
-         base_footprint -> base_link height of 0.0815 m, its base_link-relative
-         z is therefore 0.1285 m. It is centered laterally and directly above the
-         Astra camera; its mount is level. Frame names follow the depthai_ros
-         (depthai_ros_driver) convention with camera name "oak" so published
-         image/pointcloud TF (oak_rgb_camera_optical_frame, etc.) resolves
-         against these static frames. Set the driver's `camera.i_tf_prefix`
-         / publish_tf_from_calibration=false so it does NOT re-publish these.
-         Stereo baseline 75 mm: left mono +Y, right mono -Y from center. -->
+    <!-- ============ OAK-D Pro W (2026-09-25, replaces the OAK-D Lite) ============
+         Luxonis OAK-D Pro W on the printed bracket stls/oakdpro_mount.STL.
+         Meshes were exported from stls/oakd_pro_assembly.STEP directly into
+         this link's frame (METRES, origin = camera body bbox centre, +X out of
+         the lens, +Z up). Assembly axes were -Z forward, +Y up; the camera is
+         level in the bracket. Bracket foot underside is 65.4 mm below this
+         origin; camera front glass is at x=+0.0116.
+         Placement is PROVISIONAL: the Lite's measured centre (0.210 m above
+         the floor, centred above the Astra) is kept until the Pro W is
+         measured. Refine ONLY oak_center_joint.
+         Frame names follow the depthai_ros convention (camera name "oak").
+         Stereo baseline 75 mm: left mono +Y, right mono -Y from centre. -->
     <link name="oak-d-base-frame">
         <inertial>
             <origin xyz="0 0 0" rpy="0 0 0"/>
-            <mass value="0.0611"/>
-            <inertia ixx="4.3E-05" ixy="0" ixz="0"
-                     iyy="4.5E-06" iyz="0" izz="4.5E-05"/>
+            <mass value="0.15"/>
+            <inertia ixx="1.2E-04" ixy="0" ixz="0"
+                     iyy="1.5E-05" iyz="0" izz="1.2E-04"/>
         </inertial>
         <visual>
-            <!-- OAK-D Lite body approx 91 (Y) x 28 (X) x 17.5 (Z) mm -->
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <box size="0.028 0.091 0.0175"/>
+                <mesh filename="package://yahboomcar_description/meshes/oakd_pro_w.stl"/>
             </geometry>
             <material name="">
                 <color rgba="0.15 0.15 0.15 1"/>
             </material>
         </visual>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry>
+                <mesh filename="package://yahboomcar_description/meshes/oakd_pro_w_mount.stl"/>
+            </geometry>
+            <material name="">
+                <color rgba="0.75 0.75 0.78 1"/>
+            </material>
+        </visual>
         <collision>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <box size="0.028 0.091 0.0175"/>
+                <box size="0.0231 0.097 0.0295"/>
             </geometry>
         </collision>
     </link>
     <joint name="oak_center_joint" type="fixed">
-        <!-- The OAK-D Lite is centered laterally and mounted directly above the
-             Astra camera. Keep its verified height/orientation and align its
-             fore/aft center with camera_link. -->
-        <origin xyz="0.107315 1.7948E-05 0.1285" rpy="0 0 0"/>
+        <!-- Provisional: the Lite's centre moved +0.5 mm forward and -1.0 mm
+             down to seat the Pro W bracket in RViz (2026-09-25). Not yet
+             measured. Keep oakd_driver.OAK_MOUNT_X/Z in step with this. -->
+        <origin xyz="0.107815 1.7948E-05 0.1275" rpy="0 0 0"/>
         <parent link="base_link"/>
         <child link="oak-d-base-frame"/>
     </joint>

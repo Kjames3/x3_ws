@@ -57,12 +57,13 @@ MONO_W = 640
 MONO_H = 400
 
 # Static transform oak_rgb_camera_optical_frame -> base_link (from the measured
-# X3 Plus URDF): the OAK is directly above the Astra at x=0.107315 and its
-# optical centre is z=0.1285 above base_link (0.210 m above the floor). Optical
+# X3 Plus URDF): the OAK-D Pro W sits above the Astra at x=0.107815 and its
+# optical centre is z=0.1275 above base_link (0.209 m above the floor), fitted
+# to the bracket in RViz on 2026-09-25, not yet measured. Optical
 # convention is X right, Y down, Z forward, so base_x = MOUNT_X + z,
 # base_y = -x, base_z = MOUNT_Z - y.
-OAK_MOUNT_X = 0.107315
-OAK_MOUNT_Z = 0.1285
+OAK_MOUNT_X = 0.107815
+OAK_MOUNT_Z = 0.1275
 
 _COCO80 = [
     "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
