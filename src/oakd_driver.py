@@ -38,6 +38,9 @@ import logging
 import os
 import threading
 import time
+import uuid
+from collections import deque
+from rgbd_pairing import RGBDPairer, timedelta_ns
 
 import numpy as np
 import cv2
@@ -131,8 +134,17 @@ class OakDCamera:
     def __init__(self, mono_fps=30, nn_fps=12, usb2_mode=False, align_depth_to_left=True,
                  accel_hz=250, gyro_hz=200, left_right_check=True, sim_mode=False,
                  spatial_blob=None, spatial_config=None, auto_economy=True,
-                 conf_threshold=None, speckle_filter=True, speckle_range=50):
-        self.mono_fps = mono_fps
+                 conf_threshold=None, speckle_filter=True, speckle_range=50,
+                 record_rgbd=False, subpixel=False):
+        self.record_rgbd = record_rgbd
+        self.subpixel = bool(subpixel)
+        self._rgbd_pairs = deque(maxlen=16)
+        self._rgbd_drops = 0
+        self._rgbd_calibration = None
+        self._latest_detection_meta = None
+        self._pairer = RGBDPairer(capacity=64)
+        self._capture_session = str(uuid.uuid4())
+        self.mono_fps = min(mono_fps, 30) if record_rgbd else mono_fps
         self.nn_fps = nn_fps
         self.usb2_mode = usb2_mode
         self._auto_economy = auto_economy   # on a USB2 link, stop streaming mono L/R
@@ -247,10 +259,13 @@ class OakDCamera:
 
         xoutDepth = pipeline.create(dai.node.XLinkOut); xoutDepth.setStreamName("depth")
         xoutImu = pipeline.create(dai.node.XLinkOut);   xoutImu.setStreamName("imu")
+        if self.record_rgbd:
+            xoutDepth.input.setBlocking(False)
+            xoutDepth.input.setQueueSize(2)
         # Economy (USB2): don't ship mono L/R to the host — those XLink streams eat
         # ~15 MB/s, which starves depth on a 480 Mbit link. get_stereo_frames() then
         # returns None (GUI stereo panels stay blank); depth + detection are unaffected.
-        if not economy:
+        if not economy and not self.record_rgbd:
             xoutLeft = pipeline.create(dai.node.XLinkOut);  xoutLeft.setStreamName("left")
             xoutRight = pipeline.create(dai.node.XLinkOut); xoutRight.setStreamName("right")
 
@@ -263,7 +278,13 @@ class OakDCamera:
 
         stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.DEFAULT)
         stereo.setLeftRightCheck(self.left_right_check)
-        stereo.setSubpixel(False)
+        stereo.setSubpixel(self.subpixel)
+        if self.subpixel:
+            stereo.initialConfig.setSubpixelFractionalBits(3)
+            # DEFAULT reserves three post-processing SHAVEs/CMX slices.
+            # With subpixel that leaves only seven SHAVEs for our 8-SHAVE NN.
+            # Reserve two instead; keep filter settings intact and audit timing.
+            stereo.setPostProcessingHardwareResources(2, 2)
 
         # Speckle removal. The pipeline previously ran with NO post-processing at
         # all, so isolated mismatched-disparity blobs reached consumers as real
@@ -298,7 +319,7 @@ class OakDCamera:
 
         monoLeft.out.link(stereo.left)
         monoRight.out.link(stereo.right)
-        if not economy:
+        if not economy and not self.record_rgbd:
             monoLeft.out.link(xoutLeft.input)
             monoRight.out.link(xoutRight.input)
         stereo.depth.link(xoutDepth.input)
@@ -324,7 +345,17 @@ class OakDCamera:
             nn.setBlobPath(self.spatial_blob)
             nn.setNumInferenceThreads(2)
             nn.input.setBlocking(False)
+            if self.record_rgbd:
+                # NN queue references must not exhaust the RGB preview pool.
+                nn.input.setQueueSize(1)
+                camRgb.setPreviewNumFramesPool(8)
             camRgb.preview.link(nn.input)
+            if self.record_rgbd:
+                xoutRgb = pipeline.create(dai.node.XLinkOut)
+                xoutRgb.setStreamName("record_rgb")
+                xoutRgb.input.setBlocking(False)
+                xoutRgb.input.setQueueSize(4)
+                camRgb.preview.link(xoutRgb.input)
 
             xoutDet = pipeline.create(dai.node.XLinkOut)
             xoutDet.setStreamName("det")
@@ -364,31 +395,50 @@ class OakDCamera:
                     self.available = True
                     self.spatial_active = with_spatial
                     backoff = 1.0
+                    self._capture_session = str(uuid.uuid4())
+                    self._pairer = RGBDPairer(capacity=64)
+                    with self._lock:
+                        self._rgbd_pairs.clear()
+                        self._latest_detection_meta = None
                     self._read_intrinsics(device, with_spatial)
+                    if self.record_rgbd and not with_spatial:
+                        logger.error("C1 RGB-D unavailable: CAM_A/NN pipeline inactive")
                     logger.info(f"OakDCamera: connected (USB {self.usb_speed}) — depth + imu"
                                 + ("" if economy else " + stereo")
                                 + (" + host-decoded detections" if with_spatial else "")
                                 + (" [ECONOMY/USB2]" if economy else ""))
 
-                    # maxSize=1 + non-blocking = always the freshest frame, old ones
-                    # dropped (low latency, no device backpressure). get() still blocks
-                    # the host until the next frame, so the loop paces without busy-spin.
-                    if not economy:
+                    # Live consumers get newest frames. C1 retains a bounded depth
+                    # history so later-delivered RGB can find its temporal neighbour;
+                    # non-blocking queues never backpressure the device.
+                    if not economy and not self.record_rgbd:
                         qLeft = device.getOutputQueue("left", maxSize=1, blocking=False)
                         qRight = device.getOutputQueue("right", maxSize=1, blocking=False)
                     else:
                         qLeft = qRight = None
-                    qDepth = device.getOutputQueue("depth", maxSize=1, blocking=False)
+                    qDepth = device.getOutputQueue("depth", maxSize=32 if self.record_rgbd else 1, blocking=False)
                     qImu = device.getOutputQueue("imu", maxSize=20, blocking=False)
                     qDet = device.getOutputQueue("det", maxSize=1, blocking=False) if with_spatial else None
 
+                    qRgb = (device.getOutputQueue("record_rgb", maxSize=4, blocking=False)
+                            if self.record_rgbd and with_spatial else None)
                     fps_n, fps_t = 0, time.monotonic()
                     fps_win_n, fps_win_t = 0, fps_t   # ~1s window for the live get_depth_fps() value
                     # Block on the depth queue (paces the loop at the depth rate, no busy-spin).
                     while self._running:
                         inDepth = qDepth.get()          # blocks until the next (freshest) depth frame
                         if inDepth is not None:
-                            self._process_depth(inDepth.getFrame())
+                            if qRgb is not None:
+                                # Retain device-time history for slower RGB delivery.
+                                # The live consumer still gets only the newest depth.
+                                batch = [inDepth] + qDepth.tryGetAll()
+                                for depth_packet in batch:
+                                    depth_mm = depth_packet.getFrame()
+                                    self._enqueue_pairs(self._pairer.add('depth',
+                                        {'image': depth_mm, 'meta': self._packet_meta(depth_packet)}))
+                            else:
+                                depth_mm = inDepth.getFrame()
+                            self._process_depth(depth_mm)
                             fps_n += 1
                             fps_win_n += 1
                             _now = time.monotonic()
@@ -401,6 +451,11 @@ class OakDCamera:
                                             f"(USB {self.usb_speed}, mono {self.mono_fps} req"
                                             f"{', economy' if economy else ''})")
                                 fps_n, fps_t = 0, _now
+                        if qRgb is not None:
+                            for inRgb in qRgb.tryGetAll():
+                                meta = self._packet_meta(inRgb)
+                                self._enqueue_pairs(self._pairer.add('rgb',
+                                    {'image': inRgb.getCvFrame(), 'meta': meta}))
                         if qLeft is not None:
                             inLeft = qLeft.tryGet()
                             if inLeft is not None:
@@ -417,7 +472,8 @@ class OakDCamera:
                         if qDet is not None:
                             inDet = qDet.tryGet()
                             if inDet is not None:
-                                self._process_nn(inDet)
+                                detection_meta = self._packet_meta(inDet)
+                                self._process_nn(inDet, detection_meta)
             except Exception as e:
                 self.available = False
                 self.spatial_active = False
@@ -441,6 +497,7 @@ class OakDCamera:
         self._inv_depth_offset = load_depth_correction(mxid)
         logger.info("OakDCamera: %s depth correction 1/Z offset %.4f 1/m",
                     mxid, self._inv_depth_offset)
+        self._rgbd_calibration = None
         # A reconnect may change pipeline mode. Invalidate first so callers can
         # never consume calibration left over from the previous stream geometry.
         with self._lock:
@@ -462,7 +519,7 @@ class OakDCamera:
                 # The 480x640 grid is a centre crop of the 16:9 ISP output at
                 # uniform scale, which M above does not model (fx, fy ~2.4x too
                 # small). Map the EEPROM K through the real sensor crop instead.
-                from c1_camera_geometry import rgb_1080_preview_intrinsics
+                from c1_camera_geometry import rgb_1080_preview_crop, rgb_1080_preview_intrinsics
                 native_k, native_w, native_h = calib.getDefaultIntrinsics(socket)
                 sensor_name = next(f.sensorName for f in device.getConnectedCameraFeatures()
                                    if f.socket == socket)
@@ -472,6 +529,38 @@ class OakDCamera:
                 except ValueError as exc:
                     logger.error("OakDCamera: %s; falling back to uniform-scale "
                                  "intrinsics, which are WRONG on a cropped preview", exc)
+                else:
+                    if self.record_rgbd:
+                        crop_xywh = [round(v, 1) for v in rgb_1080_preview_crop(
+                            sensor_name, (native_w, native_h), (width, height))]
+                        with self._lock:
+                            self._rgbd_calibration = dict(width=width, height=height,
+                                requested_mono_fps=self.mono_fps, requested_rgb_fps=self.nn_fps,
+                                stereo_subpixel=self.subpixel,
+                                nn_inference_threads=2,
+                                stereo_postprocessing_shaves=2 if self.subpixel else 3,
+                                stereo_postprocessing_memory_slices=2 if self.subpixel else 3,
+                                subpixel_fractional_bits=3 if self.subpixel else 0,
+                                left_right_check=self.left_right_check,
+                                speckle_filter=self.speckle_filter, speckle_range=self.speckle_range,
+                                rgb_k=np.asarray(M).reshape(-1).tolist(),
+                                rgb_d=list(calib.getDistortionCoefficients(socket)),
+                                rgb_sensor_name=sensor_name,
+                                rgb_native_k=np.asarray(native_k).reshape(-1).tolist(),
+                                rgb_native_size=[native_w,native_h],
+                                rgb_sensor_mode='1080P', rgb_crop_xywh=crop_xywh,
+                                rgb_binning=2,
+                                depth_k=np.asarray(M).reshape(-1).tolist(),
+                                rgb_geometry=f'{sensor_name}_1080P_bin2_preview_centre_crop',
+                                depth_geometry='CAM_A_aligned_stereo_depth',
+                                # Recorded depth stays RAW; replay applies
+                                # Z/(1 + c*Z) with this per-device c.
+                                device_mxid=mxid,
+                                depth_inv_offset_per_m=self._inv_depth_offset,
+                                depth_recorded='raw_uncorrected',
+                                same_pixel_grid_verified=False)
+                        logger.info("C1 RGB calibration: %s native %sx%s, preview crop %s -> %sx%s",
+                                    sensor_name,native_w,native_h,crop_xywh,width,height)
             fx, fy = float(M[0][0]), float(M[1][1])
             cx, cy = float(M[0][2]), float(M[1][2])
             if not np.isfinite((fx, fy, cx, cy)).all() or fx <= 0.0 or fy <= 0.0:
@@ -493,6 +582,41 @@ class OakDCamera:
             logger.error(f"OakDCamera: readCalibration failed: {e}")
 
     # ------------------------------------------------------------------ processing
+    def _packet_meta(self, packet):
+        receipt_mono = time.monotonic_ns()
+        receipt_unix = time.time_ns()
+        before = time.monotonic_ns()
+        sdk_now = timedelta_ns(dai.Clock.now())
+        after = time.monotonic_ns()
+        source_host = timedelta_ns(packet.getTimestamp())
+        return dict(session_id=self._capture_session, seq=int(packet.getSequenceNum()),
+                    device_ns=timedelta_ns(packet.getTimestampDevice()),
+                    sdk_host_ns=source_host,
+                    host_monotonic_estimate_ns=(before + after) // 2 + source_host - sdk_now,
+                    host_clock_sample_span_ns=after - before,
+                    receipt_monotonic_ns=receipt_mono, receipt_unix_ns=receipt_unix,
+                    timestamp_kind='depthai_message_timestamp',
+                    clock_sync='depthai_sdk', hard_clock_error_bound_ns=None)
+
+    def _enqueue_pairs(self, pairs):
+        with self._lock:
+            for pair in pairs:
+                if len(self._rgbd_pairs) == self._rgbd_pairs.maxlen:
+                    self._rgbd_drops += 1
+                pair['calibration'] = self._rgbd_calibration
+                pair['publisher_queue_drops'] = self._rgbd_drops
+                self._rgbd_pairs.append(pair)
+
+    def pop_rgbd_pairs(self):
+        with self._lock:
+            pairs = list(self._rgbd_pairs)
+            self._rgbd_pairs.clear()
+        return pairs
+
+    def get_detection_observation(self):
+        with self._lock:
+            return self._latest_detections, self._latest_detection_meta
+
     def _process_depth(self, depth_mm):
         raw_m = depth_mm.astype(np.float32) / 1000.0
         if self._inv_depth_offset:
@@ -568,7 +692,7 @@ class OakDCamera:
         n_hits = int((scores >= self.nn_conf).sum())
         return (in_range > 0.9 and 1 <= n_hits <= 300), n_hits
 
-    def _process_nn(self, nndata):
+    def _process_nn(self, nndata, metadata=None):
         """Host-side decode of the yolo26 [85, 6300] output + depth back-projection."""
         try:
             if self.nn_out_name:
@@ -583,6 +707,7 @@ class OakDCamera:
         if raw.size < 85 * 6300:
             with self._lock:
                 self._latest_detections = []
+                self._latest_detection_meta = metadata
             return
 
         if self._decode_mode is None:
@@ -600,6 +725,7 @@ class OakDCamera:
             if best is None:
                 with self._lock:
                     self._latest_detections = []
+                self._latest_detection_meta = metadata
                 return
             self._decode_mode = best[0]
             logger.info(f"OAK NN: locked decode mode {self._decode_mode}")
@@ -609,6 +735,7 @@ class OakDCamera:
         if not keep.any():
             with self._lock:
                 self._latest_detections = []
+                self._latest_detection_meta = metadata
             return
         box, scores, cls_id = box[keep], scores[keep], cls_id[keep]
         # Cap work before the pure-python NMS (O(n^2)): keep only the top-100 by score.
@@ -649,6 +776,7 @@ class OakDCamera:
             out.append(det)
         with self._lock:
             self._latest_detections = out
+            self._latest_detection_meta = metadata
 
     def _locate(self, depth, x1, y1, x2, y2):
         """Median depth in the inner half of the box -> 3D point in the CAM_A optical frame."""

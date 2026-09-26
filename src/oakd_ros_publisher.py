@@ -28,6 +28,7 @@ Usage:
 """
 
 import array
+import json
 import logging
 import threading
 import time
@@ -81,6 +82,7 @@ class OakRosPublisher:
         self._last_left_obj = None
         self._last_right_obj = None
         self._last_imu_ts = None
+        self._last_detection_id = None
         self._last_info_shape = None
 
         from sensor_msgs.msg import CameraInfo, Image, Imu
@@ -100,6 +102,18 @@ class OakRosPublisher:
                                                    qos_profile_sensor_data)
             self._right_pub = node.create_publisher(Image, "/oak/right/image_raw",
                                                     qos_profile_sensor_data)
+
+        self._rgbd_pubs = None
+        if getattr(oak, 'record_rgbd', False):
+            from std_msgs.msg import String
+            self._String = String
+            self._rgbd_pubs = {
+                'rgb': node.create_publisher(Image, '/oak/rgbd/rgb/image_raw', 5),
+                'depth': node.create_publisher(Image, '/oak/rgbd/depth/image_raw', 5),
+                'rgb_info': node.create_publisher(CameraInfo, '/oak/rgbd/rgb/camera_info', 5),
+                'depth_info': node.create_publisher(CameraInfo, '/oak/rgbd/depth/camera_info', 5),
+                'meta': node.create_publisher(String, '/oak/rgbd/metadata', 20),
+            }
 
         # vision_msgs ships with a full Humble desktop install but not with
         # ros-humble-ros-base; degrade to "no detections topic" rather than
@@ -166,6 +180,9 @@ class OakRosPublisher:
 
     def _publish_once(self):
         stamp = self._node.get_clock().now().to_msg()
+        if self._rgbd_pubs is not None:
+            for pair in self._oak.pop_rgbd_pairs():
+                self._publish_rgbd(pair)
 
         raw = self._oak.get_raw_depth_frame()
         if raw is not None and raw is not self._last_depth_obj:
@@ -188,8 +205,83 @@ class OakRosPublisher:
             self._imu_pub.publish(self._imu_msg(imu, stamp))
 
         if self._det_pub is not None and getattr(self._oak, "spatial_active", False):
-            self._det_pub.publish(
-                self._detections_msg(self._oak.get_spatial_detections(), stamp))
+            detections, metadata = self._oak.get_detection_observation()
+            if metadata is not None:
+                identity = (metadata['session_id'], metadata['seq'])
+                if identity != self._last_detection_id:
+                    self._last_detection_id = identity
+                    ros_ns = self._node.get_clock().now().nanoseconds
+                    mono_ns = time.monotonic_ns()
+                    det_stamp = self._capture_stamp(metadata, ros_ns - mono_ns)
+                    self._det_pub.publish(self._detections_msg(detections, det_stamp))
+
+    @staticmethod
+    def _capture_stamp(meta, ros_minus_monotonic_ns):
+        from builtin_interfaces.msg import Time
+        ns = meta['host_monotonic_estimate_ns'] + ros_minus_monotonic_ns
+        stamp = Time()
+        stamp.sec, stamp.nanosec = divmod(max(0, ns), 1000000000)
+        return stamp
+
+    def _publish_rgbd(self, pair):
+        calibration = pair['calibration']
+        if calibration is None:
+            logger.warning("C1 pair rejected: no calibration")
+            return
+        # Validate both payloads before publishing either half of a pair.
+        for name, dtype, shape in (
+                ('rgb', np.dtype('uint8'), (calibration['height'], calibration['width'], 3)),
+                ('depth', np.dtype('<u2'), (calibration['height'], calibration['width']))):
+            arr = pair[name]['image']
+            if arr.shape != shape or arr.dtype != dtype:
+                logger.error("C1 pair rejected: %s layout does not match calibration", name)
+                return
+        before = time.monotonic_ns()
+        ros_now = self._node.get_clock().now().nanoseconds
+        after = time.monotonic_ns()
+        offset = ros_now - (before + after) // 2
+        metadata = {k: v for k, v in pair.items() if k not in ('rgb', 'depth')}
+        metadata.update(schema='x3.rgbd.pair.v1', publication_ros_ns=ros_now,
+                        publication_monotonic_ns=after,
+                        ros_minus_monotonic_ns=offset,
+                        ros_clock_sample_span_ns=after - before,
+                        ros_clock_type=str(self._node.get_clock().clock_type),
+                        frame_id=DEPTH_FRAME)
+        for name, encoding, width_bytes in [('rgb', 'bgr8', 3), ('depth', '16UC1', 2)]:
+            packet = pair[name]
+            arr = np.ascontiguousarray(packet['image'])
+            if arr.shape[:2] != (calibration['height'], calibration['width']):
+                logger.error("C1 pair rejected: image/calibration shape mismatch")
+                return
+            msg = self._Image()
+            msg.header.stamp = self._capture_stamp(packet['meta'], offset)
+            msg.header.frame_id = DEPTH_FRAME
+            msg.height, msg.width = arr.shape[:2]
+            msg.encoding = encoding
+            msg.is_bigendian = 0
+            msg.step = msg.width * width_bytes
+            msg.data = _as_uint8_array(arr)
+            info = self._CameraInfo()
+            info.header = msg.header
+            info.height, info.width = msg.height, msg.width
+            info.k = calibration[name + '_k']
+            info.r = [1., 0., 0., 0., 1., 0., 0., 0., 1.]
+            k = info.k
+            info.p = [k[0], k[1], k[2], 0., k[3], k[4], k[5], 0., k[6], k[7], k[8], 0.]
+            if name == 'rgb':
+                # OpenCV extended rational coefficients are retained in metadata.
+                info.distortion_model = 'rational_polynomial'
+                info.d = calibration['rgb_d'][:8]
+            else:
+                info.distortion_model = 'plumb_bob'
+                info.d = [0.] * 5
+            self._rgbd_pubs[name].publish(msg)
+            self._rgbd_pubs[name + '_info'].publish(info)
+            metadata[name] = dict(packet['meta'], encoding=encoding,
+                ros_stamp_ns=msg.header.stamp.sec * 1000000000 + msg.header.stamp.nanosec)
+        out = self._String()
+        out.data = json.dumps(metadata, separators=(',', ':'), allow_nan=False)
+        self._rgbd_pubs['meta'].publish(out)
 
     # ------------------------------------------------------------------ builders
     def _depth_msg(self, raw_m, stamp):

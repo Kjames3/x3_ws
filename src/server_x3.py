@@ -119,6 +119,10 @@ parser.add_argument('--no-oak', action='store_true', dest='no_oak',
 parser.add_argument('--no-oak-spatial', action='store_true', dest='no_oak_spatial',
                     help='Disable on-device YOLO spatial detection on the OAK-D '
                          '(still streams stereo/depth/IMU).')
+parser.add_argument('--c1-recording', action='store_true',
+                    help='Enable timestamp-paired OAK RGB/depth diagnostic topics in the existing camera owner.')
+parser.add_argument('--c1-subpixel', action='store_true',
+                    help='Use 3-bit subpixel stereo for the C1 recording experiment; requires --c1-recording.')
 parser.add_argument('--oak-ros-publish', action='store_true', dest='oak_ros_publish',
                     help='Republish the OAK-D streams on ROS2 topics (/oak/depth/image_raw, '
                          '/oak/left|right/image_raw, /oak/imu, /oak/detections) so they can be '
@@ -150,12 +154,14 @@ parser.add_argument('--auto-nav2-map', type=str, default=None, dest='auto_nav2_m
 parser.add_argument('--oak-cloud', action='store_true', dest='oak_cloud',
                     help='Enable OAK-D point cloud publishing.')
 args = parser.parse_args()
+if args.c1_subpixel and not args.c1_recording:
+    parser.error("--c1-subpixel requires --c1-recording")
 SIM_MODE  = args.sim
 ROS2_MODE = not args.sim  # ROS2 hardware bridge is the default; only --sim disables it
 OAK_ENABLED = not args.no_oak  # OAK-D Lite supplies stereo/depth/imu unless --no-oak
 TOF_ENABLED = not args.no_tof   # dual VL53L5CX 8x8 arrays via the Teensy
 OAK_SPATIAL = not args.no_oak_spatial  # on-device YOLO spatial detection (if blob present)
-OAK_ROS_PUBLISH = args.oak_ros_publish      # republish OAK streams as ROS2 topics (bagging/RViz)
+OAK_ROS_PUBLISH = args.oak_ros_publish or args.c1_recording      # republish OAK streams as ROS2 topics (bagging/RViz)
 OAK_ROS_RATE = args.oak_ros_rate
 OAK_ROS_STEREO = not args.oak_ros_no_stereo
 WEBRTC_CAMERA = args.webrtc_camera  # color via WebRTC/mediamtx instead of base64 (releases Astra)
@@ -728,6 +734,10 @@ class ROS2Bridge:
         # nothing.  At <=64 points (~800 B) reliability costs nothing.
         # /tof/<name>/points is every valid return; /tof/<name>/obstacles is the
         # subset that passes the CBF's above-floor test, for the costmap.
+        # Full raw C1 evidence; source/read/receipt/publication clocks stay distinct.
+        from std_msgs.msg import String
+        self._tof_observation_type = String
+        self._tof_observation_pub = self._node.create_publisher(String, '/tof/observations', 100)
         self._tof_pubs = {
             (name, kind): self._node.create_publisher(PointCloud2, f'/tof/{name}/{kind}', 5)
             for name in ('upper', 'lower') for kind in ('points', 'obstacles')}
@@ -1108,6 +1118,15 @@ class ROS2Bridge:
         msg.linear.y  = float(safe_vy)    * self.LINEAR_SCALE
         msg.angular.z = float(omega) * self.ANGULAR_SCALE
         self._cmd_vel_pub.publish(msg)
+
+    def publish_tof_observation(self, observation):
+        record = dict(observation)
+        record['publication_ros_ns'] = self._node.get_clock().now().nanoseconds
+        record['publication_ros_clock_type'] = str(self._node.get_clock().clock_type)
+        record['pointcloud_stamp_kind'] = 'publication_time_not_acquisition'
+        msg = self._tof_observation_type()
+        msg.data = json.dumps(record, separators=(',', ':'), allow_nan=False)
+        self._tof_observation_pub.publish(msg)
 
     def publish_tof_cloud(self, name, points, kind='points'):
         """(N,3) float32 sensor-frame points -> /tof/<name>/<kind>.
@@ -1854,7 +1873,8 @@ def initialize_hardware():
     # retries every 2 s, so a missing Teensy just leaves the panels empty.
     if not SIM_MODE and TOF_ENABLED:
         logger.info(f"Starting Teensy ToF reader on {args.tof_port}")
-        tof_array = TeensyToFArrays(port=args.tof_port, on_frame=_publish_tof_cloud)
+        tof_array = TeensyToFArrays(port=args.tof_port, on_frame=_publish_tof_cloud,
+                                   on_observation=_publish_tof_observation)
 
     # 3. Camera — direct USB in both direct-hardware and --ros2 modes.
     #    Only --sim uses ROS2Bridge.get_frame() (Gazebo publishes /camera/image_raw).
@@ -1888,7 +1908,9 @@ def initialize_hardware():
             # mono_fps targets high on-device stereo/depth rate for perception; the
             # actual rate is gated by the USB link (needs USB3/SUPER to approach it).
             oak = OakDCamera(mono_fps=80, spatial_blob=_spatial_blob, spatial_config=_spatial_cfg,
-                             conf_threshold=0.35, accel_hz=500, gyro_hz=400)
+                             conf_threshold=0.35, accel_hz=500, gyro_hz=400,
+                             record_rgbd=args.c1_recording,
+                             subpixel=args.c1_recording and args.c1_subpixel)
             oak.start()
             logger.info("OAK-D Lite: driver started (stereo + depth + IMU"
                         + (" + spatial detection)" if _spatial_blob else ")"))
@@ -1903,8 +1925,8 @@ def initialize_hardware():
             try:
                 from oakd_ros_publisher import OakRosPublisher
                 oak_ros_pub = OakRosPublisher(ros_bridge._node, oak,
-                                              rate_hz=OAK_ROS_RATE,
-                                              publish_stereo=OAK_ROS_STEREO)
+                                              rate_hz=max(OAK_ROS_RATE, 15) if args.c1_recording else OAK_ROS_RATE,
+                                              publish_stereo=OAK_ROS_STEREO and not args.c1_recording)
                 oak_ros_pub.start()
             except Exception as e:
                 logger.error(f"OAK-D ROS publisher: init failed: {e}")
@@ -3571,6 +3593,11 @@ def _tof_floor_deficit(dist, status):
     if abs(float(np.median(deficit[ok]))) > TOF_FLOOR_TILT_MM:
         return None                      # whole view shifted: chassis tilt
     return ok & (deficit > TOF_FLOOR_DEFICIT_MM)
+
+
+def _publish_tof_observation(observation):
+    if ros_bridge is not None:
+        ros_bridge.publish_tof_observation(observation)
 
 
 def _publish_tof_cloud(name, seq, dist, status):

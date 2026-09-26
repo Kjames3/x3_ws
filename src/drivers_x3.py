@@ -1030,13 +1030,24 @@ class TeensyToFArrays:
 
     SENSORS = ('upper', 'lower')
 
-    def __init__(self, port=TEENSY_TOF_PORT, max_range_m=None, on_frame=None):
+    def __init__(self, port=TEENSY_TOF_PORT, max_range_m=None, on_frame=None,
+                 on_observation=None):
         """``on_frame(name, seq, dist, status)`` runs on the reader thread for
         EVERY frame -- use it for consumers that must not drop frames when the
-        asyncio loop is busy (the ROS clouds).  Exceptions are logged, not raised.
+        asyncio loop is busy (the ROS clouds). Duplicate/ambiguous reset frames
+        are quarantined. ``on_observation(envelope)`` receives every validated
+        record, including quarantined frames and firmware status/stats, with
+        unchanged source payload and separate receipt clocks. Exceptions are logged.
         """
         from teensy_tof_serial import LineDecoder
+        from tof_observation import ToFObservations
+        from tof_clock import TeensyClock
         self.on_frame = on_frame
+        self.on_observation = on_observation
+        self._observations = ToFObservations()
+        self._clock_cls = TeensyClock
+        self._source_clock = TeensyClock()
+        self._metadata = {}
         self.port = port
         self.max_range_m = DEFAULT_MAX_RANGE_M if max_range_m is None else float(max_range_m)
         self.connected = False
@@ -1060,6 +1071,12 @@ class TeensyToFArrays:
             return None
         return f[0], f[1], f[2], time.monotonic() - f[3]
 
+    def latest_observation(self, name):
+        """Copy of provenance for the cached accepted frame; never re-stamped."""
+        import copy
+        with self._lock:
+            return copy.deepcopy(self._metadata.get(name))
+
     def sensor_active(self, name):
         return self._active.get(name)
 
@@ -1074,15 +1091,23 @@ class TeensyToFArrays:
             try:
                 with serial.Serial(self.port, 115200, timeout=0.2,
                                    write_timeout=1, exclusive=True) as ser:
+                    self._observations.connect()
+                    self._source_clock = self._clock_cls()
+                    next_sync_ns = 0
                     ser.write(b'r')   # raw frames, in case a monitor left benchmark mode on
                     self.connected = True
                     logged_missing = False
                     logger.info(f"Teensy ToF connected on {self.port}")
                     decoder = self._decoder_cls()
                     while not self._stop.is_set():
-                        chunk = ser.read(max(ser.in_waiting, 1))
+                        now_ns = time.monotonic_ns()
+                        if now_ns >= next_sync_ns:
+                            ser.write(self._source_clock.request(now_ns))
+                            next_sync_ns = now_ns + 1_000_000_000
+                        chunk = ser.read(min(max(ser.in_waiting, 1), 4096))
+                        receipt_mono, receipt_unix = time.monotonic_ns(), time.time_ns()
                         for rec in decoder.feed(chunk):
-                            self._handle(rec)
+                            self._handle(rec, receipt_mono, receipt_unix, decoder.rejected)
             except Exception as e:
                 if self.connected or not logged_missing:
                     logger.warning(f"Teensy ToF on {self.port}: {e}; retrying every 2 s")
@@ -1090,13 +1115,33 @@ class TeensyToFArrays:
             self.connected = False
             self._stop.wait(2.0)
 
-    def _handle(self, rec):
+    def _handle(self, rec, receipt_monotonic_ns=None, receipt_unix_ns=None,
+                decoder_rejected_total=None):
+        receipt_monotonic_ns = (time.monotonic_ns() if receipt_monotonic_ns is None
+                                else receipt_monotonic_ns)
+        receipt_unix_ns = time.time_ns() if receipt_unix_ns is None else receipt_unix_ns
+        if rec['type'] == 'sync':
+            self._source_clock.observe(rec, receipt_monotonic_ns)
+        observation = self._observations.envelope(rec, receipt_monotonic_ns, receipt_unix_ns)
+        if rec['type'] == 'frame':
+            if observation['continuity'] == 'reset_or_reorder':
+                self._source_clock = self._clock_cls()
+            observation['clock'].update(self._source_clock.estimate(rec['t_ms'], receipt_monotonic_ns))
+        observation['decoder_rejected_total'] = decoder_rejected_total
+        if self.on_observation is not None:
+            try:
+                self.on_observation(observation)
+            except Exception as e:
+                logger.error(f"Teensy ToF observation callback: {e}")
         name = rec['sensor']
         if rec['type'] == 'frame':
+            if not observation['accepted']:
+                return
             dist = np.asarray(rec['distance_mm'], dtype=np.float64)
             status = np.asarray(rec['target_status'], dtype=np.int32)
             with self._lock:
-                self._frames[name] = (rec['seq'], dist, status, time.monotonic())
+                self._frames[name] = (rec['seq'], dist, status, receipt_monotonic_ns / 1e9)
+                self._metadata[name] = observation
             if self.on_frame is not None:
                 try:
                     self.on_frame(name, rec['seq'], dist, status)

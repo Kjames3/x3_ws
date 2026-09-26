@@ -22,6 +22,7 @@
 #   /tf_static                — Static coordinate frame transforms
 #
 # Optional topics (opt in — they roughly double or triple the bag size):
+#   RECORD_C1=true            include raw ToF timing evidence and diagnostic topics
 #   RECORD_OAK_STEREO=true    /oak/left/image_raw, /oak/right/image_raw (mono8)
 #   RECORD_ASTRA_DEPTH=true   /camera/depth/image_raw (Orbbec Astra Pro, 16UC1)
 #
@@ -76,6 +77,7 @@ BAG_PATH="${OUTPUT_DIR}/${BAG_NAME}"
 # Opt-in extras (see header). Default off to keep ~30 min sessions a sane size.
 RECORD_OAK_STEREO="${RECORD_OAK_STEREO:-false}"
 RECORD_ASTRA_DEPTH="${RECORD_ASTRA_DEPTH:-false}"
+RECORD_C1="${RECORD_C1:-false}"
 
 TOPICS=(
     "/oak/depth/image_raw"
@@ -93,6 +95,16 @@ TOPICS=(
 OPTIONAL_TOPICS=(
     "/oak/detections"
 )
+
+# C1 requires server --c1-recording. Prefer src/c1_dataset.py for frozen
+# calibration/code manifests and deterministic pairing/pose replay audits.
+if [[ "${RECORD_C1}" == "true" ]]; then
+    TOPICS+=("/tof/observations" "/oak/rgbd/rgb/image_raw"
+             "/oak/rgbd/depth/image_raw" "/oak/rgbd/rgb/camera_info"
+             "/oak/rgbd/depth/camera_info" "/oak/rgbd/metadata")
+    OPTIONAL_TOPICS+=("/tof/upper/points" "/tof/lower/points"
+                     "/tof/upper/obstacles" "/tof/lower/obstacles")
+fi
 
 if [[ "${RECORD_OAK_STEREO}" == "true" ]]; then
     OPTIONAL_TOPICS+=("/oak/left/image_raw" "/oak/right/image_raw")
