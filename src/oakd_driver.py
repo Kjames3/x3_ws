@@ -434,9 +434,9 @@ class OakDCamera:
 
             M = calib.getCameraIntrinsics(socket, width, height)
             if with_spatial:
-                # The 480x640 grid is the 16:9 ISP output stretched, so the
-                # uniform-scale M above has fy ~= fx and a wrong cy. Map the
-                # EEPROM K through the real sensor crop instead.
+                # The 480x640 grid is a centre crop of the 16:9 ISP output at
+                # uniform scale, which M above does not model (fx, fy ~2.4x too
+                # small). Map the EEPROM K through the real sensor crop instead.
                 from c1_camera_geometry import rgb_1080_preview_intrinsics
                 native_k, native_w, native_h = calib.getDefaultIntrinsics(socket)
                 sensor_name = next(f.sensorName for f in device.getConnectedCameraFeatures()
@@ -446,7 +446,7 @@ class OakDCamera:
                         (native_w, native_h), (width, height), sensor_name)
                 except ValueError as exc:
                     logger.error("OakDCamera: %s; falling back to uniform-scale "
-                                 "intrinsics, which are WRONG on a stretched preview", exc)
+                                 "intrinsics, which are WRONG on a cropped preview", exc)
             fx, fy = float(M[0][0]), float(M[1][1])
             cx, cy = float(M[0][2]), float(M[1][2])
             if not np.isfinite((fx, fy, cx, cy)).all() or fx <= 0.0 or fy <= 0.0:

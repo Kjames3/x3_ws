@@ -202,10 +202,10 @@ def test_driver_reads_cam_a_intrinsics_at_spatial_depth_size():
         camera._read_intrinsics(_FakeDevice(calibration), with_spatial=True)
 
         assert calibration.calls == [("CAM_A", 480, 640)]
-        # The 16:9 ISP output is stretched to 480x640, so fy is scaled by
-        # 640/2160 while fx is scaled by 480/3840 -- not the uniform-scale M.
-        expected = (2283.0 * 480 / 3840, 2283.0 * 640 / 2160,
-                    1944.0 * 480 / 3840, 1080.0 * 640 / 2160)
+        # The 480x640 preview is the middle 1620x2160 of the 16:9 frame at a
+        # uniform 640/2160 scale -- not the M from getCameraIntrinsics.
+        k = 640 / 2160
+        expected = (2283.0 * k, 2283.0 * k, (1944.0 - 1110) * k, 1080.0 * k)
         assert np.allclose(camera.get_depth_intrinsics()[:4], expected)
         assert camera.get_depth_intrinsics()[4:] == (480, 640)
         assert np.allclose((camera._fx, camera._fy, camera._cx, camera._cy), expected)

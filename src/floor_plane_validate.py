@@ -63,7 +63,7 @@ def build_pipeline():
 
 
 def camA_intrinsics(dev, calib):
-    """CAM_A K on the stretched NN_W x NN_H grid (see c1_camera_geometry)."""
+    """CAM_A K on the centre-cropped NN_W x NN_H grid (see c1_camera_geometry)."""
     sock = dai.CameraBoardSocket.CAM_A
     native_k, nw, nh = calib.getDefaultIntrinsics(sock)
     name = next(f.sensorName for f in dev.getConnectedCameraFeatures() if f.socket == sock)
