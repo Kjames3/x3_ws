@@ -1,7 +1,7 @@
 {
   "camera_height_m": 0.213,
-  "camera_pitch_deg": -1.044,
+  "camera_pitch_deg": -0.29,
   "min_obstacle_height_m": 0.15,
   "max_obstacle_height_m": 2.0,
-  "notes": "OAK-D Pro W (installed 2026-09-25). camera_height_m 0.213 is the caliper-measured lens centre (21.2-21.4 cm; housing bottom 19.4-19.5 cm). camera_pitch_deg is the angle between the camera axis and THE FLOOR IT IS REJECTING, so it absorbs both mount tolerance and local floor slope -- re-run src/floor_plane_validate.py after any move, including a translation on the same floor. Measured 2026-09-25 with the stretched-preview intrinsics fixed (fy ~676, not ~285): Theil-Sen over 7 clean bins gave -1.044 deg (nose UP), fit RMS 1.2 mm; BNO086 gravity (down axis -X) gave -1.0 deg. Roll is NOT modelled by the single-pitch height equation. The Lite's value was +1.077 deg nose-down."
+  "notes": "OAK-D Pro W (installed 2026-09-25). camera_height_m 0.213 is the caliper-measured lens centre (21.2-21.4 cm; housing bottom 19.4-19.5 cm). camera_pitch_deg is the angle between the camera axis and THE FLOOR IT IS REJECTING, so it absorbs both mount tolerance and local floor slope -- re-run src/floor_plane_validate.py after any move, including a translation on the same floor. Measured 2026-09-25 on lab carpet with 4.5 m of clear floor, on depth corrected by config/oak_depth_correction.json: -0.308 and -0.271 deg (nose UP), fit RMS 1.3/0.9 mm. The earlier -1.044 was fitted to uncorrected depth, which reads long and mimics a nose-up pitch. The BNO086 reads ~-1.1 deg, i.e. it sits ~0.85 deg off the optical axis on this unit, so do not calibrate pitch from the IMU. Roll is NOT modelled by the single-pitch height equation."
 }
