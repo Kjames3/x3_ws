@@ -98,7 +98,7 @@ def test_ground_config_matches_measured_height_and_urdf():
     oak_rpy = tuple(map(float, joints["oak_center_joint"].find("origin")
                         .get("rpy").split()))
 
-    assert np.isclose(config["camera_height_m"], 0.209)
+    assert np.isclose(config["camera_height_m"], 0.213)
     assert np.isclose(config["camera_height_m"], base_z + oak_z)
     # The URDF describes design intent: the OAK is *specified* level, rpy 0 0 0.
     assert oak_rpy == (0.0, 0.0, 0.0)

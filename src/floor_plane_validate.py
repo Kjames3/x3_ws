@@ -25,6 +25,8 @@ except ImportError:
     sys.exit("depthai not importable -- run this on the robot")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from c1_camera_geometry import rgb_1080_preview_intrinsics  # noqa: E402
 CFG = os.path.join(os.path.dirname(HERE), "config", "camera_ground_plane.json")
 NN_W, NN_H = 480, 640           # CAM_A-aligned depth, matches oakd_driver spatial mode
 Z_MIN, Z_MAX = 0.5, 4.0         # the estimator's valid depth band
@@ -60,6 +62,17 @@ def build_pipeline():
     return p
 
 
+def camA_intrinsics(dev, calib):
+    """CAM_A K on the stretched NN_W x NN_H grid (see c1_camera_geometry)."""
+    sock = dai.CameraBoardSocket.CAM_A
+    native_k, nw, nh = calib.getDefaultIntrinsics(sock)
+    name = next(f.sensorName for f in dev.getConnectedCameraFeatures() if f.socket == sock)
+    try:
+        return rgb_1080_preview_intrinsics(native_k, (nw, nh), (NN_W, NN_H), name)
+    except ValueError as e:
+        sys.exit(f"{e} -- add this sensor to c1_camera_geometry before fitting a floor")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--frames", type=int, default=60, help="depth frames to accumulate")
@@ -86,7 +99,7 @@ def main():
 
     with dai.Device(build_pipeline()) as dev:
         calib = dev.readCalibration()
-        M = calib.getCameraIntrinsics(dai.CameraBoardSocket.CAM_A, NN_W, NN_H)
+        M = camA_intrinsics(dev, calib)
         fx, fy = float(M[0][0]), float(M[1][1])
         cx, cy = float(M[0][2]), float(M[1][2])
         print(f"CAM_A intrinsics @ {NN_W}x{NN_H}: fx={fx:.1f} fy={fy:.1f} cx={cx:.1f} cy={cy:.1f}")
@@ -196,16 +209,22 @@ def main():
         if abs(n - 9.81) > 1.5:
             print("  !! |a| is not ~9.81 -- robot moving or IMU unreliable; ignore this check")
         else:
-            # OAK optical convention: X right, Y down, Z forward.
-            # Level camera => gravity lies along +Y only.
-            imu_pitch = math.degrees(math.atan2(a[2], a[1]))
-            imu_roll = math.degrees(math.atan2(a[0], a[1]))
-            print(f"  pitch {imu_pitch:+.3f} deg (nose down +), roll {imu_roll:+.3f} deg")
+            # IMU Z runs along the lens axis on both boards, but "down" does not:
+            # +Y on the Lite's BMI270, -X on the Pro W's BNO086 (its EEPROM IMU
+            # extrinsics are identity, so they cannot rotate it for us). Take
+            # the dominant in-plane axis as down; +Z along gravity = nose down.
             dom = int(np.argmax(np.abs(a)))
-            if dom != 1:
-                print(f"  !! gravity dominates axis {'XYZ'[dom]}, not Y -- the camera is NOT")
-                print("     mounted in the orientation the height model assumes. Stop and")
-                print("     resolve this before trusting any slope above.")
+            if dom == 2:
+                print("  !! gravity dominates Z -- the camera is looking at the floor or")
+                print("     ceiling, not the horizon. Resolve this before trusting the slope.")
+            else:
+                down = abs(a[dom])
+                side = a[1 - dom]
+                imu_pitch = math.degrees(math.atan2(a[2], down))
+                imu_roll = math.degrees(math.atan2(side, down))
+                print(f"  down axis {'-' if a[dom] < 0 else '+'}{'XY'[dom]}")
+                print(f"  pitch {imu_pitch:+.3f} deg (nose down +), roll {imu_roll:+.3f} deg "
+                      f"(sign depends on the board)")
 
     print("\n" + "=" * 56)
     print("VERDICT")

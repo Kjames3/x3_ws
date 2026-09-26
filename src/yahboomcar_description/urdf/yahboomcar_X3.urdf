@@ -459,10 +459,10 @@
         </collision>
     </link>
     <joint name="oak_center_joint" type="fixed">
-        <!-- Provisional: the Lite's centre moved +0.5 mm forward and -1.0 mm
-             down to seat the Pro W bracket in RViz (2026-09-25). Not yet
-             measured. Keep oakd_driver.OAK_MOUNT_X/Z in step with this. -->
-        <origin xyz="0.107815 1.7948E-05 0.1275" rpy="0 0 0"/>
+        <!-- x fitted to the Pro W bracket in RViz; z from the lens centre
+             measured 0.213 m above the floor (2026-09-25).
+             Keep oakd_driver.OAK_MOUNT_X/Z in step with this. -->
+        <origin xyz="0.107815 1.7948E-05 0.1315" rpy="0 0 0"/>
         <parent link="base_link"/>
         <child link="oak-d-base-frame"/>
     </joint>

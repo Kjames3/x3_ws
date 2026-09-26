@@ -162,11 +162,21 @@ class _FakeCalibration:
                 [0.0, 311.0, 201.0],
                 [0.0, 0.0, 1.0]]
 
+    def getDefaultIntrinsics(self, socket):
+        # OAK-D Pro W IMX378: EEPROM is calibrated at 3840x2160.
+        return ([[2283.0, 0.0, 1944.0],
+                 [0.0, 2283.0, 1080.0],
+                 [0.0, 0.0, 1.0]], 3840, 2160)
+
 
 class _FakeDevice:
-    def __init__(self, calibration=None, error=None):
+    def __init__(self, calibration=None, error=None, sensor_name="IMX378"):
         self.calibration = calibration
         self.error = error
+        self.sensor_name = sensor_name
+
+    def getConnectedCameraFeatures(self):
+        return [SimpleNamespace(socket="CAM_A", sensorName=self.sensor_name)]
 
     def readCalibration(self):
         if self.error is not None:
@@ -192,10 +202,27 @@ def test_driver_reads_cam_a_intrinsics_at_spatial_depth_size():
         camera._read_intrinsics(_FakeDevice(calibration), with_spatial=True)
 
         assert calibration.calls == [("CAM_A", 480, 640)]
+        # The 16:9 ISP output is stretched to 480x640, so fy is scaled by
+        # 640/2160 while fx is scaled by 480/3840 -- not the uniform-scale M.
+        expected = (2283.0 * 480 / 3840, 2283.0 * 640 / 2160,
+                    1944.0 * 480 / 3840, 1080.0 * 640 / 2160)
+        assert np.allclose(camera.get_depth_intrinsics()[:4], expected)
+        assert camera.get_depth_intrinsics()[4:] == (480, 640)
+        assert np.allclose((camera._fx, camera._fy, camera._cx, camera._cy), expected)
+    finally:
+        oakd_driver.dai = old_dai
+
+
+def test_driver_falls_back_for_unqualified_rgb_sensor():
+    import oakd_driver
+
+    old_dai = _patch_fake_dai(oakd_driver)
+    try:
+        camera = oakd_driver.OakDCamera(sim_mode=True)
+        camera._read_intrinsics(_FakeDevice(_FakeCalibration(), sensor_name="OV9782"),
+                                with_spatial=True)
         assert camera.get_depth_intrinsics() == (301.0, 311.0, 241.0, 201.0,
                                                   480, 640)
-        assert (camera._fx, camera._fy, camera._cx, camera._cy) == \
-            (301.0, 311.0, 241.0, 201.0)
     finally:
         oakd_driver.dai = old_dai
 
@@ -250,7 +277,7 @@ def test_oak_mount_uses_measured_x3plus_position():
     from oakd_driver import OAK_MOUNT_X, OAK_MOUNT_Z
 
     assert np.isclose(OAK_MOUNT_X, 0.107815)
-    assert np.isclose(OAK_MOUNT_Z, 0.1275)
+    assert np.isclose(OAK_MOUNT_Z, 0.1315)
 
 
 def test_scaled_intrinsics_project_consistently():
