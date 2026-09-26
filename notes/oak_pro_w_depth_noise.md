@@ -1,0 +1,64 @@
+# OAK-D Pro W depth noise model (2026-09-25)
+
+Camera: OAK-D-PRO-W, MxId 14442C103181D7D600, CAM_A-aligned 480x640 depth,
+fx=fy=676, mono 640x400 (fB = 21.6 px*m). All numbers are on depth corrected by
+`config/oak_depth_correction.json` (Z / (1 + 0.0821 Z)), projector off unless noted.
+
+## Floor (grazing incidence) — production stereo config
+
+Exact `oakd_driver` settings: DEFAULT preset, LR check, speckle filter 50, 80 fps
+mono. Lab carpet, 4.5 m clear, 100–150 frames. "Per-pixel" = per-row line fit
+removed, so pitch/roll/bias are excluded. This is what ground removal sees.
+
+| range (m) | temporal sd, sp off | fixed per-pixel sd, sp off | total per-frame sd, sp off | total, sp on |
+|---|---|---|---|---|
+| 0.50–0.75 | 0.9 mm | 4.3 mm | 4.5 mm | 5.1 mm |
+| 1.00–1.25 | 2.7 | 11.6 | 12.2 | 13.0 |
+| 1.50–1.75 | 4.7 | 21.9 | 22.4 | 24.5 |
+| 2.00–2.25 | 11.5 | 38.9 | 41.3 | 42.2 |
+| 2.50–2.75 | 27.4 | 56.6 | 60.0 | 64.7 |
+| 2.75–3.00 | 19.4 | 69.2 | 71.8 | 107.0 |
+
+- Fits: **total per-frame sd ≈ 0.009·Z² (subpixel off), 0.011·Z² (on)**; temporal
+  only ≈ 0.0024·Z² (off), 0.0041·Z² (on).
+- The error is dominated by a **fixed per-pixel** term. Subpixel does not shrink it,
+  so it is not disparity quantization — it is matching error on a surface seen at a
+  grazing angle. A per-row quadratic removes only 5–15%, so it is not a distortion
+  bow either.
+- Temporal sd alone understates the error badly: with subpixel off a pixel can sit
+  on one disparity level for the whole capture (sd 0) while being ~half a step wrong.
+- Bias vs flat-floor geometry: +7..+25 mm at 0.5–2 m, −20..−65 mm at 2.3–3 m;
+  within what a 0.1 deg pitch error produces at those ranges.
+
+## Fronto-parallel board (30.1 cm) — HIGH_DENSITY preset, not production
+
+| range | mode | temporal sd | plane RMS / p95 |
+|---|---|---|---|
+| 0.57 m | sp off | 1.6 mm | 4.4 / 9.2 mm |
+| 1.1 m | sp off | 22.3 mm (2 levels, 57 mm apart) | 11.1 / 19.7 mm |
+| 1.1 m | sp on | 5.4 mm | 4.5 / 9.8 mm |
+
+- Subpixel **does** help on a surface facing the camera (people, walls, obstacles),
+  unlike on the floor. Not yet measured in the production preset or beyond 1.1 m.
+- Disparity step with subpixel off: **0.046·Z² m** (5 cm at 1 m, 19 cm at 2 m,
+  42 cm at 3 m); subpixel (3 bits) divides it by 8.
+
+## Projector
+
+- Plain board at >= 2 m: without the projector, matching fails (patches at 5–7 m).
+- Board at 0.6 m: **with** the projector, the repeating dot pattern ghosts large
+  patches to 0.4 m and 1.9 m. Off, the board is clean (0.62–0.65 m).
+- It degrades the upper VL53L5CX array's far zones (valid 50.7 -> 46.3%).
+- Production keeps it off.
+
+## Use
+
+- Ground removal / floor-height gating: use **0.009·Z²** per pixel (subpixel off).
+- `c3_person_tracker.measurement_cov_camera` assumes the Lite's 0.0025·Z². It is
+  clamped by `meas_sigma_floor_m` 0.25 m, so it only matters beyond ~5 m (0.0025) or
+  ~5.3 m (0.009); not urgent, but the constant is the Lite's.
+- Subpixel: no benefit on the floor; a real benefit on fronto-parallel surfaces at
+  1.1 m. Before switching production, measure a board at 1–3 m in the production
+  preset and check NN frame rate/latency with the 2-SHAVE post-processing budget.
+
+Scripts used (robot `/tmp`, not in repo): `floor_noise.py`, `board_noise.py`.
