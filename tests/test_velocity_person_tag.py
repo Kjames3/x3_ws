@@ -123,3 +123,63 @@ def test_static_blob_never_moving():
         x = 2.0 + rng.gauss(0, 0.06)
         out = tr.update([(0.0, 0.0, x)], [(x, rng.gauss(0, 0.06), x)], [False])
     assert next(iter(out.values()))["moving"] is False
+
+
+# --- Track cap: a nearer newcomer must get a track --------------------------
+from velocity_estimator import MAX_OBSTACLES  # noqa: E402
+
+
+def _fill(tr, n, z0=3.0, flags=False):
+    cm = [(0.3 * i, 0.0, z0) for i in range(n)]
+    cg = [(z0, 2.0 * i, z0) for i in range(n)]   # 2 m apart: never merged
+    for _ in range(4):
+        out = tr.update(cm, cg, [flags] * n)
+    return cm, cg, out
+
+
+def test_newcomer_evicts_farthest_static_track_at_cap():
+    tr = ObstacleTracker()
+    cm, cg, _ = _fill(tr, MAX_OBSTACLES)
+    near_m, near_g = (0.0, 0.0, 1.0), (1.0, -5.0, 1.0)
+    out = tr.update(cm + [near_m], cg + [near_g], [False] * MAX_OBSTACLES + [True])
+    assert len(out) == MAX_OBSTACLES
+    assert any(abs(t['centroid'][2] - 1.0) < 1e-6 for t in out.values())
+
+
+def test_confirmed_people_are_never_evicted():
+    tr = ObstacleTracker()
+    cm, cg, before = _fill(tr, MAX_OBSTACLES, flags=True)
+    assert all(t['is_person'] for t in before.values())
+    out = tr.update(cm + [(0.0, 0.0, 1.0)], cg + [(1.0, -5.0, 1.0)],
+                    [True] * (MAX_OBSTACLES + 1))
+    assert set(out) == set(before)
+
+
+def test_farther_newcomer_does_not_evict_visible_nearer_tracks():
+    tr = ObstacleTracker()
+    cm, cg, before = _fill(tr, MAX_OBSTACLES, z0=1.0)
+    out = tr.update(cm + [(0.0, 0.0, 3.5)], cg + [(3.5, -5.0, 3.5)],
+                    [False] * (MAX_OBSTACLES + 1))
+    assert set(out) == set(before)
+
+
+# --- Confidence hysteresis ---------------------------------------------------
+from velocity_estimator import PERSON_CONFIRM_CONF  # noqa: E402
+
+
+def test_low_confidence_boxes_cannot_confirm():
+    weak = PERSON_CONFIRM_CONF - 0.1
+    assert _run([[weak]] * 20) is False
+
+
+def test_low_confidence_boxes_keep_a_confirmed_person():
+    weak = PERSON_CONFIRM_CONF - 0.1
+    assert _run([[0.8]] * 4 + [[weak]] * (3 * PERSON_RELEASE_FRAMES)) is True
+
+
+def test_ceiling_slice_sliding_sideways_is_not_motion():
+    # Recorded pattern: a far-wall slice at z~3.95 m whose centroid slides
+    # 1.30 -> -0.43 m sideways as the 4.0 m depth cutoff moves along it.
+    xs = [1.30, 1.31, 1.32, 0.92, 0.64, 0.28, -0.10, -0.25, -0.40, -0.43]
+    h = [(3.95, -x, 3.95) for x in xs]
+    assert not motion_evidence(h, 3.95)

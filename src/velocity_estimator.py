@@ -42,7 +42,12 @@ INFER_HZ      = 10          # target inference rate
 # measured ~29 fps depth rate, so it only trips on a real stall.
 MAX_DEPTH_FRAME_AGE_S = 0.5
 MIN_BLOB_AREA = 500         # pixels — ignore tiny depth blobs
-MAX_OBSTACLES = 5           # track at most N obstacles simultaneously
+# Track at most N obstacles simultaneously. Was 5: parked in the apartment the
+# tracker sat at 3-5 tracks (5 in 6% of frames, 36% with the Roomba running),
+# and at the cap a person walking in got NO track and no predicted motion.
+# At 10 the MLP batch is still trivial. When full, a nearer new detection
+# evicts the least useful existing track (see ObstacleTracker.update).
+MAX_OBSTACLES = 10
 MAX_RANGE_M   = 5.0         # ignore detections beyond this distance
 # Person confirmation hysteresis. A track's person score rises by 1 on each
 # frame its blob falls inside a YOLO person box and falls by 1 otherwise,
@@ -58,6 +63,11 @@ PERSON_BOX_PAD_PX     = 15
 PERSON_CONFIRM        = 3
 PERSON_SCORE_MAX      = 6
 PERSON_RELEASE_FRAMES = 20
+# Confidence hysteresis. The server runs the OAK detector at 0.35 to catch
+# more, and a parked run with nobody present (2026-09-26) still latched a
+# person for up to 4.8 s at a time. Only boxes >= PERSON_CONFIRM_CONF count
+# toward CONFIRMING a person; once latched, any box keeps it alive.
+PERSON_CONFIRM_CONF   = 0.5
 
 # Motion evidence -> the "dynamic" category (non-person things that really
 # move, e.g. the Roomba). A track shows motion on a frame when, over its
@@ -79,11 +89,18 @@ MOTION_MIN_DISP_M       = 0.20
 MOTION_MIN_STRAIGHTNESS = 0.5
 MOTION_CONFIRM          = 3
 MOTION_RELEASE_FRAMES   = 20
+# No motion evidence beyond this depth. Blobs near the 4.0 m extraction
+# ceiling are slices of far walls: as the cutoff wanders along the wall the
+# slice's centroid slides sideways in a straight line (parked, 2026-09-26:
+# x 1.30 -> -0.43 m at z ~3.95 m), which passes both tests above and marked
+# 1-4 phantom "dynamic" tracks in 81% of frames. 3.5 m is still well past
+# CBF_SPEED_RANGE_M (1.8 m), the range where the category changes behaviour.
+MOTION_MAX_Z_M          = 3.5
 
 
 def motion_evidence(history_global, depth_z):
     """True when a track's global history shows motion beyond depth noise."""
-    if len(history_global) < WINDOW_SIZE:
+    if len(history_global) < WINDOW_SIZE or depth_z > MOTION_MAX_Z_M:
         return False
     xy = np.asarray(history_global, dtype=np.float64)[:, :2]
     n = MOTION_END_N
@@ -135,11 +152,25 @@ class ObstacleTracker:
         features assume uniformly spaced samples."""
         self.tracks = {}
 
+    def _eviction_candidate(self, new_z):
+        """Track to drop so a detection at depth new_z can be tracked, or None."""
+        best, best_key = None, None
+        for tid, t in self.tracks.items():
+            if t['person'] or t['moving']:
+                continue
+            if t['age'] == 0 and t['centroid'][2] <= new_z:
+                continue    # visible and at least as near: keep it
+            key = (t['age'] > 0, t['centroid'][2])
+            if best_key is None or key > best_key:
+                best, best_key = tid, key
+        return best
+
     def update(self, centroids_m, centroids_g, person_flags=None):
         """
         centroids_m: list of (x, y, z) in metres relative to robot.
         centroids_g: list of (x, y, z) in global map frame.
-        person_flags: optional per-centroid bools (inside a YOLO person box),
+        person_flags: optional per-centroid person-box confidence (0.0 when
+                      outside every box; bools also accepted, True == 1.0),
                       or None when no detector is live.
         Returns dict of updated tracks. 'is_person' is None when person_flags
         is None, else whether the track's person score is confirmed.
@@ -147,18 +178,24 @@ class ObstacleTracker:
         def _bump(track, idx):
             if person_flags is None:
                 return
-            hit = bool(person_flags[idx])
-            step = 1 if hit else -1
-            track['person_score'] = min(PERSON_SCORE_MAX,
-                                        max(0, track['person_score'] + step))
+            conf = float(person_flags[idx])
             if track['person']:
-                track['person_miss'] = 0 if hit else track['person_miss'] + 1
+                # Latched: any box renews it.
+                track['person_miss'] = 0 if conf > 0 else track['person_miss'] + 1
                 if track['person_miss'] >= PERSON_RELEASE_FRAMES:
                     track['person'] = False
                     track['person_score'] = 0
-            elif track['person_score'] >= PERSON_CONFIRM:
+                return
+            step = 1 if conf >= PERSON_CONFIRM_CONF else -1
+            track['person_score'] = min(PERSON_SCORE_MAX,
+                                        max(0, track['person_score'] + step))
+            if track['person_score'] >= PERSON_CONFIRM:
                 track['person'] = True
                 track['person_miss'] = 0
+                # Diagnostic for false tags: which blob, how far, how sure.
+                logger.info("VelocityEstimator: person confirmed at z=%.2f m "
+                            "x=%.2f m (box conf %.2f)", track['centroid'][2],
+                            track['centroid'][0], conf)
 
         # Age all tracks. NOTE: do NOT decrement visible_count here — a track that
         # matches every frame would net zero (decrement here, +1 on match below) and
@@ -223,10 +260,17 @@ class ObstacleTracker:
             if track['age'] > 0:
                 track['visible_count'] = max(0, track['visible_count'] - 1)
 
-        # Create new tracks for unmatched detections
+        # Create new tracks for unmatched detections, nearest first. At the
+        # cap, a new detection evicts the least useful track that is farther
+        # away than it: tracks not seen this frame go first, then the
+        # farthest static one. Person and moving tracks are never evicted.
+        unmatched.sort(key=lambda i: centroids_m[i][2])
         for idx in unmatched:
             if len(self.tracks) >= MAX_OBSTACLES:
-                break
+                victim = self._eviction_candidate(centroids_m[idx][2])
+                if victim is None:
+                    break
+                del self.tracks[victim]
             tid = self.next_id
             self.next_id += 1
             cx_l, cy_l, cz = centroids_m[idx]
@@ -460,7 +504,7 @@ class VelocityEstimator:
             return None
         if detections is None:
             return None
-        return [d["bbox"] for d in detections
+        return [(d["bbox"], float(d.get("conf", 1.0))) for d in detections
                 if d.get("label") == "person" and d.get("bbox")]
 
     def _extract_depth_centroids(self, depth_frame, raw_depth_frame=None,
@@ -586,16 +630,23 @@ class VelocityEstimator:
                     fx_full, fy_full, cx_full, cy_full = intr_full
                     u = x_m * fx_full / Z + cx_full
                     v = y_m * fy_full / Z + cy_full
-                    person_flags.append(any(
-                        (x1 - PERSON_BOX_PAD_PX) <= u <= (x2 + PERSON_BOX_PAD_PX) and
-                        (y1 - PERSON_BOX_PAD_PX) <= v <= (y2 + PERSON_BOX_PAD_PX)
-                        for x1, y1, x2, y2 in person_boxes))
+                    # Confidence of the most confident box containing the
+                    # blob, 0.0 when none does.
+                    person_flags.append(max(
+                        (c for (x1, y1, x2, y2), c in person_boxes
+                         if (x1 - PERSON_BOX_PAD_PX) <= u <= (x2 + PERSON_BOX_PAD_PX)
+                         and (y1 - PERSON_BOX_PAD_PX) <= v <= (y2 + PERSON_BOX_PAD_PX)),
+                        default=0.0))
 
                 centroids.append((x_m, y_m, Z))
 
-            self._last_person_flags = (person_flags[:MAX_OBSTACLES]
+            # Keep the NEAREST blobs. findContours order is image order, so a
+            # plain [:N] could drop a person at 1 m for a wall at 3.9 m.
+            order = sorted(range(len(centroids)), key=lambda i: centroids[i][2])
+            order = order[:MAX_OBSTACLES]
+            self._last_person_flags = ([person_flags[i] for i in order]
                                        if person_flags is not None else None)
-            return centroids[:MAX_OBSTACLES]
+            return [centroids[i] for i in order]
 
         self._last_person_flags = None
         if depth_frame is None:
@@ -642,7 +693,7 @@ class VelocityEstimator:
 
             centroids.append((x_m, y_m, Z))
 
-        return centroids[:MAX_OBSTACLES]
+        return centroids[:MAX_OBSTACLES]  # fallback path: Z is a fixed 1.0
 
     def _build_window_features(self, history_local):
         """
