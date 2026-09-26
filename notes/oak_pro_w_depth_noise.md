@@ -53,7 +53,7 @@ removed, so pitch/roll/bias are excluded. This is what ground removal sees.
 
 ## Use
 
-- Ground removal / floor-height gating: use **0.009·Z²** per pixel (subpixel off).
+- Ground removal / floor-height gating: use **0.011·Z²** per pixel (subpixel on, production; 0.009·Z² with it off).
 - `c3_person_tracker.measurement_cov_camera` assumes the Lite's 0.0025·Z². It is
   clamped by `meas_sigma_floor_m` 0.25 m, so it only matters beyond ~5 m (0.0025) or
   ~5.3 m (0.009); not urgent, but the constant is the Lite's.
