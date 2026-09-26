@@ -276,6 +276,8 @@ velocity_estimation_enabled = True  # A/B toggle: False = reactive, True = predi
 # change and needs a driving test -- see F7, where a stale obstacle set drove
 # the robot into a wall.
 CBF_SPEED_RANGE_M = 1.8
+# Person tags from YOLO older than this are ignored (tracks read "unknown").
+YOLO_TAG_STALE_S = 1.0
 _p2p_proc = None           # point-to-point test subprocess handle
 _ab_test_proc = None       # A/B comparison test subprocess handle
 _ab_test_mode = None       # A/B comparison test mode ("reactive" or "predictive")
@@ -548,6 +550,7 @@ def _tilt_nav_conflict():
 lidar_enabled = False
 is_auto_driving = False
 last_detections = []
+last_detections_t = 0.0   # monotonic stamp of last_detections
 active_model_name = "yolo26n"
 
 # Current motor powers (tank-drive representation for GUI readout)
@@ -1049,6 +1052,15 @@ class ROS2Bridge:
                     # test, and now it is rejected outright. Same obstacles.
                     if est.get("z", 0.0) > CBF_SPEED_RANGE_M:
                         continue
+                    # Only people and confirmed movers ("dynamic", e.g. the
+                    # Roomba) get predicted motion. Static depth blobs (door
+                    # frames, chair legs, wall ends) jitter past 0.15 m/s and
+                    # made the robot swerve at nothing. Their current position
+                    # still reaches the CBF via /scan and the ToF arrays; they
+                    # only lose the forward prediction. category None (no live
+                    # detector) keeps the old untagged behaviour.
+                    if est.get("category") == "static":
+                        continue
                     if speed > 0.15:
                         ox = est.get("z", est.get("y", 0.0))
                         oy = -est.get("x", 0.0)
@@ -1161,6 +1173,8 @@ class ROS2Bridge:
         state_array.header = pose_array.header
 
         for est in estimates:
+            if est.get("is_person") is False:
+                continue
             x = est.get("x", 0.0)
             y = est.get("y", 0.0)
             z = est.get("z", 1.0)
@@ -1948,7 +1962,20 @@ def initialize_hardware():
 
         # Callback to retrieve latest visual YOLO detections (Idea 146)
         def get_latest_yolo_detections():
-            global last_detections
+            # None = no live detector. Prefer the OAK's on-device YOLO: it
+            # runs whenever the spatial pipeline is up (no GUI toggle), and its
+            # boxes are in the same CAM_A-aligned nn_w x nn_h frame as the
+            # depth the estimator uses. Host YOLO never runs under
+            # --webrtc-camera (no frames reach the camera loop).
+            if oak is not None and getattr(oak, "spatial_active", False):
+                if oak.get_detection_age() <= YOLO_TAG_STALE_S:
+                    return oak.get_spatial_detections()
+            # Host YOLO fallback. last_detections is never cleared when YOLO
+            # is switched off, so without the age check the estimator would
+            # keep tagging tracks against a frozen set of boxes.
+            if (not detection_enabled or
+                    time.monotonic() - last_detections_t > YOLO_TAG_STALE_S):
+                return None
             return list(last_detections)
 
         velocity_estimator = VelocityEstimator(get_current_depth_source, lidar, robot_pose_fn=get_robot_pose_and_twist, model_path=model_path, detections_fn=get_latest_yolo_detections)
@@ -2721,6 +2748,14 @@ async def handle_client(websocket):
                         except Exception as e:
                             logger.warning(f"set_velocity_estimation error: {e}")
                     logger.info(f"Velocity estimation: {'enabled' if enabled else 'disabled'}")
+
+                elif msg_type == "set_person_tagging":
+                    # A/B switch for phantom tests: off = every track untagged
+                    # (the pre-tagging behaviour). Resets to on at restart.
+                    if velocity_estimator is not None:
+                        velocity_estimator.person_tagging_enabled = bool(data.get("enabled", True))
+                        logger.info("Person tagging: %s",
+                                    velocity_estimator.person_tagging_enabled)
                     await websocket.send(json.dumps({
                         "type": "velocity_estimation_status",
                         "enabled": enabled
@@ -3095,7 +3130,7 @@ def _save_battery_state():
 
 async def broadcast_loop():
     global _cam_frame_count, _yolo_frame_count, _fps_last_time
-    global fps_camera, fps_detection, last_detections, depth_enabled, lidar_enabled
+    global fps_camera, fps_detection, last_detections, last_detections_t, depth_enabled, lidar_enabled
     global _batt_cache_v, _batt_cache_time, _batt_cache_a, _batt_cache_w  # P9
     global _batt_cache_a_time
     global _ab_test_mode, stereo_enabled
@@ -3136,6 +3171,7 @@ async def broadcast_loop():
                     _, buf = cv2.imencode('.jpg', annotated_downscaled, [cv2.IMWRITE_JPEG_QUALITY, 70])
                     return dets, bytes(buf)
                 last_detections, img_bytes = await loop.run_in_executor(None, _run_yolo)
+                last_detections_t = time.monotonic()
                 _yolo_frame_count += 1
             elif frame is not None:
                 def _encode_frame():

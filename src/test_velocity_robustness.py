@@ -194,7 +194,7 @@ def test_gate_reads_config_and_no_hardcoded_range_remains():
     # comparison now reads the configured attribute, so raising the range in
     # config cannot silently leave a second hardcoded gate behind.
     import inspect
-    src = inspect.getsource(VelocityEstimator._inference_loop)
+    src = inspect.getsource(VelocityEstimator._step)
     assert "self.max_speed_range_m" in src
     assert "> 1.8" not in src
 

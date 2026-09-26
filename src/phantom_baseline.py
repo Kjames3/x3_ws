@@ -14,6 +14,15 @@ Every non-zero reading it records is a phantom, by construction. Score it with:
 Usage
     python3 phantom_baseline.py --seconds 300
     python3 phantom_baseline.py --seconds 300 --label v3
+
+Person-tag A/B (same parked scene, back to back):
+    python3 phantom_baseline.py --seconds 180 --tagging off --label untagged
+    python3 phantom_baseline.py --seconds 180 --tagging on  --label tagged
+Person boxes come from the OAK's on-device YOLO (always on); --yolo only
+matters for the host-YOLO fallback when there is no OAK spatial pipeline.
+The headline column is n_cbf_injected: tracks the CBF would turn into
+predicted-motion obstacles (speed > 0.15, z <= 1.8 m, category not static),
+i.e. the ones that cause swerves. With the scene empty of people it should be 0.
 """
 import argparse
 import asyncio
@@ -33,10 +42,23 @@ FIELDS = [
     "time_s", "mode", "segment", "robot_x", "robot_y", "robot_th_deg",
     "n_obstacles", "max_obs_speed", "min_obstacle_dist", "path_y",
     "vx_cmd", "vy_cmd", "vy_rep", "corrected_x", "corrected_y", "corrected_yaw_deg",
+    "n_person", "n_nonperson", "n_untagged", "n_cbf_injected", "n_dynamic",
 ]
 
+# Mirror of the server's CBF gate (server_x3.py CBF_SPEED_RANGE_M and the 0.15
+# m/s predictive threshold). Keep in sync if either changes.
+CBF_SPEED_RANGE_M = 1.8
+CBF_SPEED_MIN = 0.15
 
-async def run(url, seconds, label, log_dir):
+
+def cbf_injected(est):
+    return (est.get("category") != "static" and
+            est.get("z", 0.0) <= CBF_SPEED_RANGE_M and
+            est.get("speed", 0.0) > CBF_SPEED_MIN)
+
+
+async def run(url, seconds, label, log_dir, yolo="leave", tagging="on",
+              hold_motors=True):
     os.makedirs(log_dir, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = os.path.join(log_dir, f"ab_{label}_{ts}.csv")
@@ -48,6 +70,23 @@ async def run(url, seconds, label, log_dir):
 
     async with websockets.connect(url, max_size=None) as ws:
         await ws.send(json.dumps({"type": "set_velocity_estimation", "enabled": True}))
+        if hold_motors:
+            # This script sends no /cmd_vel, but the CBF's proactive repulsion
+            # does: a person walking at the robot pushed it away (2026-09-26).
+            # Motors off publishes a zero Twist directly, bypassing the CBF.
+            await ws.send(json.dumps({"type": "toggle_motors", "enabled": False}))
+            print("[phantom] motors OFF (re-enable from the GUI when done)")
+        await ws.send(json.dumps({"type": "set_person_tagging",
+                                  "enabled": tagging == "on"}))
+        print(f"[phantom] person tagging {tagging}")
+        if yolo != "leave":
+            await ws.send(json.dumps({"type": "toggle_detection",
+                                      "enabled": yolo == "on"}))
+            print(f"[phantom] YOLO {yolo}")
+        print("[phantom] waiting 3 s for tags to settle")
+        await asyncio.sleep(3.0)
+        start = time.monotonic()
+        next_log = start
         print(f"[phantom] estimator ON, logging {seconds}s -> {path}")
         print("[phantom] keep the robot parked and the scene still (stay behind it)")
 
@@ -87,6 +126,11 @@ async def run(url, seconds, label, log_dir):
                     n_obstacles=len(latest),
                     max_obs_speed=round(max(speeds), 4) if speeds else 0.0,
                     min_obstacle_dist=round(min(dists), 3) if dists else 999.0,
+                    n_person=sum(e.get("is_person") is True for e in latest),
+                    n_nonperson=sum(e.get("is_person") is False for e in latest),
+                    n_untagged=sum(e.get("is_person") is None for e in latest),
+                    n_cbf_injected=sum(cbf_injected(e) for e in latest),
+                    n_dynamic=sum(e.get("category") == "dynamic" for e in latest),
                 )
                 rows.append(row)
                 if len(rows) % (LOG_HZ * 30) == 0:
@@ -99,6 +143,20 @@ async def run(url, seconds, label, log_dir):
         w.writeheader()
         w.writerows(rows)
     print(f"[phantom] saved {len(rows)} rows -> {path}")
+    if rows:
+        n = len(rows)
+        def mean(k):
+            return sum(r[k] for r in rows) / n
+        inj = sum(r["n_cbf_injected"] > 0 for r in rows)
+        print(f"[phantom] tracks/frame {mean('n_obstacles'):.2f}  "
+              f"(person {mean('n_person'):.2f}, non-person {mean('n_nonperson'):.2f}, "
+              f"untagged {mean('n_untagged'):.2f})")
+        dyn = sum(r["n_dynamic"] > 0 for r in rows)
+        print(f"[phantom] frames with a dynamic (moving non-person) track: {dyn}/{n} "
+              f"({100.0 * dyn / n:.1f}%)")
+        print(f"[phantom] frames with a CBF-injected track: {inj}/{n} "
+              f"({100.0 * inj / n:.1f}%)  mean injected/frame {mean('n_cbf_injected'):.3f}")
+        print(f"[phantom] humanoids drawn/frame {mean('n_person') + mean('n_untagged'):.2f}")
     print(f"[phantom] score it:  python3 score_ab_logs.py {path} --static")
 
 
@@ -110,9 +168,16 @@ def main():
                     help="goes in the filename and the mode column, e.g. 'v3'")
     ap.add_argument("--url", default="ws://localhost:8081")
     ap.add_argument("--log-dir", default=DEFAULT_LOG_DIR)
+    ap.add_argument("--yolo", choices=["on", "off", "leave"], default="leave",
+                    help="host YOLO toggle (fallback tagger only; the OAK tags on its own)")
+    ap.add_argument("--allow-motion", action="store_true",
+                    help="leave motors enabled (the CBF may move the robot)")
+    ap.add_argument("--tagging", choices=["on", "off"], default="on",
+                    help="person tagging A/B switch (off = old untagged behaviour)")
     a = ap.parse_args()
     try:
-        asyncio.run(run(a.url, a.seconds, a.label, a.log_dir))
+        asyncio.run(run(a.url, a.seconds, a.label, a.log_dir, a.yolo, a.tagging,
+                        not a.allow_motion))
     except KeyboardInterrupt:
         print("\n[phantom] interrupted -- rerun for a full-length baseline")
 

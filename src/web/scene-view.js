@@ -327,14 +327,45 @@
         return { group, ghost, arrow };
     }
 
+    function removeTrack(p) {
+        scene.remove(p.group, p.ghost, p.arrow);
+    }
+
+    let moverGeom = null, moverMat = null, moverGhostMat = null;
+    function makeMover() {
+        if (!moverGeom) {
+            moverGeom = new THREE.BoxGeometry(0.34, 0.12, 0.34);
+            moverGeom.translate(0, 0.06, 0);
+            moverMat = new THREE.MeshLambertMaterial({ color: 0xf59e0b });
+            moverGhostMat = new THREE.MeshLambertMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.3 });
+        }
+        const group = new THREE.Mesh(moverGeom, moverMat);
+        const ghost = new THREE.Mesh(moverGeom, moverGhostMat);
+        const arrow = new THREE.ArrowHelper(new THREE.Vector3(0, 0, -1), new THREE.Vector3(),
+            1, 0xdc2626, 0.15, 0.1);
+        scene.add(group, ghost, arrow);
+        return { group, ghost, arrow };
+    }
+
     function updatePeople(estimates) {
         const seen = new Set();
         for (const est of estimates || []) {
             const fwd = est.z, right = est.x;
             if (!isFinite(fwd) || !isFinite(right)) continue;
+            // Static depth blobs (furniture, door frames) are already drawn by
+            // the /scan walls. People get an avatar, confirmed non-person
+            // movers ("dynamic", e.g. the Roomba) an amber box. A null
+            // category means no live detector, so draw as a person as before.
+            if (est.category === 'static') continue;
+            const kind = est.category === 'dynamic' ? 'dynamic' : 'person';
             seen.add(est.id);
             let p = people.get(est.id);
-            if (!p) { p = makePerson(); people.set(est.id, p); }
+            if (p && p.kind !== kind) { removeTrack(p); p = null; }
+            if (!p) {
+                p = kind === 'dynamic' ? makeMover() : makePerson();
+                p.kind = kind;
+                people.set(est.id, p);
+            }
             p.group.position.set(right, 0, -fwd);
 
             // vx=forward, vy=left (CBF convention) -> scene (x=-vy, z=-vx)
@@ -344,8 +375,9 @@
             p.ghost.visible = moving;
             p.arrow.visible = moving;
             if (moving) {
-                p.ghost.position.set(right + sx * GHOST_S, 0.6, -fwd + sz * GHOST_S);
-                _org.set(right, 1.3, -fwd);
+                p.ghost.position.set(right + sx * GHOST_S, kind === 'dynamic' ? 0 : 0.6,
+                    -fwd + sz * GHOST_S);
+                _org.set(right, kind === 'dynamic' ? 0.3 : 1.3, -fwd);
                 _dir.set(sx, 0, sz).normalize();
                 p.arrow.position.copy(_org);
                 p.arrow.setDirection(_dir);
@@ -354,7 +386,7 @@
         }
         for (const [id, p] of people) {
             if (seen.has(id)) continue;
-            scene.remove(p.group, p.ghost, p.arrow);
+            removeTrack(p);
             people.delete(id);
         }
     }

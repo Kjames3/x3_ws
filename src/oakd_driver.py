@@ -166,6 +166,7 @@ class OakDCamera:
         self._last_depth_time = 0.0
         self._latest_imu = None
         self._latest_detections = []
+        self._latest_detections_t = 0.0   # monotonic, last NN packet decoded
         self.depth_fps = 0.0              # live depth/stereo capture rate (~1s window)
 
         # CAM_A intrinsics at (nn_w, nn_h), filled once the device is up.
@@ -576,6 +577,9 @@ class OakDCamera:
                 raw = np.array(nndata.getFirstLayerFp16(), dtype=np.float32)
         except Exception:
             return
+        # Stamp every decoded packet, including ones with no detections: "no
+        # person this frame" is a fresh answer, not a missing one.
+        self._latest_detections_t = time.monotonic()
         if raw.size < 85 * 6300:
             with self._lock:
                 self._latest_detections = []
@@ -729,6 +733,11 @@ class OakDCamera:
     def get_imu(self):
         with self._lock:
             return self._latest_imu
+
+    def get_detection_age(self):
+        """Seconds since the last NN packet was decoded (inf if never)."""
+        t = self._latest_detections_t
+        return time.monotonic() - t if t else float("inf")
 
     def get_spatial_detections(self):
         with self._lock:

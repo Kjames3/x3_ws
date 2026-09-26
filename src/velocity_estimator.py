@@ -44,6 +44,55 @@ MAX_DEPTH_FRAME_AGE_S = 0.5
 MIN_BLOB_AREA = 500         # pixels — ignore tiny depth blobs
 MAX_OBSTACLES = 5           # track at most N obstacles simultaneously
 MAX_RANGE_M   = 5.0         # ignore detections beyond this distance
+# Person confirmation hysteresis. A track's person score rises by 1 on each
+# frame its blob falls inside a YOLO person box and falls by 1 otherwise,
+# clamped to [0, PERSON_SCORE_MAX]. It becomes a person at >= PERSON_CONFIRM,
+# so one false box cannot promote a door frame.
+#
+# Once confirmed the tag LATCHES for the life of the track and is released
+# only after PERSON_RELEASE_FRAMES consecutive box misses (2 s at INFER_HZ).
+# Without the latch the OAK's YOLO dropping a walker for a few frames cut the
+# tag into 16 pieces in 60 s (2026-09-26 walk run), and each gap removed the
+# walker's predicted motion from the CBF.
+PERSON_BOX_PAD_PX     = 15
+PERSON_CONFIRM        = 3
+PERSON_SCORE_MAX      = 6
+PERSON_RELEASE_FRAMES = 20
+
+# Motion evidence -> the "dynamic" category (non-person things that really
+# move, e.g. the Roomba). A track shows motion on a frame when, over its
+# global-frame history window (WINDOW_SIZE samples, ~1 s):
+#   * the mean of the last MOTION_END_N samples sits more than
+#     max(MOTION_MIN_DISP_M, MOTION_K_SIGMA * sigma_diff(Z)) from the mean of
+#     the first MOTION_END_N, where sigma_diff is the OAK-D Pro W depth noise
+#     (DEPTH_NOISE_COEF * Z^2 per sample) propagated to a difference of two
+#     N-sample means -- so a far blob needs more travel than a near one; and
+#   * the path is straight: net displacement / summed step length >=
+#     MOTION_MIN_STRAIGHTNESS. Centroid jitter wanders; a mover goes somewhere.
+# MOTION_MIN_DISP_M is a floor because the dominant phantom noise is blob-shape
+# change (0.3-1.3 m/s phantoms), which the depth noise model does not cover.
+# Confirmation and release latch like the person tag.
+DEPTH_NOISE_COEF        = 0.009
+MOTION_END_N            = 3
+MOTION_K_SIGMA          = 3.0
+MOTION_MIN_DISP_M       = 0.20
+MOTION_MIN_STRAIGHTNESS = 0.5
+MOTION_CONFIRM          = 3
+MOTION_RELEASE_FRAMES   = 20
+
+
+def motion_evidence(history_global, depth_z):
+    """True when a track's global history shows motion beyond depth noise."""
+    if len(history_global) < WINDOW_SIZE:
+        return False
+    xy = np.asarray(history_global, dtype=np.float64)[:, :2]
+    n = MOTION_END_N
+    net = float(np.linalg.norm(xy[-n:].mean(axis=0) - xy[:n].mean(axis=0)))
+    sigma_diff = DEPTH_NOISE_COEF * depth_z ** 2 * math.sqrt(2.0 / n)
+    if net < max(MOTION_MIN_DISP_M, MOTION_K_SIGMA * sigma_diff):
+        return False
+    path = float(np.linalg.norm(np.diff(xy, axis=0), axis=1).sum())
+    return path > 0 and net / path >= MOTION_MIN_STRAIGHTNESS
 
 # Safe defaults match the physically measured OAK optical-centre height and the
 # level mount represented in the X3 Plus URDF. The JSON file makes a later
@@ -86,12 +135,31 @@ class ObstacleTracker:
         features assume uniformly spaced samples."""
         self.tracks = {}
 
-    def update(self, centroids_m, centroids_g):
+    def update(self, centroids_m, centroids_g, person_flags=None):
         """
         centroids_m: list of (x, y, z) in metres relative to robot.
         centroids_g: list of (x, y, z) in global map frame.
-        Returns dict of updated tracks.
+        person_flags: optional per-centroid bools (inside a YOLO person box),
+                      or None when no detector is live.
+        Returns dict of updated tracks. 'is_person' is None when person_flags
+        is None, else whether the track's person score is confirmed.
         """
+        def _bump(track, idx):
+            if person_flags is None:
+                return
+            hit = bool(person_flags[idx])
+            step = 1 if hit else -1
+            track['person_score'] = min(PERSON_SCORE_MAX,
+                                        max(0, track['person_score'] + step))
+            if track['person']:
+                track['person_miss'] = 0 if hit else track['person_miss'] + 1
+                if track['person_miss'] >= PERSON_RELEASE_FRAMES:
+                    track['person'] = False
+                    track['person_score'] = 0
+            elif track['person_score'] >= PERSON_CONFIRM:
+                track['person'] = True
+                track['person_miss'] = 0
+
         # Age all tracks. NOTE: do NOT decrement visible_count here — a track that
         # matches every frame would net zero (decrement here, +1 on match below) and
         # stay pinned at its initial value of 1, making the visible_count >= 3
@@ -128,6 +196,25 @@ class ObstacleTracker:
                 track['age']      = 0
                 track['visible_count'] += 1  # Increment visible count (Idea 109)
                 track['history_global'].append((cx_g, cy_g, cz_filtered))
+                _bump(track, idx)
+
+        # Motion evidence for tracks matched this frame (latched like the
+        # person tag). Independent of the detector, so it runs even when
+        # person_flags is None.
+        for track in self.tracks.values():
+            if track['age'] != 0:
+                continue
+            if motion_evidence(track['history_global'], track['centroid'][2]):
+                track['motion_hits'] += 1
+                track['motion_miss'] = 0
+                if track['motion_hits'] >= MOTION_CONFIRM:
+                    track['moving'] = True
+            else:
+                track['motion_hits'] = 0
+                if track['moving']:
+                    track['motion_miss'] += 1
+                    if track['motion_miss'] >= MOTION_RELEASE_FRAMES:
+                        track['moving'] = False
 
         # Decay confirmation for tracks that were NOT matched this frame
         # (matched tracks had age reset to 0 above). This keeps visible_count a
@@ -151,13 +238,23 @@ class ObstacleTracker:
                 'age':      0,
                 'visible_count': 1,  # Initialize visible count (Idea 109)
                 'history_global': deque(maxlen=WINDOW_SIZE),
+                'person_score': 0,
+                'person': False,        # latched confirmation
+                'person_miss': 0,       # consecutive misses while latched
+                'moving': False,        # latched motion confirmation
+                'motion_hits': 0,       # consecutive frames with motion evidence
+                'motion_miss': 0,       # consecutive frames without, while latched
             }
             self.tracks[tid]['history_global'].append((cx_g, cy_g, cz))
+            _bump(self.tracks[tid], idx)
 
         return {tid: {'centroid': t['centroid'],
                       'centroid_global': t['centroid_global'],
                       'history_global': t['history_global'],
-                      'visible_count': t['visible_count']}  # Return visible count (Idea 109)
+                      'visible_count': t['visible_count'],  # Return visible count (Idea 109)
+                      'is_person': (None if person_flags is None
+                                    else t['person']),
+                      'moving': t['moving']}
                 for tid, t in self.tracks.items()}
 
 
@@ -211,6 +308,8 @@ class VelocityEstimator:
         self._logged_stale_depth = False
         self._logged_missing_pose = False
         self._height_ray_cache = {}
+        self.person_tagging_enabled = True
+        self._last_person_flags = None
         # Optional feature capture for offline model comparison. Off unless
         # VELOCITY_FEATURE_LOG is set, so the deployed path is untouched.
         self._feature_log_path = os.environ.get("VELOCITY_FEATURE_LOG")
@@ -348,6 +447,22 @@ class VelocityEstimator:
             fy, cy = fy * sy, cy * sy
         return float(fx), float(fy), float(cx), float(cy)
 
+    def _person_boxes(self):
+        """Person bboxes from the detector, or None when there is no live
+        detector (YOLO off or stale). None means "unknown", which consumers
+        must treat like the old untagged behaviour -- NOT as "not a person"."""
+        if self.detections_fn is None or not self.person_tagging_enabled:
+            return None
+        try:
+            detections = self.detections_fn()
+        except Exception as ex:
+            logger.warning(f"VelocityEstimator: detections_fn failed: {ex}")
+            return None
+        if detections is None:
+            return None
+        return [d["bbox"] for d in detections
+                if d.get("label") == "person" and d.get("bbox")]
+
     def _extract_depth_centroids(self, depth_frame, raw_depth_frame=None,
                                  depth_intrinsics=None):
         """
@@ -409,6 +524,8 @@ class VelocityEstimator:
             
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             centroids = []
+            person_boxes = self._person_boxes()
+            person_flags = [] if person_boxes is not None else None
             h, w = raw_depth_frame.shape[:2]
             
             for cnt in contours:
@@ -458,50 +575,29 @@ class VelocityEstimator:
                 x_m = (cx - cx0) * Z / fx
                 y_m = (cy - cy0) * Z / fy
                 
-                # Visual-LiDAR Fusion Gating (Idea 146)
-                if self.detections_fn is not None:
-                    try:
-                        detections = self.detections_fn()
-                        # Filter for 'person' boxes
-                        person_boxes = [d.get("bbox") for d in detections if d.get("label") == "person"]
-                        if person_boxes:
-                            # Project into the full-resolution depth image. This
-                            # gate remains disabled below, but keeping its geometry
-                            # calibrated prevents it regressing if re-enabled.
-                            fx_full, fy_full, cx_full, cy_full = intr_full
-                            u = int(x_m * fx_full / Z + cx_full)
-                            v = int(y_m * fy_full / Z + cy_full)
-                            
-                            inside_any = False
-                            for x1, y1, x2, y2 in person_boxes:
-                                # 15px padding margin
-                                if (x1 - 15) <= u <= (x2 + 15) and (y1 - 15) <= v <= (y2 + 15):
-                                    inside_any = True
-                                    break
-                            if not inside_any:
-                                # DELIBERATELY DISABLED -- and NOT because the
-                                # geometry is unverified. Verified 2026-09-04:
-                                # detections are scaled by oakd_driver nn_w/nn_h
-                                # (480x640) and get_raw_depth_frame() is the same
-                                # CAM_A-aligned 480x640 via stereo.setOutputSize,
-                                # so both live in one frame; the projection above
-                                # reduces to u = 2*cx of the 2x-downsampled mask,
-                                # which is correct.
-                                #
-                                # The blocker is scope, not calibration: these
-                                # centroids also feed the CBF, so discarding
-                                # everything that is not a person would make
-                                # collision avoidance blind to boxes, furniture
-                                # and the Roomba. Enabling this needs the
-                                # estimator and CBF consumers split first.
-                                pass
-                    except Exception as ex:
-                        logger.warning(f"VelocityEstimator: failed visual-lidar gating check: {ex}")
-                
+                # Person tagging (Idea 146). The blob is KEPT either way --
+                # this only labels it. Consumers decide what a non-person
+                # means: the CBF still sees it as a lidar/ToF obstacle but
+                # gets no predicted motion for it, and the GUI draws it as a
+                # box. Detections live in the same CAM_A-aligned 480x640 frame
+                # as get_raw_depth_frame() (verified 2026-09-04), so the
+                # projection below reduces to 2x the downsampled centroid.
+                if person_boxes is not None:
+                    fx_full, fy_full, cx_full, cy_full = intr_full
+                    u = x_m * fx_full / Z + cx_full
+                    v = y_m * fy_full / Z + cy_full
+                    person_flags.append(any(
+                        (x1 - PERSON_BOX_PAD_PX) <= u <= (x2 + PERSON_BOX_PAD_PX) and
+                        (y1 - PERSON_BOX_PAD_PX) <= v <= (y2 + PERSON_BOX_PAD_PX)
+                        for x1, y1, x2, y2 in person_boxes))
+
                 centroids.append((x_m, y_m, Z))
-                
+
+            self._last_person_flags = (person_flags[:MAX_OBSTACLES]
+                                       if person_flags is not None else None)
             return centroids[:MAX_OBSTACLES]
 
+        self._last_person_flags = None
         if depth_frame is None:
             return []
 
@@ -652,6 +748,204 @@ class VelocityEstimator:
         except Exception as exc:
             logger.error("VelocityEstimator: failed writing feature log: %s", exc)
 
+    def _step(self, centroids_m, rx_rob, ry_rob, rtheta_rob, person_flags=None):
+        """Track, infer and clamp one frame of camera-local centroids.
+
+        Split out of the inference loop so offline replay (c3_replay.py)
+        runs exactly the deployed tracker/MLP/gating chain. Returns
+        ``(estimates, tracks)``.
+        """
+        # Compute global coordinates of centroids (Idea 1, 11, & 121)
+        centroids_g = []
+        cos_r = math.cos(rtheta_rob)
+        sin_r = math.sin(rtheta_rob)
+        if centroids_m:
+            local_coords = np.array([[cz, -cx_l] for cx_l, cy_l, cz in centroids_m], dtype=np.float32)
+            R = np.array([[cos_r, -sin_r],
+                          [sin_r, cos_r]], dtype=np.float32)
+            T = np.array([rx_rob, ry_rob], dtype=np.float32)
+            global_xy = local_coords @ R.T + T
+            for idx, (cx_l, cy_l, cz) in enumerate(centroids_m):
+                centroids_g.append((float(global_xy[idx, 0]), float(global_xy[idx, 1]), cz))
+
+        # 4. Update tracker using global coordinate matching
+        if person_flags is not None and len(person_flags) != len(centroids_m):
+            person_flags = None
+        tracks = self._tracker.update(centroids_m, centroids_g, person_flags)
+
+        # 5. Run MLP inference on active tracks (batched) (Idea 46)
+        estimates = []
+        eligible_tracks = []
+        features_list = []
+        recorded_rows = []
+
+        self._feature_frame += 1
+        # Periodic flush: the server is usually stopped with a signal, so
+        # relying on stop() alone would lose a whole capture.
+        if (self._feature_log_path is not None and
+                self._feature_frame % 300 == 0):
+            self._flush_feature_log()
+        for tid, track in tracks.items():
+            # Filter out tracks that do not satisfy the track initiation gate (Idea 109)
+            if track.get('visible_count', 1) < 3:
+                self._record_track(tid, track['centroid'],
+                                   track.get('visible_count', 1),
+                                   "gated_visible")
+                continue
+
+            # Skip tracks that are beyond the proximity threshold — they contribute zero to speed scaling
+            if track['centroid'][2] > self.max_speed_range_m:
+                self._record_track(tid, track['centroid'],
+                                   track.get('visible_count', 1),
+                                   "gated_range")
+                cx, cy, cz = track['centroid']
+                estimates.append({
+                    'id':    tid,
+                    'x':     round(cx, 3),
+                    'y':     round(cy, 3),
+                    'z':     round(cz, 3),
+                    'vx':    0.0,
+                    'vy':    0.0,
+                    'speed': 0.0,
+                })
+                continue
+
+            if len(track['history_global']) < 2:
+                self._record_track(tid, track['centroid'],
+                                   track.get('visible_count', 1),
+                                   "gated_history")
+                cx, cy, cz = track['centroid']
+                estimates.append({
+                    'id':    tid,
+                    'x':     round(cx, 3),
+                    'y':     round(cy, 3),
+                    'z':     round(cz, 3),
+                    'vx':    0.0,
+                    'vy':    0.0,
+                    'speed': 0.0,
+                })
+                continue
+
+            # Default velocity to 0.0 when estimation is disabled or model is not loaded
+            if not self.estimation_enabled or self._model is None:
+                cx, cy, cz = track['centroid']
+                estimates.append({
+                    'id':    tid,
+                    'x':     round(cx, 3),
+                    'y':     round(cy, 3),
+                    'z':     round(cz, 3),
+                    'vx':    0.0,
+                    'vy':    0.0,
+                    'speed': 0.0,
+                })
+                continue
+
+            # Reconstruct relative history for this track in the robot's current frame (Idea 1 & 11)
+            hist_g_arr = np.array(list(track['history_global']), dtype=np.float32)  # shape (T, 3)
+            if len(hist_g_arr) == 0:
+                continue
+            dxy = hist_g_arr[:, :2] - np.array([rx_rob, ry_rob], dtype=np.float32)  # (T, 2)
+            R = np.array([[cos_r, sin_r], [-sin_r, cos_r]], dtype=np.float32)
+            local_xy = dxy @ R.T  # (T, 2): col0=rx_l, col1=ry_l
+            # cx_l = -ry_l, cy_l = 0.0, cz = rx_l
+            hist_local = [(-float(local_xy[i, 1]), 0.0, float(local_xy[i, 0])) for i in range(len(local_xy))]
+
+            feats, is_stopped = self._build_window_features(hist_local)
+            if is_stopped:  # Kinematic Stop-Trigger Gating (Idea 108)
+                self._record_track(tid, tracks[tid]['centroid'],
+                                   tracks[tid].get('visible_count', 1),
+                                   "gated_stopped", feats)
+                cx, cy, cz = tracks[tid]['centroid']
+                estimates.append({
+                    'id':    tid,
+                    'x':     round(cx, 3),
+                    'y':     round(cy, 3),
+                    'z':     round(cz, 3),
+                    'vx':    0.0,
+                    'vy':    0.0,
+                    'speed': 0.0,
+                })
+                continue
+
+            row_idx = self._record_track(
+                tid, tracks[tid]['centroid'],
+                tracks[tid].get('visible_count', WINDOW_SIZE), "ok", feats)
+            recorded_rows.append(row_idx)
+            eligible_tracks.append((tid, hist_local))
+            features_list.append(feats)
+
+        if eligible_tracks and self.estimation_enabled and self._model is not None:
+            # Stack features into a single matrix of shape (N, 40) (Idea 46)
+            features_batch = np.vstack(features_list)
+                    
+            # Normalize using parameters (Idea 72)
+            features_scaled = (features_batch - self.scaler_X_mean) * self.scaler_X_inv_scale
+                    
+            # Copy directly into pre-allocated PyTorch tensor (Idea 116)
+            num_tracks = len(eligible_tracks)
+            self.x_tensor_preallocated[:num_tracks].copy_(torch.from_numpy(features_scaled))
+            x_tensor = self.x_tensor_preallocated[:num_tracks]
+
+            with torch.no_grad():
+                pred_scaled = self._model(x_tensor).numpy()
+
+            # Inverse transform predictions: shape (N, 2)
+            pred_ms = pred_scaled * self.scaler_y_scale + self.scaler_y_mean
+            pred_ms = np.clip(pred_ms, -2.5, 2.5)
+
+            for idx, (tid, _) in enumerate(eligible_tracks):
+                vx = float(pred_ms[idx, 0])
+                vy = float(pred_ms[idx, 1])
+                speed = float(np.sqrt(vx**2 + vy**2))
+
+                cx, cy, cz = tracks[tid]['centroid']
+                visible_count = tracks[tid].get('visible_count', WINDOW_SIZE)
+                conf = min(1.0, visible_count / WINDOW_SIZE)
+                if (self._feature_log_path is not None and
+                        idx < len(recorded_rows)):
+                    row = self._feature_rows[recorded_rows[idx]]
+                    row["vx_model"], row["vy_model"] = vx, vy
+                    row["vx_pub"] = round(vx * conf, 3)
+                    row["vy_pub"] = round(vy * conf, 3)
+                estimates.append({
+                    'id':    tid,
+                    'x':     round(cx, 3),
+                    'y':     round(cy, 3),
+                    'z':     round(cz, 3),
+                    'vx':    round(vx * conf, 3),
+                    'vy':    round(vy * conf, 3),
+                    'speed': round(speed * conf, 3),
+                })
+
+        # Idea 152: clamp velocity change between frames to max human acceleration (3 m/s²)
+        max_delta = 3.0 / INFER_HZ  # max speed change per frame = 0.3 m/s at 10Hz
+        for est in estimates:
+            tid = est['id']
+            if tid in self._prev_estimates:
+                prev = self._prev_estimates[tid]
+                dvx = est['vx'] - prev.get('vx', 0.0)
+                dvy = est['vy'] - prev.get('vy', 0.0)
+                if abs(dvx) > max_delta:
+                    est['vx'] = prev.get('vx', 0.0) + math.copysign(max_delta, dvx)
+                if abs(dvy) > max_delta:
+                    est['vy'] = prev.get('vy', 0.0) + math.copysign(max_delta, dvy)
+                est['speed'] = float(np.sqrt(est['vx']**2 + est['vy']**2))
+        self._prev_estimates = {est['id']: est for est in estimates}
+        for est in estimates:
+            tr = tracks[est['id']]
+            est['is_person'] = tr.get('is_person')
+            # person > dynamic > static. None only when no detector is live
+            # AND the track has not shown motion: we cannot tell.
+            if est['is_person']:
+                est['category'] = 'person'
+            elif tr.get('moving'):
+                est['category'] = 'dynamic'
+            elif est['is_person'] is False:
+                est['category'] = 'static'
+            else:
+                est['category'] = None
+        return estimates, tracks
+
     def _inference_loop(self):
         dt = 1.0 / INFER_HZ
         logger.info("VelocityEstimator: inference loop started")
@@ -743,180 +1037,8 @@ class VelocityEstimator:
                     logger.info("VelocityEstimator: robot pose recovered")
                     self._logged_missing_pose = False
 
-                # Compute global coordinates of centroids (Idea 1, 11, & 121)
-                centroids_g = []
-                cos_r = math.cos(rtheta_rob)
-                sin_r = math.sin(rtheta_rob)
-                if centroids_m:
-                    local_coords = np.array([[cz, -cx_l] for cx_l, cy_l, cz in centroids_m], dtype=np.float32)
-                    R = np.array([[cos_r, -sin_r],
-                                  [sin_r, cos_r]], dtype=np.float32)
-                    T = np.array([rx_rob, ry_rob], dtype=np.float32)
-                    global_xy = local_coords @ R.T + T
-                    for idx, (cx_l, cy_l, cz) in enumerate(centroids_m):
-                        centroids_g.append((float(global_xy[idx, 0]), float(global_xy[idx, 1]), cz))
-
-                # 4. Update tracker using global coordinate matching
-                tracks = self._tracker.update(centroids_m, centroids_g)
-
-                # 5. Run MLP inference on active tracks (batched) (Idea 46)
-                estimates = []
-                eligible_tracks = []
-                features_list = []
-                recorded_rows = []
-
-                self._feature_frame += 1
-                # Periodic flush: the server is usually stopped with a signal, so
-                # relying on stop() alone would lose a whole capture.
-                if (self._feature_log_path is not None and
-                        self._feature_frame % 300 == 0):
-                    self._flush_feature_log()
-                for tid, track in tracks.items():
-                    # Filter out tracks that do not satisfy the track initiation gate (Idea 109)
-                    if track.get('visible_count', 1) < 3:
-                        self._record_track(tid, track['centroid'],
-                                           track.get('visible_count', 1),
-                                           "gated_visible")
-                        continue
-
-                    # Skip tracks that are beyond the proximity threshold — they contribute zero to speed scaling
-                    if track['centroid'][2] > self.max_speed_range_m:
-                        self._record_track(tid, track['centroid'],
-                                           track.get('visible_count', 1),
-                                           "gated_range")
-                        cx, cy, cz = track['centroid']
-                        estimates.append({
-                            'id':    tid,
-                            'x':     round(cx, 3),
-                            'y':     round(cy, 3),
-                            'z':     round(cz, 3),
-                            'vx':    0.0,
-                            'vy':    0.0,
-                            'speed': 0.0,
-                        })
-                        continue
-
-                    if len(track['history_global']) < 2:
-                        self._record_track(tid, track['centroid'],
-                                           track.get('visible_count', 1),
-                                           "gated_history")
-                        cx, cy, cz = track['centroid']
-                        estimates.append({
-                            'id':    tid,
-                            'x':     round(cx, 3),
-                            'y':     round(cy, 3),
-                            'z':     round(cz, 3),
-                            'vx':    0.0,
-                            'vy':    0.0,
-                            'speed': 0.0,
-                        })
-                        continue
-
-                    # Default velocity to 0.0 when estimation is disabled or model is not loaded
-                    if not self.estimation_enabled or self._model is None:
-                        cx, cy, cz = track['centroid']
-                        estimates.append({
-                            'id':    tid,
-                            'x':     round(cx, 3),
-                            'y':     round(cy, 3),
-                            'z':     round(cz, 3),
-                            'vx':    0.0,
-                            'vy':    0.0,
-                            'speed': 0.0,
-                        })
-                        continue
-
-                    # Reconstruct relative history for this track in the robot's current frame (Idea 1 & 11)
-                    hist_g_arr = np.array(list(track['history_global']), dtype=np.float32)  # shape (T, 3)
-                    if len(hist_g_arr) == 0:
-                        continue
-                    dxy = hist_g_arr[:, :2] - np.array([rx_rob, ry_rob], dtype=np.float32)  # (T, 2)
-                    R = np.array([[cos_r, sin_r], [-sin_r, cos_r]], dtype=np.float32)
-                    local_xy = dxy @ R.T  # (T, 2): col0=rx_l, col1=ry_l
-                    # cx_l = -ry_l, cy_l = 0.0, cz = rx_l
-                    hist_local = [(-float(local_xy[i, 1]), 0.0, float(local_xy[i, 0])) for i in range(len(local_xy))]
-
-                    feats, is_stopped = self._build_window_features(hist_local)
-                    if is_stopped:  # Kinematic Stop-Trigger Gating (Idea 108)
-                        self._record_track(tid, tracks[tid]['centroid'],
-                                           tracks[tid].get('visible_count', 1),
-                                           "gated_stopped", feats)
-                        cx, cy, cz = tracks[tid]['centroid']
-                        estimates.append({
-                            'id':    tid,
-                            'x':     round(cx, 3),
-                            'y':     round(cy, 3),
-                            'z':     round(cz, 3),
-                            'vx':    0.0,
-                            'vy':    0.0,
-                            'speed': 0.0,
-                        })
-                        continue
-
-                    row_idx = self._record_track(
-                        tid, tracks[tid]['centroid'],
-                        tracks[tid].get('visible_count', WINDOW_SIZE), "ok", feats)
-                    recorded_rows.append(row_idx)
-                    eligible_tracks.append((tid, hist_local))
-                    features_list.append(feats)
-
-                if eligible_tracks and self.estimation_enabled and self._model is not None:
-                    # Stack features into a single matrix of shape (N, 40) (Idea 46)
-                    features_batch = np.vstack(features_list)
-                    
-                    # Normalize using parameters (Idea 72)
-                    features_scaled = (features_batch - self.scaler_X_mean) * self.scaler_X_inv_scale
-                    
-                    # Copy directly into pre-allocated PyTorch tensor (Idea 116)
-                    num_tracks = len(eligible_tracks)
-                    self.x_tensor_preallocated[:num_tracks].copy_(torch.from_numpy(features_scaled))
-                    x_tensor = self.x_tensor_preallocated[:num_tracks]
-
-                    with torch.no_grad():
-                        pred_scaled = self._model(x_tensor).numpy()
-
-                    # Inverse transform predictions: shape (N, 2)
-                    pred_ms = pred_scaled * self.scaler_y_scale + self.scaler_y_mean
-                    pred_ms = np.clip(pred_ms, -2.5, 2.5)
-
-                    for idx, (tid, _) in enumerate(eligible_tracks):
-                        vx = float(pred_ms[idx, 0])
-                        vy = float(pred_ms[idx, 1])
-                        speed = float(np.sqrt(vx**2 + vy**2))
-
-                        cx, cy, cz = tracks[tid]['centroid']
-                        visible_count = tracks[tid].get('visible_count', WINDOW_SIZE)
-                        conf = min(1.0, visible_count / WINDOW_SIZE)
-                        if (self._feature_log_path is not None and
-                                idx < len(recorded_rows)):
-                            row = self._feature_rows[recorded_rows[idx]]
-                            row["vx_model"], row["vy_model"] = vx, vy
-                            row["vx_pub"] = round(vx * conf, 3)
-                            row["vy_pub"] = round(vy * conf, 3)
-                        estimates.append({
-                            'id':    tid,
-                            'x':     round(cx, 3),
-                            'y':     round(cy, 3),
-                            'z':     round(cz, 3),
-                            'vx':    round(vx * conf, 3),
-                            'vy':    round(vy * conf, 3),
-                            'speed': round(speed * conf, 3),
-                        })
-
-                # Idea 152: clamp velocity change between frames to max human acceleration (3 m/s²)
-                max_delta = 3.0 / INFER_HZ  # max speed change per frame = 0.3 m/s at 10Hz
-                for est in estimates:
-                    tid = est['id']
-                    if tid in self._prev_estimates:
-                        prev = self._prev_estimates[tid]
-                        dvx = est['vx'] - prev.get('vx', 0.0)
-                        dvy = est['vy'] - prev.get('vy', 0.0)
-                        if abs(dvx) > max_delta:
-                            est['vx'] = prev.get('vx', 0.0) + math.copysign(max_delta, dvx)
-                        if abs(dvy) > max_delta:
-                            est['vy'] = prev.get('vy', 0.0) + math.copysign(max_delta, dvy)
-                        est['speed'] = float(np.sqrt(est['vx']**2 + est['vy']**2))
-                self._prev_estimates = {est['id']: est for est in estimates}
+                estimates, tracks = self._step(centroids_m, rx_rob, ry_rob, rtheta_rob,
+                                               self._last_person_flags)
 
                 with self._lock:
                     self._estimates = estimates
