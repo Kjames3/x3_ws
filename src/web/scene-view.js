@@ -2,6 +2,8 @@
 // Surroundings view (Drive tab): a Tesla-style chase-cam scene built only from
 // data the server already streams -- no extra work on the Jetson.
 //   people : readout.velocity_estimates (camera frame: x=right, z=forward)
+//   c3     : c3_tracks, the diagnostic C3 Kalman tracker (robot frame:
+//            fwd, left). Cyan floor rings: now, and PREDICT_S ahead at 2 sigma.
 //   walls  : /scan via the Foxglove bridge. foxgloveScanToXY leaves points in
 //            laser_link as (x, -y); laser_link is yawed 180 deg and 0.044 m
 //            ahead of base_link (tf2_echo on the robot, 2026-09-14).
@@ -19,6 +21,8 @@
     let lastPts = null, lastPtsAt = 0;
     let renderer, scene, camera, container, hint, _m, _dir, _org;
     const people = new Map();     // track id -> {group, arrow, ghost}
+    const c3 = new Map();         // C3 track id -> {now, pred, line}
+    let c3RingGeom = null, c3Mat = null, c3PredMat = null;
 
     function init() {
         container = document.getElementById('scene-view');
@@ -395,6 +399,49 @@
         }
     }
 
+    function makeC3() {
+        if (!c3RingGeom) {
+            c3RingGeom = new THREE.RingGeometry(0.9, 1.0, 40);
+            c3RingGeom.rotateX(-Math.PI / 2);
+            c3Mat = new THREE.MeshBasicMaterial({ color: 0x0891b2, side: THREE.DoubleSide });
+            c3PredMat = new THREE.MeshBasicMaterial({ color: 0x0891b2, transparent: true,
+                opacity: 0.45, side: THREE.DoubleSide });
+        }
+        const now = new THREE.Mesh(c3RingGeom, c3Mat);
+        const pred = new THREE.Mesh(c3RingGeom, c3PredMat);
+        const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(
+            [new THREE.Vector3(), new THREE.Vector3()]), new THREE.LineBasicMaterial({ color: 0x0891b2 }));
+        scene.add(now, pred, line);
+        return { now, pred, line };
+    }
+
+    function updateC3(tracks) {
+        const seen = new Set();
+        for (const t of tracks || []) {
+            if (!isFinite(t.fwd) || !isFinite(t.left)) continue;
+            seen.add(t.id);
+            let c = c3.get(t.id);
+            if (!c) { c = makeC3(); c3.set(t.id, c); }
+            // Robot frame (fwd, left) -> scene (x = -left, z = -fwd); 1 cm up to avoid z-fighting.
+            const x = -t.left, z = -t.fwd;
+            const px = x - t.vy * t.predict_s, pz = z - t.vx * t.predict_s;
+            c.now.position.set(x, 0.01, z);
+            c.now.scale.setScalar(Math.max(0.15, 2 * t.pos_sigma_m));
+            c.now.material = t.measured ? c3Mat : c3PredMat;   // coasting = faded
+            c.pred.position.set(px, 0.01, pz);
+            c.pred.scale.setScalar(Math.max(0.15, 2 * t.pred_sigma_m));
+            const pos = c.line.geometry.attributes.position;
+            pos.setXYZ(0, x, 0.02, z); pos.setXYZ(1, px, 0.02, pz);
+            pos.needsUpdate = true;
+        }
+        for (const [id, c] of c3) {
+            if (seen.has(id)) continue;
+            scene.remove(c.now, c.pred, c.line);
+            c.line.geometry.dispose(); c.line.material.dispose();
+            c3.delete(id);
+        }
+    }
+
     // Keep /scan subscribed while this view is on screen, independent of the
     // Sweep tab's Lidar toggle; release it again when hidden unless that toggle wants it.
     function syncScanSubscription(visible) {
@@ -425,11 +472,13 @@
             clearBins(); panels.count = 0; posts.count = 0;
         }
         updatePeople(d.velocityEstimates, dt);
+        updateC3(d.c3Tracks);
         updateTilt(d.readout);
         if (hint) {
             const msgs = [];
             if (!scanFresh) msgs.push('No lidar scan');
             if (!d.velocityEstimates || !d.velocityEstimates.length) msgs.push('No people tracked');
+            if (d.c3Stats) msgs.push(`C3 ${d.c3Tracks.length} trk · ${d.c3Stats.hz} Hz · ${d.c3Stats.update_ms_avg} ms`);
             hint.textContent = msgs.join(' · ');
         }
         renderer.render(scene, camera);

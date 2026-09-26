@@ -153,6 +153,9 @@ parser.add_argument('--auto-nav2-map', type=str, default=None, dest='auto_nav2_m
                          'makes RViz drop odom-framed messages.')
 parser.add_argument('--oak-cloud', action='store_true', dest='oak_cloud',
                     help='Enable OAK-D point cloud publishing.')
+parser.add_argument('--no-c3-live', action='store_true', dest='no_c3_live',
+                    help='Disable the diagnostic C3 person tracker (OAK YOLO boxes + '
+                         'Kalman). It never reaches the CBF; it only feeds the GUI.')
 args = parser.parse_args()
 if args.c1_subpixel and not args.c1_recording:
     parser.error("--c1-subpixel requires --c1-recording")
@@ -269,6 +272,7 @@ _shutting_down  = False  # set on SIGINT/SIGTERM/cleanup so motion_loop stops pu
                          # to /cmd_vel before rclpy is torn down (avoids a publish-on-dead-
                          # context RCLError → C++ abort that orphaned the bringup stack)
 velocity_estimator = None  # VelocityEstimator instance (EE244 project)
+c3_live = None             # diagnostic C3 person tracker (src/c3_live.py), GUI only
 active_velocity_model_name = "velocity_mlp_v3"  # currently loaded torchscript velocity model
 # v3 deployed 2026-09-04. Measured against v1 on one recorded capture replayed
 # offline (src/score_velocity_models.py): closer to truth at range (+15% vs
@@ -2006,6 +2010,26 @@ def initialize_hardware():
     except Exception as e:
         logger.error(f"Failed to start VelocityEstimator: {e}")
 
+    # Diagnostic C3 tracker: OAK person boxes -> torso depth -> CV Kalman.
+    # GUI/telemetry only; nothing here reaches the CBF.
+    global c3_live
+    if not args.no_c3_live and oak is not None:
+        try:
+            from c3_live import C3Live
+            from oakd_driver import OAK_MOUNT_X
+
+            def _c3_pose():
+                if ros_bridge is None or time.monotonic() - ros_bridge._odom_stamp > 0.5:
+                    return None
+                return ros_bridge.get_pose_m()
+
+            c3_live = C3Live(oak, _c3_pose, OAK_MOUNT_X)
+            c3_live.start()
+            logger.info("C3 live tracker started (diagnostic only)")
+        except Exception as e:
+            logger.error(f"Failed to start C3 live tracker: {e}")
+            c3_live = None
+
     logger.info("="*50)
     logger.info("Initialization Complete")
     logger.info("="*50)
@@ -2066,6 +2090,8 @@ def cleanup():
             oak.cleanup()
         except Exception as e:
             logger.error(f"Failed to stop OAK-D driver: {e}")
+    if c3_live is not None:
+        c3_live.stop()
     if velocity_estimator is not None:
         try:
             logger.info("Stopping VelocityEstimator...")
@@ -3327,6 +3353,8 @@ async def broadcast_loop():
                 except Exception as e:
                     logger.error(f"Failed to get velocity estimates: {e}")
 
+            c3_tracks, c3_stats = c3_live.get_tracks() if c3_live is not None else ([], None)
+
             # P3: send camera frame as a binary WebSocket message (raw JPEG, no base64)
             if img_bytes:
                 websockets.broadcast(connected_clients, img_bytes)
@@ -3375,6 +3403,8 @@ async def broadcast_loop():
                 "is_auto_driving": is_auto_driving,
                 "detections": last_detections,
                 "velocity_estimates": velocity_estimates,
+                "c3_tracks": c3_tracks,
+                "c3_stats": c3_stats,
                 "battery": {"voltage": batt_v, "amps": est_current, "watts": est_watts},
                 "power": {
                     "voltage":     batt_v,

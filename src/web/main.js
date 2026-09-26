@@ -1973,6 +1973,10 @@ function handleMessage(data) {
         if (data.velocity_estimates !== undefined) {
             state.latestData.velocityEstimates = data.velocity_estimates;
         }
+        if (data.c3_tracks !== undefined) {
+            state.latestData.c3Tracks = data.c3_tracks;
+            state.latestData.c3Stats = data.c3_stats;
+        }
 
         if (data.battery) state.latestData.battery = data.battery;
 
