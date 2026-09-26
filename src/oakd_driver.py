@@ -163,6 +163,7 @@ class OakDCamera:
         self.nn_conf = 0.5
         self.nn_iou = 0.5
         self.nn_classes = 80
+        self.nn_kpts = 0                  # >0 for a YOLO pose head (17 COCO keypoints)
         self.nn_w, self.nn_h = 480, 640
         self.nn_out_name = None
         if spatial_config:
@@ -216,11 +217,13 @@ class OakDCamera:
             if meta.get("classes"):
                 self.labels = list(meta["classes"])
             self.nn_classes = int(meta.get("n_classes", len(self.labels)))
+            self.nn_kpts = int(meta.get("n_keypoints", 0))
             self.nn_conf = float(meta.get("conf_threshold", self.nn_conf))
             self.nn_iou = float(meta.get("iou_threshold", self.nn_iou))
             logger.info(f"OakDCamera: NN config — {self.nn_classes} classes, input "
                         f"{self.nn_w}x{self.nn_h}, out '{self.nn_out_name}', "
-                        f"conf {self.nn_conf}, iou {self.nn_iou}")
+                        f"conf {self.nn_conf}, iou {self.nn_iou}"
+                        + (f", {self.nn_kpts} keypoints" if self.nn_kpts else ""))
         except Exception as e:
             logger.error(f"OakDCamera: failed to read NN config {config_path}: {e}")
 
@@ -657,14 +660,29 @@ class OakDCamera:
     # objectness channel aren't documented for this model, so we auto-pick the one
     # that yields sane, SPARSE detections (a real scene has few boxes; a wrong layout
     # scrambles into thousands). The pick is logged once, then locked.
+    # A pose head ([4 box, n_classes, 3 * n_keypoints] rows) has no objectness.
     _DECODE_MODES = [("cm", False), ("cm", True), ("am", False), ("am", True)]
+    _N_ANCHORS = 6300
+
+    @property
+    def _nn_rows(self):
+        return 4 + self.nn_classes + 3 * self.nn_kpts if self.nn_kpts else 85
 
     def _decode(self, raw, mode):
+        """Returns (box cxcywh, scores, cls_id, keypoints (N, K, 3) or None)."""
         reshape_mode, has_obj = mode
-        base = raw[:85 * 6300]
-        A = base.reshape(85, 6300).T if reshape_mode == "cm" else base.reshape(6300, 85)
+        rows, n = self._nn_rows, self._N_ANCHORS
+        base = raw[:rows * n]
+        A = base.reshape(rows, n).T if reshape_mode == "cm" else base.reshape(n, rows)
         box = np.ascontiguousarray(A[:, 0:4])
-        if has_obj:
+        kpts = None
+        if self.nn_kpts:
+            obj = None
+            cls = A[:, 4:4 + self.nn_classes]
+            # Ultralytics' exported pose head already decodes keypoints to
+            # input pixels and applies the visibility sigmoid.
+            kpts = A[:, 4 + self.nn_classes:].reshape(n, self.nn_kpts, 3)
+        elif has_obj:
             obj = A[:, 4]
             cls = A[:, 5:85]
         else:
@@ -680,7 +698,7 @@ class OakDCamera:
             scores = obj * cls_sc
         else:
             scores = cls_sc
-        return box, scores.astype(np.float32), cls_id
+        return box, scores.astype(np.float32), cls_id, kpts
 
     def _mode_plausible(self, box, scores):
         """Plausible = boxes lie inside the frame and detections are sparse."""
@@ -693,7 +711,8 @@ class OakDCamera:
         return (in_range > 0.9 and 1 <= n_hits <= 300), n_hits
 
     def _process_nn(self, nndata, metadata=None):
-        """Host-side decode of the yolo26 [85, 6300] output + depth back-projection."""
+        """Host-side decode of the YOLO head (detect [85, 6300] or pose [56, 6300])
+        + depth back-projection."""
         try:
             if self.nn_out_name:
                 raw = np.array(nndata.getLayerFp16(self.nn_out_name), dtype=np.float32)
@@ -704,7 +723,7 @@ class OakDCamera:
         # Stamp every decoded packet, including ones with no detections: "no
         # person this frame" is a fresh answer, not a missing one.
         self._latest_detections_t = time.monotonic()
-        if raw.size < 85 * 6300:
+        if raw.size < self._nn_rows * self._N_ANCHORS:
             with self._lock:
                 self._latest_detections = []
                 self._latest_detection_meta = metadata
@@ -713,7 +732,9 @@ class OakDCamera:
         if self._decode_mode is None:
             best, report = None, []
             for mode in self._DECODE_MODES:
-                b, s, _ = self._decode(raw, mode)
+                if self.nn_kpts and mode[1]:
+                    continue   # a pose head has no objectness row
+                b, s, _, _ = self._decode(raw, mode)
                 ok, n_hits = self._mode_plausible(b, s)
                 report.append(f"{mode[0]}{'+obj' if mode[1] else ''}={n_hits}{'*' if ok else ''}")
                 if ok and (best is None or n_hits < best[1]):
@@ -730,7 +751,7 @@ class OakDCamera:
             self._decode_mode = best[0]
             logger.info(f"OAK NN: locked decode mode {self._decode_mode}")
 
-        box, scores, cls_id = self._decode(raw, self._decode_mode)
+        box, scores, cls_id, kpts = self._decode(raw, self._decode_mode)
         keep = scores >= self.nn_conf
         if not keep.any():
             with self._lock:
@@ -738,14 +759,21 @@ class OakDCamera:
                 self._latest_detection_meta = metadata
             return
         box, scores, cls_id = box[keep], scores[keep], cls_id[keep]
+        if kpts is not None:
+            kpts = kpts[keep].copy()
         # Cap work before the pure-python NMS (O(n^2)): keep only the top-100 by score.
         if scores.shape[0] > 100:
             top = np.argpartition(scores, -100)[-100:]
             box, scores, cls_id = box[top], scores[top], cls_id[top]
+            if kpts is not None:
+                kpts = kpts[top]
         # Box coords: normalised (<=~1) -> scale to pixels; else already pixels.
         if box.max() <= 2.0:
             box[:, [0, 2]] *= self.nn_w
             box[:, [1, 3]] *= self.nn_h
+            if kpts is not None:
+                kpts[:, :, 0] *= self.nn_w
+                kpts[:, :, 1] *= self.nn_h
         # cxcywh -> xyxy
         xyxy = np.empty_like(box)
         xyxy[:, 0] = box[:, 0] - box[:, 2] / 2.0
@@ -766,6 +794,10 @@ class OakDCamera:
                 "xyz_m": None,
                 "xyz_base_m": None,
             }
+            if kpts is not None:
+                # COCO-17 order; [u, v, visibility] in NN/depth-grid pixels.
+                det["keypoints"] = [[round(float(u), 1), round(float(v), 1), round(float(c), 3)]
+                                    for u, v, c in kpts[i]]
             xyz = self._locate(depth, x1, y1, x2, y2)
             if xyz is not None:
                 x, y, z = xyz

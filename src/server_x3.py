@@ -153,6 +153,11 @@ parser.add_argument('--auto-nav2-map', type=str, default=None, dest='auto_nav2_m
                          'makes RViz drop odom-framed messages.')
 parser.add_argument('--oak-cloud', action='store_true', dest='oak_cloud',
                     help='Enable OAK-D point cloud publishing.')
+parser.add_argument('--oak-model', default='yolo26n',
+                    choices=['yolo26n', 'yolo11n-pose', 'yolo26n-pose'],
+                    help='On-device OAK YOLO blob under src/blobs/<name>/. The pose '
+                         'models also detect people (label "person") and add '
+                         'COCO-17 "keypoints" to each detection.')
 parser.add_argument('--no-c3-live', action='store_true', dest='no_c3_live',
                     help='Disable the diagnostic C3 person tracker (OAK YOLO boxes + '
                          'Kalman). It never reaches the CBF; it only feeds the GUI.')
@@ -1904,8 +1909,8 @@ def initialize_hardware():
             from oakd_driver import OakDCamera
             # Auto-enable on-device YOLO spatial detection if the plain blob exists
             # (extract it from the .superblob once via blobs/extract_superblob.py).
-            _blob_dir = Path(__file__).parent / "blobs" / "yolo26n"
-            _blob = _blob_dir / "yolo26n.blob"
+            _blob_dir = Path(__file__).parent / "blobs" / args.oak_model
+            _blob = _blob_dir / f"{args.oak_model}.blob"
             _cfg = _blob_dir / "config.json"
             _spatial_blob = str(_blob) if (OAK_SPATIAL and _blob.exists()) else None
             _spatial_cfg = str(_cfg) if (_spatial_blob and _cfg.exists()) else None
@@ -1917,7 +1922,7 @@ def initialize_hardware():
                              subpixel=args.c1_recording and args.c1_subpixel)
             oak.start()
             logger.info("OAK-D Lite: driver started (stereo + depth + IMU"
-                        + (" + spatial detection)" if _spatial_blob else ")"))
+                        + (f" + spatial detection, {args.oak_model})" if _spatial_blob else ")"))
         except Exception as e:
             logger.error(f"OAK-D Lite: init failed: {e}")
             oak = None
