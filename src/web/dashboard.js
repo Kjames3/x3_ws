@@ -505,27 +505,52 @@
     function wireTabs() {
         const bar = $('tabbar');
         if (!bar) return;
-        bar.addEventListener('click', (ev) => {
-            const btn = ev.target.closest('.tab');
-            if (!btn) return;
+        const tabs = [...bar.querySelectorAll('.tab')];
+        bar.setAttribute('role', 'tablist');
+        bar.setAttribute('aria-label', 'Robot workspaces');
+        tabs.forEach(t => {
+            t.id = 'tab-' + t.dataset.tab;
+            t.setAttribute('role', 'tab');
+            t.setAttribute('aria-controls', 'panel-' + t.dataset.tab);
+        });
+        function activate(btn) {
             const name = btn.dataset.tab;
-            bar.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t === btn));
+            tabs.forEach(t => {
+                t.classList.toggle('active', t === btn);
+                t.setAttribute('aria-selected', String(t === btn));
+                t.tabIndex = t === btn ? 0 : -1;
+            });
             document.querySelectorAll('.tab-panel').forEach(p => {
+                p.id = 'panel-' + p.dataset.panel;
+                p.setAttribute('role', 'tabpanel');
+                p.setAttribute('aria-labelledby', 'tab-' + p.dataset.panel);
                 p.classList.toggle('active', p.dataset.panel === name);
             });
-            // Canvas-backed panels (lidar, 3D, nav map) size themselves on
-            // layout; a panel that was display:none measured zero, so give
-            // them a resize once they are actually visible.
+            document.querySelector('.tab-area').scrollTop = 0;
             window.dispatchEvent(new Event('resize'));
             try { localStorage.setItem('x3_tab', name); } catch (e) { /* private mode */ }
+        }
+        bar.addEventListener('click', ev => {
+            const btn = ev.target.closest('.tab');
+            if (btn) activate(btn);
+        });
+        bar.addEventListener('keydown', ev => {
+            const index = tabs.indexOf(ev.target);
+            if (index < 0) return;
+            let next;
+            if (ev.key === 'ArrowRight') next = (index + 1) % tabs.length;
+            else if (ev.key === 'ArrowLeft') next = (index + tabs.length - 1) % tabs.length;
+            else if (ev.key === 'Home') next = 0;
+            else if (ev.key === 'End') next = tabs.length - 1;
+            else return;
+            ev.preventDefault();
+            tabs[next].focus();
+            activate(tabs[next]);
         });
 
         let saved = null;
         try { saved = localStorage.getItem('x3_tab'); } catch (e) { /* ignore */ }
-        if (saved) {
-            const btn = bar.querySelector('.tab[data-tab="' + saved + '"]');
-            if (btn) btn.click();
-        }
+        activate(tabs.find(t => t.dataset.tab === saved) || tabs[0]);
     }
 
     // ------------------------------------------------------------------ init

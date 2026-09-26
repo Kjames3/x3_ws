@@ -313,22 +313,21 @@
     }
 
     function makePerson() {
-        const group = new THREE.Group();
-        const bodyMat = new THREE.MeshLambertMaterial({ color: 0xf59e0b });
-        const cyl = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 1.2, 24), bodyMat);
-        cyl.position.y = 0.6;
-        cyl.castShadow = true;
-        group.add(cyl);
-        const ghost = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 1.2, 24),
-            new THREE.MeshLambertMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.25 }));
+        const avatar = X3Humanoid.create();
+        const prediction = X3Humanoid.create({ ghost: true });
+        const group = avatar.group, ghost = prediction.group;
         const arrow = new THREE.ArrowHelper(new THREE.Vector3(0, 0, -1), new THREE.Vector3(),
             1, 0xdc2626, 0.15, 0.1);
         scene.add(group, ghost, arrow);
-        return { group, ghost, arrow };
+        return { group, ghost, arrow, avatar, prediction, joints: avatar.joints, predictionJoints: prediction.joints };
     }
 
     function removeTrack(p) {
         scene.remove(p.group, p.ghost, p.arrow);
+        // Avatar/mover meshes share geometry/materials; only the per-track
+        // ArrowHelper materials are owned here (its geometry is shared too).
+        p.arrow.line.material.dispose();
+        p.arrow.cone.material.dispose();
     }
 
     let moverGeom = null, moverMat = null, moverGhostMat = null;
@@ -336,18 +335,19 @@
         if (!moverGeom) {
             moverGeom = new THREE.BoxGeometry(0.34, 0.12, 0.34);
             moverGeom.translate(0, 0.06, 0);
-            moverMat = new THREE.MeshLambertMaterial({ color: 0xf59e0b });
-            moverGhostMat = new THREE.MeshLambertMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.3 });
+            moverMat = new THREE.MeshStandardMaterial({ color: 0xf59e0b, roughness: 0.6 });
+            moverGhostMat = new THREE.MeshStandardMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.3 });
         }
         const group = new THREE.Mesh(moverGeom, moverMat);
         const ghost = new THREE.Mesh(moverGeom, moverGhostMat);
         const arrow = new THREE.ArrowHelper(new THREE.Vector3(0, 0, -1), new THREE.Vector3(),
             1, 0xdc2626, 0.15, 0.1);
         scene.add(group, ghost, arrow);
-        return { group, ghost, arrow };
+        const still = { animate() {} };
+        return { group, ghost, arrow, avatar: still, prediction: still };
     }
 
-    function updatePeople(estimates) {
+    function updatePeople(estimates, dt) {
         const seen = new Set();
         for (const est of estimates || []) {
             const fwd = est.z, right = est.x;
@@ -372,11 +372,15 @@
             const sx = -(est.vy || 0), sz = -(est.vx || 0);
             const speed = Math.hypot(sx, sz);
             const moving = speed > 0.15;
+            p.avatar.animate(speed, dt);
+            p.prediction.animate(speed, dt);
             p.ghost.visible = moving;
             p.arrow.visible = moving;
             if (moving) {
-                p.ghost.position.set(right + sx * GHOST_S, kind === 'dynamic' ? 0 : 0.6,
-                    -fwd + sz * GHOST_S);
+                // Heading follows travel direction, not measured body orientation.
+                p.group.rotation.y = Math.atan2(-sx, -sz);
+                p.ghost.rotation.y = p.group.rotation.y;
+                p.ghost.position.set(right + sx * GHOST_S, 0, -fwd + sz * GHOST_S);
                 _org.set(right, kind === 'dynamic' ? 0.3 : 1.3, -fwd);
                 _dir.set(sx, 0, sz).normalize();
                 p.arrow.position.copy(_org);
@@ -400,14 +404,17 @@
     }
 
     let wasVisible = null;
+    let previousFrameAt = performance.now();
     function loop() {
         requestAnimationFrame(loop);
+        const now = performance.now();
+        const dt = (now - previousFrameAt) / 1000;
+        previousFrameAt = now;
         const visible = !!container.offsetParent;
         if (visible !== wasVisible || visible) syncScanSubscription(visible);
         wasVisible = visible;
         if (!visible) return;   // Drive tab hidden: skip rendering
         const d = state.latestData;
-        const now = performance.now();
         try {
         if (d.lidarPoints !== lastPts) {
             lastPts = d.lidarPoints; lastPtsAt = now;
@@ -417,7 +424,7 @@
         if (!scanFresh && (panels.count || posts.count)) {
             clearBins(); panels.count = 0; posts.count = 0;
         }
-        updatePeople(d.velocityEstimates);
+        updatePeople(d.velocityEstimates, dt);
         updateTilt(d.readout);
         if (hint) {
             const msgs = [];

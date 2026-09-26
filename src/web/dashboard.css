@@ -346,3 +346,95 @@ body:has(.dashboard) { overflow: hidden; }
 }
 
 .header-session #stat-uptime { font-weight: 700; }
+
+/* Task-focused workspace: primary views fit a laptop; details have their own tab. */
+.app-container.dashboard { height: 100dvh; max-height: 100dvh; }
+.dashboard > .header { margin: 0; padding: 0 0 0.4rem; gap: 0.5rem; }
+.dashboard .header-title h1 { font-size: 1.15rem; white-space: nowrap; }
+.dashboard .connection-status { flex-wrap: wrap; gap: 0.5rem; }
+.dashboard #stop-btn { width: auto; height: auto; padding: 0.55rem 1.3rem; font-size: 0.95rem; border-radius: 6px; }
+.dashboard .card { min-width: 0; }
+.dashboard .card-header { padding: 0.6rem 0.75rem; gap: 0.5rem; flex-wrap: wrap; }
+.dashboard .card-header h2 { font-size: 0.95rem; }
+.dashboard .card-body { padding: 0.65rem; }
+.dashboard .tile-label, .dashboard .tile-sub { color: var(--text-secondary); }
+.dashboard .tab { font-size: 0.85rem; padding: 0.6rem 0.9rem; }
+.dashboard :is(button, input, select, summary):focus-visible { outline: 2px solid var(--accent-cyan); outline-offset: 3px; }
+.dashboard .drive-controls .control-section-item { padding: 0; border: 0; }
+.dashboard .drive-controls .slider-wrapper { height: clamp(160px, 27vh, 260px); width: 55px; }
+.dashboard .drive-controls .sliders-container { gap: 0.65rem; }
+.dashboard .drive-controls .combined-controls { display: block; }
+.dashboard .drive-controls .d-pad { margin: 0; }
+.dashboard .drive-camera .card-header > div { width: 100%; align-items: flex-start !important; }
+.dashboard .drive-camera .camera-feed { object-fit: contain; }
+.dashboard .drive-camera .detection-list { max-height: 100px; overflow: auto; }
+.dashboard .sensor-arrays > .control-section-item { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem 1.5rem; padding: 0; max-width: 850px; margin: auto !important; }
+.dashboard .sensor-arrays h3 { margin: 0 !important; }
+.dashboard #tof-grid { grid-column: 1; grid-row: 2; }
+.dashboard #tof-grid-lower { grid-column: 2; grid-row: 2; }
+.dashboard .tof-cell { font-size: clamp(0.65rem, 1vw, 0.9rem); }
+.dashboard .tof-grid { max-width: min(100%, 43vh); }
+.dashboard .tof-legend { grid-column: 1 / -1; }
+.dashboard .diagnostic-readings .control-section-item { padding: 0.5rem; border: 0; }
+.dashboard .tab-panel > .card { margin-top: 0 !important; }
+
+@media (min-width: 1000px) {
+    .dashboard .status-strip { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+    .dashboard .tab-panel.active[data-panel="drive"] {
+        display: grid;
+        grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) 300px;
+        gap: 0.6rem;
+        align-items: stretch;
+    }
+    .dashboard .drive-scene { display: flex; flex-direction: column; }
+    .dashboard #scene-view { flex: 1; height: auto !important; min-height: 300px; }
+    .dashboard .drive-camera .camera-feed,
+    .dashboard .drive-camera .camera-placeholder { max-height: 36vh; }
+    .dashboard .tab-panel.active[data-panel="sweep"] {
+        display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 0.6rem; align-items: start;
+    }
+    .dashboard [data-panel="sweep"] .controls-row { margin-top: 0 !important; }
+    .dashboard #nav-card > .card-body { display: grid; grid-template-columns: minmax(0, 1fr) 350px; gap: 1rem; align-items: start; }
+    .dashboard #nav-map-canvas, .dashboard #nav-map-webgl-canvas { max-height: none; }
+    .dashboard .tab-panel.active[data-panel="diag"] { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; align-items: start; }
+}
+@media (min-width: 1000px) and (max-width: 1199px) {
+    .dashboard .tab-panel.active[data-panel="drive"] { grid-template-columns: minmax(0, 1fr) 300px; }
+    .dashboard .drive-controls { grid-column: 2; grid-row: 1 / 3; }
+    .dashboard .drive-camera .camera-feed, .dashboard .drive-camera .camera-placeholder { max-height: 26vh; }
+    .dashboard #scene-view { min-height: 230px; }
+}
+@media (max-width: 999px) {
+    .dashboard .tab-panel.active[data-panel="drive"] { display: flex; flex-direction: column; gap: 0.6rem; }
+    .dashboard .drive-controls { order: -1; }
+    .dashboard .drive-controls .slider-wrapper { height: 160px; }
+    .dashboard .tabbar { overflow-x: auto; }
+    .dashboard .tab { white-space: nowrap; }
+    .dashboard .status-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (max-width: 540px) {
+    .app-container.dashboard { padding: 0.4rem; }
+    .dashboard .header-session, .dashboard #gamepad-indicator { display: none; }
+    .dashboard .tile { padding: 0.3rem; }
+    .dashboard .tile-value { font-size: 0.85rem; }
+    .dashboard .sensor-arrays > .control-section-item { display: flex; flex-direction: column; }
+    .dashboard .tof-grid { max-width: 100%; }
+    .dashboard .card-header > div { flex-wrap: wrap; }
+}
+.dashboard .drive-controls .slider-input { width: clamp(160px, 27vh, 260px); height: 55px; }
+.dashboard .drive-controls .slider-thumb { width: 45px; height: 45px; border-radius: 14px; }
+.dashboard .drive-camera .camera-placeholder { width: 100%; }
+.dashboard .tof-grid:empty::before { content: 'Awaiting sensor data'; grid-column: 1 / -1; padding: 2rem 0; color: var(--text-secondary); font-size: 0.85rem; }
+@media (min-width: 1000px) {
+    .dashboard #nav-card > .card-body > div:first-child { width: min(100%, calc(100dvh - 290px)) !important; margin-inline: auto; }
+    .dashboard .tab-panel.active[data-panel="drive"] { min-height: min(540px, calc(100dvh - 210px)); }
+}
+@media (max-width: 999px) {
+    .dashboard .drive-controls .slider-input { width: 160px; }
+}
+@media (min-width: 1000px) and (max-width: 1199px) {
+    .dashboard .tab-panel.active[data-panel="drive"] { grid-template-rows: auto minmax(200px, 1fr); min-height: 0; }
+    .dashboard .drive-camera .camera-placeholder { height: 140px; aspect-ratio: auto; }
+    .dashboard #scene-view { min-height: 200px; }
+}
+.dashboard .sensor-arrays .fs-xs { font-size: 0.72rem; }

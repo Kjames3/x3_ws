@@ -10,13 +10,13 @@
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 
     <link rel="stylesheet" href="style.css?v=6">
-    <link rel="stylesheet" href="dashboard.css?v=1">
+    <link rel="stylesheet" href="dashboard.css?v=2">
 </head>
 
 <body>
     <div class="app-container dashboard">
         <header class="header">
-            <div class="header-title">
+            <div class="header-title"><button id="stop-btn" class="stop-btn">STOP</button>
                                 <h1>X3 Control</h1>
             </div>
 
@@ -108,6 +108,7 @@
 
         <nav class="tabbar" id="tabbar">
             <button class="tab active" data-tab="drive">Drive</button>
+            <button class="tab" data-tab="sensors">Sensors</button>
             <button class="tab" data-tab="sweep">Sweep</button>
             <button class="tab" data-tab="pedestrian">Pedestrian</button>
             <button class="tab" data-tab="nav">Navigation</button>
@@ -116,7 +117,7 @@
 
         <div class="tab-area">
         <section class="tab-panel active" data-panel="drive">
-        <div class="card">
+        <div class="card drive-camera">
             <div class="card-header">
                 <h2>Camera Feed</h2>
                 <div style="display: flex; flex-direction: column; gap: 0.4rem; align-items: flex-end;">
@@ -320,16 +321,16 @@
                 </div>
             </div>
         </div>
-        <div class="card" style="margin-top: 0.5rem;">
+        <div class="card drive-scene">
             <div class="card-header">
                 <h2>Surroundings</h2>
                 <span id="scene-view-hint" style="font-size: 0.75rem; color: var(--text-muted);"></span>
             </div>
             <div id="scene-view" style="position: relative; height: 360px; border-radius: 8px; overflow: hidden;"></div>
         </div>
-        <div class="card" style="margin-top: 0.5rem;">
+        <div class="card drive-controls">
             <div class="card-header">
-                <h2>Controls & Status</h2>
+                <h2>Drive controls</h2>
                 <!-- Controller Status inline -->
                 <div id="controller-status"
                     style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: var(--text-muted);">
@@ -347,14 +348,14 @@
                                 <div class="slider-wrapper">
                                     <div class="slider-fill" id="left-fill" style="bottom: 50%; height: 0%;"></div>
                                     <div class="slider-thumb" id="left-thumb" style="bottom: 50%;"></div>
-                                    <input type="range" id="left-slider" class="slider-input" min="-100" max="100"
+                                    <input type="range" id="left-slider" aria-label="Left motor speed" class="slider-input" min="-100" max="100"
                                         value="0" step="1">
                                 </div>
                                 <span id="left-slider-value" class="slider-value">0</span>
                             </div>
 
                             <div style="display: flex; flex-direction: column; gap: 0.5rem; align-items: center;">
-                                <button id="stop-btn" class="stop-btn">STOP</button>
+
                                 <button id="auto-drive-btn" class="btn btn-primary"
                                     style="font-size: 0.75rem; padding: 0.4rem 0.8rem;">
                                     Auto-Drive
@@ -371,10 +372,10 @@
                                 </button>
                                 <!-- Compact WASD -->
                                 <div class="d-pad" style="transform: scale(0.8);">
-                                    <button class="d-btn" id="btn-w"></button>
-                                    <button class="d-btn" id="btn-a"></button>
-                                    <button class="d-btn" id="btn-s"></button>
-                                    <button class="d-btn" id="btn-d"></button>
+                                    <button class="d-btn" id="btn-w" aria-label="Forward">↑</button>
+                                    <button class="d-btn" id="btn-a" aria-label="Left">←</button>
+                                    <button class="d-btn" id="btn-s" aria-label="Backward">↓</button>
+                                    <button class="d-btn" id="btn-d" aria-label="Right">→</button>
                                 </div>
                                 <!-- Keyboard Toggle -->
                                 <label
@@ -389,7 +390,7 @@
                                 <div class="slider-wrapper">
                                     <div class="slider-fill" id="right-fill" style="bottom: 50%; height: 0%;"></div>
                                     <div class="slider-thumb" id="right-thumb" style="bottom: 50%;"></div>
-                                    <input type="range" id="right-slider" class="slider-input" min="-100" max="100"
+                                    <input type="range" id="right-slider" aria-label="Right motor speed" class="slider-input" min="-100" max="100"
                                         value="0" step="1">
                                 </div>
                                 <span id="right-slider-value" class="slider-value">0</span>
@@ -438,54 +439,14 @@
                         </div>
                     </div>
 
-                    <!-- Motor Status Section -->
-                    <div class="control-section-item">
-                        <h3 style="margin: 0 0 0.5rem 0; font-size: 0.9rem; color: var(--text-secondary);"> Status
-                        </h3>
-                        <div class="motor-grid" style="grid-template-columns: 1fr 1fr; gap: 0.5rem;">
-                            <div class="motor-card">
-                                <h3>Front-L</h3>
-                                <div id="m1-pos" class="motor-value">0</div>
-                                <div id="m1-pos-label" class="motor-label fs-xs">ticks</div>
-                                <div id="m1-power" class="motor-value mt-1 fs-sm">0%</div>
-                            </div>
-                            <div class="motor-card">
-                                <h3>Front-R</h3>
-                                <div id="m2-pos" class="motor-value">0</div>
-                                <div id="m2-pos-label" class="motor-label fs-xs">ticks</div>
-                                <div id="m2-power" class="motor-value mt-1 fs-sm">0%</div>
-                            </div>
-                            <div class="motor-card">
-                                <h3>Rear-L</h3>
-                                <div id="m3-pos" class="motor-value">0</div>
-                                <div id="m3-pos-label" class="motor-label fs-xs">ticks</div>
-                                <div id="m3-power" class="motor-value mt-1 fs-sm">0%</div>
-                            </div>
-                            <div class="motor-card">
-                                <h3>Rear-R</h3>
-                                <div id="m4-pos" class="motor-value">0</div>
-                                <div id="m4-pos-label" class="motor-label fs-xs">ticks</div>
-                                <div id="m4-power" class="motor-value mt-1 fs-sm">0%</div>
-                            </div>
-                        </div>
-                    </div>
 
-                    <!-- Servo Status Section -->
-                    <div class="control-section-item" style="margin-top: 0.5rem;">
-                        <h3 style="margin: 0 0 0.5rem 0; font-size: 0.9rem; color: var(--text-secondary);"> Servo Status</h3>
-                        <div class="motor-grid" style="grid-template-columns: 1fr 1fr; gap: 0.5rem;">
-                            <div class="motor-card">
-                                <h3>Voltage</h3>
-                                <div id="servo-voltage" class="motor-value" style="color: var(--accent-cyan);">--</div>
-                            </div>
-                            <div class="motor-card">
-                                <h3>State</h3>
-                                <div id="servo-state" class="motor-value" style="color: var(--accent-green);">Free</div>
-                            </div>
-                        </div>
-                    </div>
+                </div>
+            </div>
+        </div>
 
-                    <!-- Dual VL53L5CX ToF Arrays (Teensy over USB) -->
+        </section>
+        <section class="tab-panel" data-panel="sensors">
+<div class="card"><div class="card-header"><h2>Front obstacle sensors</h2><span class="hdr-note">Distance in mm · robot’s left on the left</span></div><div class="card-body sensor-arrays">                    <!-- Dual VL53L5CX ToF Arrays (Teensy over USB) -->
                     <div class="control-section-item" style="margin-top: 0.5rem;">
                         <h3 style="margin: 0 0 0.5rem 0; font-size: 0.9rem; color: var(--text-secondary);">
                             ToF Upper (15&deg;) <span id="tof-stats" class="fs-xs"
@@ -505,13 +466,9 @@
                             <span id="tof-far">far</span>
                         </div>
                     </div>
-
-                </div>
-            </div>
-        </div>
-
-        </section>
-        <section class="tab-panel" data-panel="sweep">
+</div></div>
+</section>
+<section class="tab-panel" data-panel="sweep">
             <div class="card">
                 <div class="card-header"><h2>Sweep Control</h2>
                     <span class="hdr-note" id="sweep-state-note">idle</span>
@@ -674,6 +631,7 @@
                     <div id="nav-hint" class="nav-hint">Connect in --ros2 or --sim mode to enable navigation</div>
                 </div>
 
+<div class="navigation-tools">
                 <!-- Control button row -->
                 <div class="nav-controls" style="margin-top: 0.6rem;">
                     <button id="launch-nav2-btn" class="btn-nav"> Launch Nav2</button>
@@ -752,10 +710,59 @@
                     </span>
                 </div>
                 <div id="frontier-status-text" class="nav-hint" style="margin-top: 0.2rem;"></div>
+</div>
             </div>
         </div>
         </section>
         <section class="tab-panel" data-panel="diag">
+<div class="card"><div class="card-header"><h2>Motors &amp; servo</h2></div><div class="card-body diagnostic-readings">                    <!-- Motor Status Section -->
+                    <div class="control-section-item">
+                        <h3 style="margin: 0 0 0.5rem 0; font-size: 0.9rem; color: var(--text-secondary);"> Status
+                        </h3>
+                        <div class="motor-grid" style="grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                            <div class="motor-card">
+                                <h3>Front-L</h3>
+                                <div id="m1-pos" class="motor-value">0</div>
+                                <div id="m1-pos-label" class="motor-label fs-xs">ticks</div>
+                                <div id="m1-power" class="motor-value mt-1 fs-sm">0%</div>
+                            </div>
+                            <div class="motor-card">
+                                <h3>Front-R</h3>
+                                <div id="m2-pos" class="motor-value">0</div>
+                                <div id="m2-pos-label" class="motor-label fs-xs">ticks</div>
+                                <div id="m2-power" class="motor-value mt-1 fs-sm">0%</div>
+                            </div>
+                            <div class="motor-card">
+                                <h3>Rear-L</h3>
+                                <div id="m3-pos" class="motor-value">0</div>
+                                <div id="m3-pos-label" class="motor-label fs-xs">ticks</div>
+                                <div id="m3-power" class="motor-value mt-1 fs-sm">0%</div>
+                            </div>
+                            <div class="motor-card">
+                                <h3>Rear-R</h3>
+                                <div id="m4-pos" class="motor-value">0</div>
+                                <div id="m4-pos-label" class="motor-label fs-xs">ticks</div>
+                                <div id="m4-power" class="motor-value mt-1 fs-sm">0%</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Servo Status Section -->
+                    <div class="control-section-item" style="margin-top: 0.5rem;">
+                        <h3 style="margin: 0 0 0.5rem 0; font-size: 0.9rem; color: var(--text-secondary);"> Servo Status</h3>
+                        <div class="motor-grid" style="grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                            <div class="motor-card">
+                                <h3>Voltage</h3>
+                                <div id="servo-voltage" class="motor-value" style="color: var(--accent-cyan);">--</div>
+                            </div>
+                            <div class="motor-card">
+                                <h3>State</h3>
+                                <div id="servo-state" class="motor-value" style="color: var(--accent-green);">Free</div>
+                            </div>
+                        </div>
+                    </div>
+
+</div></div>
             <div class="card">
                 <div class="card-header"><h2>System</h2>
                     <span class="hdr-note" id="sys-build">build --</span>
@@ -784,9 +791,11 @@
     </div>
 
     <script src="main.js?v=5"></script>
-    <script src="dashboard.js?v=1"></script>
+    <script src="dashboard.js?v=2"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
-    <script src="scene-view.js?v=7"></script>
+    <script src="models/humanoid-walk.js?v=1"></script>
+    <script src="humanoid.js?v=2"></script>
+    <script src="scene-view.js?v=9"></script>
 </body>
 
 </html>
