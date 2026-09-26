@@ -316,3 +316,26 @@ if __name__ == "__main__":
             print(f"  FAIL  {name}: {type(e).__name__}: {e}")
     print(f"\n{len(fns) - failed}/{len(fns)} passed")
     sys.exit(1 if failed else 0)
+
+
+def test_depth_correction_is_per_device_and_keeps_invalid_zero(tmp_path):
+    import json as _json
+    import oakd_driver
+
+    cfg = tmp_path / "corr.json"
+    cfg.write_text(_json.dumps({"devices": {"ABC": {"inv_depth_offset_per_m": 0.0821}}}))
+    assert oakd_driver.load_depth_correction("ABC", cfg) == 0.0821
+    assert oakd_driver.load_depth_correction("OTHER", cfg) == 0.0
+    assert oakd_driver.load_depth_correction("ABC", tmp_path / "missing.json") == 0.0
+
+    camera = oakd_driver.OakDCamera(sim_mode=True)
+    camera._inv_depth_offset = 0.0821
+    camera._process_depth(np.array([[0, 2440, 3989]], dtype=np.uint16))
+    # The fitted Pro W points: 2.44 m -> 2.04 m, 3.989 m -> 3.00 m.
+    np.testing.assert_allclose(camera._latest_raw_depth, [[0.0, 2.033, 3.004]], atol=2e-3)
+
+
+def test_shipped_depth_correction_covers_the_pro_w():
+    import oakd_driver
+
+    assert oakd_driver.load_depth_correction("14442C103181D7D600") > 0.0

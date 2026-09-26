@@ -35,6 +35,7 @@ returning None/empty while the worker retries with exponential backoff.
 """
 import json
 import logging
+import os
 import threading
 import time
 
@@ -64,6 +65,24 @@ MONO_H = 400
 # base_y = -x, base_z = MOUNT_Z - y.
 OAK_MOUNT_X = 0.107815
 OAK_MOUNT_Z = 0.1315
+
+DEPTH_CORRECTION_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                     "config", "oak_depth_correction.json")
+
+
+def load_depth_correction(mxid, path=DEPTH_CORRECTION_PATH):
+    """Return this device's inverse-depth offset (1/m), or 0.0 if it has none.
+
+    Stereo on the Pro W reads long by a constant disparity offset (2.04 m reads
+    2.44 m), so Z_true = Z / (1 + c * Z). See config/oak_depth_correction.json.
+    """
+    try:
+        with open(path) as f:
+            entry = json.load(f)["devices"].get(str(mxid))
+    except (OSError, ValueError, KeyError) as e:
+        logger.warning("OakDCamera: no depth correction loaded (%s)", e)
+        return 0.0
+    return float(entry["inv_depth_offset_per_m"]) if entry else 0.0
 
 _COCO80 = [
     "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
@@ -151,6 +170,7 @@ class OakDCamera:
 
         # CAM_A intrinsics at (nn_w, nn_h), filled once the device is up.
         self._fx = self._fy = self._cx = self._cy = None
+        self._inv_depth_offset = 0.0
         # Intrinsics for the stream emitted by the active depth pipeline. Spatial
         # mode aligns to CAM_A at the NN size; stereo-only mode aligns to CAM_B/C
         # at the native 400p mono size.
@@ -416,6 +436,10 @@ class OakDCamera:
         self.spatial_active = False
 
     def _read_intrinsics(self, device, with_spatial=True):
+        mxid = device.getMxId() if hasattr(device, "getMxId") else None
+        self._inv_depth_offset = load_depth_correction(mxid)
+        logger.info("OakDCamera: %s depth correction 1/Z offset %.4f 1/m",
+                    mxid, self._inv_depth_offset)
         # A reconnect may change pipeline mode. Invalidate first so callers can
         # never consume calibration left over from the previous stream geometry.
         with self._lock:
@@ -470,6 +494,8 @@ class OakDCamera:
     # ------------------------------------------------------------------ processing
     def _process_depth(self, depth_mm):
         raw_m = depth_mm.astype(np.float32) / 1000.0
+        if self._inv_depth_offset:
+            raw_m /= 1.0 + self._inv_depth_offset * raw_m   # 0 (invalid) stays 0
         with self._lock:
             self._latest_raw_depth = raw_m
             self._latest_depth_color = None   # invalidate; colourise lazily on demand

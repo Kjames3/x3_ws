@@ -27,6 +27,7 @@ except ImportError:
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from c1_camera_geometry import rgb_1080_preview_intrinsics  # noqa: E402
+from oakd_driver import load_depth_correction  # noqa: E402
 CFG = os.path.join(os.path.dirname(HERE), "config", "camera_ground_plane.json")
 NN_W, NN_H = 480, 640           # CAM_A-aligned depth, matches oakd_driver spatial mode
 Z_MIN, Z_MAX = 0.5, 4.0         # the estimator's valid depth band
@@ -100,6 +101,8 @@ def main():
     with dai.Device(build_pipeline()) as dev:
         calib = dev.readCalibration()
         M = camA_intrinsics(dev, calib)
+        inv_off = load_depth_correction(dev.getMxId())
+        print(f"stereo depth correction 1/Z offset {inv_off:.4f} 1/m")
         fx, fy = float(M[0][0]), float(M[1][1])
         cx, cy = float(M[0][2]), float(M[1][2])
         print(f"CAM_A intrinsics @ {NN_W}x{NN_H}: fx={fx:.1f} fy={fy:.1f} cx={cx:.1f} cy={cy:.1f}")
@@ -115,6 +118,7 @@ def main():
             pkt = qd.tryGet()
             if pkt is not None:
                 Z = pkt.getFrame().astype(np.float32) / 1000.0
+                Z /= 1.0 + inv_off * Z   # same correction as oakd_driver
                 rows = np.arange(Z.shape[0], dtype=np.float32)
                 # Same form as VelocityEstimator._height_band_mask: applying the
                 # CONFIGURED pitch means what we fit below is the RESIDUAL after

@@ -1,0 +1,11 @@
+{
+  "notes": "Per-device stereo depth correction, keyed by MxId: Z_true = Z / (1 + inv_depth_offset_per_m * Z), i.e. a constant disparity offset. Unlisted devices are left uncorrected. Refit if the camera is re-calibrated, dropped or re-mounted.",
+  "devices": {
+    "14442C103181D7D600": {
+      "model": "OAK-D-PRO-W (REAL lab spare)",
+      "inv_depth_offset_per_m": 0.0821,
+      "disparity_offset_px_at_640x400": 1.77,
+      "fitted": "2026-09-25: 30.1 cm board tape-measured from the lens at 0.60/1.00/2.04/3.00 m read 0.635/1.077/2.44/3.989 m (subpixel on; projector on at >= 1 m, off at 0.6 m where it ghosts). Offset-only fit leaves -1.1..+0.4 cm, within tape error; a free scale fitted 0.99 and was dropped. Same bias in left-aligned and RGB-aligned depth, so it is the EEPROM stereo calibration, not RGB alignment."
+    }
+  }
+}
