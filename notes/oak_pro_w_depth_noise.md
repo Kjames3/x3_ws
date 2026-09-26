@@ -57,8 +57,48 @@ removed, so pitch/roll/bias are excluded. This is what ground removal sees.
 - `c3_person_tracker.measurement_cov_camera` assumes the Lite's 0.0025·Z². It is
   clamped by `meas_sigma_floor_m` 0.25 m, so it only matters beyond ~5 m (0.0025) or
   ~5.3 m (0.009); not urgent, but the constant is the Lite's.
-- Subpixel: no benefit on the floor; a real benefit on fronto-parallel surfaces at
-  1.1 m. Before switching production, measure a board at 1–3 m in the production
-  preset and check NN frame rate/latency with the 2-SHAVE post-processing budget.
+- Subpixel is **ON in production** since 2026-09-25 (see below).
+
+## Subpixel and the velocity estimator (decided 2026-09-25)
+
+With subpixel off, the disparity step is ~0.5 m at 3–3.5 m. A person standing at the
+3.5 m tape mark read torso 3.19 m and legs 3.72 m — two adjacent disparity levels —
+and a steadily walking person became a staircase. Parked robot, lane 1.0–3.5 m,
+300 s walks, `phantom_baseline.py` + `score_velocity_models.py` replay:
+
+| | subpixel off (1.34 m/s) | subpixel on (1.25 m/s) |
+|---|---|---|
+| live p95 error | −19 / −20% | −8 / −9% (gate 1.8 / 4.0) |
+| replay v1 / v2 / v3 / compress25 | −27 / −22 / −21 / −22% | −17 / −13 / **−10** / −11% |
+| person at 3.5 m (legs) | 3.72 m | 3.48 m |
+
+Subpixel cost nothing measurable: `/oak/detections` 5.1 Hz (4.9 before), depth
+16–25 fps either way. The floor noise table above does not show the benefit because
+floor error is per-pixel matching error; a blob-median centroid cannot average away
+quantization, since all its pixels share one disparity level.
+
+### How it is enabled (interim)
+
+`/etc/systemd/system/x3_server.service.d/90-c1-recording.conf` on the robot:
+`SERVER_ARGS=--domain-id 42 --webrtc-camera --c1-recording --c1-subpixel`
+(backup of the previous file: `~/wip-backup-2026-09-25/90-c1-recording.conf.bak`).
+This only works because `server_x3.py` passes
+`subpixel=args.c1_recording and args.c1_subpixel` and `--c1-subpixel` requires
+`--c1-recording`. **Dropping `--c1-recording` silently turns subpixel off** and brings
+back the −20%.
+
+### TODO — standalone subpixel option (do with the C1 commit)
+
+- `server_x3.py`: add `--oak-subpixel/--no-oak-subpixel`, default ON, independent of
+  `--c1-recording`; pass `subpixel=args.oak_subpixel` to `OakDCamera`. Keep
+  `--c1-subpixel` as a deprecated alias (or drop it) so the drop-in keeps working.
+- `oakd_driver.OakDCamera`: default `subpixel=True`; the
+  `setSubpixelFractionalBits(3)` + `setPostProcessingHardwareResources(2, 2)` block
+  already exists and is what was tested.
+- Record the stereo mode in the C1 calibration metadata (`stereo_subpixel` already is).
+- Then remove `--c1-subpixel` from `90-c1-recording.conf`, restart, and check the
+  depth has fine steps (>100 distinct values between 2.5 and 4.5 m in one frame).
+- The depth correction (`config/oak_depth_correction.json`) was fitted with subpixel
+  ON; refit if subpixel is ever turned off.
 
 Scripts used (robot `/tmp`, not in repo): `floor_noise.py`, `board_noise.py`.
