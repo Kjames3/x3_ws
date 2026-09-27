@@ -180,6 +180,8 @@ class OakDCamera:
         self._latest_imu = None
         self._latest_detections = []
         self._latest_detections_t = 0.0   # monotonic, last NN packet decoded
+        self._det_log = None              # open NDJSON file (set_detection_log)
+        self._det_log_name = None
         self.depth_fps = 0.0              # live depth/stereo capture rate (~1s window)
 
         # CAM_A intrinsics at (nn_w, nn_h), filled once the device is up.
@@ -241,11 +243,32 @@ class OakDCamera:
         logger.info("OakDCamera: worker thread started"
                     + (" (spatial detection ON)" if self._want_spatial else ""))
 
+    def set_detection_log(self, path, model_name=None):
+        """Append one NDJSON line per decoded NN packet (empty ones too, so
+        false detections can be counted per minute). Diagnostic; off by default."""
+        self._det_log_name = model_name
+        self._det_log = open(path, "a", buffering=1)
+        logger.info(f"OakDCamera: logging detections to {path}")
+
+    def _write_det_log(self):
+        with self._lock:
+            dets = list(self._latest_detections)
+        try:
+            self._det_log.write(json.dumps({
+                "t_mono": round(self._latest_detections_t, 4), "t_wall": round(time.time(), 3),
+                "model": self._det_log_name, "dets": dets}) + "\n")
+        except (OSError, ValueError) as e:
+            logger.warning(f"OakDCamera: detection log disabled: {e}")
+            self._det_log = None
+
     def cleanup(self):
         self._running = False
         t = self._thread
         if t is not None:
             t.join(timeout=2.0)
+        if self._det_log is not None:
+            self._det_log.close()
+            self._det_log = None
         self.available = False
         logger.info("OakDCamera: stopped")
 
@@ -711,6 +734,12 @@ class OakDCamera:
         return (in_range > 0.9 and 1 <= n_hits <= 300), n_hits
 
     def _process_nn(self, nndata, metadata=None):
+        before = self._latest_detections_t
+        self._decode_nn(nndata, metadata)
+        if self._det_log is not None and self._latest_detections_t != before:
+            self._write_det_log()
+
+    def _decode_nn(self, nndata, metadata=None):
         """Host-side decode of the YOLO head (detect [85, 6300] or pose [56, 6300])
         + depth back-projection."""
         try:

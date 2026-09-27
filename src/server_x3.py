@@ -158,6 +158,10 @@ parser.add_argument('--oak-model', default='yolo26n',
                     help='On-device OAK YOLO blob under src/blobs/<name>/. The pose '
                          'models also detect people (label "person") and add '
                          'COCO-17 "keypoints" to each detection.')
+parser.add_argument('--oak-det-log', default=None, metavar='DIR',
+                    help='Append every OAK NN packet (detections, keypoints, depth) '
+                         'as NDJSON to DIR/<model>-<time>.ndjson. Summarize with '
+                         'src/oak_pose_summary.py.')
 parser.add_argument('--no-c3-live', action='store_true', dest='no_c3_live',
                     help='Disable the diagnostic C3 person tracker (OAK YOLO boxes + '
                          'Kalman). It never reaches the CBF; it only feeds the GUI.')
@@ -1920,6 +1924,12 @@ def initialize_hardware():
                              conf_threshold=0.35, accel_hz=500, gyro_hz=400,
                              record_rgbd=args.c1_recording,
                              subpixel=args.c1_recording and args.c1_subpixel)
+            if args.oak_det_log and _spatial_blob:
+                _log_dir = Path(args.oak_det_log)
+                _log_dir.mkdir(parents=True, exist_ok=True)
+                oak.set_detection_log(
+                    _log_dir / f"{args.oak_model}-{time.strftime('%Y%m%d-%H%M%S')}.ndjson",
+                    args.oak_model)
             oak.start()
             logger.info("OAK-D Lite: driver started (stereo + depth + IMU"
                         + (f" + spatial detection, {args.oak_model})" if _spatial_blob else ")"))
