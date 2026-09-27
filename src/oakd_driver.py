@@ -219,7 +219,7 @@ class OakDCamera:
             if meta.get("classes"):
                 self.labels = list(meta["classes"])
             self.nn_classes = int(meta.get("n_classes", len(self.labels)))
-            self.nn_kpts = int(meta.get("n_keypoints", 0))
+            self.nn_kpts = int(meta.get("n_keypoints") or 0)   # the detector config has null
             self.nn_conf = float(meta.get("conf_threshold", self.nn_conf))
             self.nn_iou = float(meta.get("iou_threshold", self.nn_iou))
             logger.info(f"OakDCamera: NN config — {self.nn_classes} classes, input "

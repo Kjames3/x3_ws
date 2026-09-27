@@ -54,3 +54,12 @@ def test_driver_logs_every_packet_including_empty(tmp_path):
     cam.cleanup()
     lines = (tmp_path / 'd.ndjson').read_text().splitlines()
     assert len(lines) == 2 and all(json.loads(l)['dets'] == [] for l in lines)
+
+
+def test_every_blob_config_loads_without_error(caplog):
+    import oakd_driver
+    for cfg in sorted((ROOT / 'src' / 'blobs').glob('*/config.json')):
+        caplog.clear()
+        cam = oakd_driver.OakDCamera(spatial_config=str(cfg))
+        assert not [r for r in caplog.records if r.levelname == 'ERROR'], cfg
+        assert cam._nn_rows in (85, 56), cfg
