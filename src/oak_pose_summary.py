@@ -11,7 +11,8 @@ visible (>= 0.5) per distance bin. Distance is the detection's box depth
 segment out of a longer log; --timeline prints per-window rows so segments
 can be found (e.g. which 10 s you stood at the 1.2 m mark). --notes takes the
 "HH:MM:SS label" lines written during the test (same clock as the robot) and
-prints one row per segment; a segment runs until the next note.
+prints one row per segment; a segment runs until the next note. Notes outside
+the log's time span are ignored, so one notes file can cover several runs.
 """
 import argparse
 import json
@@ -103,13 +104,15 @@ def note_segments(rows, notes_path):
         if not line.strip():
             continue
         hms, label = line.strip().split(' ', 1)
-        t = dt.datetime.combine(first.date(), dt.time.fromisoformat(hms))
-        if t < first - dt.timedelta(hours=1):
-            t += dt.timedelta(days=1)
+        # The day that puts the note nearest the log start (runs cross midnight).
+        t = min((dt.datetime.combine(first.date() + dt.timedelta(days=k), dt.time.fromisoformat(hms))
+                 for k in (-1, 0, 1)), key=lambda c: abs((c - first).total_seconds()))
         marks.append((t.timestamp(), label))
     marks.sort()
-    end = rows[-1]['t_wall']
-    return [(lab, a, b) for (a, lab), (b, _) in zip(marks, marks[1:] + [(end, None)]) if a < end]
+    start, end = rows[0]['t_wall'], rows[-1]['t_wall']
+    # Notes from another run in the same file fall outside this log; drop them.
+    marks = [m for m in marks if start - 60 <= m[0] < end]
+    return [(lab, a, b) for (a, lab), (b, _) in zip(marks, marks[1:] + [(end, None)])]
 
 
 def segment_table(rows, notes_path):
