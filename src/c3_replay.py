@@ -132,10 +132,11 @@ def forward_depth(xy, ofc):
     return float(np.dot(np.asarray(xy) - np.asarray(ofc['translation_xyz'][:2]), fwd))
 
 
-def run(directory, output, tracker_config=None, tracker_config_c=None):
+def run(directory, output, tracker_config=None, tracker_config_c=None,
+        detections_name='c3-detections.json'):
     rows = json.loads((directory / 'pair-index.json').read_text())
     odom = load_odom(directory)
-    det_path = directory / 'c3-detections.json'
+    det_path = directory / detections_name
     detections = json.loads(det_path.read_text()) if det_path.exists() else None
     v3 = make_v3(directory)
     trk_b = pt.KalmanTracker(tracker_config)
@@ -248,13 +249,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='mode', required=True)
     d = sub.add_parser('detect'); d.add_argument('dataset', type=Path)
+    d.add_argument('--model', default=DETECTOR, help='repo-relative weights (default %(default)s)')
+    d.add_argument('--name', default='c3-detections.json', help='output file in the dataset')
     r = sub.add_parser('run'); r.add_argument('dataset', type=Path)
     r.add_argument('--output', type=Path, required=True)
     r.add_argument('--config', type=json.loads, default=None,
                    help='JSON overrides of c3_person_tracker.DEFAULT_CONFIG')
     args = parser.parse_args()
     if args.mode == 'detect':
-        detect(args.dataset)
+        detect(args.dataset, args.model, DETECTOR_CONF, args.name)
     else:
         print(json.dumps(run(args.dataset, args.output, args.config)['static'], indent=2))
 

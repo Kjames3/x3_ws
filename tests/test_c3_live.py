@@ -37,6 +37,10 @@ def test_tracks_a_walking_person_in_robot_frame():
     trk.stop()
     tracks, stats = trk.get_tracks()
     assert stats['updates'] > 10 and '_prev' not in stats
+    d = stats['diag']
+    assert d['person_packets'] == d['dets'] == d['meas'] > 10
+    assert d['ring_packets'] >= d['person_packets'] - 3   # 3 hits to confirm
+    assert d['reset_pose'] == d['reset_depth'] == d['reset_gap'] == 0
     assert len(tracks) == 1
     t = tracks[0]
     assert abs(t['fwd'] - 2.1) < 0.1

@@ -41,6 +41,13 @@ class C3Live:
         self._lock = threading.Lock()
         self._tracks = []
         self._stats = {'updates': 0, 'update_ms_avg': 0.0, 'update_ms_max': 0.0, 'hz': 0.0}
+        # Where person detections are lost between the OAK and a ring (cumulative).
+        #   person_packets / ring_packets: packets with a person box / with >=1 ring
+        #   dets / meas: person boxes / boxes that gave a torso-depth measurement
+        #   reset_pose / reset_depth: packets dropped (tracker reset) for stale
+        #   odom or missing depth; reset_gap: packet gap > max_dt_s reset the tracker
+        self._diag = dict(person_packets=0, ring_packets=0, dets=0, meas=0,
+                          reset_pose=0, reset_depth=0, reset_gap=0)
         self._running = False
         self._thread = None
 
@@ -56,7 +63,9 @@ class C3Live:
 
     def get_tracks(self):
         with self._lock:
-            return list(self._tracks), {k: v for k, v in self._stats.items() if not k.startswith('_')}
+            st = {k: v for k, v in self._stats.items() if not k.startswith('_')}
+            st['diag'] = dict(self._diag)
+            return list(self._tracks), st
 
     def _measurements(self, detections, depth, intr, pose):
         fx, fy, cx, cy, w, h = intr
@@ -116,17 +125,29 @@ class C3Live:
                     continue
                 last_t = stamp
                 detections, _ = self.oak.get_detection_observation()
+                people = [d for d in detections or [] if d.get('label') == 'person' and d.get('bbox')]
                 pose = self.pose_fn()
                 depth = self.oak.get_raw_depth_frame()
                 intr = self.oak.get_depth_intrinsics()
+                dg = self._diag
+                if people:
+                    dg['person_packets'] += 1
+                    dg['dets'] += len(people)
                 if pose is None or depth is None or intr is None:
+                    dg['reset_pose' if pose is None else 'reset_depth'] += 1
                     self.tracker.reset()
                     with self._lock:
                         self._tracks = []
                     continue
                 t0 = time.perf_counter()
-                meas = self._measurements(detections or [], depth, intr, pose)
+                meas = self._measurements(people, depth, intr, pose)
+                dg['meas'] += len(meas)
+                prev_t = self.tracker.last_t
+                if prev_t is not None and stamp - prev_t > ARM_C_CONFIG['max_dt_s']:
+                    dg['reset_gap'] += 1   # update() will reset rather than predict
                 tracks = self._to_local(self.tracker.update(stamp, meas), pose)
+                if people and tracks:
+                    dg['ring_packets'] += 1
                 ms = (time.perf_counter() - t0) * 1e3
                 with self._lock:
                     self._tracks = tracks

@@ -186,11 +186,12 @@ def scenario_of(run):
     return 'stand' if name.startswith('stand') else name.split('-')[0]
 
 
-def score(runs, output, config_c=None):
+def score(runs, output, config_c=None, detections_name='c3-detections.json'):
     report = {}
     for run in runs:
-        prepare(run)
-        summary = rp.run(run, output / run.name, None, config_c)
+        if detections_name == 'c3-detections.json':
+            prepare(run)
+        summary = rp.run(run, output / run.name, None, config_c, detections_name)
         ref = reference_track(run)
         report[run.name] = {}
         for arm in 'ABC':
@@ -253,6 +254,8 @@ def main():
     s = sub.add_parser('score'); s.add_argument('runs', type=Path, nargs='+')
     s.add_argument('--output', type=Path, required=True)
     s.add_argument('--config-c', type=json.loads, default=None)
+    s.add_argument('--detections', default='c3-detections.json',
+                   help='arm C box file in each run (from c3_replay.py detect --name)')
     a = sub.add_parser('aggregate'); a.add_argument('score_json', type=Path)
     args = parser.parse_args()
     if args.mode == 'aggregate':
@@ -263,7 +266,7 @@ def main():
             prepare(run)
             print(run.name, 'prepared', flush=True)
     else:
-        score(args.runs, args.output, args.config_c)
+        score(args.runs, args.output, args.config_c, args.detections)
 
 
 if __name__ == '__main__':
