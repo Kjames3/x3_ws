@@ -32,7 +32,13 @@ ekf_filter_node:
         odom0_differential: false
         odom0_relative: false
         odom0_pose_rejection_threshold: 20.0
-        odom0_twist_rejection_threshold: 1.542
+        # Was 1.542 (Yahboom default). That gate rejected every turn-rate reading
+        # once the robot turned fast, so the EKF's yaw rate went stale and heading
+        # sawtoothed (drift the wrong way, snap back at each 10 Hz odom_raw yaw):
+        # 48.6 rad of /odom yaw travel for 35.2 rad of real rotation
+        # (artifacts/c3-drive-2026-09-28, 2026-09-28). Gyro and wheel yaw rate
+        # agree 1.00 during turns, so outlier gating here only hurts.
+        odom0_twist_rejection_threshold: 1000.0
 
         imu0: imu/data
         imu0_config: [false, false, false,
@@ -45,7 +51,7 @@ ekf_filter_node:
         imu0_relative: true
         imu0_queue_size: 10
         imu0_pose_rejection_threshold: 20.0
-        imu0_twist_rejection_threshold: 1.542
+        imu0_twist_rejection_threshold: 1000.0   # see odom0_twist_rejection_threshold
         imu0_linear_acceleration_rejection_threshold: 10.0
         imu0_remove_gravitational_acceleration: true
 
