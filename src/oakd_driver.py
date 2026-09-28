@@ -370,7 +370,13 @@ class OakDCamera:
             camRgb.setPreviewSize(self.nn_w, self.nn_h)
             camRgb.setInterleaved(False)
             camRgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
-            camRgb.setPreviewKeepAspectRatio(False)
+            # Centre crop, NOT a stretch. The depth aligned to CAM_A below is the
+            # centre 810x1080 of the 1080P frame at uniform scale (fx == fy ~677,
+            # checked against the lidar 2026-09-28). With False the preview was the
+            # full 1920 width squeezed into 480 px (horizontal fx ~285), so boxes
+            # and depth used different columns: bearings came out 2.37x too small
+            # (0.593 / 0.25) and off-centre boxes read the wall behind the person.
+            camRgb.setPreviewKeepAspectRatio(True)
             camRgb.setFps(self.nn_fps)
 
             stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
