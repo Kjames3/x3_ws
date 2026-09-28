@@ -128,7 +128,38 @@
                 frame.position.y += group.position.y - Math.min(leftFootBox.min.y, rightFootBox.min.y);
             }
         }
-        return { group, joints, animate };
+        // Keypoint-driven upper body, applied after animate() each frame.
+        // dirs: bone name -> unit Vector3 in scene (world) frame, pointing
+        // from the joint to its child. Bones without a direction fade back to
+        // the walk clip. Each bone takes the minimal rotation from its
+        // current direction, so the clip's twist is kept.
+        const POSE_BONES = [['left_upper_arm', 'left_lower_arm'], ['left_lower_arm', 'left_hand'],
+            ['right_upper_arm', 'right_lower_arm'], ['right_lower_arm', 'right_hand']];
+        const poseState = Object.create(null);
+        const pq = new THREE.Quaternion(), dq = new THREE.Quaternion(), tq = new THREE.Quaternion();
+        const want = new THREE.Vector3(), have = new THREE.Vector3();
+        function pose(dirs, dt) {
+            dt = Number.isFinite(dt) ? Math.max(0, Math.min(dt, 0.1)) : 0;
+            const alpha = 1 - Math.exp(-dt / 0.12);
+            for (const [bone, child] of POSE_BONES) {
+                const st = poseState[bone] || (poseState[bone] = { w: 0, dir: new THREE.Vector3() });
+                const d = dirs && dirs[bone];
+                if (d) {
+                    if (st.w === 0) st.dir.copy(d);
+                    else st.dir.lerp(d, alpha).normalize();
+                }
+                st.w += ((d ? 1 : 0) - st.w) * alpha;
+                if (st.w < 0.01) { st.w = 0; continue; }
+                const node = joints[bone];
+                node.parent.updateWorldMatrix(true, false);
+                node.parent.getWorldQuaternion(pq);
+                want.copy(st.dir).applyQuaternion(pq.invert());
+                have.copy(joints[child].position).normalize().applyQuaternion(node.quaternion);
+                tq.copy(dq.setFromUnitVectors(have, want)).multiply(node.quaternion);
+                node.quaternion.slerp(tq, st.w);
+            }
+        }
+        return { group, joints, animate, pose };
     }
     window.X3Humanoid = { create };
 })();

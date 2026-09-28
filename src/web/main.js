@@ -1973,6 +1973,10 @@ function handleMessage(data) {
         if (data.velocity_estimates !== undefined) {
             state.latestData.velocityEstimates = data.velocity_estimates;
         }
+        if (data.oak_detections !== undefined) {
+            state.latestData.oakDetections = data.oak_detections;
+            state.latestData.oakDetectionsAt = performance.now();
+        }
         if (data.c3_tracks !== undefined) {
             state.latestData.c3Tracks = data.c3_tracks;
             state.latestData.c3Stats = data.c3_stats;

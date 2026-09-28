@@ -351,8 +351,43 @@
         return { group, ghost, arrow, avatar: still, prediction: still };
     }
 
+    // COCO-17 indices: shoulder -> elbow -> wrist, per side.
+    const ARM_KPTS = {
+        left_upper_arm: [5, 7], left_lower_arm: [7, 9],
+        right_upper_arm: [6, 8], right_lower_arm: [8, 10],
+    };
+    const POSE_MATCH_M = 0.8;     // max est <-> OAK person distance (x/z, camera frame)
+    const POSE_STALE_MS = 500;
+
+    // Limb directions for one tracked person from the nearest unused OAK pose
+    // detection. keypoints_xyz is CAM_A optical (x right, y down, z fwd) ->
+    // scene (x, -y, -z). Only directions are used, so the camera height and
+    // the shared torso-plane depth drop out.
+    function poseDirs(est, dets, used) {
+        if (!dets) return null;
+        let best = -1, bestD = POSE_MATCH_M;
+        dets.forEach((d, i) => {
+            if (used.has(i) || d.label !== 'person' || !d.keypoints_xyz || !d.xyz_m) return;
+            const dist = Math.hypot(d.xyz_m.x - est.x, d.xyz_m.z - est.z);
+            if (dist < bestD) { bestD = dist; best = i; }
+        });
+        if (best < 0) return null;
+        used.add(best);
+        const k = dets[best].keypoints_xyz, dirs = {};
+        for (const [bone, [a, b]] of Object.entries(ARM_KPTS)) {
+            if (!k[a] || !k[b]) continue;
+            const v = new THREE.Vector3(k[b][0] - k[a][0], -(k[b][1] - k[a][1]), -(k[b][2] - k[a][2]));
+            if (v.lengthSq() > 1e-4) dirs[bone] = v.normalize();
+        }
+        return dirs;
+    }
+
     function updatePeople(estimates, dt) {
         const seen = new Set();
+        const d = state.latestData;
+        const dets = d.oakDetectionsAt && performance.now() - d.oakDetectionsAt < POSE_STALE_MS
+            ? d.oakDetections : null;
+        const used = new Set();
         for (const est of estimates || []) {
             const fwd = est.z, right = est.x;
             if (!isFinite(fwd) || !isFinite(right)) continue;
@@ -377,6 +412,7 @@
             const speed = Math.hypot(sx, sz);
             const moving = speed > 0.15;
             p.avatar.animate(speed, dt);
+            if (p.avatar.pose) p.avatar.pose(kind === 'person' ? poseDirs(est, dets, used) : null, dt);
             p.prediction.animate(speed, dt);
             p.ghost.visible = moving;
             p.arrow.visible = moving;

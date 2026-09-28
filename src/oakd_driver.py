@@ -69,6 +69,8 @@ MONO_H = 400
 NN_STALL_S = 5.0          # no NN packet for this long while depth flows = stalled
 OAK_MOUNT_X = 0.107815
 OAK_MOUNT_Z = 0.1315
+# Pose keypoint visibility threshold; same cut oak_pose_summary.py uses.
+KPT_VIS = 0.5
 
 DEPTH_CORRECTION_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                      "config", "oak_depth_correction.json")
@@ -849,10 +851,30 @@ class OakDCamera:
                 det["xyz_base_m"] = {"x": round(OAK_MOUNT_X + z, 3),
                                      "y": round(-x, 3),
                                      "z": round(OAK_MOUNT_Z - y, 3)}
+                if kpts is not None:
+                    det["keypoints_xyz"] = self._keypoints_xyz(kpts[i], z)
             out.append(det)
         with self._lock:
             self._latest_detections = out
             self._latest_detection_meta = metadata
+
+    def _keypoints_xyz(self, kpts, z):
+        """COCO-17 keypoints -> CAM_A optical-frame points, all at the box depth z.
+
+        Per-keypoint depth is deliberately not sampled: on thin limbs the depth
+        window mostly hits the background. Flattening onto the torso plane loses
+        reach toward/away from the camera but keeps limb directions stable.
+        Keypoints below KPT_VIS are None.
+        """
+        out = []
+        for u, v, c in kpts:
+            if c < KPT_VIS:
+                out.append(None)
+            else:
+                out.append([round(float((u - self._cx) * z / self._fx), 3),
+                            round(float((v - self._cy) * z / self._fy), 3),
+                            round(float(z), 3)])
+        return out
 
     def _locate(self, depth, x1, y1, x2, y2):
         """Median depth in the inner half of the box -> 3D point in the CAM_A optical frame."""
