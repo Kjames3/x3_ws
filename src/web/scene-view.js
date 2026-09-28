@@ -1,7 +1,10 @@
 // =================================================================
 // Surroundings view (Drive tab): a Tesla-style chase-cam scene built only from
 // data the server already streams -- no extra work on the Jetson.
-//   people : readout.velocity_estimates (camera frame: x=right, z=forward)
+//   people : c3_tracks when the C3 tracker runs (robot frame: fwd, left;
+//            capture-time corrected, 0.5 s prediction), else
+//            readout.velocity_estimates (camera frame: x=right, z=forward).
+//            v3 still supplies non-person movers (amber boxes).
 //   c3     : c3_tracks, the diagnostic C3 Kalman tracker (robot frame:
 //            fwd, left). Cyan floor rings: now, and PREDICT_S ahead at 2 sigma.
 //   walls  : /scan via the Foxglove bridge. foxgloveScanToXY leaves points in
@@ -382,6 +385,26 @@
         return dirs;
     }
 
+    // Avatars follow C3 when it runs: it is corrected for camera latency and
+    // uses the fixed preview geometry, one track per person. v3 (the MLP)
+    // stays the CBF's input and here only contributes non-person movers.
+    // Entries are normalised to v3's shape: x=right, z=forward in the CAMERA
+    // frame (poseDirs matches keypoints on that), vx=forward, vy=left.
+    const OAK_MOUNT_X = 0.107815;   // oakd_driver.OAK_MOUNT_X, camera ahead of base
+    function avatarEntries(d) {
+        if (!d.c3Stats) return d.velocityEstimates || [];   // C3 off: v3 as before
+        const out = [];
+        for (const t of d.c3Tracks || []) {
+            out.push({ id: 'c3-' + t.id, x: -t.left, z: t.fwd - OAK_MOUNT_X, fwdBase: t.fwd,
+                       vx: t.vx, vy: t.vy, category: 'person',
+                       horizon: t.predict_s, measured: t.measured });
+        }
+        for (const e of d.velocityEstimates || []) {
+            if (e.category === 'dynamic') out.push(Object.assign({}, e, { id: 'v3-' + e.id }));
+        }
+        return out;
+    }
+
     function updatePeople(estimates, dt) {
         const seen = new Set();
         const d = state.latestData;
@@ -389,7 +412,8 @@
             ? d.oakDetections : null;
         const used = new Set();
         for (const est of estimates || []) {
-            const fwd = est.z, right = est.x;
+            // Scene origin is the robot base; C3 gives base-frame forward directly.
+            const fwd = est.fwdBase !== undefined ? est.fwdBase : est.z, right = est.x;
             if (!isFinite(fwd) || !isFinite(right)) continue;
             // Static depth blobs (furniture, door frames) are already drawn by
             // the /scan walls. People get an avatar, confirmed non-person
@@ -420,12 +444,13 @@
                 // Heading follows travel direction, not measured body orientation.
                 p.group.rotation.y = Math.atan2(-sx, -sz);
                 p.ghost.rotation.y = p.group.rotation.y;
-                p.ghost.position.set(right + sx * GHOST_S, 0, -fwd + sz * GHOST_S);
+                const horizon = est.horizon || GHOST_S;
+                p.ghost.position.set(right + sx * horizon, 0, -fwd + sz * horizon);
                 _org.set(right, kind === 'dynamic' ? 0.3 : 1.3, -fwd);
                 _dir.set(sx, 0, sz).normalize();
                 p.arrow.position.copy(_org);
                 p.arrow.setDirection(_dir);
-                p.arrow.setLength(Math.max(0.3, speed * GHOST_S), 0.15, 0.1);
+                p.arrow.setLength(Math.max(0.3, speed * horizon), 0.15, 0.1);
             }
         }
         for (const [id, p] of people) {
@@ -507,13 +532,14 @@
         if (!scanFresh && (panels.count || posts.count)) {
             clearBins(); panels.count = 0; posts.count = 0;
         }
-        updatePeople(d.velocityEstimates, dt);
+        const avatars = avatarEntries(d);
+        updatePeople(avatars, dt);
         updateC3(d.c3Tracks);
         updateTilt(d.readout);
         if (hint) {
             const msgs = [];
             if (!scanFresh) msgs.push('No lidar scan');
-            if (!d.velocityEstimates || !d.velocityEstimates.length) msgs.push('No people tracked');
+            if (!avatars.length) msgs.push('No people tracked');
             if (d.c3Stats) msgs.push(`C3 ${d.c3Tracks.length} trk · ${d.c3Stats.hz} Hz · ${d.c3Stats.update_ms_avg} ms`);
             hint.textContent = msgs.join(' · ');
         }
