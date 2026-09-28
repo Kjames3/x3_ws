@@ -2,14 +2,16 @@
 """Summarize OAK detection logs written by x3_server --oak-det-log.
 
   python3 src/oak_pose_summary.py LOG.ndjson [LOG2.ndjson ...] [--from S] [--to S]
-                                  [--timeline 5]
+                                  [--timeline 5] [--notes notes.txt]
 
 Per log: model, duration, NN packet rate, person detections per minute, and
 (for pose models) the fraction of person detections with each body part
 visible (>= 0.5) per distance bin. Distance is the detection's box depth
 (xyz_m.z). --from/--to (seconds from the log's first packet) cut one test
 segment out of a longer log; --timeline prints per-window rows so segments
-can be found (e.g. which 10 s you stood at the 1.2 m mark).
+can be found (e.g. which 10 s you stood at the 1.2 m mark). --notes takes the
+"HH:MM:SS label" lines written during the test (same clock as the robot) and
+prints one row per segment; a segment runs until the next note.
 """
 import argparse
 import json
@@ -89,17 +91,62 @@ def timeline(rows, window):
         t += window
 
 
+def note_segments(rows, notes_path):
+    """[(label, start_wall, end_wall)] from 'HH:MM:SS label' lines, anchored to
+    the log's first wall time; times before it roll over to the next day."""
+    import datetime as dt
+    if not rows:
+        return []
+    first = dt.datetime.fromtimestamp(rows[0]['t_wall'])
+    marks = []
+    for line in Path(notes_path).read_text().splitlines():
+        if not line.strip():
+            continue
+        hms, label = line.strip().split(' ', 1)
+        t = dt.datetime.combine(first.date(), dt.time.fromisoformat(hms))
+        if t < first - dt.timedelta(hours=1):
+            t += dt.timedelta(days=1)
+        marks.append((t.timestamp(), label))
+    marks.sort()
+    end = rows[-1]['t_wall']
+    return [(lab, a, b) for (a, lab), (b, _) in zip(marks, marks[1:] + [(end, None)]) if a < end]
+
+
+def segment_table(rows, notes_path):
+    has_kp = any('keypoints' in d for _, d in persons(rows))
+    head = f'{"segment":20s} {"dur":>4} {"Hz":>5} {"person%":>7} {"z_med":>5} {"conf":>5}'
+    print(head + ('  head shoulders hips knees ankles' if has_kp else ''))
+    for label, a, b in note_segments(rows, notes_path):
+        seg = [r for r in rows if a <= r['t_wall'] < b]
+        if not seg:
+            print(f'{label:20s} no packets')
+            continue
+        ds = [d for _, d in persons(seg)]
+        zs = [depth(d) for d in ds if depth(d) is not None]
+        line = (f'{label:20s} {b - a:4.0f} {len(seg) / (b - a):5.2f} '
+                f'{np.mean([any(d.get("label") == "person" for d in r["dets"]) for r in seg]):7.0%} '
+                f'{np.median(zs) if zs else float("nan"):5.2f} '
+                f'{np.median([d["conf"] for d in ds]) if ds else float("nan"):5.2f}')
+        if has_kp and ds:
+            line += ''.join(f' {np.mean([part_visible(d, i) for d in ds]):{max(4, len(p))}.0%}'
+                            for p, i in PARTS.items())
+        print(line)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('logs', type=Path, nargs='+')
     ap.add_argument('--from', dest='t_from', type=float)
     ap.add_argument('--to', dest='t_to', type=float)
     ap.add_argument('--timeline', type=float, metavar='SECONDS')
+    ap.add_argument('--notes', type=Path, help='"HH:MM:SS label" segment notes')
     args = ap.parse_args()
     for p in args.logs:
         rows = load(p, args.t_from, args.t_to)
         print(f'\n== {p.name}')
         print(json.dumps(summarize(rows), indent=1))
+        if args.notes:
+            segment_table(load(p), args.notes)
         if args.timeline:
             timeline(rows, args.timeline)
 
