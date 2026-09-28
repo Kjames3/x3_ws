@@ -5,18 +5,24 @@ Each new OAK detection packet is turned into robust torso-depth measurements
 robot pose and fused by the constant-velocity Kalman tracker with the arm C
 config frozen in the 2026-09-25 evaluation. Nothing here reaches the CBF.
 
+Timing: NN packets reach the host a few hundred ms after their frame was
+captured. The detection is placed with the robot pose interpolated to the
+frame's capture time (a ~2 s pose history sampled here) and measured on the
+depth frame taken with it. Using "latest pose / latest depth" instead made a
+still person swing ~2 m sideways during a 2 rad/s turn (2026-09-28).
+
 Differences from the offline replay, on purpose kept visible:
   - camera -> base uses the OAK mount offsets only (no -0.29 deg pitch, no TF);
-  - the pose is the latest odom when the packet is processed, not interpolated
-    to the depth stamp;
   - boxes come from the OAK's yolo26 blob, not the host yolo26n replay boxes.
 
 Outputs are robot-local (fwd, left) so the GUI can draw them without a pose.
 """
+import bisect
 import logging
 import math
 import threading
 import time
+from collections import deque
 
 import numpy as np
 
@@ -29,6 +35,7 @@ ARM_C_CONFIG = dict(pt.DEFAULT_CONFIG, accel_sigma_mps2=1.5, meas_sigma_floor_m=
 PREDICT_S = 0.5       # CV prediction is only better than "hold" out to ~0.5-0.7 s
 POLL_S = 0.02
 POSE_MAX_AGE_S = 0.5
+POSE_HISTORY_S = 2.0
 
 
 class C3Live:
@@ -46,10 +53,12 @@ class C3Live:
         #   dets / meas: person boxes / boxes that gave a torso-depth measurement
         #   reset_pose / reset_depth: packets dropped (tracker reset) for stale
         #   odom or missing depth; reset_gap: packet gap > max_dt_s reset the tracker
+        #   timed: packets placed with capture-time pose + depth (else latest)
         self._diag = dict(person_packets=0, ring_packets=0, dets=0, meas=0,
-                          reset_pose=0, reset_depth=0, reset_gap=0)
+                          reset_pose=0, reset_depth=0, reset_gap=0, timed=0)
         self._running = False
         self._thread = None
+        self._poses = deque()   # (monotonic, x, y, unwrapped theta), sampled every poll
 
     def start(self):
         self._running = True
@@ -88,6 +97,36 @@ class C3Live:
             out.append((xy, cov))
         return out
 
+    def _record_pose(self, now):
+        pose = self.pose_fn()
+        if pose is None:
+            self._poses.clear()
+            return
+        th = pose['theta']
+        if self._poses:   # unwrap so interpolation never crosses the +/-pi seam
+            prev = self._poses[-1][3]
+            th = prev + math.atan2(math.sin(th - prev), math.cos(th - prev))
+        self._poses.append((now, pose['x'], pose['y'], th))
+        while self._poses and now - self._poses[0][0] > POSE_HISTORY_S:
+            self._poses.popleft()
+
+    def _pose_at(self, t):
+        """Pose interpolated at monotonic t, or None if t is outside the history."""
+        ps = self._poses
+        if len(ps) < 2 or not (ps[0][0] <= t <= ps[-1][0] + POLL_S * 2):
+            return None
+        ts = [p[0] for p in ps]
+        i = bisect.bisect_left(ts, t)
+        if i >= len(ps):
+            _, x, y, th = ps[-1]
+            return {'x': x, 'y': y, 'theta': th}
+        if i == 0 or ts[i] == t:
+            _, x, y, th = ps[i]
+            return {'x': x, 'y': y, 'theta': th}
+        (t0, x0, y0, h0), (t1, x1, y1, h1) = ps[i - 1], ps[i]
+        a = (t - t0) / (t1 - t0)
+        return {'x': x0 + a * (x1 - x0), 'y': y0 + a * (y1 - y0), 'theta': h0 + a * (h1 - h0)}
+
     def _to_local(self, tracks, pose):
         c, s = math.cos(pose['theta']), math.sin(pose['theta'])
         out = []
@@ -118,6 +157,7 @@ class C3Live:
         while self._running:
             time.sleep(POLL_S)
             try:
+                self._record_pose(time.monotonic())
                 # The packet stamp is the only reliable "new packet" signal;
                 # a repeat would reach the tracker with dt=0 and reset it.
                 stamp = getattr(self.oak, '_latest_detections_t', 0.0)
@@ -126,10 +166,20 @@ class C3Live:
                 last_t = stamp
                 detections, _ = self.oak.get_detection_observation()
                 people = [d for d in detections or [] if d.get('label') == 'person' and d.get('bbox')]
-                pose = self.pose_fn()
-                depth = self.oak.get_raw_depth_frame()
-                intr = self.oak.get_depth_intrinsics()
                 dg = self._diag
+                cap_t = getattr(self.oak, 'get_detection_capture_time', lambda: None)()
+                near = (self.oak.get_depth_near(cap_t)
+                        if cap_t is not None and hasattr(self.oak, 'get_depth_near') else None)
+                pose_cap = self._pose_at(cap_t) if cap_t is not None else None
+                if cap_t is not None:
+                    stamp = cap_t   # tracker time = capture time: honest dt between frames
+                if near is not None and pose_cap is not None:
+                    depth, pose = near[1], pose_cap
+                    dg['timed'] += 1
+                else:
+                    pose = self.pose_fn()
+                    depth = self.oak.get_raw_depth_frame()
+                intr = self.oak.get_depth_intrinsics()
                 if people:
                     dg['person_packets'] += 1
                     dg['dets'] += len(people)

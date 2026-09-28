@@ -183,6 +183,11 @@ class OakDCamera:
         self._latest_imu = None
         self._latest_detections = []
         self._latest_detections_t = 0.0   # monotonic, last NN packet decoded
+        self._latest_detections_capture_t = None  # monotonic capture time of its frame
+        # (capture monotonic s, metres) of recent depth frames, so a detection can
+        # be paired with the depth taken with its image, not the newest one. NN
+        # packets arrive a few hundred ms after capture; at ~30 fps this is ~0.6 s.
+        self._depth_history = deque(maxlen=20)
         self._det_log = None              # open NDJSON file (set_detection_log)
         self._det_log_name = None
         self.depth_fps = 0.0              # live depth/stereo capture rate (~1s window)
@@ -472,8 +477,11 @@ class OakDCamera:
                                     self._enqueue_pairs(self._pairer.add('depth',
                                         {'image': depth_mm, 'meta': self._packet_meta(depth_packet)}))
                             else:
+                                depth_packet = inDepth
                                 depth_mm = inDepth.getFrame()
-                            self._process_depth(depth_mm)
+                            # getTimestamp() is the host-synced capture time on the
+                            # same clock as time.monotonic() (checked: 0.001 ms).
+                            self._process_depth(depth_mm, depth_packet.getTimestamp().total_seconds())
                             fps_n += 1
                             fps_win_n += 1
                             _now = time.monotonic()
@@ -660,12 +668,14 @@ class OakDCamera:
         with self._lock:
             return self._latest_detections, self._latest_detection_meta
 
-    def _process_depth(self, depth_mm):
+    def _process_depth(self, depth_mm, capture_t=None):
         raw_m = depth_mm.astype(np.float32) / 1000.0
         if self._inv_depth_offset:
             raw_m /= 1.0 + self._inv_depth_offset * raw_m   # 0 (invalid) stays 0
         with self._lock:
             self._latest_raw_depth = raw_m
+            if capture_t is not None:
+                self._depth_history.append((capture_t, raw_m))
             self._latest_depth_color = None   # invalidate; colourise lazily on demand
             self._last_depth_time = time.monotonic()
 
@@ -768,6 +778,10 @@ class OakDCamera:
             return
         # Stamp every decoded packet, including ones with no detections: "no
         # person this frame" is a fresh answer, not a missing one.
+        try:
+            self._latest_detections_capture_t = nndata.getTimestamp().total_seconds()
+        except Exception:
+            self._latest_detections_capture_t = None
         self._latest_detections_t = time.monotonic()
         if raw.size < self._nn_rows * self._N_ANCHORS:
             with self._lock:
@@ -924,6 +938,19 @@ class OakDCamera:
             if self._latest_raw_depth is raw:
                 self._latest_depth_color = coloured
         return coloured
+
+    def get_detection_capture_time(self):
+        """Monotonic capture time of the frame behind the latest detections."""
+        return self._latest_detections_capture_t
+
+    def get_depth_near(self, capture_t, max_gap_s=0.05):
+        """(capture_t, depth metres) of the stored frame nearest capture_t, or None."""
+        with self._lock:
+            hist = list(self._depth_history)
+        if not hist or capture_t is None:
+            return None
+        t, d = min(hist, key=lambda h: abs(h[0] - capture_t))
+        return (t, d) if abs(t - capture_t) <= max_gap_s else None
 
     def get_raw_depth_frame(self):
         with self._lock:
