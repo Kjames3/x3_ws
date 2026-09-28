@@ -7,7 +7,8 @@
 Grabs ~3 s of /oak/rgbd/rgb (the NN preview, 480x640) with the paired
 /oak/rgbd/depth, finds the tag, and prints per frame-set:
   - tag centre column u / row v, side lengths in pixels;
-  - tag depth Z (median of the aligned depth inside the tag);
+  - tag depth Z (median of the aligned depth inside the tag, with the server's
+    1/Z correction applied: the published topic is raw);
   - fx = horizontal size * Z / size, fy likewise (independent of the
     calibration being tested), and the lateral offset the CURRENT fx=677
     would report.
@@ -39,6 +40,9 @@ def main():
     ap.add_argument('--id', type=int, default=1)
     ap.add_argument('--label', default='')
     ap.add_argument('--seconds', type=float, default=3.0)
+    ap.add_argument('--inv-offset', type=float, default=0.0821,
+                    help='1/Z depth correction the server applies (its startup log); '
+                         '/oak/rgbd/depth is published RAW, before it')
     a = ap.parse_args()
 
     rclpy.init()
@@ -78,6 +82,7 @@ def main():
         top, bottom = np.linalg.norm(c[1] - c[0]), np.linalg.norm(c[2] - c[3])
         left, right = np.linalg.norm(c[3] - c[0]), np.linalg.norm(c[2] - c[1])
         D = np.frombuffer(bytes(d.data), np.uint16).reshape(d.height, d.width).astype(np.float32) / 1000
+        D = D / (1.0 + a.inv_offset * D)   # same correction as OakDCamera._process_depth
         mask = np.zeros(D.shape, np.uint8)
         cv2.fillConvexPoly(mask, c.astype(np.int32), 1)
         z = D[(mask > 0) & (D > 0.2)]
