@@ -66,6 +66,7 @@ MONO_H = 400
 # centre measured 21.2-21.4 cm, housing bottom 19.4-19.5 cm, 2026-09-25). Optical
 # convention is X right, Y down, Z forward, so base_x = MOUNT_X + z,
 # base_y = -x, base_z = MOUNT_Z - y.
+NN_STALL_S = 5.0          # no NN packet for this long while depth flows = stalled
 OAK_MOUNT_X = 0.107815
 OAK_MOUNT_Z = 0.1315
 
@@ -183,6 +184,7 @@ class OakDCamera:
         self._det_log = None              # open NDJSON file (set_detection_log)
         self._det_log_name = None
         self.depth_fps = 0.0              # live depth/stereo capture rate (~1s window)
+        self.nn_stalls = 0                # pipeline rebuilds forced by the NN watchdog
 
         # CAM_A intrinsics at (nn_w, nn_h), filled once the device is up.
         self._fx = self._fy = self._cx = self._cy = None
@@ -449,6 +451,11 @@ class OakDCamera:
                     qRgb = (device.getOutputQueue("record_rgb", maxSize=4, blocking=False)
                             if self.record_rgbd and with_spatial else None)
                     fps_n, fps_t = 0, time.monotonic()
+                    # NN stall watchdog. The NN node has been seen to stop emitting
+                    # (2026-09-28, yolo11n-pose + C1 recording) while depth and the
+                    # shared RGB preview kept flowing, silently. Every NN packet is
+                    # normally a fresh answer (empty or not), so a gap means a stall.
+                    det_last_rx = None
                     fps_win_n, fps_win_t = 0, fps_t   # ~1s window for the live get_depth_fps() value
                     # Block on the depth queue (paces the loop at the depth rate, no busy-spin).
                     while self._running:
@@ -498,8 +505,16 @@ class OakDCamera:
                         if qDet is not None:
                             inDet = qDet.tryGet()
                             if inDet is not None:
+                                det_last_rx = time.monotonic()
                                 detection_meta = self._packet_meta(inDet)
                                 self._process_nn(inDet, detection_meta)
+                            elif (det_last_rx is not None
+                                  and time.monotonic() - det_last_rx > NN_STALL_S):
+                                self.nn_stalls += 1
+                                logger.error(f"OakDCamera: NN stalled ({NN_STALL_S:.0f} s without a "
+                                             f"packet while depth flows); rebuilding the pipeline "
+                                             f"(stall #{self.nn_stalls})")
+                                break   # leaves `with`, closes the device; the outer loop rebuilds
             except Exception as e:
                 self.available = False
                 self.spatial_active = False
