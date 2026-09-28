@@ -2038,7 +2038,11 @@ def initialize_hardware():
                     return None
                 return ros_bridge.get_pose_m()
 
-            c3_live = C3Live(oak, _c3_pose, OAK_MOUNT_X)
+            _c3_log = None
+            if args.oak_det_log:
+                Path(args.oak_det_log).mkdir(parents=True, exist_ok=True)
+                _c3_log = Path(args.oak_det_log) / f"c3-{time.strftime('%Y%m%d-%H%M%S')}.ndjson"
+            c3_live = C3Live(oak, _c3_pose, OAK_MOUNT_X, log_path=_c3_log)
             c3_live.start()
             logger.info("C3 live tracker started (diagnostic only)")
         except Exception as e:

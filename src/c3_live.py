@@ -18,6 +18,7 @@ Differences from the offline replay, on purpose kept visible:
 Outputs are robot-local (fwd, left) so the GUI can draw them without a pose.
 """
 import bisect
+import json
 import logging
 import math
 import threading
@@ -39,8 +40,15 @@ POSE_HISTORY_S = 2.0
 
 
 class C3Live:
-    def __init__(self, oak, pose_fn, mount_x, mount_z=0.0):
-        """pose_fn() -> {'x','y','theta'} in odom, or None when stale."""
+    def __init__(self, oak, pose_fn, mount_x, mount_z=0.0, log_path=None):
+        """pose_fn() -> {'x','y','theta'} in odom, or None when stale.
+
+        log_path: optional NDJSON debug log of raw measurements and the pose
+        stream (25 Hz), so placement can be recomputed offline with any
+        timing offset.
+        """
+        self._log = open(log_path, 'a', buffering=1) if log_path else None
+        self._log_pose_n = 0
         self.oak = oak
         self.pose_fn = pose_fn
         self.mount_x = mount_x
@@ -60,6 +68,7 @@ class C3Live:
         self._running = False
         self._thread = None
         self._poses = deque()   # (monotonic, x, y, unwrapped theta), sampled every poll
+        self._meas_log = []
 
     def start(self):
         self._running = True
@@ -70,6 +79,16 @@ class C3Live:
         self._running = False
         if self._thread is not None:
             self._thread.join(timeout=1.0)
+        if self._log is not None:
+            self._log.close()
+            self._log = None
+
+    def _write(self, rec):
+        if self._log is not None:
+            try:
+                self._log.write(json.dumps(rec) + '\n')
+            except (OSError, ValueError):
+                self._log = None
 
     def get_tracks(self):
         with self._lock:
@@ -93,6 +112,9 @@ class C3Live:
                 continue
             fwd = self.mount_x + m['z']
             left = -(m['u'] - cx) * m['z'] / fx
+            self._meas_log.append({'bbox': d['bbox'], 'u': m['u'], 'z': round(m['z'], 4),
+                                   'spread': round(m['spread_m'], 4), 'fwd': round(fwd, 4),
+                                   'left': round(left, 4)})
             xy = rot @ np.array([fwd, left]) + np.array([pose['x'], pose['y']])
             cov = rot @ pt.measurement_cov_camera(m['z'], floor, m['spread_m']) @ rot.T
             out.append((xy, cov))
@@ -108,6 +130,10 @@ class C3Live:
             prev = self._poses[-1][3]
             th = prev + math.atan2(math.sin(th - prev), math.cos(th - prev))
         self._poses.append((now, pose['x'], pose['y'], th))
+        self._log_pose_n += 1
+        if self._log is not None and self._log_pose_n % 2 == 0:
+            self._write({'k': 'pose', 't': round(now, 4), 'x': round(pose['x'], 4),
+                         'y': round(pose['y'], 4), 'th': round(th, 5)})
         while self._poses and now - self._poses[0][0] > POSE_HISTORY_S:
             self._poses.popleft()
 
@@ -194,7 +220,15 @@ class C3Live:
                         self._tracks = []
                     continue
                 t0 = time.perf_counter()
+                self._meas_log = []
                 meas = self._measurements(people, depth, intr, pose)
+                self._write({'k': 'pkt', 'recv': round(self.oak._latest_detections_t, 4),
+                             'cap': None if cap_t is None else round(cap_t, 4),
+                             'timed': near is not None and pose_cap is not None,
+                             'depth_t': None if near is None else round(near[0], 4),
+                             'pose': {k: round(v, 5) for k, v in pose.items()},
+                             'intr': [round(v, 3) for v in intr[:4]] + list(intr[4:]),
+                             'depth_shape': list(depth.shape), 'meas': self._meas_log})
                 dg['meas'] += len(meas)
                 prev_t = self.tracker.last_t
                 if prev_t is not None and stamp - prev_t > ARM_C_CONFIG['max_dt_s']:
