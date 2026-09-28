@@ -227,3 +227,38 @@ def test_cbf_rejects_far_obstacles_before_the_speed_test():
     body = src[src.index("estimates = velocity_estimator.get_estimates()"):]
     body = body[:body.index("except Exception")]
     assert body.index("CBF_SPEED_RANGE_M") < body.index("speed > 0.15")
+
+
+# ------------------------------------------------- one person box, one person
+
+def _tagging_estimator(boxes):
+    est = _loop_estimator(None)
+    est.detections_fn = lambda: [{"label": "person", "conf": c, "bbox": b} for b, c in boxes]
+    est.person_tagging_enabled = True
+    return est
+
+
+def test_split_person_blobs_tag_only_the_largest():
+    # A torso and a separate outstretched-arm blob inside the same person box
+    # used to both be tagged, spawning a duplicate person track.
+    depth = np.full((480, 640), 6.0, dtype=np.float32)   # background beyond range
+    depth[140:300, 280:340] = 2.0                         # torso
+    depth[150:175, 370:430] = 2.0                         # arm, detached by a gap
+    intr = (600.0, 600.0, 320.0, 240.0, 640, 480)
+    est = _tagging_estimator([([260, 100, 450, 320], 0.8)])
+    cents = est._extract_depth_centroids(None, depth, intr)
+    assert len(cents) == 2
+    flags = est._last_person_flags
+    assert sorted(flags) == [0.0, 0.8]
+    torso = min(range(2), key=lambda i: abs(cents[i][0]))   # torso is near x = 0
+    assert flags[torso] == 0.8
+
+
+def test_two_person_boxes_each_tag_their_own_blob():
+    depth = np.full((480, 640), 6.0, dtype=np.float32)
+    depth[140:300, 150:210] = 2.0
+    depth[140:300, 430:490] = 2.5
+    intr = (600.0, 600.0, 320.0, 240.0, 640, 480)
+    est = _tagging_estimator([([130, 100, 230, 320], 0.7), ([410, 100, 510, 320], 0.9)])
+    est._extract_depth_centroids(None, depth, intr)
+    assert sorted(est._last_person_flags) == [0.7, 0.9]

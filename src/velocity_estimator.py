@@ -570,6 +570,7 @@ class VelocityEstimator:
             centroids = []
             person_boxes = self._person_boxes()
             person_flags = [] if person_boxes is not None else None
+            blob_areas = []
             h, w = raw_depth_frame.shape[:2]
             
             for cnt in contours:
@@ -630,15 +631,31 @@ class VelocityEstimator:
                     fx_full, fy_full, cx_full, cy_full = intr_full
                     u = x_m * fx_full / Z + cx_full
                     v = y_m * fy_full / Z + cy_full
-                    # Confidence of the most confident box containing the
-                    # blob, 0.0 when none does.
-                    person_flags.append(max(
-                        (c for (x1, y1, x2, y2), c in person_boxes
-                         if (x1 - PERSON_BOX_PAD_PX) <= u <= (x2 + PERSON_BOX_PAD_PX)
-                         and (y1 - PERSON_BOX_PAD_PX) <= v <= (y2 + PERSON_BOX_PAD_PX)),
-                        default=0.0))
+                    # Indices of the boxes containing the blob; resolved to
+                    # one blob per box after the loop.
+                    person_flags.append([
+                        bi for bi, ((x1, y1, x2, y2), _c) in enumerate(person_boxes)
+                        if (x1 - PERSON_BOX_PAD_PX) <= u <= (x2 + PERSON_BOX_PAD_PX)
+                        and (y1 - PERSON_BOX_PAD_PX) <= v <= (y2 + PERSON_BOX_PAD_PX)])
+                    blob_areas.append(area)
 
                 centroids.append((x_m, y_m, Z))
+
+            if person_flags is not None:
+                # One person box = one person. An outstretched arm, the gap
+                # between the legs or furniture just behind someone splits into
+                # extra blobs inside the same box; tagging them all spawned
+                # duplicate person tracks. Only the box's largest blob (the
+                # torso) takes the tag. Value: confidence of the most confident
+                # box the blob won, 0.0 when none.
+                winner = {}
+                for i, boxes in enumerate(person_flags):
+                    for bi in boxes:
+                        if bi not in winner or blob_areas[i] > blob_areas[winner[bi]]:
+                            winner[bi] = i
+                person_flags = [max((person_boxes[bi][1] for bi in boxes if winner[bi] == i),
+                                    default=0.0)
+                                for i, boxes in enumerate(person_flags)]
 
             # Keep the NEAREST blobs. findContours order is image order, so a
             # plain [:N] could drop a person at 1 m for a wall at 3.9 m.

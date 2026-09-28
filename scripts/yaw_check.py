@@ -32,8 +32,7 @@ class Watch:
         for name in ('/odom', '/odom_raw'):
             node.create_subscription(Odometry, name,
                                      lambda m, n=name: self._set(n, yaw(m.pose.pose.orientation)), 20)
-        node.create_subscription(Imu, '/imu/data', lambda m: self._set('/imu/data', yaw(m.orientation)),
-                                 qos_profile_sensor_data)
+        node.create_subscription(Imu, '/imu/data', lambda m: self._set('/imu/data', yaw(m.orientation)), 50)
         node.create_subscription(Imu, '/imu/data_raw', self._gyro, qos_profile_sensor_data)
 
     def _set(self, name, y):
