@@ -55,7 +55,8 @@ class C3Live:
         #   odom or missing depth; reset_gap: packet gap > max_dt_s reset the tracker
         #   timed: packets placed with capture-time pose + depth (else latest)
         self._diag = dict(person_packets=0, ring_packets=0, dets=0, meas=0,
-                          reset_pose=0, reset_depth=0, reset_gap=0, timed=0)
+                          reset_pose=0, reset_depth=0, reset_gap=0, timed=0,
+                          latency_ms_avg=0.0)
         self._running = False
         self._thread = None
         self._poses = deque()   # (monotonic, x, y, unwrapped theta), sampled every poll
@@ -172,6 +173,9 @@ class C3Live:
                         if cap_t is not None and hasattr(self.oak, 'get_depth_near') else None)
                 pose_cap = self._pose_at(cap_t) if cap_t is not None else None
                 if cap_t is not None:
+                    # Receipt minus capture: how late the packet is (EMA, ms).
+                    lat = self.oak._latest_detections_t - cap_t
+                    dg['latency_ms_avg'] = round(0.9 * dg['latency_ms_avg'] + 100.0 * lat, 1)
                     stamp = cap_t   # tracker time = capture time: honest dt between frames
                 if near is not None and pose_cap is not None:
                     depth, pose = near[1], pose_cap
@@ -195,7 +199,15 @@ class C3Live:
                 prev_t = self.tracker.last_t
                 if prev_t is not None and stamp - prev_t > ARM_C_CONFIG['max_dt_s']:
                     dg['reset_gap'] += 1   # update() will reset rather than predict
-                tracks = self._to_local(self.tracker.update(stamp, meas), pose)
+                # Tracking runs at capture time, but the GUI draws rings around
+                # the robot as it is NOW: convert with the newest pose.
+                now_pose = self.pose_fn() or pose
+                if now_pose is not pose:
+                    now_pose = dict(now_pose)
+                    now_pose['theta'] = pose['theta'] + math.atan2(
+                        math.sin(now_pose['theta'] - pose['theta']),
+                        math.cos(now_pose['theta'] - pose['theta']))
+                tracks = self._to_local(self.tracker.update(stamp, meas), now_pose)
                 if people and tracks:
                     dg['ring_packets'] += 1
                 ms = (time.perf_counter() - t0) * 1e3

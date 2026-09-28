@@ -104,3 +104,8 @@ def test_still_person_stays_still_while_the_robot_turns():
     assert stats['diag']['timed'] > 20
     assert len(tracks) == 1
     assert tracks[0]['speed'] < 0.3, tracks[0]
+    # Drawn relative to the robot as it is now, not at capture time.
+    th = oak.theta(time.monotonic())
+    fwd, left = 3.0 * math.cos(th), -3.0 * math.sin(th)
+    assert math.hypot(tracks[0]['fwd'] - fwd, tracks[0]['left'] - left) < 0.3, (tracks[0], fwd, left)
+    assert stats['diag']['latency_ms_avg'] > 200
