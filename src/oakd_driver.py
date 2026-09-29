@@ -347,6 +347,25 @@ class OakDCamera:
                 logger.warning("OakDCamera: speckle filter unavailable (%s); "
                                "continuing without post-processing", exc)
 
+        # Optional spatial (edge-preserving, small hole filling) + range threshold,
+        # for A/B testing: X3_OAK_DEPTH_FILTERS=1. Still no temporal filter (see
+        # above). Shared feed: check 3D mapping before making it the default.
+        if os.environ.get("X3_OAK_DEPTH_FILTERS") == "1":
+            try:
+                cfg = stereo.initialConfig.get()
+                sf = cfg.postProcessing.spatialFilter
+                sf.enable = True
+                sf.holeFillingRadius = 2
+                sf.numIterations = 1
+                sf.alpha = 0.5
+                sf.delta = 0
+                cfg.postProcessing.thresholdFilter.minRange = 200
+                cfg.postProcessing.thresholdFilter.maxRange = 8000
+                stereo.initialConfig.set(cfg)
+                logger.info("OakDCamera: spatial filter + 0.2-8 m threshold ON (X3_OAK_DEPTH_FILTERS)")
+            except Exception as exc:
+                logger.warning("OakDCamera: depth filters unavailable (%s)", exc)
+
         imu.enableIMUSensor(dai.IMUSensor.ACCELEROMETER_RAW, self.accel_hz)
         imu.enableIMUSensor(dai.IMUSensor.GYROSCOPE_RAW, self.gyro_hz)
         imu.setBatchReportThreshold(1)
