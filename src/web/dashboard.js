@@ -327,6 +327,21 @@
         setText($('sys-temp'), sys.temp_c === null || sys.temp_c === undefined
             ? '--' : fmt(sys.temp_c, 1, ' C'));
 
+        // Orin GPU, averaged over the same 2 s window. It is shared by the
+        // TensorRT engine and CUDA preprocessing; the OAK's YOLO runs on the
+        // camera's own VPU and never shows here.
+        const gpuEl = $('sys-gpu');
+        if (sys.gpu_pct === null || sys.gpu_pct === undefined) {
+            setText(gpuEl, 'n/a');
+        } else {
+            setText(gpuEl, fmt(sys.gpu_pct, 0, '%') + ' busy');
+            setClass(gpuEl, 'warn', sys.gpu_pct > 60 && sys.gpu_pct <= 85);
+            setClass(gpuEl, 'bad', sys.gpu_pct > 85);
+        }
+        setText($('sys-gpu-clk'),
+            (sys.gpu_mhz ? sys.gpu_mhz + ' / ' + (sys.gpu_max_mhz || '?') + ' MHz' : '--') +
+            (sys.gpu_temp_c !== null && sys.gpu_temp_c !== undefined ? '   ' + fmt(sys.gpu_temp_c, 1, ' C') : ''));
+
         renderCoreBars(cores);
     }
 

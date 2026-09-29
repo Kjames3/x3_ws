@@ -3014,7 +3014,8 @@ async def handle_client(websocket):
 # Sampled on a background thread, never in the event loop: psutil.cpu_percent
 # with an interval blocks, and a blocking call here stalls every client.
 _sys_stats = {"cpu_per_core": [], "cpu_total": 0.0, "proc_cpu": 0.0,
-              "proc_rss_mb": 0.0, "temp_c": None, "mem_pct": 0.0, "loadavg": 0.0}
+              "proc_rss_mb": 0.0, "temp_c": None, "mem_pct": 0.0, "loadavg": 0.0,
+              "gpu_pct": None, "gpu_mhz": None, "gpu_max_mhz": None, "gpu_temp_c": None}
 _sys_stats_lock = threading.Lock()
 
 
@@ -3086,6 +3087,35 @@ def _read_thermal_c():
     return round(best, 1) if best is not None else None
 
 
+# Orin GPU (ga10b). load is per-mille busy over the driver's short window,
+# so one read every 2 s is noise; the sampler averages 10 reads instead. Each
+# read is a small sysfs file -- no nvidia-smi (absent on Jetson) and no
+# tegrastats subprocess.
+_GPU_LOAD = "/sys/devices/platform/gpu.0/load"
+_GPU_DEVFREQ = "/sys/class/devfreq/17000000.gpu"
+
+
+def _read_sysfs_int(path):
+    try:
+        with open(path) as fh:
+            return int(fh.read().strip())
+    except Exception:
+        return None
+
+
+def _find_gpu_thermal_zone():
+    """temp path of the gpu-thermal zone, or None. Zone numbering is not stable."""
+    import glob
+    for zone in sorted(glob.glob("/sys/devices/virtual/thermal/thermal_zone*")):
+        try:
+            with open(zone + "/type") as fh:
+                if fh.read().strip() == "gpu-thermal":
+                    return zone + "/temp"
+        except Exception:
+            continue
+    return None
+
+
 def _system_snapshot():
     with _sys_stats_lock:
         return dict(_sys_stats)
@@ -3108,9 +3138,23 @@ def _system_sampler(period_s=2.0):
     proc.cpu_percent(None)          # prime; the first call always returns 0.0
     psutil.cpu_percent(percpu=True)
 
+    gpu_ok = os.path.exists(_GPU_LOAD)
+    gpu_max = _read_sysfs_int(_GPU_DEVFREQ + "/max_freq")
+    gpu_temp_path = _find_gpu_thermal_zone()
+    n_sub = 10
+
     while not _shutting_down:
         try:
-            per_core = psutil.cpu_percent(interval=period_s, percpu=True)
+            # Sleep the window in slices so the GPU load can be averaged over
+            # it; cpu_percent(None) then covers the same window.
+            gpu_loads = []
+            for _ in range(n_sub):
+                time.sleep(period_s / n_sub)
+                if gpu_ok:
+                    v = _read_sysfs_int(_GPU_LOAD)
+                    if v is not None:
+                        gpu_loads.append(v)
+            per_core = psutil.cpu_percent(interval=None, percpu=True)
             vm = psutil.virtual_memory()
             temp = _read_thermal_c()
             snap = {
@@ -3123,7 +3167,18 @@ def _system_sampler(period_s=2.0):
                 "mem_pct": round(vm.percent, 1),
                 "loadavg": round(os.getloadavg()[0], 2),
                 "temp_c": temp,
+                "gpu_pct": (round(sum(gpu_loads) / len(gpu_loads) / 10.0, 1)
+                            if gpu_loads else None),
+                "gpu_mhz": None,
+                "gpu_max_mhz": round(gpu_max / 1e6) if gpu_max else None,
+                "gpu_temp_c": None,
             }
+            f = _read_sysfs_int(_GPU_DEVFREQ + "/cur_freq") if gpu_ok else None
+            if f:
+                snap["gpu_mhz"] = round(f / 1e6)
+            t = _read_sysfs_int(gpu_temp_path) if gpu_temp_path else None
+            if t:
+                snap["gpu_temp_c"] = round(t / 1000.0, 1)
             with _sys_stats_lock:
                 _sys_stats.update(snap)
         except Exception as e:
