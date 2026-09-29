@@ -96,7 +96,7 @@ class C3Live:
             st['diag'] = dict(self._diag)
             return list(self._tracks), st
 
-    def _measurements(self, detections, depth, intr, pose):
+    def _measurements(self, detections, depth, intr, pose, masks=None):
         fx, fy, cx, cy, w, h = intr
         sx, sy = depth.shape[1] / w, depth.shape[0] / h
         fx, fy, cx, cy = fx * sx, fy * sy, cx * sx, cy * sy
@@ -104,16 +104,18 @@ class C3Live:
         rot = np.array([[c, -s], [s, c]])
         floor = ARM_C_CONFIG['meas_sigma_floor_m']
         out = []
-        for d in detections:
+        for i, d in enumerate(detections):
             if d.get('label') != 'person' or not d.get('bbox'):
                 continue
-            m = pt.person_measurement(depth, d['bbox'])
+            mask = masks[i] if masks is not None and i < len(masks) else None
+            m = pt.person_measurement(depth, d['bbox'], mask=mask)
             if m is None:
                 continue
             fwd = self.mount_x + m['z']
             left = -(m['u'] - cx) * m['z'] / fx
             self._meas_log.append({'bbox': d['bbox'], 'u': m['u'], 'z': round(m['z'], 4),
                                    'spread': round(m['spread_m'], 4), 'fwd': round(fwd, 4),
+                                   'mask': bool(m.get('mask')),
                                    'left': round(left, 4)})
             xy = rot @ np.array([fwd, left]) + np.array([pose['x'], pose['y']])
             cov = rot @ pt.measurement_cov_camera(m['z'], floor, m['spread_m']) @ rot.T
@@ -191,8 +193,12 @@ class C3Live:
                 if stamp == 0.0 or stamp == last_t:
                     continue
                 last_t = stamp
-                detections, _ = self.oak.get_detection_observation()
-                people = [d for d in detections or [] if d.get('label') == 'person' and d.get('bbox')]
+                if hasattr(self.oak, 'get_detections_with_masks'):
+                    detections, masks = self.oak.get_detections_with_masks()
+                else:
+                    (detections, _), masks = self.oak.get_detection_observation(), None
+                detections = detections or []
+                people = [d for d in detections if d.get('label') == 'person' and d.get('bbox')]
                 dg = self._diag
                 cap_t = getattr(self.oak, 'get_detection_capture_time', lambda: None)()
                 near = (self.oak.get_depth_near(cap_t)
@@ -221,7 +227,7 @@ class C3Live:
                     continue
                 t0 = time.perf_counter()
                 self._meas_log = []
-                meas = self._measurements(people, depth, intr, pose)
+                meas = self._measurements(detections, depth, intr, pose, masks)
                 self._write({'k': 'pkt', 'recv': round(self.oak._latest_detections_t, 4),
                              'cap': None if cap_t is None else round(cap_t, 4),
                              'timed': near is not None and pose_cap is not None,

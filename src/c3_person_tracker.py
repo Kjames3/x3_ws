@@ -67,13 +67,17 @@ def rotate_cov_to_odom(cov_fl, rot):
     return basis @ cov_fl @ basis.T
 
 
-def person_measurement(depth_m, box, min_valid_px=30, min_valid_fraction=0.2):
+def person_measurement(depth_m, box, min_valid_px=30, min_valid_fraction=0.2, mask=None):
     """Robust torso depth inside a person box on the depth pixel grid.
 
     Uses the central 40 % of the width and 20-55 % of the height, where the
     box is least likely to contain background or floor. Returns None when the
     support is too thin, otherwise pixel centre, median depth and quality.
     """
+    if mask is not None and mask.shape == depth_m.shape:
+        m = mask_measurement(depth_m, mask, min_valid_px)
+        if m is not None:
+            return m
     x1, y1, x2, y2 = box
     w, h = x2 - x1, y2 - y1
     u0, u1 = int(x1 + 0.3 * w), int(math.ceil(x1 + 0.7 * w))
@@ -98,6 +102,33 @@ def person_measurement(depth_m, box, min_valid_px=30, min_valid_fraction=0.2):
     return {'u': (u0 + u1) / 2.0, 'v': (v0 + v1) / 2.0, 'z': z,
             'valid_fraction': fraction, 'inlier_fraction': keep.size / valid.size,
             'spread_m': spread}
+
+
+def mask_measurement(depth_m, mask, min_valid_px=30):
+    """Robust depth over a segmentation silhouette (no background by construction).
+
+    Same outputs as person_measurement; u, v are the inlier-pixel centroid.
+    Returns None when the silhouette has too little valid depth, so the caller
+    can fall back to the box.
+    """
+    vs, us = np.nonzero(mask)
+    if vs.size == 0:
+        return None
+    vals = depth_m[vs, us]
+    ok = (vals >= 0.5) & (vals <= 4.0)
+    if ok.sum() < min_valid_px:
+        return None
+    vs, us, vals = vs[ok], us[ok], vals[ok]
+    median = float(np.median(vals))
+    mad = float(np.median(np.abs(vals - median))) * 1.4826
+    keep = np.abs(vals - median) <= max(0.15, 2.5 * mad)
+    if keep.sum() < min_valid_px:
+        return None
+    k = vals[keep]
+    return {'u': float(us[keep].mean()), 'v': float(vs[keep].mean()), 'z': float(np.median(k)),
+            'valid_fraction': float(ok.mean()), 'inlier_fraction': float(keep.mean()),
+            'spread_m': float(np.percentile(k, 84) - np.percentile(k, 16)) / 2,
+            'mask': True}
 
 
 class KalmanTracker:

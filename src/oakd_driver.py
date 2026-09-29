@@ -167,6 +167,10 @@ class OakDCamera:
         self.nn_iou = 0.5
         self.nn_classes = 80
         self.nn_kpts = 0                  # >0 for a YOLO pose head (17 COCO keypoints)
+        self.nn_masks = 0                 # >0 for a YOLO seg head (32 mask coefficients)
+        self.nn_proto_name = None
+        self.nn_proto_shape = None        # (n_masks, H, W) of the prototype output
+        self._latest_masks = []           # per latest detection: bool (nn_h, nn_w) or None
         self.nn_w, self.nn_h = 480, 640
         self.nn_out_name = None
         if spatial_config:
@@ -221,20 +225,26 @@ class OakDCamera:
             shape = inp.get("shape")
             if shape and len(shape) == 4:
                 self.nn_h, self.nn_w = int(shape[2]), int(shape[3])
-            out = (model.get("outputs") or [{}])[0]
-            self.nn_out_name = out.get("name")
+            outs = model.get("outputs") or [{}]
+            self.nn_out_name = outs[0].get("name")
+            # Segmentation heads add a prototype output (1, n_masks, H/4, W/4).
+            if len(outs) > 1:
+                self.nn_proto_name = outs[1].get("name")
+                self.nn_proto_shape = tuple(int(v) for v in outs[1].get("shape", [])[1:])
             head = (model.get("heads") or [{}])[0]
             meta = head.get("metadata", {})
             if meta.get("classes"):
                 self.labels = list(meta["classes"])
             self.nn_classes = int(meta.get("n_classes", len(self.labels)))
             self.nn_kpts = int(meta.get("n_keypoints") or 0)   # the detector config has null
+            self.nn_masks = int(meta.get("n_masks") or 0)
             self.nn_conf = float(meta.get("conf_threshold", self.nn_conf))
             self.nn_iou = float(meta.get("iou_threshold", self.nn_iou))
             logger.info(f"OakDCamera: NN config — {self.nn_classes} classes, input "
                         f"{self.nn_w}x{self.nn_h}, out '{self.nn_out_name}', "
                         f"conf {self.nn_conf}, iou {self.nn_iou}"
-                        + (f", {self.nn_kpts} keypoints" if self.nn_kpts else ""))
+                        + (f", {self.nn_kpts} keypoints" if self.nn_kpts else "")
+                        + (f", {self.nn_masks} mask coefficients" if self.nn_masks else ""))
         except Exception as e:
             logger.error(f"OakDCamera: failed to read NN config {config_path}: {e}")
 
@@ -741,10 +751,16 @@ class OakDCamera:
 
     @property
     def _nn_rows(self):
-        return 4 + self.nn_classes + 3 * self.nn_kpts if self.nn_kpts else 85
+        if self.nn_kpts:
+            return 4 + self.nn_classes + 3 * self.nn_kpts
+        if self.nn_masks:
+            return 4 + self.nn_classes + self.nn_masks
+        return 85
 
     def _decode(self, raw, mode):
-        """Returns (box cxcywh, scores, cls_id, keypoints (N, K, 3) or None)."""
+        """Returns (box cxcywh, scores, cls_id, extra): extra is keypoints
+        (N, K, 3) for a pose head, mask coefficients (N, M) for a seg head,
+        else None."""
         reshape_mode, has_obj = mode
         rows, n = self._nn_rows, self._N_ANCHORS
         base = raw[:rows * n]
@@ -757,6 +773,10 @@ class OakDCamera:
             # Ultralytics' exported pose head already decodes keypoints to
             # input pixels and applies the visibility sigmoid.
             kpts = A[:, 4 + self.nn_classes:].reshape(n, self.nn_kpts, 3)
+        elif self.nn_masks:
+            obj = None
+            cls = A[:, 4:4 + self.nn_classes]
+            kpts = A[:, 4 + self.nn_classes:4 + self.nn_classes + self.nn_masks]
         elif has_obj:
             obj = A[:, 4]
             cls = A[:, 5:85]
@@ -817,8 +837,8 @@ class OakDCamera:
         if self._decode_mode is None:
             best, report = None, []
             for mode in self._DECODE_MODES:
-                if self.nn_kpts and mode[1]:
-                    continue   # a pose head has no objectness row
+                if (self.nn_kpts or self.nn_masks) and mode[1]:
+                    continue   # pose / seg heads have no objectness row
                 b, s, _, _ = self._decode(raw, mode)
                 ok, n_hits = self._mode_plausible(b, s)
                 report.append(f"{mode[0]}{'+obj' if mode[1] else ''}={n_hits}{'*' if ok else ''}")
@@ -837,21 +857,29 @@ class OakDCamera:
             logger.info(f"OAK NN: locked decode mode {self._decode_mode}")
 
         box, scores, cls_id, kpts = self._decode(raw, self._decode_mode)
+        coef = None
+        if self.nn_masks:
+            kpts, coef = None, kpts
         keep = scores >= self.nn_conf
         if not keep.any():
             with self._lock:
                 self._latest_detections = []
+                self._latest_masks = []
                 self._latest_detection_meta = metadata
             return
         box, scores, cls_id = box[keep], scores[keep], cls_id[keep]
         if kpts is not None:
             kpts = kpts[keep].copy()
+        if coef is not None:
+            coef = coef[keep]
         # Cap work before the pure-python NMS (O(n^2)): keep only the top-100 by score.
         if scores.shape[0] > 100:
             top = np.argpartition(scores, -100)[-100:]
             box, scores, cls_id = box[top], scores[top], cls_id[top]
             if kpts is not None:
                 kpts = kpts[top]
+            if coef is not None:
+                coef = coef[top]
         # Box coords: normalised (<=~1) -> scale to pixels; else already pixels.
         if box.max() <= 2.0:
             box[:, [0, 2]] *= self.nn_w
@@ -868,7 +896,8 @@ class OakDCamera:
 
         kept = _nms(xyxy, scores, self.nn_iou)
         depth = self.get_raw_depth_frame()   # (nn_h, nn_w) metres, CAM_A-aligned
-        out = []
+        protos = self._read_protos(nndata) if coef is not None else None
+        out, masks = [], []
         for i in kept[:20]:
             x1, y1, x2, y2 = xyxy[i]
             label = self.labels[cls_id[i]] if 0 <= cls_id[i] < len(self.labels) else str(cls_id[i])
@@ -883,7 +912,12 @@ class OakDCamera:
                 # COCO-17 order; [u, v, visibility] in NN/depth-grid pixels.
                 det["keypoints"] = [[round(float(u), 1), round(float(v), 1), round(float(c), 3)]
                                     for u, v, c in kpts[i]]
-            xyz = self._locate(depth, x1, y1, x2, y2)
+            mask = None
+            if protos is not None and label == "person":
+                mask = self._person_mask(protos, coef[i], (x1, y1, x2, y2))
+                det["mask_px"] = int(mask.sum()) if mask is not None else 0
+            masks.append(mask)
+            xyz = self._locate(depth, x1, y1, x2, y2, mask)
             if xyz is not None:
                 x, y, z = xyz
                 det["xyz_m"] = {"x": round(x, 3), "y": round(y, 3), "z": round(z, 3)}
@@ -895,6 +929,7 @@ class OakDCamera:
             out.append(det)
         with self._lock:
             self._latest_detections = out
+            self._latest_masks = masks
             self._latest_detection_meta = metadata
 
     def _keypoints_xyz(self, kpts, z):
@@ -915,10 +950,64 @@ class OakDCamera:
                             round(float(z), 3)])
         return out
 
-    def _locate(self, depth, x1, y1, x2, y2):
-        """Median depth in the inner half of the box -> 3D point in the CAM_A optical frame."""
+    def _read_protos(self, nndata):
+        """Seg prototypes as (n_masks, H, W) float32, or None."""
+        try:
+            p = np.array(nndata.getLayerFp16(self.nn_proto_name), dtype=np.float32)
+            return p[:int(np.prod(self.nn_proto_shape))].reshape(self.nn_proto_shape)
+        except Exception as e:
+            if not getattr(self, "_logged_proto", False):
+                self._logged_proto = True
+                logger.warning(f"OakDCamera: seg prototypes unreadable ({e}); boxes only")
+            return None
+
+    def _person_mask(self, protos, coef, box):
+        """Silhouette as bool (nn_h, nn_w): sigmoid(coef . protos) > 0.5, inside the box."""
+        m, ph, pw = protos.shape
+        logits = (coef[:m] @ protos.reshape(m, -1)).reshape(ph, pw)
+        small = logits > 0.0                     # sigmoid(x) > 0.5  <=>  x > 0
+        if not small.any():
+            return None
+        sy, sx = self.nn_h // ph, self.nn_w // pw
+        full = np.repeat(np.repeat(small, sy, axis=0), sx, axis=1)
+        x1, y1, x2, y2 = (int(round(v)) for v in box)
+        crop = np.zeros_like(full)
+        y1c, y2c = max(0, y1), min(full.shape[0], y2)
+        x1c, x2c = max(0, x1), min(full.shape[1], x2)
+        crop[y1c:y2c, x1c:x2c] = full[y1c:y2c, x1c:x2c]
+        return crop if crop.any() else None
+
+    def get_detections_with_masks(self):
+        """(detections, masks) from the same packet, read atomically."""
+        with self._lock:
+            return list(self._latest_detections), list(self._latest_masks)
+
+    def get_detection_masks(self):
+        """Masks aligned with get_detection_observation()[0] (None where unavailable).
+        Kept apart from the detection dicts: those are broadcast as JSON."""
+        with self._lock:
+            return list(self._latest_masks)
+
+    def _locate(self, depth, x1, y1, x2, y2, mask=None):
+        """Depth of the subject -> 3D point in the CAM_A optical frame.
+
+        With a seg mask: median depth over the silhouette (no background by
+        construction), at the silhouette's centroid. Without: 20th percentile in
+        the inner half of the box.
+        """
         if depth is None or None in (self._fx, self._fy, self._cx, self._cy):
             return None
+        if mask is not None and mask.shape == depth.shape[:2]:
+            sel = mask & (depth > DEPTH_MIN_M) & (depth < DEPTH_MAX_M)
+            if sel.sum() >= 30:
+                vs, us = np.nonzero(sel)
+                vals = depth[vs, us]
+                z0 = float(np.median(vals))
+                near = np.abs(vals - z0) < max(0.3, 3 * float(np.median(np.abs(vals - z0))))
+                z = float(np.median(vals[near]))
+                x = float((float(us[near].mean()) - self._cx) * z / self._fx)
+                y = float((float(vs[near].mean()) - self._cy) * z / self._fy)
+                return x, y, z
         h, w = depth.shape[:2]
         # Clamp the box to the frame first: a detection that runs off-frame (common with
         # the distorted NN input) otherwise puts the sample point off the subject and

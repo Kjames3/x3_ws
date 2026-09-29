@@ -62,4 +62,4 @@ def test_every_blob_config_loads_without_error(caplog):
         caplog.clear()
         cam = oakd_driver.OakDCamera(spatial_config=str(cfg))
         assert not [r for r in caplog.records if r.levelname == 'ERROR'], cfg
-        assert cam._nn_rows in (85, 56), cfg
+        assert cam._nn_rows in (85, 56, 116), cfg

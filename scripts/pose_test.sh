@@ -10,12 +10,12 @@ DROPIN=/etc/systemd/system/x3_server.service.d/95-pose-test.conf
 LOGDIR="$HOME/x3_ws/artifacts/pose-apartment"
 # systemctl prints "SERVER_ARGS=a b c" quoted when it has spaces.
 server_args() { grep -oP '"?SERVER_ARGS=\K[^"]*' | head -1 | sed 's/ [A-Z_]*=.*//'; }
-model="${1:?usage: pose_test.sh <yolo26n|yolo11n-pose|yolo26n-pose|off>}"
+model="${1:?usage: pose_test.sh <yolo26n|yolo11n-pose|yolo26n-pose|yolo26n-seg|yolo11n-seg|off>}"
 
 if [ "$model" = off ]; then
     sudo rm -f "$DROPIN"
 else
-    case "$model" in yolo26n|yolo11n-pose|yolo26n-pose) ;; *) echo "unknown model $model" >&2; exit 1;; esac
+    case "$model" in yolo26n|yolo11n-pose|yolo26n-pose|yolo26n-seg|yolo11n-seg) ;; *) echo "unknown model $model" >&2; exit 1;; esac
     sudo rm -f "$DROPIN"
     sudo systemctl daemon-reload
     base=$(systemctl show x3_server -p Environment --value | server_args)
