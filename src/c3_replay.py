@@ -101,27 +101,50 @@ def intrinsics(row):
     return (k[0], k[4], k[2], k[5], row['depth']['width'], row['depth']['height'])
 
 
-def detect(directory, model_rel=DETECTOR, conf=DETECTOR_CONF, name='c3-detections.json'):
+def masks_path(directory, name):
+    return directory / (Path(name).stem + '.masks.npz')
+
+
+def detect(directory, model_rel=DETECTOR, conf=DETECTOR_CONF, name='c3-detections.json',
+           masks=False):
     """Run a frozen detector once and cache its person boxes.
 
     Arm C reads c3-detections.json (DETECTOR). c3_score.py builds its
     independent reference, c3-reference.json, with a different, larger model.
+    masks=True (seg models) also saves each person's silhouette on the depth
+    grid to <name stem>.masks.npz, bit-packed; box['mask'] is its key.
     """
+    import cv2
     from ultralytics import YOLO
     rows = json.loads((directory / 'pair-index.json').read_text())
     model = YOLO(str(ROOT / model_rel))
-    frames = []
+    frames, packed = [], {}
     for i in range(len(rows)):
         arrays, row = load_pair(directory, i)
         rgb, support = rgb_on_depth_grid(arrays, row)
         res = model.predict(rgb, conf=conf, classes=[0], verbose=False)[0]
         boxes = [dict(xyxy=[float(v) for v in b.xyxy[0]], conf=float(b.conf[0]))
                  for b in res.boxes]
+        if masks:
+            if res.masks is None and boxes:
+                raise ValueError(f'{model_rel} returned no masks; is it a seg model?')
+            for k, box in enumerate(boxes):
+                # Polygons are in rgb (= depth grid) pixels; rasterise at that size.
+                sil = np.zeros(rgb.shape[:2], np.uint8)
+                poly = res.masks.xy[k]
+                if len(poly) >= 3:
+                    cv2.fillPoly(sil, [np.round(poly).astype(np.int32)], 1)
+                key = f'{i}_{k}'
+                packed[key] = np.packbits(sil.astype(bool))
+                box['mask'] = key
         frames.append(dict(index=i, depth_stamp_ns=row['depth']['stamp_ns'], boxes=boxes))
     cache = dict(schema='x3.c3.detections.v1', detector=model_rel,
                  detector_sha256=file_sha256(ROOT / model_rel), conf=conf,
                  image='rgb_on_depth_grid (nominal calibration, registration unqualified)',
                  frames=frames)
+    if masks:
+        np.savez_compressed(masks_path(directory, name), **packed)
+        cache['masks_file'] = masks_path(directory, name).name
     (directory / name).write_text(json.dumps(cache) + '\n')
     print(f'{sum(len(f["boxes"]) for f in frames)} person boxes in {len(frames)} frames')
 
@@ -138,6 +161,8 @@ def run(directory, output, tracker_config=None, tracker_config_c=None,
     odom = load_odom(directory)
     det_path = directory / detections_name
     detections = json.loads(det_path.read_text()) if det_path.exists() else None
+    masks = (np.load(directory / detections['masks_file'])
+             if detections and detections.get('masks_file') else None)
     v3 = make_v3(directory)
     trk_b = pt.KalmanTracker(tracker_config)
     trk_c = pt.KalmanTracker(tracker_config_c if tracker_config_c is not None else tracker_config)
@@ -167,7 +192,10 @@ def run(directory, output, tracker_config=None, tracker_config_c=None,
             meas_c = []
             fx, fy, cx, cy = intr[:4]
             for b in detections['frames'][i]['boxes']:
-                m = pt.person_measurement(depth_m, b['xyxy'])
+                sil = None
+                if masks is not None and 'mask' in b:
+                    sil = np.unpackbits(masks[b['mask']])[:depth_m.size].reshape(depth_m.shape).astype(bool)
+                m = pt.person_measurement(depth_m, b['xyxy'], mask=sil)
                 if m is None:
                     continue
                 p = [(m['u'] - cx) * m['z'] / fx, (m['v'] - cy) * m['z'] / fy, m['z']]
@@ -251,13 +279,15 @@ def main():
     d = sub.add_parser('detect'); d.add_argument('dataset', type=Path)
     d.add_argument('--model', default=DETECTOR, help='repo-relative weights (default %(default)s)')
     d.add_argument('--name', default='c3-detections.json', help='output file in the dataset')
+    d.add_argument('--conf', type=float, default=DETECTOR_CONF)
+    d.add_argument('--masks', action='store_true', help='seg model: also save silhouettes')
     r = sub.add_parser('run'); r.add_argument('dataset', type=Path)
     r.add_argument('--output', type=Path, required=True)
     r.add_argument('--config', type=json.loads, default=None,
                    help='JSON overrides of c3_person_tracker.DEFAULT_CONFIG')
     args = parser.parse_args()
     if args.mode == 'detect':
-        detect(args.dataset, args.model, DETECTOR_CONF, args.name)
+        detect(args.dataset, args.model, args.conf, args.name, args.masks)
     else:
         print(json.dumps(run(args.dataset, args.output, args.config)['static'], indent=2))
 
