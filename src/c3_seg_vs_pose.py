@@ -35,7 +35,14 @@ import c3_score as cs  # noqa: E402
 FRONT_ENDS = {
     'pose': dict(model='models/yolo26n-pose.pt', name='c3-det-pose.json', masks=False),
     'seg': dict(model='models/yolo26n-seg.pt', name='c3-det-seg.json', masks=True),
+    # Post-hoc (added 2026-10-01 after the first scoring): seg split close
+    # people into overlapping partial boxes (e.g. left half, right half,
+    # whole), each becoming its own track. Same seg detections, merged.
+    'seg-merged': dict(derived_from='seg', name='c3-det-seg-merged.json'),
 }
+# Boxes whose overlap covers this fraction of the SMALLER box are one person.
+# Two people only merge when one is mostly hidden behind the other.
+MERGE_CONTAIN = 0.6
 # The live OAK's nn_conf. The replay default (0.35) admits the lab's
 # towel-on-chair phantom for both models, which is not what would run live.
 CONF = 0.5
@@ -65,49 +72,115 @@ def stand_accuracy(run_out, run_name):
                 track_ids=len(set(ids)))
 
 
+def _contain(a, b):
+    """Intersection area over the smaller box's area."""
+    iw = min(a[2], b[2]) - max(a[0], b[0])
+    ih = min(a[3], b[3]) - max(a[1], b[1])
+    if iw <= 0 or ih <= 0:
+        return 0.0
+    small = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+    return iw * ih / small if small > 0 else 0.0
+
+
+def merge_boxes(boxes, threshold=MERGE_CONTAIN):
+    """Group boxes that overlap by >= threshold (transitively); returns index groups."""
+    parent = list(range(len(boxes)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+    for i in range(len(boxes)):
+        for j in range(i + 1, len(boxes)):
+            if _contain(boxes[i]['xyxy'], boxes[j]['xyxy']) >= threshold:
+                parent[find(i)] = find(j)
+    groups = {}
+    for i in range(len(boxes)):
+        groups.setdefault(find(i), []).append(i)
+    return list(groups.values())
+
+
+def write_merged(run, src_name, dst_name):
+    """One box per merged group: union box, max confidence, OR of silhouettes."""
+    src = json.loads((run / src_name).read_text())
+    masks = np.load(run / src['masks_file'])
+    packed, n_in, n_out = {}, 0, 0
+    for fr in src['frames']:
+        merged = []
+        for k, group in enumerate(merge_boxes(fr['boxes'])):
+            bs = [fr['boxes'][i] for i in group]
+            box = dict(xyxy=[min(b['xyxy'][0] for b in bs), min(b['xyxy'][1] for b in bs),
+                             max(b['xyxy'][2] for b in bs), max(b['xyxy'][3] for b in bs)],
+                       conf=max(b['conf'] for b in bs), merged_from=len(bs))
+            sils = [np.unpackbits(masks[b['mask']]) for b in bs if 'mask' in b]
+            if sils:
+                key = f"{fr['index']}_{k}"
+                packed[key] = np.packbits(np.bitwise_or.reduce(sils).astype(bool))
+                box['mask'] = key
+            merged.append(box)
+        n_in += len(fr['boxes']); n_out += len(merged)
+        fr['boxes'] = merged
+    mpath = rp.masks_path(run, dst_name)
+    np.savez_compressed(mpath, **packed)
+    src.update(masks_file=mpath.name, merged=dict(from_file=src_name, contain=MERGE_CONTAIN))
+    (run / dst_name).write_text(json.dumps(src) + '\n')
+    print(f'{run.name}: merged {n_in} seg boxes -> {n_out}', flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('runs', type=Path, nargs='+')
     ap.add_argument('--output', type=Path, required=True)
+    ap.add_argument('--front-ends', default=','.join(FRONT_ENDS),
+                    help='comma list to (re)score; others are read back from a '
+                         'previous seg_vs_pose.json in --output (default: all)')
     args = ap.parse_args()
     runs = sorted(r for r in args.runs if (r / 'pair-index.json').exists())
+    todo = args.front_ends.split(',')
 
     for run in runs:
-        for fe in FRONT_ENDS.values():
-            if not (run / fe['name']).exists():
-                print(f'{run.name}: detect {fe["model"]}', flush=True)
-                rp.detect(run, fe['model'], CONF, fe['name'], fe['masks'])
+        for label, fe in FRONT_ENDS.items():
+            if 'derived_from' in fe or (run / fe['name']).exists():
+                continue
+            print(f'{run.name}: detect {fe["model"]}', flush=True)
+            rp.detect(run, fe['model'], CONF, fe['name'], fe['masks'])
+        if 'seg-merged' in todo:
+            write_merged(run, FRONT_ENDS['seg']['name'], FRONT_ENDS['seg-merged']['name'])
         cs.prepare(run)
 
-    result = {}
-    for label, fe in FRONT_ENDS.items():
+    prev = args.output / 'seg_vs_pose.json'
+    result = json.loads(prev.read_text()) if prev.exists() else {}
+    for label in todo:
         out = args.output / label
-        report = cs.score(runs, out, detections_name=fe['name'])
+        report = cs.score(runs, out, detections_name=FRONT_ENDS[label]['name'])
         result[label] = dict(
             aggregate_C=cs.aggregate(report)['C'],
             stand={r.name: stand_accuracy(out / r.name, r.name) for r in runs
                    if STAND_RE.match(r.name)})
     args.output.mkdir(parents=True, exist_ok=True)
-    (args.output / 'seg_vs_pose.json').write_text(json.dumps(result, indent=1) + '\n')
+    prev.write_text(json.dumps(result, indent=1) + '\n')
 
-    # Side-by-side table of every arm C metric both front ends produced.
-    keys = sorted(set(result['pose']['aggregate_C']) | set(result['seg']['aggregate_C']))
-    lines = ['| metric | pose | seg |', '|---|---|---|']
+    # Side-by-side table of every arm C metric each front end produced.
+    labels = [fe for fe in FRONT_ENDS if fe in result]
+    keys = sorted(set().union(*(result[fe]['aggregate_C'] for fe in labels)))
+    lines = ['| metric | ' + ' | '.join(labels) + ' |', '|---' * (len(labels) + 1) + '|']
     for k in keys:
         cells = []
-        for label in FRONT_ENDS:
+        for label in labels:
             v = result[label]['aggregate_C'].get(k)
             cells.append('--' if v is None else ', '.join(
                 f'{m}={x:.3g}' if isinstance(x, float) else f'{m}={x}' for m, x in v.items()))
-        lines.append(f'| {k} | {cells[0]} | {cells[1]} |')
-    lines += ['', '| stand run | pose bias / jitter / ids | seg bias / jitter / ids |', '|---|---|---|']
-    for name in sorted(result['pose']['stand']):
+        lines.append(f'| {k} | ' + ' | '.join(cells) + ' |')
+    lines += ['', '| stand run | ' + ' | '.join(f'{fe} bias / jitter / ids' for fe in labels) + ' |',
+              '|---' * (len(labels) + 1) + '|']
+    for name in sorted(result[labels[0]]['stand']):
         cells = []
-        for label in FRONT_ENDS:
+        for label in labels:
             s = result[label]['stand'].get(name)
             cells.append('no output' if not s or not s['n'] else
                          f"{s['bias_m']:+.3f} m / {s['jitter_m']:.3f} m / {s['track_ids']}")
-        lines.append(f'| {name} | {cells[0]} | {cells[1]} |')
+        lines.append(f'| {name} | ' + ' | '.join(cells) + ' |')
     (args.output / 'RESULTS.md').write_text('\n'.join(lines) + '\n')
     print('\n'.join(lines))
 
