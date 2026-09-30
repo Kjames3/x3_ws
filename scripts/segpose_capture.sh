@@ -14,7 +14,7 @@ cd "$HOME/x3_ws"
 out="artifacts/c3-captures-segpose/$name"
 if [ -e "$out" ]; then echo "$out exists; pick the next -rN" >&2; exit 1; fi
 unset ROS_DISCOVERY_SERVER FASTDDS_DEFAULT_PROFILES_FILE
-source /opt/ros/humble/setup.bash
+set +u; source /opt/ros/humble/setup.bash; set -u   # ROS setup reads unset vars
 export ROS_DOMAIN_ID=42
 python3 src/c1_dataset.py record --output "$out" --seconds "$secs" > "/tmp/segpose-$name.log" 2>&1 \
     || { echo "record FAILED, see /tmp/segpose-$name.log" >&2; exit 1; }
