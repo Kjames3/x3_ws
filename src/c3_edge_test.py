@@ -134,19 +134,19 @@ def track_vs_tape(run, width, out_dir, acc):
         path = out_dir / fe / run.name / 'armC_tracks.csv'
         if not path.exists():
             continue
-        best = {}  # one confirmed output per frame: the one nearest the line
+        errs = defaultdict(list)   # frame -> |depth - line| of every confirmed output
         with path.open() as fh:
             for r in csv.DictReader(fh):
                 t = int(r['t_ns'])
-                if r['confirmed'] != 'True' or t not in where:
-                    continue
-                e = float(r['z']) - line
-                if t not in best or abs(e) < abs(best[t]):
-                    best[t] = e
+                if r['confirmed'] == 'True' and t in where:
+                    errs[t].append(abs(float(r['z']) - line))
         for t, w in where.items():
             acc[(fe, line, w, 'frames')].append(1)
-            if t in best:
-                acc[(fe, line, w, 'err')].append(best[t])
+            if t in errs:
+                # One person walks the line, so every confirmed output should be
+                # on it: the worst one catches a second track at a wrong depth.
+                acc[(fe, line, w, 'err')].append(min(errs[t]))
+                acc[(fe, line, w, 'worst')].append(max(errs[t]))
 
 
 def main():
@@ -203,21 +203,22 @@ def main():
     for run in runs:
         track_vs_tape(run, image_width(run), args.output, acc4)
     lines += ['', '## 4. Tracker output vs the tape line on crossings', '',
-              f'| line m | front end | inside: tracked, off > {OFF_M} m, median abs | '
-              f'edge: tracked, off > {OFF_M} m, median abs |', '|---|---|---|---|']
+              f'| line m | front end | inside: tracked, any track off > {OFF_M} m, median abs | '
+              f'edge: tracked, any track off > {OFF_M} m, median abs |', '|---|---|---|---|']
     track = {}
     for line in sorted({k[1] for k in acc4}):
         for fe in labels:
             cells = []
             for where in ('inside', 'edge'):
                 n = len(acc4.get((fe, line, where, 'frames'), []))
-                a = np.abs(np.array(acc4.get((fe, line, where, 'err'), [])))
+                a = np.array(acc4.get((fe, line, where, 'err'), []))
+                worst = np.array(acc4.get((fe, line, where, 'worst'), []))
                 track[f'{line:g} | {fe} | {where}'] = dict(
                     frames=n, tracked_pct=100 * a.size / n if n else None,
-                    off_pct=100 * float(np.mean(a > OFF_M)) if a.size else None,
+                    off_pct=100 * float(np.mean(worst > OFF_M)) if a.size else None,
                     median_abs_m=float(np.median(a)) if a.size else None)
                 cells.append('--' if not n or not a.size else
-                             f'{100 * a.size / n:.0f}%, {100 * np.mean(a > OFF_M):.0f}%, {np.median(a):.2f} m')
+                             f'{100 * a.size / n:.0f}%, {100 * np.mean(worst > OFF_M):.0f}%, {np.median(a):.2f} m')
             lines.append(f'| {line:g} | {fe} | {cells[0]} | {cells[1]} |')
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / 'edge_test.json').write_text(json.dumps(
