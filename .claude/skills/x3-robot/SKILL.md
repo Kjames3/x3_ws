@@ -48,7 +48,7 @@ The MCP ROS tools (`check_ros_status`, `check_ros_node`, `view_ros_topic`,
 | Unit | Enabled | What it is |
 | --- | --- | --- |
 | `x3_server` | yes | The main server. Web GUI on **8080**, websocket on **8081**. |
-| `x3_dynamixel_tilt_home` | yes | Homes the XL430 lidar tilt servo to 2048 at boot. |
+| `x3_dynamixel_tilt_home` | yes | Homes the XL430 lidar tilt servo to level (2032) at boot. |
 | `x3_lidar_home` | no | Superseded by the Dynamixel unit above. |
 
 **Restarting needs root, and `sudo` over SSH has no tty** -- a bare
@@ -111,7 +111,7 @@ it. `check_robot_devices` checks the symlinks, the raw nodes, and the installed
 rules together.
 
 The XL430 runs at **1 Mbps**, not the 57600 factory default; it was written
-into EEPROM on 2026-08-29. Its zero is **2048 counts**.
+into EEPROM on 2026-08-29. Its zero is the hand-levelled **2032 counts** (`config/lidar_tilt_calibration_dynamixel.json`), not 2048.
 
 ## Laptop and robot drift apart
 
