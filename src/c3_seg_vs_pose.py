@@ -31,6 +31,7 @@ sys.path.insert(0, str(ROOT / 'src'))
 
 import c3_replay as rp  # noqa: E402
 import c3_score as cs  # noqa: E402
+from person_box_merge import MERGE_CONTAIN, group_overlapping  # noqa: E402
 
 FRONT_ENDS = {
     'pose': dict(model='models/yolo26n-pose.pt', name='c3-det-pose.json', masks=False),
@@ -40,9 +41,7 @@ FRONT_ENDS = {
     # whole), each becoming its own track. Same seg detections, merged.
     'seg-merged': dict(derived_from='seg', name='c3-det-seg-merged.json'),
 }
-# Boxes whose overlap covers this fraction of the SMALLER box are one person.
-# Two people only merge when one is mostly hidden behind the other.
-MERGE_CONTAIN = 0.6
+
 # The live OAK's nn_conf. The replay default (0.35) admits the lab's
 # towel-on-chair phantom for both models, which is not what would run live.
 CONF = 0.5
@@ -72,33 +71,9 @@ def stand_accuracy(run_out, run_name):
                 track_ids=len(set(ids)))
 
 
-def _contain(a, b):
-    """Intersection area over the smaller box's area."""
-    iw = min(a[2], b[2]) - max(a[0], b[0])
-    ih = min(a[3], b[3]) - max(a[1], b[1])
-    if iw <= 0 or ih <= 0:
-        return 0.0
-    small = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
-    return iw * ih / small if small > 0 else 0.0
-
-
 def merge_boxes(boxes, threshold=MERGE_CONTAIN):
-    """Group boxes that overlap by >= threshold (transitively); returns index groups."""
-    parent = list(range(len(boxes)))
-
-    def find(i):
-        while parent[i] != i:
-            parent[i] = parent[parent[i]]
-            i = parent[i]
-        return i
-    for i in range(len(boxes)):
-        for j in range(i + 1, len(boxes)):
-            if _contain(boxes[i]['xyxy'], boxes[j]['xyxy']) >= threshold:
-                parent[find(i)] = find(j)
-    groups = {}
-    for i in range(len(boxes)):
-        groups.setdefault(find(i), []).append(i)
-    return list(groups.values())
+    """Index groups of detection dicts ({'xyxy': ...}) that are one person."""
+    return group_overlapping([b['xyxy'] for b in boxes], threshold)
 
 
 def write_merged(run, src_name, dst_name):

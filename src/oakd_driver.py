@@ -41,6 +41,7 @@ import time
 import uuid
 from collections import deque
 from rgbd_pairing import RGBDPairer, timedelta_ns
+from person_box_merge import group_overlapping, union_box
 
 import numpy as np
 import cv2
@@ -897,25 +898,39 @@ class OakDCamera:
         kept = _nms(xyxy, scores, self.nn_iou)
         depth = self.get_raw_depth_frame()   # (nn_h, nn_w) metres, CAM_A-aligned
         protos = self._read_protos(nndata) if coef is not None else None
-        out, masks = [], []
+        # Candidates first, then (seg only) merge the person boxes that cover
+        # one person, then locate: the 3D point must come from the merged
+        # silhouette, not from one of its halves.
+        cands = []
         for i in kept[:20]:
-            x1, y1, x2, y2 = xyxy[i]
             label = self.labels[cls_id[i]] if 0 <= cls_id[i] < len(self.labels) else str(cls_id[i])
+            mask = None
+            if protos is not None and label == "person":
+                mask = self._person_mask(protos, coef[i], tuple(xyxy[i]))
+            cands.append({"label": label, "conf": float(scores[i]),
+                          "box": [float(v) for v in xyxy[i]], "mask": mask,
+                          "kpts": kpts[i] if kpts is not None else None})
+        if protos is not None:
+            cands = self._merge_people(cands)
+        out, masks = [], []
+        for c in cands:
+            x1, y1, x2, y2 = c["box"]
             det = {
-                "label": label,
-                "conf": float(scores[i]),
+                "label": c["label"],
+                "conf": c["conf"],
                 "bbox": [int(x1), int(y1), int(x2), int(y2)],
                 "xyz_m": None,
                 "xyz_base_m": None,
             }
-            if kpts is not None:
+            if c["kpts"] is not None:
                 # COCO-17 order; [u, v, visibility] in NN/depth-grid pixels.
-                det["keypoints"] = [[round(float(u), 1), round(float(v), 1), round(float(c), 3)]
-                                    for u, v, c in kpts[i]]
-            mask = None
-            if protos is not None and label == "person":
-                mask = self._person_mask(protos, coef[i], (x1, y1, x2, y2))
+                det["keypoints"] = [[round(float(u), 1), round(float(v), 1), round(float(k), 3)]
+                                    for u, v, k in c["kpts"]]
+            mask = c["mask"]
+            if protos is not None and c["label"] == "person":
                 det["mask_px"] = int(mask.sum()) if mask is not None else 0
+            if c.get("merged_from", 1) > 1:
+                det["merged_from"] = c["merged_from"]
             masks.append(mask)
             xyz = self._locate(depth, x1, y1, x2, y2, mask)
             if xyz is not None:
@@ -924,13 +939,37 @@ class OakDCamera:
                 det["xyz_base_m"] = {"x": round(OAK_MOUNT_X + z, 3),
                                      "y": round(-x, 3),
                                      "z": round(OAK_MOUNT_Z - y, 3)}
-                if kpts is not None:
-                    det["keypoints_xyz"] = self._keypoints_xyz(kpts[i], z)
+                if c["kpts"] is not None:
+                    det["keypoints_xyz"] = self._keypoints_xyz(c["kpts"], z)
             out.append(det)
         with self._lock:
             self._latest_detections = out
             self._latest_masks = masks
             self._latest_detection_meta = metadata
+
+    @staticmethod
+    def _merge_people(cands):
+        """Seg heads split a close person into overlapping partial boxes; make
+        each group one detection (union box, max confidence, OR of silhouettes).
+        Same rule as the offline scorer (person_box_merge). Other labels and
+        candidate order are kept."""
+        people = [k for k, c in enumerate(cands) if c["label"] == "person"]
+        groups = group_overlapping([cands[k]["box"] for k in people])
+        if len(groups) == len(people):
+            return cands
+        drop = set()
+        for g in groups:
+            if len(g) == 1:
+                continue
+            members = [cands[people[j]] for j in g]
+            first = members[0]
+            first["box"] = union_box([m["box"] for m in members])
+            first["conf"] = max(m["conf"] for m in members)
+            sils = [m["mask"] for m in members if m["mask"] is not None]
+            first["mask"] = np.logical_or.reduce(sils) if sils else None
+            first["merged_from"] = len(members)
+            drop.update(people[j] for j in g[1:])
+        return [c for k, c in enumerate(cands) if k not in drop]
 
     def _keypoints_xyz(self, kpts, z):
         """COCO-17 keypoints -> CAM_A optical-frame points, all at the box depth z.
