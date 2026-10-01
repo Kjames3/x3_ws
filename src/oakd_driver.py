@@ -1045,13 +1045,16 @@ class OakDCamera:
             # The mask is the prototype grid upscaled by s, so every s-th pixel
             # keeps its shape at 1/s^2 of the work (this ran on ~150k pixels per
             # close person). Small silhouettes keep full resolution.
-            s = max(1, mask.shape[0] // self.nn_proto_shape[1]) if self.nn_proto_shape else 1
-            if s > 1 and np.count_nonzero(mask) < 200 * s * s:
-                s = 1
-            d = depth[::s, ::s]
-            sel = mask[::s, ::s] & (d > DEPTH_MIN_M) & (d < DEPTH_MAX_M)
-            vs, us = np.nonzero(sel)
-            if vs.size >= max(30 // (s * s), 8):
+            # Go to full resolution when too few samples have valid depth
+            # (a far person, mostly past the depth limit).
+            s0 = max(1, mask.shape[0] // self.nn_proto_shape[1]) if self.nn_proto_shape else 1
+            for s in (s0, 1):
+                d = depth[::s, ::s]
+                sel = mask[::s, ::s] & (d > DEPTH_MIN_M) & (d < DEPTH_MAX_M)
+                vs, us = np.nonzero(sel)
+                if s == 1 or vs.size >= 200:
+                    break
+            if vs.size >= 30:
                 vals = d[vs, us]
                 z0 = float(np.median(vals))
                 near = np.abs(vals - z0) < max(0.3, 3 * float(np.median(np.abs(vals - z0))))

@@ -36,6 +36,8 @@ DEFAULT_CONFIG = {
 # band; people at or past it are detected but give no measurement.
 # c3_depth_cap_test.py varies the upper limit offline.
 DEPTH_RANGE_M = (0.5, 4.0)
+# mask_measurement subsamples a silhouette only while this many valid-depth samples remain.
+SUBSAMPLE_MIN_VALID = 200
 
 
 def measurement_cov_camera(z_m, floor_sigma_m=0.03, extra_sigma_m=0.0):
@@ -119,21 +121,20 @@ def mask_measurement(depth_m, mask, min_valid_px=30):
     """
     # A big silhouette is ~150k pixels and every step below is O(pixels); on
     # the Jetson that was most of an 80 ms tracker update. Seg masks are a
-    # 160x120 grid upscaled 4x, so every 4th pixel keeps the shape. Small
-    # silhouettes are sampled densely enough to keep >= ~200 samples.
-    n = int(np.count_nonzero(mask))
-    if n == 0:
+    # 160x120 grid upscaled 4x, so every 4th pixel keeps the shape. Go finer
+    # only when that leaves too few pixels with valid depth (a far person
+    # mostly past the depth limit): step 1 is the original, exact computation.
+    for step in (4, 2, 1):
+        vs, us = np.nonzero(mask[::step, ::step])
+        vals = depth_m[::step, ::step][vs, us]
+        ok = (vals >= DEPTH_RANGE_M[0]) & (vals <= DEPTH_RANGE_M[1])
+        if step == 1 or ok.sum() >= SUBSAMPLE_MIN_VALID:
+            break
+    if vs.size == 0 or ok.sum() < min_valid_px:
         return None
-    step = 4 if n >= 3200 else 2 if n >= 800 else 1
-    vs, us = np.nonzero(mask[::step, ::step])
-    vals = depth_m[::step, ::step][vs, us]
     # Sample (i, j) stands for the step x step block starting at (i*step, j*step).
     vs = vs * step + (step - 1) / 2.0
     us = us * step + (step - 1) / 2.0
-    min_valid_px = max(min_valid_px // (step * step), 8)
-    ok = (vals >= DEPTH_RANGE_M[0]) & (vals <= DEPTH_RANGE_M[1])
-    if ok.sum() < min_valid_px:
-        return None
     vs, us, vals = vs[ok], us[ok], vals[ok]
     median = float(np.median(vals))
     mad = float(np.median(np.abs(vals - median))) * 1.4826
