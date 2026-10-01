@@ -135,9 +135,16 @@ def main():
     ap.add_argument('--front-ends', default=','.join(FRONT_ENDS),
                     help='comma list to (re)score; others are read back from a '
                          'previous seg_vs_pose.json in --output (default: all)')
+    ap.add_argument('--tracker', choices=['default', 'live'], default='default',
+                    help="arm C tracker settings: c3_person_tracker.DEFAULT_CONFIG or "
+                         "the robot's c3_live.ARM_C_CONFIG. Use a separate --output per choice.")
     args = ap.parse_args()
     runs = sorted(r for r in args.runs if (r / 'pair-index.json').exists())
     todo = args.front_ends.split(',')
+    config_c = None
+    if args.tracker == 'live':
+        from c3_live import ARM_C_CONFIG
+        config_c = dict(ARM_C_CONFIG)
 
     for run in runs:
         for label, fe in FRONT_ENDS.items():
@@ -145,7 +152,7 @@ def main():
                 continue
             print(f'{run.name}: detect {fe["model"]}', flush=True)
             rp.detect(run, fe['model'], CONF, fe['name'], fe['masks'])
-        if 'seg-merged' in todo:
+        if 'seg-merged' in todo and not (run / FRONT_ENDS['seg-merged']['name']).exists():
             write_merged(run, FRONT_ENDS['seg']['name'], FRONT_ENDS['seg-merged']['name'])
         cs.prepare(run)
 
@@ -153,7 +160,7 @@ def main():
     result = json.loads(prev.read_text()) if prev.exists() else {}
     for label in todo:
         out = args.output / label
-        report = cs.score(runs, out, detections_name=FRONT_ENDS[label]['name'])
+        report = cs.score(runs, out, config_c=config_c, detections_name=FRONT_ENDS[label]['name'])
         result[label] = dict(
             aggregate_C=cs.aggregate(report)['C'],
             stand={r.name: stand_accuracy(out / r.name, r.name) for r in runs
