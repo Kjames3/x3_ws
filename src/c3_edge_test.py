@@ -18,10 +18,17 @@ Needs the caches from c3_seg_vs_pose.py and c3_calibration.py. Three parts:
 
 3. pose-noedge: pose detections with edge-touching boxes removed, so the
    tracker coasts through entry and exit instead of taking a wrong depth.
+   pose-soft<s>: edge-touching boxes kept, but with <s> m added to their
+   measurement sigma, so the tracker uses them weakly.
+
+4. Tracker output vs the tape line on crossings, split the same way (edge
+   frames = the pose box is clipped). This is the only edge-frame truth: the
+   inside-only reference in part 2 cannot score those frames.
 
 Arm C runs with the live ARM_C_CONFIG. Offline only.
 """
 import argparse
+import csv
 import json
 import re
 import sys
@@ -39,7 +46,9 @@ from c3_live import ARM_C_CONFIG  # noqa: E402
 EDGE_PX = 3              # a box within this of the left/right border is clipped
 OFF_M = 0.4              # depth this far from the tape line counts as wrong
 INSIDE_REFERENCE = 'c3-reference-inside.json'
+SOFT_SIGMAS_M = (0.5, 1.0)
 FRONT_ENDS = {'pose': 'c3-det-pose.json', 'pose-noedge': 'c3-det-pose-noedge.json',
+              **{f'pose-soft{s:g}': f'c3-det-pose-soft{s:g}.json' for s in SOFT_SIGMAS_M},
               'seg-merged': 'c3-det-seg-merged.json'}
 MEAS = {'pose': 'c3-meas-pose.json', 'seg-merged': 'c3-meas-seg-merged.json'}
 CROSS_RE = re.compile(r'^cross(?:ing)?-(\d+(?:\.\d+)?)m-r\d+$')
@@ -101,6 +110,45 @@ def write_noedge(run, width):
     return n_in, n_out
 
 
+def write_soft(run, width, sigma):
+    det = json.loads((run / FRONT_ENDS['pose']).read_text())
+    for f in det['frames']:
+        for b in f['boxes']:
+            if clipped(b['xyxy'], width):
+                b['extra_sigma_m'] = sigma
+    det['edge_filter'] = dict(edge_px=EDGE_PX, extra_sigma_m=sigma)
+    (run / FRONT_ENDS[f'pose-soft{sigma:g}']).write_text(json.dumps(det) + '\n')
+
+
+def track_vs_tape(run, width, out_dir, acc):
+    """Part 4: (front end, line, edge|inside) -> [track depth - line], plus frame counts."""
+    m = CROSS_RE.match(run.name)
+    if not m:
+        return
+    line = float(m.group(1))
+    where = {}     # depth stamp -> 'edge' | 'inside', frames with exactly one pose box
+    for f in json.loads((run / FRONT_ENDS['pose']).read_text())['frames']:
+        if len(f['boxes']) == 1:
+            where[f['depth_stamp_ns']] = 'edge' if clipped(f['boxes'][0]['xyxy'], width) else 'inside'
+    for fe in FRONT_ENDS:
+        path = out_dir / fe / run.name / 'armC_tracks.csv'
+        if not path.exists():
+            continue
+        best = {}  # one confirmed output per frame: the one nearest the line
+        with path.open() as fh:
+            for r in csv.DictReader(fh):
+                t = int(r['t_ns'])
+                if r['confirmed'] != 'True' or t not in where:
+                    continue
+                e = float(r['z']) - line
+                if t not in best or abs(e) < abs(best[t]):
+                    best[t] = e
+        for t, w in where.items():
+            acc[(fe, line, w, 'frames')].append(1)
+            if t in best:
+                acc[(fe, line, w, 'err')].append(best[t])
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('runs', type=Path, nargs='+')
@@ -114,6 +162,8 @@ def main():
         tape_depth(run, w, acc)
         dropped = write_inside_reference(run, w)
         n_in, n_out = write_noedge(run, w)
+        for sigma in SOFT_SIGMAS_M:
+            write_soft(run, w, sigma)
         print(f'{run.name}: prepared, reference -{dropped} edge frames, pose boxes {n_in} -> {n_out}',
               flush=True)
 
@@ -149,8 +199,29 @@ def main():
             cells.append('--' if v is None else ', '.join(
                 f'{m}={x:.3g}' if isinstance(x, float) else f'{m}={x}' for m, x in v.items()))
         lines.append(f'| {k} | ' + ' | '.join(cells) + ' |')
+    acc4 = defaultdict(list)
+    for run in runs:
+        track_vs_tape(run, image_width(run), args.output, acc4)
+    lines += ['', '## 4. Tracker output vs the tape line on crossings', '',
+              f'| line m | front end | inside: tracked, off > {OFF_M} m, median abs | '
+              f'edge: tracked, off > {OFF_M} m, median abs |', '|---|---|---|---|']
+    track = {}
+    for line in sorted({k[1] for k in acc4}):
+        for fe in labels:
+            cells = []
+            for where in ('inside', 'edge'):
+                n = len(acc4.get((fe, line, where, 'frames'), []))
+                a = np.abs(np.array(acc4.get((fe, line, where, 'err'), [])))
+                track[f'{line:g} | {fe} | {where}'] = dict(
+                    frames=n, tracked_pct=100 * a.size / n if n else None,
+                    off_pct=100 * float(np.mean(a > OFF_M)) if a.size else None,
+                    median_abs_m=float(np.median(a)) if a.size else None)
+                cells.append('--' if not n or not a.size else
+                             f'{100 * a.size / n:.0f}%, {100 * np.mean(a > OFF_M):.0f}%, {np.median(a):.2f} m')
+            lines.append(f'| {line:g} | {fe} | {cells[0]} | {cells[1]} |')
     args.output.mkdir(parents=True, exist_ok=True)
-    (args.output / 'edge_test.json').write_text(json.dumps(dict(tape=tape, scores=result), indent=1) + '\n')
+    (args.output / 'edge_test.json').write_text(json.dumps(
+        dict(tape=tape, scores=result, track_vs_tape=track), indent=1) + '\n')
     (args.output / 'RESULTS.md').write_text('\n'.join(lines) + '\n')
     print('\n'.join(lines))
 

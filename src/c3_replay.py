@@ -200,7 +200,9 @@ def run(directory, output, tracker_config=None, tracker_config_c=None,
                     continue
                 p = [(m['u'] - cx) * m['z'] / fx, (m['v'] - cy) * m['z'] / fy, m['z']]
                 xy, rot = pt.camera_point_to_odom(p, ofc)
-                cov = pt.measurement_cov_camera(m['z'], floor_c, m['spread_m'])
+                # extra_sigma_m: optional per-box distrust (c3_edge_test.py's soft-edge variants).
+                cov = pt.measurement_cov_camera(
+                    m['z'], floor_c, math.hypot(m['spread_m'], b.get('extra_sigma_m', 0.0)))
                 meas_c.append((xy, pt.rotate_cov_to_odom(cov, rot)))
             for o in trk_c.update(t_ns / 1e9, meas_c):
                 out['C'].append(dict(o, t_ns=t_ns, z=forward_depth((o['x'], o['y']), ofc)))
