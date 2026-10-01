@@ -117,10 +117,20 @@ def mask_measurement(depth_m, mask, min_valid_px=30):
     Returns None when the silhouette has too little valid depth, so the caller
     can fall back to the box.
     """
-    vs, us = np.nonzero(mask)
-    if vs.size == 0:
+    # A big silhouette is ~150k pixels and every step below is O(pixels); on
+    # the Jetson that was most of an 80 ms tracker update. Seg masks are a
+    # 160x120 grid upscaled 4x, so every 4th pixel keeps the shape. Small
+    # silhouettes are sampled densely enough to keep >= ~200 samples.
+    n = int(np.count_nonzero(mask))
+    if n == 0:
         return None
-    vals = depth_m[vs, us]
+    step = 4 if n >= 3200 else 2 if n >= 800 else 1
+    vs, us = np.nonzero(mask[::step, ::step])
+    vals = depth_m[::step, ::step][vs, us]
+    # Sample (i, j) stands for the step x step block starting at (i*step, j*step).
+    vs = vs * step + (step - 1) / 2.0
+    us = us * step + (step - 1) / 2.0
+    min_valid_px = max(min_valid_px // (step * step), 8)
     ok = (vals >= DEPTH_RANGE_M[0]) & (vals <= DEPTH_RANGE_M[1])
     if ok.sum() < min_valid_px:
         return None

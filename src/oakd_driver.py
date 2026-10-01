@@ -1003,17 +1003,22 @@ class OakDCamera:
     def _person_mask(self, protos, coef, box):
         """Silhouette as bool (nn_h, nn_w): sigmoid(coef . protos) > 0.5, inside the box."""
         m, ph, pw = protos.shape
-        logits = (coef[:m] @ protos.reshape(m, -1)).reshape(ph, pw)
-        small = logits > 0.0                     # sigmoid(x) > 0.5  <=>  x > 0
+        sy, sx = self.nn_h // ph, self.nn_w // pw
+        x1, y1, x2, y2 = (int(round(v)) for v in box)
+        y1c, y2c = max(0, y1), min(self.nn_h, y2)
+        x1c, x2c = max(0, x1), min(self.nn_w, x2)
+        if y2c <= y1c or x2c <= x1c:
+            return None
+        # Only the prototype cells the box touches: the mask is zero elsewhere.
+        py1, py2 = y1c // sy, -(-y2c // sy)
+        px1, px2 = x1c // sx, -(-x2c // sx)
+        sub = protos[:, py1:py2, px1:px2]
+        small = np.tensordot(coef[:m], sub, axes=1) > 0.0   # sigmoid(x) > 0.5  <=>  x > 0
         if not small.any():
             return None
-        sy, sx = self.nn_h // ph, self.nn_w // pw
-        full = np.repeat(np.repeat(small, sy, axis=0), sx, axis=1)
-        x1, y1, x2, y2 = (int(round(v)) for v in box)
-        crop = np.zeros_like(full)
-        y1c, y2c = max(0, y1), min(full.shape[0], y2)
-        x1c, x2c = max(0, x1), min(full.shape[1], x2)
-        crop[y1c:y2c, x1c:x2c] = full[y1c:y2c, x1c:x2c]
+        up = np.repeat(np.repeat(small, sy, axis=0), sx, axis=1)
+        crop = np.zeros((self.nn_h, self.nn_w), dtype=bool)
+        crop[y1c:y2c, x1c:x2c] = up[y1c - py1 * sy:y2c - py1 * sy, x1c - px1 * sx:x2c - px1 * sx]
         return crop if crop.any() else None
 
     def get_detections_with_masks(self):
@@ -1037,15 +1042,25 @@ class OakDCamera:
         if depth is None or None in (self._fx, self._fy, self._cx, self._cy):
             return None
         if mask is not None and mask.shape == depth.shape[:2]:
-            sel = mask & (depth > DEPTH_MIN_M) & (depth < DEPTH_MAX_M)
-            if sel.sum() >= 30:
-                vs, us = np.nonzero(sel)
-                vals = depth[vs, us]
+            # The mask is the prototype grid upscaled by s, so every s-th pixel
+            # keeps its shape at 1/s^2 of the work (this ran on ~150k pixels per
+            # close person). Small silhouettes keep full resolution.
+            s = max(1, mask.shape[0] // self.nn_proto_shape[1]) if self.nn_proto_shape else 1
+            if s > 1 and np.count_nonzero(mask) < 200 * s * s:
+                s = 1
+            d = depth[::s, ::s]
+            sel = mask[::s, ::s] & (d > DEPTH_MIN_M) & (d < DEPTH_MAX_M)
+            vs, us = np.nonzero(sel)
+            if vs.size >= max(30 // (s * s), 8):
+                vals = d[vs, us]
                 z0 = float(np.median(vals))
                 near = np.abs(vals - z0) < max(0.3, 3 * float(np.median(np.abs(vals - z0))))
                 z = float(np.median(vals[near]))
-                x = float((float(us[near].mean()) - self._cx) * z / self._fx)
-                y = float((float(vs[near].mean()) - self._cy) * z / self._fy)
+                # Sample (i, j) stands for the s x s block starting at (i*s, j*s).
+                u = float(us[near].mean()) * s + (s - 1) / 2.0
+                v = float(vs[near].mean()) * s + (s - 1) / 2.0
+                x = float((u - self._cx) * z / self._fx)
+                y = float((v - self._cy) * z / self._fy)
                 return x, y, z
         h, w = depth.shape[:2]
         # Clamp the box to the frame first: a detection that runs off-frame (common with
