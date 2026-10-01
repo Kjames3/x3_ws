@@ -29,6 +29,13 @@ PATCHED = os.path.join(REPO, 'src', 'Rosmaster_Lib.py')
 BASELINE_REF = os.environ.get('ROSMASTER_BASELINE_REF', 'main')
 BASELINE_PATH = 'src/Rosmaster_Lib.py'
 
+# The patched parser lives on the worktree-rosmaster-lib-fixes branch and is not
+# merged yet.  Against the stock library there is nothing to compare, so skip
+# instead of failing on every checkout that only has the stock file.
+with open(PATCHED) as _f:
+    if 'rx_healthy' not in _f.read():
+        raise unittest.SkipTest('src/Rosmaster_Lib.py is the stock parser (patched one not merged)')
+
 
 # ---------------------------------------------------------------- fake serial
 class FakeSerial(object):

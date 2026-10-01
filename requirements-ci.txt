@@ -1,0 +1,12 @@
+# What the GitHub Actions `pytest` job installs.  Deliberately small: tests that
+# need ROS (rclpy), onnxruntime, mediapipe or depthai skip themselves.
+# CPU-only wheel: velocity_estimator imports torch, and the default wheel
+# drags in ~2 GB of CUDA libraries.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+numpy
+scipy
+opencv-python-headless
+pyserial
+pyyaml
+pytest

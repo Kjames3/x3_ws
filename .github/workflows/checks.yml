@@ -56,3 +56,51 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check for oversized files and committed rosbags
         run: ./scripts/ci/check_large_files.sh
+
+  pytest:
+    name: pytest (offline tests)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # 3.10 is what the Jetson (Ubuntu 22.04) and the laptop run.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+
+      - name: Install test dependencies
+        run: pip install -r requirements-ci.txt
+
+      # Catches a syntax error in any script, including the ROS and hardware
+      # ones that no test imports.
+      - name: Byte-compile sources
+        run: python -m compileall -q src/*.py scripts/*.py tests
+
+      # No ROS here: tests that need rclpy, onnxruntime or mediapipe skip
+      # themselves. -rs prints the skip reasons so a silent skip is visible.
+      - name: pytest
+        run: python -m pytest tests -q -rs
+
+  web:
+    name: web GUI (syntax + humanoid)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: node --check
+        run: |
+          for f in src/web/*.js src/web/models/*.js; do
+            node --check "$f"
+          done
+
+      # Same three.js release GUI.html loads from the CDN.
+      - name: Humanoid walk-cycle test
+        run: |
+          npm install --no-save --prefix /tmp/three three@0.128.0
+          NODE_PATH=/tmp/three/node_modules node tests/test_humanoid_walk.cjs
