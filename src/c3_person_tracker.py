@@ -32,6 +32,12 @@ DEFAULT_CONFIG = {
 }
 
 
+# Depth accepted for a person measurement (m). 4.0 matches the v3 estimator's
+# band; people at or past it are detected but give no measurement.
+# c3_depth_cap_test.py varies the upper limit offline.
+DEPTH_RANGE_M = (0.5, 4.0)
+
+
 def measurement_cov_camera(z_m, floor_sigma_m=0.03, extra_sigma_m=0.0):
     """Planar (forward, left) covariance for a point at depth z.
 
@@ -88,7 +94,7 @@ def person_measurement(depth_m, box, min_valid_px=30, min_valid_fraction=0.2, ma
     if u1 <= u0 or v1 <= v0:
         return None
     region = depth_m[v0:v1, u0:u1]
-    valid = region[(region >= 0.5) & (region <= 4.0)]
+    valid = region[(region >= DEPTH_RANGE_M[0]) & (region <= DEPTH_RANGE_M[1])]
     fraction = valid.size / region.size
     if valid.size < min_valid_px or fraction < min_valid_fraction:
         return None
@@ -115,7 +121,7 @@ def mask_measurement(depth_m, mask, min_valid_px=30):
     if vs.size == 0:
         return None
     vals = depth_m[vs, us]
-    ok = (vals >= 0.5) & (vals <= 4.0)
+    ok = (vals >= DEPTH_RANGE_M[0]) & (vals <= DEPTH_RANGE_M[1])
     if ok.sum() < min_valid_px:
         return None
     vs, us, vals = vs[ok], us[ok], vals[ok]

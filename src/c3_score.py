@@ -35,6 +35,7 @@ TIME_MATCH_NS = 60_000_000
 SPEED_WINDOW_S = 0.5     # reference speed: centred linear fit over +/- this
 FALSE_SPEED = 0.15       # plan threshold for a false-motion event
 BINS = rp.RANGE_BINS[:3]
+REFERENCE_FILE = 'c3-reference.json'   # c3_depth_cap_test.py swaps in a longer-range one
 
 
 def prepare(run):
@@ -65,7 +66,7 @@ def prepare(run):
 
 
 def reference_track(run):
-    frames = json.loads((run / 'c3-reference.json').read_text())['frames']
+    frames = json.loads((run / REFERENCE_FILE).read_text())['frames']
     t = np.array([f['depth_stamp_ns'] for f in frames], dtype=np.int64)
     pos = [f['person'] for f in frames]
     speed = np.full(len(t), np.nan)
