@@ -153,6 +153,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('runs', type=Path, nargs='+')
     ap.add_argument('--output', type=Path, required=True)
+    ap.add_argument('--front-ends', default=','.join(FRONT_ENDS),
+                    help='comma list to score (default: all)')
     args = ap.parse_args()
     runs = sorted(r for r in args.runs if (r / 'c3-reference.json').exists())
 
@@ -185,7 +187,8 @@ def main():
 
     cs.REFERENCE_FILE = INSIDE_REFERENCE
     result = {}
-    for label, det_name in FRONT_ENDS.items():
+    for label in args.front_ends.split(','):
+        det_name = FRONT_ENDS[label]
         report = cs.score(runs, args.output / label, config_c=dict(ARM_C_CONFIG),
                           detections_name=det_name)
         result[label] = {k: v for k, v in cs.aggregate(report)['C'].items() if 'nonperson' not in k}
