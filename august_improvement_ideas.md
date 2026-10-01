@@ -1,5 +1,11 @@
 # August 2026 Improvement Ideas & Enhancement Log
 
+> [!info] This log is also published as one note per idea
+> This file stays the source of truth. `scripts/split_ideas.py` derives one note per
+> idea in [`ideas/notes/`](ideas/notes/) with a namespaced id (`A-`, covering A-01–A-58) and a
+> resolved **Implemented / candidate** status; browse them from [`ideas/INDEX.md`](ideas/INDEX.md).
+> Edit *this* file and re-run the script — never edit the generated notes.
+
 This document serves as the active improvement ideas log and architectural roadmap for the EE244 Computational Learning Project (Predictive Local Planning via Onboard Velocity Estimation) for **August 2026**.
 
 > [!NOTE]
