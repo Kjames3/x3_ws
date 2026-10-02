@@ -92,3 +92,12 @@ def test_packets_without_raw_access_use_the_list_path():
             return [4.0, 5.0]
     assert cam._read_layer(Plain(), 'x').tolist() == [1.0, 2.0, 3.0]
     assert cam._read_layer(Plain(), None).tolist() == [4.0, 5.0]
+
+
+def test_depth_fps_override_only_accepts_a_sane_number():
+    from oakd_driver import _depth_fps_override as f
+    assert f(30, {}) == 30
+    assert f(30, {'X3_OAK_DEPTH_FPS': '15'}) == 15.0
+    assert f(30, {'X3_OAK_DEPTH_FPS': '60'}) == 30     # never above the default
+    assert f(30, {'X3_OAK_DEPTH_FPS': '3'}) == 30
+    assert f(30, {'X3_OAK_DEPTH_FPS': 'abc'}) == 30

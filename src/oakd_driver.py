@@ -107,6 +107,23 @@ _COCO80 = [
 ]
 
 
+def _depth_fps_override(default, env=None):
+    """Stereo fps from X3_OAK_DEPTH_FPS (5..default), else `default`."""
+    raw = (os.environ if env is None else env).get("X3_OAK_DEPTH_FPS")
+    if not raw:
+        return default
+    try:
+        fps = float(raw)
+    except ValueError:
+        logger.warning(f"OakDCamera: ignoring X3_OAK_DEPTH_FPS={raw!r} (not a number)")
+        return default
+    if not 5.0 <= fps <= default:
+        logger.warning(f"OakDCamera: ignoring X3_OAK_DEPTH_FPS={raw} (allowed 5..{default:g})")
+        return default
+    logger.info(f"OakDCamera: stereo/depth at {fps:g} fps (X3_OAK_DEPTH_FPS), default {default:g}")
+    return fps
+
+
 def _sigmoid(x):
     return 1.0 / (1.0 + np.exp(-x))
 
@@ -149,6 +166,10 @@ class OakDCamera:
         self._pairer = RGBDPairer(capacity=64)
         self._capture_session = str(uuid.uuid4())
         self.mono_fps = min(mono_fps, 30) if record_rgbd else mono_fps
+        # X3_OAK_DEPTH_FPS: A/B switch for the on-device stereo rate. Depth at
+        # 30 fps shares the Myriad with the NN, which then runs at ~5.7 packets/s
+        # against 12 requested; nothing downstream consumes more than 15.
+        self.mono_fps = _depth_fps_override(self.mono_fps)
         self.nn_fps = nn_fps
         self.usb2_mode = usb2_mode
         self._auto_economy = auto_economy   # on a USB2 link, stop streaming mono L/R
