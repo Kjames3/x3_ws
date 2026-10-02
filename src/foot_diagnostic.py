@@ -7,6 +7,7 @@ motor deadband, acceleration limits, or verified foot segmentation yet).
 """
 import bisect
 import math
+import os
 import threading
 import time
 from collections import Counter, deque
@@ -16,6 +17,25 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment, minimize
 
 MAX_AGE = 0.65
+
+
+class StageTimer:
+    """Wall time includes scheduling/GIL waits; CPU time is this worker thread only."""
+    def __init__(self):
+        self.start = self.last = time.monotonic_ns()
+        self.cpu_start = self.cpu_last = time.thread_time_ns()
+        self.stages = {}
+
+    def mark(self, name):
+        now, cpu = time.monotonic_ns(), time.thread_time_ns()
+        self.stages[name + '_wall_ms'] = (now-self.last)/1e6
+        self.stages[name + '_cpu_ms'] = (cpu-self.cpu_last)/1e6
+        self.last, self.cpu_last = now, cpu
+
+    def finish(self):
+        return dict(self.stages, work_wall_ms=(self.last-self.start)/1e6,
+                    work_cpu_ms=(self.cpu_last-self.cpu_start)/1e6,
+                    work_start_monotonic_ns=self.start, result_ready_monotonic_ns=self.last)
 
 
 def measure_feet(detections, depth, intrinsics, nn_size, mount):
@@ -212,6 +232,13 @@ class FootDiagnostic:
             r = dict(self.result)
             age = time.monotonic()-self.last_update if self.last_update else None
         r['update_age_s'] = age
+        timing = dict(r.get('timing', {}))
+        snapshot_ns = time.monotonic_ns()
+        if timing:
+            timing['snapshot_monotonic_ns'] = snapshot_ns
+            timing['ready_to_snapshot_ms'] = (snapshot_ns-timing['result_ready_monotonic_ns'])/1e6
+            timing['capture_to_snapshot_ms'] = (snapshot_ns-timing['capture_monotonic_ns'])/1e6
+            r['timing'] = timing
         if age is None or age > MAX_AGE or r.get('capture_age_s', 0) + age > MAX_AGE:
             r.update(status='stale', feet=[], shadow=dict(status='stale',velocity=None))
         return r
@@ -242,15 +269,20 @@ class FootDiagnostic:
                 dets,meta=self.oak.get_detection_observation()
                 if not meta:
                     continue
+                if 'host_decode_start_monotonic_ns' in meta and 'host_decode_end_monotonic_ns' not in meta:
+                    continue  # incomplete timing publication; retry this packet next poll
                 key=(meta.get('session_id'),meta.get('seq'))
                 if key==last:
                     continue
                 last=key
-                t0=time.perf_counter()
+                timer=StageTimer()
                 cap=meta['host_monotonic_estimate_ns']/1e9
                 sdk_cap=meta['sdk_host_ns']/1e9
                 at=self._pose_at(cap)
+                timer.mark('pose_lookup')
                 near=self.oak.get_depth_near(sdk_cap,max_gap_s=.05)
+                intr = self.oak.get_depth_intrinsics()
+                timer.mark('depth_lookup')
                 status='ok'
                 if pose is None or at is None:
                     status='missing_capture_pose'
@@ -260,16 +292,50 @@ class FootDiagnostic:
                     status='unsynchronized_depth'
                 feet=[];rejected={}
                 if status=='ok':
-                    measurements,rejected=measure_feet(dets,near[1],self.oak.get_depth_intrinsics(),
+                    measurements,rejected=measure_feet(dets,near[1],intr,
                         (self.oak.nn_w,self.oak.nn_h),self.mount)
+                    timer.mark('extraction')
                     self.tracker.update(measurements,cap,at)
                     feet=self.tracker.local(now,pose)
                 else:
+                    timer.mark('extraction')
                     self.tracker.tracks=[]
-                result=dict(mode='diagnostic_only',status=status,feet=feet,shadow=shadow_cbf(feet),
+                timer.mark('tracking')
+                shadow=shadow_cbf(feet)
+                timer.mark('shadow_cbf')
+                timing=timer.finish()
+                timing['capture_monotonic_ns']=meta['host_monotonic_estimate_ns']
+                receipt=meta.get('receipt_monotonic_ns')
+                decoded=meta.get('host_decode_end_monotonic_ns')
+                timing.update(
+                    camera_delivery_ms=(receipt-meta['host_monotonic_estimate_ns'])/1e6 if receipt else None,
+                    receipt_to_work_ms=(timer.start-receipt)/1e6 if receipt else None,
+                    host_predecode_ms=(meta['host_decode_start_monotonic_ns']-receipt)/1e6
+                        if receipt and meta.get('host_decode_start_monotonic_ns') else None,
+                    host_decode_wall_ms=meta.get('host_decode_wall_ms'),
+                    host_decode_cpu_ms=meta.get('host_decode_cpu_ms'),
+                    diagnostic_wait_ms=(timer.start-decoded)/1e6 if decoded else None,
+                    capture_to_ready_ms=(timer.last-meta['host_monotonic_estimate_ns'])/1e6,
+                    stages_ran=status=='ok')
+                settings = {name:getattr(self.oak,name,None) for name in
+                            ('nn_w','nn_h','nn_fps','mono_fps','record_rgbd','subpixel','nn_kpts','usb_speed')}
+                settings['depth_fps_observed']=getattr(self.oak,'depth_fps',None)
+                settings['model_blob']=str(getattr(self.oak,'spatial_blob','unknown'))
+                settings['environment']={name:os.environ.get(name) for name in
+                    ('X3_OAK_DEPTH_FPS','OPENBLAS_NUM_THREADS','OMP_NUM_THREADS')}
+                result=dict(mode='diagnostic_only',status=status,feet=feet,shadow=shadow,
                     rejected=rejected,capture_age_s=now-cap,depth_gap_s=abs(near[0]-sdk_cap) if near else None,
-                    seq=meta.get('seq'), update_ms=(time.perf_counter()-t0)*1000)
+                    session_id=meta.get('session_id'), seq=meta.get('seq'),
+                    update_ms=timing['work_wall_ms'], timing=timing, settings=settings)
                 with self.lock:
+                    ready_ns, ready_cpu = time.monotonic_ns(), time.thread_time_ns()
+                    timing['result_ready_monotonic_ns'] = ready_ns
+                    timing['result_build_wall_ms'] = (ready_ns-timer.last)/1e6
+                    timing['result_build_cpu_ms'] = (ready_cpu-timer.cpu_last)/1e6
+                    timing['work_wall_ms'] = (ready_ns-timer.start)/1e6
+                    timing['work_cpu_ms'] = (ready_cpu-timer.cpu_start)/1e6
+                    timing['capture_to_ready_ms'] = (ready_ns-meta['host_monotonic_estimate_ns'])/1e6
+                    result['update_ms'] = timing['work_wall_ms']
                     self.result=result;self.last_update=now
             except Exception as exc:
                 self.tracker.tracks=[]

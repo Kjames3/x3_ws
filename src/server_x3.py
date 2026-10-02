@@ -2364,7 +2364,19 @@ async def handle_client(websocket):
                 data = json.loads(message)
                 msg_type = data.get("type")
 
-                if msg_type == "set_power":
+                if msg_type == "diagnostic_clock_ping":
+                    # Read-only timing exchange. It never touches motion state.
+                    received_ns = time.monotonic_ns()
+                    nonce = data.get("nonce")
+                    if not isinstance(nonce, str) or len(nonce) > 80:
+                        continue
+                    await websocket.send(orjson_dumps({
+                        "type": "diagnostic_clock_pong", "nonce": nonce,
+                        "server_receive_monotonic_ns": received_ns,
+                        "server_send_monotonic_ns": time.monotonic_ns(),
+                    }))
+
+                elif msg_type == "set_power":
                     # Tank-drive sliders / gamepad axes
                     motor = data.get("motor")
                     power = float(data.get("power", 0.0))
@@ -3286,6 +3298,7 @@ async def broadcast_loop():
     loop = asyncio.get_event_loop()
     _depth_cycle = 0  # throttle depth to ~10 fps (every other 20fps cycle)
     _loop_i = 0       # drives the ~2 Hz "readout_slow" lane (every 10th cycle)
+    previous_readout_timing = None
 
     while True:
         if _shutting_down:
@@ -3521,8 +3534,20 @@ async def broadcast_loop():
                 "tilt": tilt_state,
                 "tof": _tof_state,
             }
-            # Fast orjson serialization with fallback (Idea 87)
-            websockets.broadcast(connected_clients, orjson_dumps(msg))
+            # Durations for encoding/broadcast are reported on the NEXT readout,
+            # with their frame_seq, avoiding a second serialization of each frame.
+            prepared_ns = time.monotonic_ns()
+            msg['telemetry_timing'] = {
+                'frame_seq': _loop_i, 'prepare_monotonic_ns': prepared_ns,
+                'previous_frame': previous_readout_timing,
+            }
+            encoded = orjson_dumps(msg)
+            encoded_ns = time.monotonic_ns()
+            websockets.broadcast(connected_clients, encoded)
+            broadcast_ns = time.monotonic_ns()
+            previous_readout_timing = dict(frame_seq=_loop_i,
+                encode_wall_ms=(encoded_ns-prepared_ns)/1e6,
+                broadcast_wall_ms=(broadcast_ns-encoded_ns)/1e6)
 
             # 9. Slow readout lane (~2 Hz): nav / SLAM / frontier / model / fps / test
             #    status. These are subprocess polls or dict-builds that don't need 20 Hz,

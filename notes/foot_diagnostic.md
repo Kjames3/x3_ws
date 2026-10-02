@@ -55,7 +55,7 @@ python3 scripts/foot_diagnostic_capture.py --host x3 --seconds 20 --label first-
 ```
 
 The tool prints a three-second countdown, START, then STOP and packet counts.
-It sends no commands. Evidence is NDJSON plus a summary under
+It sends only read-only clock probes, never movement commands. Evidence is NDJSON plus a summary under
 `evidence/foot-diagnostic/`. No regions in the summary means inspect rejection
 reasons before attempting a longer capture. This logs outputs for review; it does
 not save RGB/depth or provide ground-truth foot positions.
@@ -74,3 +74,50 @@ Live foot localization remains pending until the restarted server supplies actua
 foot/depth pairs. Existing cached pose replay outputs located for this task have
 boxes but no keypoints and cannot prove this measurement path. Compare this
 first diagnostic against the physical scene before any motor-enabled work.
+
+## Stage timing (instrumentation pass)
+
+Each diagnostic packet now includes `timing`, `session_id`, and `settings`.
+No detection thresholds, association gates, stale cutoff, or CBF limits changed.
+The current completed decode is measured before the foot worker consumes it.
+
+- `camera_delivery_ms`: estimated capture to host packet receipt. This combines
+  on-device inference, camera/device queues, USB transfer and host queue polling;
+  it does **not** isolate pure neural-network inference time.
+- `host_predecode_ms`, `host_decode_wall_ms` / `host_decode_cpu_ms`: receipt to
+  decode start, then host decoding and localization. SDK device-to-host clock
+  conversion has no calibrated hard error bound.
+- `diagnostic_wait_ms`: completed decode to diagnostic work start (poll/scheduling).
+- `pose_lookup`, `depth_lookup`, `extraction`, `tracking`, `shadow_cbf`, and
+  `result_build`, each with `_wall_ms` and `_cpu_ms`. Wall includes scheduling
+  and GIL waits; CPU is only the calling thread, not BLAS/OpenCV helper threads.
+  A large wall/CPU difference is a lead to investigate, not proof of a GIL issue.
+- `work_wall_ms`, `work_cpu_ms`, `capture_to_ready_ms`: aggregate work and age.
+- `ready_to_snapshot_ms`, `capture_to_snapshot_ms`: completed result waiting for
+  broadcast-loop consumption, and age at that point. Repeated snapshots are kept.
+
+Readouts also carry `telemetry_timing`: frame sequence, a monotonic timestamp
+before encoding, and encoding/broadcast-call durations for the **previous** frame
+(explicitly identified by its own sequence). This avoids serializing twice.
+The broadcast duration measures enqueue work, not network delivery completion.
+
+The capture script sends read-only `diagnostic_clock_ping` probes before/after a
+run. Four timestamps bound the server-minus-laptop monotonic clock offset; the
+lowest-roundtrip-width sample supplies an estimate and ± bound. The output logs
+`prepare_to_client_estimate_ms` (encoding + server/network/client queues + transport)
+and `capture_to_client_estimate_ms`. These exclude browser rendering. The bound
+covers the host clock probe assuming nonnegative path delays, not device timestamp
+error or arbitrary clock drift; before/after consistency is included in `clock.json`.
+An older server without the probe still records data but has no delivery estimate.
+Negative estimates are retained rather than concealing synchronization uncertainty.
+
+`summary.json` reports per-stage median/p95/max, packet and telemetry intervals,
+all-readout stale gaps, and camera settings (requested NN/depth rate, observed depth
+rate, input size, model blob, RGB-D recording/subpixel, USB and threading environment).
+Distinct packets are keyed by session + sequence. Repeated readouts do not overweight
+processing times, but they do contribute snapshot ages and stale-gap reporting.
+
+Run the same 20-second command above after restarting the updated server. The
+script still prints countdown/START/STOP and never sends movement commands.
+Timing instrumentation and a real local WebSocket exchange with synthetic data
+are covered by `tests/test_foot_timing.py`; real sensor timing needs the next capture.

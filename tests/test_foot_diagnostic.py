@@ -139,6 +139,14 @@ def test_worker_timestamped_pipeline_and_missing_depth():
             time.sleep(.03)
         assert result['status']=='ok' and result['feet'][0]['velocity_ready']
         assert result['shadow']['status']=='suggestion'
+        timing=result['timing']
+        stages=['pose_lookup','depth_lookup','extraction','tracking','shadow_cbf','result_build']
+        assert all(timing[s+'_wall_ms']>=0 and timing[s+'_cpu_ms']>=0 for s in stages)
+        assert abs(sum(timing[s+'_wall_ms'] for s in stages)-timing['work_wall_ms'])<1e-6
+        assert abs(sum(timing[s+'_cpu_ms'] for s in stages)-timing['work_cpu_ms'])<1e-6
+        assert timing['ready_to_snapshot_ms']>=0
+        assert timing['capture_to_snapshot_ms']>=timing['capture_to_ready_ms']
+        assert result['settings']['nn_w']==480
         json.dumps(result,allow_nan=False)
         camera.missing=True
         end=time.monotonic()+1
