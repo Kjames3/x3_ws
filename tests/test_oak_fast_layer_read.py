@@ -101,3 +101,14 @@ def test_depth_fps_override_only_accepts_a_sane_number():
     assert f(30, {'X3_OAK_DEPTH_FPS': '60'}) == 30     # never above the default
     assert f(30, {'X3_OAK_DEPTH_FPS': '3'}) == 30
     assert f(30, {'X3_OAK_DEPTH_FPS': 'abc'}) == 30
+
+
+def test_blob_variant_swaps_only_when_asked_and_present(tmp_path):
+    from oakd_driver import _blob_variant as f
+    blob = tmp_path / 'm.blob'
+    blob.write_bytes(b'8')
+    assert f(str(blob), {}) == str(blob)
+    assert f(str(blob), {'X3_OAK_BLOB_SHAVES': '4'}) == str(blob)      # variant missing
+    (tmp_path / 'm_4shave.blob').write_bytes(b'4')
+    assert f(str(blob), {'X3_OAK_BLOB_SHAVES': '4'}) == str(tmp_path / 'm_4shave.blob')
+    assert f(None, {'X3_OAK_BLOB_SHAVES': '4'}) is None

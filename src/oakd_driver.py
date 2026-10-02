@@ -107,6 +107,26 @@ _COCO80 = [
 ]
 
 
+def _blob_variant(blob_path, env=None):
+    """X3_OAK_BLOB_SHAVES=N swaps in `<stem>_<N>shave.blob` when it exists.
+
+    The deployed blobs were compiled for 8 SHAVEs, but the pipeline runs 2
+    inference threads; the device asks for 4 at every start ("compiling for 4
+    shaves likely will yield in better performance"). A/B switch, default off.
+    """
+    n = (os.environ if env is None else env).get("X3_OAK_BLOB_SHAVES")
+    if not blob_path or not n:
+        return blob_path
+    stem, ext = os.path.splitext(blob_path)
+    variant = f"{stem}_{n}shave{ext}"
+    if not os.path.exists(variant):
+        logger.warning(f"OakDCamera: X3_OAK_BLOB_SHAVES={n} but {os.path.basename(variant)} "
+                       "is missing; using the default blob")
+        return blob_path
+    logger.info(f"OakDCamera: using {os.path.basename(variant)} (X3_OAK_BLOB_SHAVES)")
+    return variant
+
+
 def _depth_fps_override(default, env=None):
     """Stereo fps from X3_OAK_DEPTH_FPS (5..default), else `default`."""
     raw = (os.environ if env is None else env).get("X3_OAK_DEPTH_FPS")
@@ -181,7 +201,7 @@ class OakDCamera:
         self.speckle_range = speckle_range
         self.sim_mode = sim_mode
 
-        self.spatial_blob = spatial_blob
+        self.spatial_blob = _blob_variant(spatial_blob)
         self._want_spatial = bool(spatial_blob)
         self._spatial_ok = self._want_spatial
         self.labels = _COCO80
@@ -836,7 +856,22 @@ class OakDCamera:
 
     def _process_nn(self, nndata, metadata=None):
         before = self._latest_detections_t
+        decode_start = time.monotonic_ns()
+        decode_cpu = time.thread_time_ns()
+        if metadata is not None:
+            metadata = dict(metadata, host_decode_start_monotonic_ns=decode_start)
         self._decode_nn(nndata, metadata)
+        decode_end = time.monotonic_ns()
+        decode_cpu_ms = (time.thread_time_ns() - decode_cpu) / 1e6
+        # Publish timing on the same packet, under the same observation lock.
+        # Consumers can distinguish a decode still in progress from a completed one.
+        if metadata is not None:
+            with self._lock:
+                if self._latest_detection_meta is metadata:
+                    self._latest_detection_meta = dict(metadata,
+                        host_decode_end_monotonic_ns=decode_end,
+                        host_decode_wall_ms=(decode_end-decode_start)/1e6,
+                        host_decode_cpu_ms=decode_cpu_ms)
         if self._det_log is not None and self._latest_detections_t != before:
             self._write_det_log()
 
