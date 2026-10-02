@@ -270,6 +270,12 @@ class OakDCamera:
                 self.nn_h, self.nn_w = int(shape[2]), int(shape[3])
             outs = model.get("outputs") or [{}]
             self.nn_out_name = outs[0].get("name")
+            output_shape = outs[0].get("shape")
+            if output_shape and len(output_shape) == 3:
+                # Raw YOLO NCD output: anchor count changes with input size.
+                self._N_ANCHORS = int(output_shape[2])
+                if self._N_ANCHORS <= 0:
+                    raise ValueError("YOLO output anchor count must be positive")
             # Segmentation heads add a prototype output (1, n_masks, H/4, W/4).
             if len(outs) > 1:
                 self.nn_proto_name = outs[1].get("name")
@@ -456,7 +462,11 @@ class OakDCamera:
 
             nn = pipeline.create(dai.node.NeuralNetwork)
             nn.setBlobPath(self.spatial_blob)
-            nn.setNumInferenceThreads(2)
+            inference_threads = os.environ.get("X3_OAK_NN_THREADS", "2")
+            if inference_threads not in ("1", "2"):
+                raise ValueError("X3_OAK_NN_THREADS must be 1 or 2")
+            nn.setNumInferenceThreads(int(inference_threads))
+            logger.info("OakDCamera: NN inference threads %s", inference_threads)
             nn.input.setBlocking(False)
             if self.record_rgbd:
                 # NN queue references must not exhaust the RGB preview pool.
@@ -472,6 +482,12 @@ class OakDCamera:
 
             xoutDet = pipeline.create(dai.node.XLinkOut)
             xoutDet.setStreamName("det")
+            # Controlled latency experiment: drop old results rather than let
+            # host backpressure retain up to the SDK default eight outputs.
+            if os.environ.get("X3_OAK_NN_LATEST_OUTPUT") == "1":
+                xoutDet.input.setQueueSize(1)
+                xoutDet.input.setBlocking(False)
+                logger.info("OakDCamera: NN output queue latest-only (size 1, nonblocking)")
             nn.out.link(xoutDet.input)
         else:
             align_socket = (dai.CameraBoardSocket.CAM_B if self.align_depth_to_left
@@ -541,10 +557,13 @@ class OakDCamera:
                     # shared RGB preview kept flowing, silently. Every NN packet is
                     # normally a fresh answer (empty or not), so a gap means a stall.
                     det_last_rx = None
+                    previous_det_poll_ns = None
                     fps_win_n, fps_win_t = 0, fps_t   # ~1s window for the live get_depth_fps() value
                     # Block on the depth queue (paces the loop at the depth rate, no busy-spin).
                     while self._running:
+                        loop_start_ns = time.monotonic_ns()
                         inDepth = qDepth.get()          # blocks until the next (freshest) depth frame
+                        depth_received_ns = time.monotonic_ns()
                         if inDepth is not None:
                             if qRgb is not None:
                                 # Retain device-time history for slower RGB delivery.
@@ -572,11 +591,13 @@ class OakDCamera:
                                             f"(USB {self.usb_speed}, mono {self.mono_fps} req"
                                             f"{', economy' if economy else ''})")
                                 fps_n, fps_t = 0, _now
+                        depth_done_ns = time.monotonic_ns()
                         if qRgb is not None:
                             for inRgb in qRgb.tryGetAll():
                                 meta = self._packet_meta(inRgb)
                                 self._enqueue_pairs(self._pairer.add('rgb',
                                     {'image': inRgb.getCvFrame(), 'meta': meta}))
+                        rgb_done_ns = time.monotonic_ns()
                         if qLeft is not None:
                             inLeft = qLeft.tryGet()
                             if inLeft is not None:
@@ -591,10 +612,22 @@ class OakDCamera:
                         if inImu is not None:
                             self._process_imu(inImu)
                         if qDet is not None:
+                            det_poll_ns = time.monotonic_ns()
                             inDet = qDet.tryGet()
+                            det_dequeue_ns = time.monotonic_ns()
+                            poll_interval_ms = ((det_poll_ns-previous_det_poll_ns)/1e6
+                                                if previous_det_poll_ns is not None else None)
+                            previous_det_poll_ns = det_poll_ns
                             if inDet is not None:
                                 det_last_rx = time.monotonic()
                                 detection_meta = self._packet_meta(inDet)
+                                detection_meta['camera_host_timing'] = dict(
+                                    camera_depth_wait_ms=(depth_received_ns-loop_start_ns)/1e6,
+                                    camera_depth_work_ms=(depth_done_ns-depth_received_ns)/1e6,
+                                    camera_rgb_work_ms=(rgb_done_ns-depth_done_ns)/1e6,
+                                    camera_aux_work_ms=(det_poll_ns-rgb_done_ns)/1e6,
+                                    camera_nn_dequeue_ms=(det_dequeue_ns-det_poll_ns)/1e6,
+                                    camera_nn_poll_interval_ms=poll_interval_ms)
                                 self._process_nn(inDet, detection_meta)
                             elif (det_last_rx is not None
                                   and time.monotonic() - det_last_rx > NN_STALL_S):

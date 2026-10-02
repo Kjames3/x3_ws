@@ -14,7 +14,7 @@ from collections import Counter, deque
 
 import cv2
 import numpy as np
-from scipy.optimize import linear_sum_assignment, minimize
+from scipy.optimize import linear_sum_assignment
 
 MAX_AGE = 0.65
 
@@ -178,6 +178,53 @@ class FootTracker:
         return out
 
 
+def minimum_norm_velocity(a, b, speed_limit):
+    """Project zero onto 2-D half-planes a @ u + b >= 0, then check speed.
+
+    The closest point of a nonempty closed polygon is zero, a perpendicular
+    projection onto an edge, or a vertex. If that point exceeds the speed
+    limit, intersecting the polygon with the speed disk cannot be feasible.
+    Enumerating candidates avoids iterative optimization, including for
+    contradictory constraints. O(n**3) checks; n is the number of ready feet.
+    """
+    a = np.asarray(a, dtype=float).reshape(-1, 2)
+    b = np.asarray(b, dtype=float).reshape(-1)
+    if (len(a) != len(b) or not np.isfinite(a).all()
+            or not np.isfinite(b).all() or not math.isfinite(speed_limit)
+            or speed_limit < 0):
+        return None
+    # Normalize to velocity units so tolerance does not depend on foot range.
+    lengths = np.hypot(a[:, 0], a[:, 1])
+    nonzero = lengths > 0
+    if np.any(b[~nonzero] < 0):
+        return None
+    a = a[nonzero] / lengths[nonzero, None]
+    b = b[nonzero] / lengths[nonzero]
+    tolerance = 1e-10
+    best = None
+    best_norm = float('inf')
+
+    def consider(u):
+        nonlocal best, best_norm
+        norm = math.hypot(float(u[0]), float(u[1]))
+        if (np.isfinite(u).all() and norm <= speed_limit + tolerance
+                and norm < best_norm and np.all(a @ u + b >= -tolerance)):
+            best, best_norm = u, norm
+
+    consider(np.zeros(2))
+    if best is not None:
+        return best
+    for i in range(len(b)):
+        consider(-b[i] * a[i])
+        for j in range(i):
+            det = a[i, 0]*a[j, 1] - a[i, 1]*a[j, 0]
+            if det == 0:
+                continue
+            consider(np.array([(a[i, 1]*b[j]-b[i]*a[j, 1])/det,
+                               (b[i]*a[j, 0]-a[i, 0]*b[j])/det]))
+    return best
+
+
 def shadow_cbf(feet):
     """Moving-obstacle CBF about nominal zero, radius incl. display uncertainty.
 
@@ -193,13 +240,10 @@ def shadow_cbf(feet):
     radii = np.array([.30+f['radius_m']+2*f['sigma_m'] for f in active])
     a = -2*o
     b = 2*np.sum(o*vel,axis=1)+np.sum(o*o,axis=1)-radii*radii
-    constraints = [dict(type='ineq',fun=lambda u:a@u+b,jac=lambda u:a),
-                   dict(type='ineq',fun=lambda u:.15**2-u@u,jac=lambda u:-2*u)]
-    res = minimize(lambda u:.5*u@u,np.zeros(2),jac=lambda u:u,
-                   constraints=constraints,method='SLSQP',options={'maxiter':40,'ftol':1e-8})
-    feasible = bool(res.success and np.min(a@res.x+b)>=-1e-5 and np.linalg.norm(res.x)<=.15001)
+    solution = minimum_norm_velocity(a, b, .15)
+    feasible = solution is not None
     return dict(status='suggestion' if feasible else 'infeasible',
-                velocity={'fwd':float(res.x[0]),'left':float(res.x[1])} if feasible else None,
+                velocity={'fwd':float(solution[0]),'left':float(solution[1])} if feasible else None,
                 min_margin_m=float(np.min(np.linalg.norm(o,axis=1)-radii)),
                 nominal='stationary', speed_limit_mps=.15,
                 scope='feet_only_no_actuator_or_surroundings_validation')
@@ -317,12 +361,13 @@ class FootDiagnostic:
                     diagnostic_wait_ms=(timer.start-decoded)/1e6 if decoded else None,
                     capture_to_ready_ms=(timer.last-meta['host_monotonic_estimate_ns'])/1e6,
                     stages_ran=status=='ok')
+                timing.update(meta.get('camera_host_timing', {}))
                 settings = {name:getattr(self.oak,name,None) for name in
                             ('nn_w','nn_h','nn_fps','mono_fps','record_rgbd','subpixel','nn_kpts','usb_speed')}
                 settings['depth_fps_observed']=getattr(self.oak,'depth_fps',None)
                 settings['model_blob']=str(getattr(self.oak,'spatial_blob','unknown'))
                 settings['environment']={name:os.environ.get(name) for name in
-                    ('X3_OAK_DEPTH_FPS','OPENBLAS_NUM_THREADS','OMP_NUM_THREADS')}
+                    ('X3_OAK_DEPTH_FPS','X3_OAK_BLOB_SHAVES','X3_OAK_NN_LATEST_OUTPUT','X3_OAK_NN_THREADS','OPENBLAS_NUM_THREADS','OMP_NUM_THREADS')}
                 result=dict(mode='diagnostic_only',status=status,feet=feet,shadow=shadow,
                     rejected=rejected,capture_age_s=now-cap,depth_gap_s=abs(near[0]-sdk_cap) if near else None,
                     session_id=meta.get('session_id'), seq=meta.get('seq'),

@@ -1,0 +1,82 @@
+{
+  "before": {
+    "samples": [
+      {
+        "offset_ns": -45795014284123.5,
+        "error_bound_ns": 2198403.5,
+        "round_trip_ns": 4399751,
+        "server_handling_ns": 2944,
+        "client_midpoint_ns": 46159748154784.5
+      },
+      {
+        "offset_ns": -45795014562789.5,
+        "error_bound_ns": 1924412.5,
+        "round_trip_ns": 3852249,
+        "server_handling_ns": 3424,
+        "client_midpoint_ns": 46159752302479.5
+      },
+      {
+        "offset_ns": -45795014508757.0,
+        "error_bound_ns": 2142964.0,
+        "round_trip_ns": 4289864,
+        "server_handling_ns": 3936,
+        "client_midpoint_ns": 46159756395805.0
+      },
+      {
+        "offset_ns": -45795014752496.0,
+        "error_bound_ns": 3468877.0,
+        "round_trip_ns": 6942298,
+        "server_handling_ns": 4544,
+        "client_midpoint_ns": 46159762039755.0
+      },
+      {
+        "offset_ns": -45795005481376.0,
+        "error_bound_ns": 11593779.0,
+        "round_trip_ns": 23194311,
+        "server_handling_ns": 6753,
+        "client_midpoint_ns": 46159777128077.5
+      }
+    ],
+    "best": {
+      "offset_ns": -45795014562789.5,
+      "error_bound_ns": 1924412.5,
+      "round_trip_ns": 3852249,
+      "server_handling_ns": 3424,
+      "client_midpoint_ns": 46159752302479.5
+    }
+  },
+  "after": {
+    "samples": [
+      {
+        "offset_ns": -45795015792925.0,
+        "error_bound_ns": 8616628.0,
+        "round_trip_ns": 17237928,
+        "server_handling_ns": 4672,
+        "client_midpoint_ns": 46182824331321.0
+      },
+      {
+        "offset_ns": -45795014472717.0,
+        "error_bound_ns": 2161306.0,
+        "round_trip_ns": 4326932,
+        "server_handling_ns": 4320,
+        "client_midpoint_ns": 46182835153257.0
+      },
+      {
+        "offset_ns": -45795014808234.0,
+        "error_bound_ns": 1630512.0,
+        "round_trip_ns": 3263872,
+        "server_handling_ns": 2848,
+        "client_midpoint_ns": 46182838967421.0
+      }
+    ],
+    "best": {
+      "offset_ns": -45795014808234.0,
+      "error_bound_ns": 1630512.0,
+      "round_trip_ns": 3263872,
+      "server_handling_ns": 2848,
+      "client_midpoint_ns": 46182838967421.0
+    }
+  },
+  "offset_change_ms": -0.2454445,
+  "consistent_with_probe_bounds": true
+}

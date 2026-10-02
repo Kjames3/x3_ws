@@ -154,7 +154,7 @@ parser.add_argument('--auto-nav2-map', type=str, default=None, dest='auto_nav2_m
 parser.add_argument('--oak-cloud', action='store_true', dest='oak_cloud',
                     help='Enable OAK-D point cloud publishing.')
 parser.add_argument('--oak-model', default='yolo26n',
-                    choices=['yolo26n', 'yolo11n-pose', 'yolo26n-pose', 'yolo26n-seg', 'yolo11n-seg'],
+                    choices=['yolo26n', 'yolo11n-pose', 'yolo26n-pose', 'yolo26n-pose-512', 'yolo26n-seg', 'yolo11n-seg'],
                     help='On-device OAK YOLO blob under src/blobs/<name>/. The pose '
                          'models also detect people (label "person") and add '
                          'COCO-17 "keypoints" to each detection.')

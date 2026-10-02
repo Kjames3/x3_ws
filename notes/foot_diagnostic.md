@@ -121,3 +121,57 @@ Run the same 20-second command above after restarting the updated server. The
 script still prints countdown/START/STOP and never sends movement commands.
 Timing instrumentation and a real local WebSocket exchange with synthetic data
 are covered by `tests/test_foot_timing.py`; real sensor timing needs the next capture.
+
+### Direct shadow solver (2026-10-02)
+
+The shadow CBF now enumerates the minimum-norm candidate velocities for its
+2-D half-plane constraints: zero, perpendicular boundary projections, and
+pairwise boundary intersections. It accepts the shortest feasible candidate
+within the existing 0.15 m/s speed disk. If the unconstrained polygon's closest
+point lies outside the disk, the bounded problem is infeasible. No iterative
+optimizer is needed. Candidate checks scale cubically with the number of ready
+feet; this is not a hard real-time scheduling guarantee.
+
+The barrier, uncertainty inflation, nominal stationary velocity, diagnostic-only
+integration, and explicit infeasible result remain unchanged. Normalized
+constraint and speed tolerances are 1e-10 m/s. Tests cover contradictory and
+parallel constraints, degenerate normals, speed boundaries, 200 randomized
+comparisons with SLSQP, and the recorded foot-timing capture (65 suggestions and
+18 infeasible results reproduced). Live timing after restart remains to be
+measured; this change does not address camera delivery latency.
+
+### Camera host polling timing
+
+The camera delivery measurement ends when the driver dequeues the pose packet,
+not when USB first delivers it. The driver polls pose after depth, recording RGB,
+and auxiliary processing. Additional `camera_*_ms` fields measure depth blocking,
+depth work, RGB work, auxiliary work, NN dequeue, and the preceding pose poll
+interval. They use host monotonic time and include scheduling delays. These
+stages describe the loop that consumed the pose, not necessarily the loop that
+received it. Do not subtract their sum from delivery and label the remainder
+inference time: device preprocessing, inference, transport, and queue residence
+are not individually timestamped. Samples cover loops that consumed a pose only.
+Use `--label foot-camera-polling` after restarting to establish this baseline
+before changing model or inference settings.
+
+### 2026-10-02 latency experiments
+
+The retained live configuration is yolo26n-pose-512 (384x512 portrait), four
+SHAVEs, two inference threads; latest-only NN output remains enabled. Full-size
+four-SHAVE / two-thread baseline (140618) versus smaller working model (143953):
+camera delivery median 268.8 -> 142.8 ms, p95 312.6 -> 165.5 ms; capture to
+ready median 313.8 -> 186.5 ms. Both had feet in every distinct packet and no
+recorded gaps. Laptop age comparisons are approximate: baseline clock probes
+were inconsistent; smaller model's initial bound was +/-10.2 ms.
+
+The 143550 smaller-model run is INVALID for tracking: the host decoder assumed
+6300 anchors and rejected the 4032-anchor output. The decoder now reads the
+output count from config, with regression tests for both sizes. The 134223
+polling run predates the server restart and lacks the new stage fields.
+
+Four SHAVEs roughly doubled observed update throughput versus eight, but did
+not reduce median delivery by itself (compiler versions also differ). Reducing
+the output queue produced no material latency change. One inference thread
+reduced delivery slightly but lost updates and did not improve overall freshness.
+Smaller input also reduces aligned depth size; foot localization accuracy and
+occlusion recovery are still unvalidated. No experiment enables foot actuation.

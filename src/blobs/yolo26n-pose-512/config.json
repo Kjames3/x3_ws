@@ -1,0 +1,52 @@
+{
+  "config_version": "1.0",
+  "model": {
+    "metadata": {
+      "name": "yolo26n-pose-512",
+      "path": "yolo26n-pose-512_4shave.blob",
+      "precision": "float16",
+      "source": "Local ONNX export from models/yolo26n-pose.pt; OpenVINO 2022.3, FP16, 4 SHAVEs; same preprocessing as full-size variant"
+    },
+    "inputs": [
+      {
+        "name": "images",
+        "dtype": "uint8",
+        "input_type": "image",
+        "shape": [
+          1,
+          3,
+          512,
+          384
+        ],
+        "layout": "NCHW"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "output0",
+        "dtype": "float32",
+        "shape": [
+          1,
+          56,
+          4032
+        ],
+        "layout": "NCD"
+      }
+    ],
+    "heads": [
+      {
+        "name": null,
+        "parser": "YOLOPose",
+        "metadata": {
+          "classes": [
+            "person"
+          ],
+          "n_classes": 1,
+          "n_keypoints": 17,
+          "conf_threshold": 0.5,
+          "iou_threshold": 0.5
+        }
+      }
+    ]
+  }
+}
