@@ -165,6 +165,8 @@ parser.add_argument('--oak-det-log', default=None, metavar='DIR',
 parser.add_argument('--no-c3-live', action='store_true', dest='no_c3_live',
                     help='Disable the diagnostic C3 person tracker (OAK YOLO boxes + '
                          'Kalman). It never reaches the CBF; it only feeds the GUI.')
+parser.add_argument('--no-foot-diagnostic', action='store_true',
+                    help='Disable read-only depth-backed foot/CBF diagnostic telemetry.')
 args = parser.parse_args()
 if args.c1_subpixel and not args.c1_recording:
     parser.error("--c1-subpixel requires --c1-recording")
@@ -282,6 +284,7 @@ _shutting_down  = False  # set on SIGINT/SIGTERM/cleanup so motion_loop stops pu
                          # context RCLError → C++ abort that orphaned the bringup stack)
 velocity_estimator = None  # VelocityEstimator instance (EE244 project)
 c3_live = None             # diagnostic C3 person tracker (src/c3_live.py), GUI only
+foot_diagnostic = None     # isolated shadow evaluator; NEVER passed to drive/CBF
 active_velocity_model_name = "velocity_mlp_v3"  # currently loaded torchscript velocity model
 # v3 deployed 2026-09-04. Measured against v1 on one recorded capture replayed
 # offline (src/score_velocity_models.py): closer to truth at range (+15% vs
@@ -2049,6 +2052,27 @@ def initialize_hardware():
             logger.error(f"Failed to start C3 live tracker: {e}")
             c3_live = None
 
+    # A read-only consumer, separate from ROS2Bridge.move and its obstacle lists.
+    global foot_diagnostic
+    if not args.no_foot_diagnostic and oak is not None:
+        try:
+            from foot_diagnostic import FootDiagnostic
+            from oakd_driver import OAK_MOUNT_X
+            ground = json.loads((Path(__file__).resolve().parent.parent /
+                                 'config/camera_ground_plane.json').read_text())
+            def _foot_pose():
+                if ros_bridge is None or time.monotonic() - ros_bridge._odom_stamp > 0.5:
+                    return None
+                return ros_bridge.get_pose_m()
+            foot_diagnostic = FootDiagnostic(oak, _foot_pose,
+                (OAK_MOUNT_X, float(ground['camera_height_m']),
+                 math.radians(float(ground['camera_pitch_deg']))))
+            foot_diagnostic.start()
+            logger.info("Foot diagnostic started (telemetry only; no motor output)")
+        except Exception as e:
+            logger.error(f"Foot diagnostic unavailable: {e}")
+            foot_diagnostic = None
+
     logger.info("="*50)
     logger.info("Initialization Complete")
     logger.info("="*50)
@@ -2103,6 +2127,8 @@ def cleanup():
             oak_ros_pub.stop()
         except Exception as e:
             logger.error(f"Failed to stop OAK-D ROS publisher: {e}")
+    if foot_diagnostic is not None:
+        foot_diagnostic.stop()
     if oak is not None:
         try:
             logger.info("Stopping OAK-D Lite driver...")
@@ -3479,6 +3505,7 @@ async def broadcast_loop():
                 "velocity_estimates": velocity_estimates,
                 "c3_tracks": c3_tracks,
                 "c3_stats": c3_stats,
+                "foot_diagnostic": foot_diagnostic.snapshot() if foot_diagnostic is not None else None,
                 "battery": {"voltage": batt_v, "amps": est_current, "watts": est_watts},
                 "power": {
                     "voltage":     batt_v,

@@ -1977,6 +1977,10 @@ function handleMessage(data) {
             state.latestData.oakDetections = data.oak_detections;
             state.latestData.oakDetectionsAt = performance.now();
         }
+        if (data.foot_diagnostic !== undefined) {
+            state.latestData.footDiagnostic = data.foot_diagnostic;
+            state.latestData.footDiagnosticAt = performance.now();
+        }
         if (data.c3_tracks !== undefined) {
             state.latestData.c3Tracks = data.c3_tracks;
             state.latestData.c3Stats = data.c3_stats;

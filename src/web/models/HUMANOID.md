@@ -56,3 +56,66 @@ NODE_PATH=/tmp/x3-gui-check/node_modules node tests/test_humanoid_walk.cjs
 Three.js/FBXLoader and decompression are offline build dependencies only.
 The deployed browser loads the compact baked JS asset; the Jetson sends the same
 tracking messages and runs no additional inference.
+
+## Observed body pose
+
+`avatar.pose(directions, dt)` follows `animate` and accepts bone-name entries
+`{ direction: THREE.Vector3, confidence: number }` in viewer world coordinates.
+The GUI uses both endpoint confidences (minimum 0.5) for arms, thighs and shins,
+and shoulder/hip midpoints for torso lean. Confidence controls blend strength;
+a missing limb holds for 0.2 s and then fades to the illustrative animation.
+Detection messages older than 0.5 s are rejected by the scene view.
+The surroundings hint identifies incomplete leg observations. The prediction
+copy uses the same observed pose, not a prediction of future joint movement.
+
+After fitting, support-foot grounding lowers the body for visible seated bends
+and permits one leg to lift while the other supports it. Track position stays
+unchanged. This assumes a level floor and a supported person; jumping, stairs,
+and feet suspended above the floor are not reconstructed. Generic body size
+remains 1.7 m. Joint depth is still flattened to the torso plane, so frontal
+sitting, forward kicks, hidden limbs and exact body yaw remain ambiguous.
+All new fitting and smoothing runs in the viewing browser; no inference or
+camera-stream changes are required on the robot.
+
+Check with `NODE_PATH=<three module directory> node tests/test_humanoid_pose.cjs`
+and the existing walking test. Live sitting/one-leg/walking checks remain needed.
+
+Heading stability: body heading is a smoothed travel estimate, not measured chest
+orientation. Updating it requires speed >= 0.25 m/s for >= 0.35 s and net travel
+>= 0.18 m. At rest it retains its last target heading. Same-ID dropouts retain
+state for 0.75 s while hidden. This suppresses posture-induced velocity spikes;
+it cannot recover a stationary turn or resolve front/back ambiguity.
+
+## Leg constraints and stationary foot contacts
+
+`pose-refinement.js` adds browser-only display priors. Both leg observations must
+be present for coordinated fitting. Hip elevation is limited to 135 degrees from
+down; knee flexion to 150 degrees. A broad 80-degree hip-twist allowance preserves
+sideways leg lifts, while the thigh and shin share a bend plane. Constraints fade
+with observation confidence. These are generic visualization limits, not measured
+joint angles, and the flattened depth still makes some poses ambiguous.
+
+Confident feet near the floor can acquire a contact after 0.2 s of stability.
+Fixed-length two-bone fitting corrects small ankle drift (at most 7.5 cm); an
+unreachable target releases rather than stretching the leg. Contacts release on
+foot lift/motion, lost confidence, track jumps, appreciable heading changes, or
+person speed >= 0.2 m/s. They are disabled without robot pose telemetry, during
+robot movement, on predicted-only C3 tracks, and on the prediction ghost.
+This first pass stabilizes standing/seated support, not walking stance phases.
+Tracking position remains untouched. The ghost shares pose observations but does
+not inherit physical foot contacts at its predicted location.
+
+The **Estimate body facing (experimental)** checkbox is off by default. When
+selected, shoulder and hip left/right ordering must agree, with confidence >= .75
+and sufficiently wide projection relative to torso length. A front/back cue must
+persist for 0.6 s before overriding travel heading. Side-on views supply no cue;
+ambiguous stationary observations retain the previous heading. This estimates
+broad front/back orientation, not continuous yaw or independent chest/pelvis twist.
+Uncheck to return to the established travel-heading behavior.
+
+Validation: `tests/test_pose_refinement.cjs` covers geometric limits, side lifts,
+sitting, fixed-length contact IK, unreachable contacts, release conditions,
+synthetic ankle-jitter suppression, and facing-cue ambiguity. Existing humanoid
+pose/walk checks cover dropout, heading persistence and moving poses. Browser
+comparison shows standing, knee lift, sitting and crouch alongside the previous
+version. Live validation of this refinement pass is still pending.

@@ -1,0 +1,10 @@
+{
+  "unique_packets": 83,
+  "packets_with_feet": 80,
+  "statuses": {
+    "ok": 81,
+    "stale": 2
+  },
+  "motors_commanded": false,
+  "note": "Coverage only, not detection accuracy or safety validation."
+}

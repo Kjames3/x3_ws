@@ -326,6 +326,16 @@
                 <h2>Surroundings</h2>
                 <span id="scene-view-hint" style="font-size: 0.75rem; color: var(--text-muted);"></span>
             </div>
+            <label style="display: block; padding: 0 12px 6px; font-size: 0.75rem; color: var(--text-muted);">
+                <input type="checkbox" id="body-facing-toggle"> Estimate body facing (experimental)
+            </label>
+            <label style="display: block; padding: 0 12px 6px; font-size: 0.75rem; color: var(--text-muted);">
+                <input type="checkbox" id="foot-diagnostic-toggle" checked> Foot diagnostic — motors unchanged
+            </label>
+            <label style="display: block; padding: 0 12px 6px; font-size: 0.75rem; color: var(--text-muted);">
+                <input type="checkbox" id="person-uncertainty-toggle" checked> Person uncertainty rings (cyan)
+            </label>
+            <div id="foot-diagnostic-status" role="status" style="padding: 0 12px 6px; font-size: 0.75rem; color: var(--text-muted);">Waiting for foot diagnostic</div>
             <div id="scene-view" style="position: relative; height: 360px; border-radius: 8px; overflow: hidden;"></div>
         </div>
         <div class="card drive-controls">
@@ -792,12 +802,13 @@
         </div>
     </div>
 
-    <script src="main.js?v=5"></script>
+    <script src="main.js?v=6"></script>
     <script src="dashboard.js?v=2"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
     <script src="models/humanoid-walk.js?v=1"></script>
-    <script src="humanoid.js?v=2"></script>
-    <script src="scene-view.js?v=9"></script>
+    <script src="pose-refinement.js?v=1"></script>
+    <script src="humanoid.js?v=4"></script>
+    <script src="scene-view.js?v=14"></script>
 </body>
 
 </html>

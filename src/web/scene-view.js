@@ -354,10 +354,12 @@
         return { group, ghost, arrow, avatar: still, prediction: still };
     }
 
-    // COCO-17 indices: shoulder -> elbow -> wrist, per side.
-    const ARM_KPTS = {
+    // COCO-17 limb endpoints, with confidence checked at both joints.
+    const BODY_KPTS = {
         left_upper_arm: [5, 7], left_lower_arm: [7, 9],
         right_upper_arm: [6, 8], right_lower_arm: [8, 10],
+        left_thigh: [11, 13], left_shin: [13, 15],
+        right_thigh: [12, 14], right_shin: [14, 16],
     };
     const POSE_MATCH_M = 0.8;     // max est <-> OAK person distance (x/z, camera frame)
     const POSE_STALE_MS = 500;
@@ -376,12 +378,28 @@
         });
         if (best < 0) return null;
         used.add(best);
-        const k = dets[best].keypoints_xyz, dirs = {};
-        for (const [bone, [a, b]] of Object.entries(ARM_KPTS)) {
-            if (!k[a] || !k[b]) continue;
-            const v = new THREE.Vector3(k[b][0] - k[a][0], -(k[b][1] - k[a][1]), -(k[b][2] - k[a][2]));
-            if (v.lengthSq() > 1e-4) dirs[bone] = v.normalize();
+        const k = dets[best].keypoints_xyz, confidence = dets[best].keypoints, dirs = {};
+        function score(i) {
+            const c = confidence && confidence[i] && confidence[i][2];
+            return k[i] && k[i].every(Number.isFinite) && Number.isFinite(c) ? c : 0;
         }
+        for (const [bone, [a, b]] of Object.entries(BODY_KPTS)) {
+            const c = Math.min(score(a), score(b));
+            if (c < 0.5) continue;
+            const v = new THREE.Vector3(k[b][0] - k[a][0], -(k[b][1] - k[a][1]), -(k[b][2] - k[a][2]));
+            if (v.lengthSq() > 1e-4) dirs[bone] = { direction: v.normalize(), confidence: c };
+        }
+        // Torso points down from shoulder midpoint to hip midpoint. The current
+        // observations share one depth plane: do not invent forward knee bends.
+        const c = Math.min(...[5, 6, 11, 12].map(score));
+        if (c >= 0.5) {
+            const v = new THREE.Vector3(
+                (k[11][0] + k[12][0] - k[5][0] - k[6][0]) / 2,
+                -(k[11][1] + k[12][1] - k[5][1] - k[6][1]) / 2,
+                -(k[11][2] + k[12][2] - k[5][2] - k[6][2]) / 2);
+            if (v.lengthSq() > 0.01) dirs.torso = { direction: v.normalize(), confidence: c };
+        }
+        if (window.X3PoseRefinement) dirs.facing = window.X3PoseRefinement.facingCue(k, confidence || []);
         return dirs;
     }
 
@@ -405,12 +423,55 @@
         return out;
     }
 
+    // Travel is only a heading cue after sustained displacement. Instantaneous
+    // tracker velocity can spike when someone raises a knee or changes posture.
+    function updateHeading(p, right, fwd, speed, dt, facing = null) {
+        const step = Number.isFinite(dt) ? Math.max(0, Math.min(dt, 0.1)) : 0;
+        if (!p.heading) p.heading = { x: right, z: fwd, age: 0, target: p.group.rotation.y };
+        const h = p.heading;
+        h.bodyHold = Math.max(0, (h.bodyHold || 0) - step);
+        if (facing && Number.isFinite(facing.yaw) && facing.confidence >= 0.75) {
+            h.bodyAge = h.bodyCandidate === facing.yaw ? (h.bodyAge || 0) + step : 0;
+            h.bodyCandidate = facing.yaw;
+            if (h.bodyAge >= 0.6) {
+                h.target = facing.yaw; h.bodyHold = 0.8;
+            }
+        } else { h.bodyAge = 0; h.bodyCandidate = null; }
+        if (speed < 0.25) {
+            h.x = right; h.z = fwd; h.age = 0;
+        } else {
+            h.age += step;
+            const dx = right - h.x, dz = fwd - h.z;
+            if (h.age >= 0.35 && Math.hypot(dx, dz) >= 0.18) {
+                if (!h.bodyHold) h.target = Math.atan2(-dx, dz);
+                h.x = right; h.z = fwd; h.age = 0;
+            }
+        }
+        const delta = Math.atan2(Math.sin(h.target - p.group.rotation.y),
+            Math.cos(h.target - p.group.rotation.y));
+        p.group.rotation.y += delta * (1 - Math.exp(-step / 0.25));
+    }
+
+    let contactRobotPose = null, robotContactHold = 0.3;
     function updatePeople(estimates, dt) {
         const seen = new Set();
         const d = state.latestData;
         const dets = d.oakDetectionsAt && performance.now() - d.oakDetectionsAt < POSE_STALE_MS
             ? d.oakDetections : null;
         const used = new Set();
+        const rp = d.robotPose;
+        const validRobotPose = rp && [rp.x, rp.y, rp.theta].every(Number.isFinite);
+        robotContactHold = Math.max(0, robotContactHold - Math.max(0, Math.min(dt || 0, 0.1)));
+        if (validRobotPose) {
+            // robotPose x/y arrive in cm. Do not pin feet in the moving robot frame.
+            if (!contactRobotPose || Math.hypot(rp.x-contactRobotPose.x, rp.y-contactRobotPose.y) > 0.1 ||
+                Math.abs(Math.atan2(Math.sin(rp.theta-contactRobotPose.theta), Math.cos(rp.theta-contactRobotPose.theta))) > 0.002) {
+                robotContactHold = 0.3;
+                contactRobotPose = { x: rp.x, y: rp.y, theta: rp.theta };
+            }
+        } else { robotContactHold = 0.3; contactRobotPose = null; }
+        const facingToggle = document.getElementById('body-facing-toggle');
+        const bodyFacing = facingToggle && facingToggle.checked;
         for (const est of estimates || []) {
             // Scene origin is the robot base; C3 gives base-frame forward directly.
             const fwd = est.fwdBase !== undefined ? est.fwdBase : est.z, right = est.x;
@@ -429,23 +490,29 @@
                 p.kind = kind;
                 people.set(est.id, p);
             }
+            p.missingFor = 0;
+            p.group.visible = true;
             p.group.position.set(right, 0, -fwd);
 
             // vx=forward, vy=left (CBF convention) -> scene (x=-vy, z=-vx)
             const sx = -(est.vy || 0), sz = -(est.vx || 0);
             const speed = Math.hypot(sx, sz);
             const moving = speed > 0.15;
+            const bodyPose = kind === 'person' ? poseDirs(est, dets, used) : null;
+            // Set heading before world-space pose fitting, including on turns.
+            if (!bodyFacing && p.heading) p.heading.bodyHold = 0;
+            updateHeading(p, right, fwd, speed, dt, bodyFacing && bodyPose ? bodyPose.facing : null);
             p.avatar.animate(speed, dt);
-            if (p.avatar.pose) p.avatar.pose(kind === 'person' ? poseDirs(est, dets, used) : null, dt);
+            if (p.avatar.pose) p.avatar.pose(bodyPose, dt, { contacts: robotContactHold === 0 && est.measured !== false });
+            p.ghost.rotation.y = p.group.rotation.y;
+            const horizon = est.horizon || GHOST_S;
+            p.ghost.position.set(right + sx * horizon, 0, -fwd + sz * horizon);
             p.prediction.animate(speed, dt);
+            if (p.prediction.pose) p.prediction.pose(bodyPose, dt);
             p.ghost.visible = moving;
             p.arrow.visible = moving;
             if (moving) {
-                // Heading follows travel direction, not measured body orientation.
-                p.group.rotation.y = Math.atan2(-sx, -sz);
-                p.ghost.rotation.y = p.group.rotation.y;
-                const horizon = est.horizon || GHOST_S;
-                p.ghost.position.set(right + sx * horizon, 0, -fwd + sz * horizon);
+                // Arrow follows velocity; body retains its filtered travel heading.
                 _org.set(right, kind === 'dynamic' ? 0.3 : 1.3, -fwd);
                 _dir.set(sx, 0, sz).normalize();
                 p.arrow.position.copy(_org);
@@ -455,8 +522,68 @@
         }
         for (const [id, p] of people) {
             if (seen.has(id)) continue;
+            // Brief same-ID dropouts must not erase facing/pose history.
+            p.missingFor = (p.missingFor || 0) + Math.max(0, Math.min(dt || 0, 0.1));
+            p.group.visible = p.ghost.visible = p.arrow.visible = false;
+            if (p.missingFor < 0.75) continue;
             removeTrack(p);
             people.delete(id);
+        }
+    }
+
+    const footMarkers = new Map();
+    let footGeom, footMat, footArrow;
+    function updateFootDiagnostic() {
+        const d = state.latestData;
+        const toggle = document.getElementById('foot-diagnostic-toggle');
+        const status = document.getElementById('foot-diagnostic-status');
+        const reportedAge = d.footDiagnostic ? (d.footDiagnostic.capture_age_s || 0) + (d.footDiagnostic.update_age_s || 0) : 0;
+        const fresh = d.footDiagnosticAt && performance.now()-d.footDiagnosticAt + reportedAge*1000 < 650;
+        const diag = fresh ? d.footDiagnostic : null;
+        const show = toggle && toggle.checked;
+        const seen = new Set();
+        if (!footGeom) {
+            footGeom = new THREE.RingGeometry(0.85, 1, 32);
+            footGeom.rotateX(-Math.PI/2);
+            footMat = new THREE.MeshBasicMaterial({color:0xd946ef,transparent:true,opacity:0.8,side:THREE.DoubleSide});
+            footArrow = new THREE.ArrowHelper(new THREE.Vector3(0,0,-1),new THREE.Vector3(0,.42,0),1,0xd946ef,.12,.08);
+            scene.add(footArrow);
+        }
+        for (const f of show && diag ? diag.feet || [] : []) {
+            if (![f.fwd,f.left,f.radius_m,f.sigma_m].every(Number.isFinite)) continue;
+            seen.add(f.id);
+            let marker = footMarkers.get(f.id);
+            if (!marker) { marker = new THREE.Mesh(footGeom,footMat); scene.add(marker); footMarkers.set(f.id,marker); }
+            // Foot extent + uncertainty, excluding robot radius. Camera/base -> scene.
+            marker.position.set(-f.left,.018,-f.fwd);
+            marker.scale.setScalar(f.radius_m+2*f.sigma_m);
+        }
+        for (const [id,m] of footMarkers) if (!seen.has(id)) { scene.remove(m); footMarkers.delete(id); }
+        const shadow = diag && diag.shadow;
+        const v = shadow && shadow.velocity;
+        const speed = v && Math.hypot(v.fwd,v.left);
+        footArrow.visible = !!(show && Number.isFinite(speed) && speed > .005);
+        if (footArrow.visible) {
+            footArrow.setDirection(new THREE.Vector3(-v.left,0,-v.fwd).normalize());
+            // Two seconds of suggested travel, with a small visible minimum.
+            footArrow.setLength(Math.max(.35,2*speed),.10,.06);
+        }
+        if (status) {
+            status.style.display = show ? '' : 'none';
+            if (!diag) status.textContent = 'Foot diagnostic: waiting/stale · motors unchanged';
+            else if (diag.status !== 'ok') status.textContent = `Foot diagnostic: ${diag.status} · motors unchanged`;
+            else {
+                const n = (diag.feet || []).length;
+                const reason = Object.entries(diag.rejected || {}).map(([k,v]) => `${k}: ${v}`).join(', ');
+                const suggestion = v ? `would move ${speed.toFixed(2)} m/s` : (shadow ? shadow.status : 'unavailable');
+                const visibility = (diag.rejected || {}).ankle_not_visible;
+                status.textContent = n
+                    ? `${n} MAGENTA foot regions · ${suggestion} · feet only, motors unchanged`
+                    : (visibility ? 'No foot markers: ankle confidence too low or ankles missing'
+                                  : 'No foot markers: no usable foot depth');
+                if (!n && reason) status.textContent += ` · ${reason}`;
+                if (!n) status.textContent += ' · cyan rings belong to person tracking';
+            }
         }
     }
 
@@ -534,12 +661,20 @@
         }
         const avatars = avatarEntries(d);
         updatePeople(avatars, dt);
-        updateC3(d.c3Tracks);
+        const uncertaintyToggle = document.getElementById('person-uncertainty-toggle');
+        updateC3(!uncertaintyToggle || uncertaintyToggle.checked ? d.c3Tracks : []);
+        updateFootDiagnostic();
         updateTilt(d.readout);
         if (hint) {
             const msgs = [];
             if (!scanFresh) msgs.push('No lidar scan');
             if (!avatars.length) msgs.push('No people tracked');
+            const persons = [...people.values()].filter(p => p.kind === 'person' && p.group.visible);
+            const partial = persons.filter(p => !(p.group.userData.poseConfidence >= 0.75)).length;
+            if (persons.length) msgs.push(partial
+                ? `Pose uncertain: ${partial}/${persons.length} · hidden joints use animation`
+                : 'Leg pose observed · depth approximated');
+            if (document.getElementById('body-facing-toggle') && document.getElementById('body-facing-toggle').checked) msgs.push('Facing estimate enabled');
             if (d.c3Stats) msgs.push(`C3 ${d.c3Tracks.length} trk · ${d.c3Stats.hz} Hz · ${d.c3Stats.update_ms_avg} ms`);
             hint.textContent = msgs.join(' · ');
         }
