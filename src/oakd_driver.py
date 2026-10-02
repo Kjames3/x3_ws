@@ -172,6 +172,7 @@ class OakDCamera:
         self.nn_proto_name = None
         self.nn_proto_shape = None        # (n_masks, H, W) of the prototype output
         self._latest_masks = []           # per latest detection: bool (nn_h, nn_w) or None
+        self._fast_layers = {}            # layer name -> True/False once the raw read is checked
         self.nn_w, self.nn_h = 480, 640
         self.nn_out_name = None
         if spatial_config:
@@ -816,10 +817,7 @@ class OakDCamera:
         """Host-side decode of the YOLO head (detect [85, 6300] or pose [56, 6300])
         + depth back-projection."""
         try:
-            if self.nn_out_name:
-                raw = np.array(nndata.getLayerFp16(self.nn_out_name), dtype=np.float32)
-            else:
-                raw = np.array(nndata.getFirstLayerFp16(), dtype=np.float32)
+            raw = self._read_layer(nndata, self.nn_out_name)
         except Exception:
             return
         # Stamp every decoded packet, including ones with no detections: "no
@@ -989,10 +987,52 @@ class OakDCamera:
                             round(float(z), 3)])
         return out
 
+    def _read_layer(self, nndata, name):
+        """One NN output layer as float32 (name None = first layer).
+
+        getLayerFp16 hands back a Python list: 15 ms to convert for a pose head
+        and 55 ms for a seg head (1.3 M values per packet) on the Orin, on top
+        of DepthAI building the list, all holding the GIL. That halved the GUI
+        telemetry rate with seg (2026-10-01). The fast path views the packet's
+        raw FP16 bytes instead. It is checked against the list path on the
+        first packet of each layer and used only if the two agree exactly.
+        """
+        def slow():
+            vals = nndata.getLayerFp16(name) if name else nndata.getFirstLayerFp16()
+            return np.array(vals, dtype=np.float32)
+
+        key = name or ""
+        state = self._fast_layers.get(key)
+        if state is False or not hasattr(nndata, "getData"):
+            return slow()
+        try:
+            layers = nndata.getAllLayers()
+            info = next(t for t in layers if t.name == name) if name else layers[0]
+            if "FP16" not in str(info.dataType):
+                raise ValueError(f"layer is {info.dataType}, not FP16")
+            count = int(np.prod([d for d in info.dims if d > 0]))
+            buf = np.asarray(nndata.getData(), dtype=np.uint8)
+            fast = np.frombuffer(buf, dtype="<f2", count=count,
+                                 offset=int(info.offset)).astype(np.float32)
+        except Exception as e:
+            if state is None:
+                logger.warning(f"OakDCamera: fast NN read unavailable for '{key or 'first layer'}' ({e}); "
+                               "using the list path")
+            self._fast_layers[key] = False
+            return slow()
+        if state is None:
+            ref = slow()
+            ok = ref.shape == fast.shape and np.array_equal(ref, fast)
+            self._fast_layers[key] = ok
+            logger.info(f"OakDCamera: fast NN read for '{key or 'first layer'}' "
+                        + ("verified against the list path" if ok else "DISAGREES with the list path; disabled"))
+            return ref
+        return fast
+
     def _read_protos(self, nndata):
         """Seg prototypes as (n_masks, H, W) float32, or None."""
         try:
-            p = np.array(nndata.getLayerFp16(self.nn_proto_name), dtype=np.float32)
+            p = self._read_layer(nndata, self.nn_proto_name)
             return p[:int(np.prod(self.nn_proto_shape))].reshape(self.nn_proto_shape)
         except Exception as e:
             if not getattr(self, "_logged_proto", False):
