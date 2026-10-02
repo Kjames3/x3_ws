@@ -787,8 +787,14 @@ class OakDCamera:
             cls = A[:, 4:84]
         if cls.max() > 1.0 or cls.min() < 0.0:
             cls = _sigmoid(cls)
-        cls_id = cls.argmax(axis=1)
-        cls_sc = cls[np.arange(cls.shape[0]), cls_id]
+        # argmax over 80 classes for all 6300 anchors cost 6 ms per seg packet
+        # on the Orin; the max is 40x cheaper and the class only matters for
+        # anchors that could pass any confidence cut used downstream.
+        cls_sc = cls.max(axis=1)
+        cls_id = np.zeros(cls.shape[0], dtype=np.int64)
+        live = np.nonzero(cls_sc >= 0.05)[0]
+        if live.size:
+            cls_id[live] = cls[live].argmax(axis=1)
         if obj is not None:
             if obj.max() > 1.0 or obj.min() < 0.0:
                 obj = _sigmoid(obj)
@@ -987,8 +993,10 @@ class OakDCamera:
                             round(float(z), 3)])
         return out
 
-    def _read_layer(self, nndata, name):
+    def _read_layer(self, nndata, name, as_float32=True):
         """One NN output layer as float32 (name None = first layer).
+        as_float32=False may return the raw FP16 values unconverted (the seg
+        prototypes: only the cells under a person box are ever used).
 
         getLayerFp16 hands back a Python list: 15 ms to convert for a pose head
         and 55 ms for a seg head (1.3 M values per packet) on the Orin, on top
@@ -1012,8 +1020,9 @@ class OakDCamera:
                 raise ValueError(f"layer is {info.dataType}, not FP16")
             count = int(np.prod([d for d in info.dims if d > 0]))
             buf = np.asarray(nndata.getData(), dtype=np.uint8)
-            fast = np.frombuffer(buf, dtype="<f2", count=count,
-                                 offset=int(info.offset)).astype(np.float32)
+            fast = np.frombuffer(buf, dtype="<f2", count=count, offset=int(info.offset))
+            if as_float32:
+                fast = fast.astype(np.float32)
         except Exception as e:
             if state is None:
                 logger.warning(f"OakDCamera: fast NN read unavailable for '{key or 'first layer'}' ({e}); "
@@ -1022,7 +1031,7 @@ class OakDCamera:
             return slow()
         if state is None:
             ref = slow()
-            ok = ref.shape == fast.shape and np.array_equal(ref, fast)
+            ok = ref.shape == fast.shape and np.array_equal(ref, fast.astype(np.float32))
             self._fast_layers[key] = ok
             logger.info(f"OakDCamera: fast NN read for '{key or 'first layer'}' "
                         + ("verified against the list path" if ok else "DISAGREES with the list path; disabled"))
@@ -1030,9 +1039,9 @@ class OakDCamera:
         return fast
 
     def _read_protos(self, nndata):
-        """Seg prototypes as (n_masks, H, W) float32, or None."""
+        """Seg prototypes as (n_masks, H, W), FP16 or float32, or None."""
         try:
-            p = self._read_layer(nndata, self.nn_proto_name)
+            p = self._read_layer(nndata, self.nn_proto_name, as_float32=False)
             return p[:int(np.prod(self.nn_proto_shape))].reshape(self.nn_proto_shape)
         except Exception as e:
             if not getattr(self, "_logged_proto", False):
@@ -1052,8 +1061,13 @@ class OakDCamera:
         # Only the prototype cells the box touches: the mask is zero elsewhere.
         py1, py2 = y1c // sy, -(-y2c // sy)
         px1, px2 = x1c // sx, -(-x2c // sx)
-        sub = protos[:, py1:py2, px1:px2]
-        small = np.tensordot(coef[:m], sub, axes=1) > 0.0   # sigmoid(x) > 0.5  <=>  x > 0
+        # Prototypes arrive as FP16; convert only the cells under the box.
+        sub = np.asarray(protos[:, py1:py2, px1:px2], dtype=np.float32)
+        # einsum, not tensordot/@: those hand this small product to OpenBLAS,
+        # which spread it over 6 threads (8-11 ms wall, 32-41 ms CPU per person
+        # on the Orin vs 0.1-0.2 ms here).
+        small = np.einsum('c,chw->hw', np.asarray(coef[:m], dtype=np.float32), sub) > 0.0   # sigmoid(x) > 0.5
+
         if not small.any():
             return None
         up = np.repeat(np.repeat(small, sy, axis=0), sx, axis=1)
