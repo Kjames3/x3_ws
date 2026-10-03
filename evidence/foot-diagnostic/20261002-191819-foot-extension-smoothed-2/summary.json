@@ -1,0 +1,401 @@
+{
+  "packet_receive_interval_ms": {
+    "n": 203,
+    "min": 4.097993994946592,
+    "median": 82.17638199857902,
+    "p95": 215.55220120353619,
+    "max": 399.5451100054197
+  },
+  "source_capture_interval_ms": {
+    "n": 203,
+    "min": 83.300714,
+    "median": 83.321996,
+    "p95": 166.643867,
+    "max": 416.608797
+  },
+  "unique_packets": 204,
+  "packets_with_feet": 204,
+  "statuses": {
+    "ok": 204
+  },
+  "telemetry_rows": 292,
+  "stages_ms": {
+    "pose_lookup_wall_ms": {
+      "n": 204,
+      "min": 0.06365,
+      "median": 0.079331,
+      "p95": 0.10880864999999995,
+      "max": 0.468625
+    },
+    "pose_lookup_cpu_ms": {
+      "n": 204,
+      "min": 0.057664,
+      "median": 0.07222400000000001,
+      "p95": 0.0871552,
+      "max": 0.101952
+    },
+    "depth_lookup_wall_ms": {
+      "n": 204,
+      "min": 0.02256,
+      "median": 0.036337499999999995,
+      "p95": 0.05098119999999999,
+      "max": 0.100196
+    },
+    "depth_lookup_cpu_ms": {
+      "n": 204,
+      "min": 0.02192,
+      "median": 0.035696000000000006,
+      "p95": 0.0445008,
+      "max": 0.055904
+    },
+    "extraction_wall_ms": {
+      "n": 204,
+      "min": 3.365143,
+      "median": 12.362193000000001,
+      "p95": 38.4816633,
+      "max": 67.879352
+    },
+    "extraction_cpu_ms": {
+      "n": 204,
+      "min": 3.352608,
+      "median": 5.016976,
+      "p95": 7.6967935999999995,
+      "max": 9.765696
+    },
+    "tracking_wall_ms": {
+      "n": 204,
+      "min": 0.287242,
+      "median": 0.3934535,
+      "p95": 1.4276818499999997,
+      "max": 14.791748
+    },
+    "tracking_cpu_ms": {
+      "n": 204,
+      "min": 0.28416,
+      "median": 0.36126400000000003,
+      "p95": 0.5913856,
+      "max": 0.847392
+    },
+    "shadow_cbf_wall_ms": {
+      "n": 204,
+      "min": 0.232424,
+      "median": 0.310011,
+      "p95": 0.7763027499999997,
+      "max": 13.191212
+    },
+    "shadow_cbf_cpu_ms": {
+      "n": 204,
+      "min": 0.232096,
+      "median": 0.297312,
+      "p95": 0.44632479999999997,
+      "max": 0.680128
+    },
+    "work_wall_ms": {
+      "n": 204,
+      "min": 4.108945,
+      "median": 13.843522,
+      "p95": 41.35738399999999,
+      "max": 69.299914
+    },
+    "work_cpu_ms": {
+      "n": 204,
+      "min": 4.084672,
+      "median": 5.916544,
+      "p95": 8.6922608,
+      "max": 10.876128
+    },
+    "camera_delivery_ms": {
+      "n": 204,
+      "min": 133.431288,
+      "median": 148.205072,
+      "p95": 158.4116016,
+      "max": 167.1762
+    },
+    "receipt_to_work_ms": {
+      "n": 204,
+      "min": 2.688318,
+      "median": 16.0728035,
+      "p95": 30.217290349999995,
+      "max": 41.382954
+    },
+    "host_predecode_ms": {
+      "n": 204,
+      "min": 0.025153,
+      "median": 0.038128999999999996,
+      "p95": 0.05789479999999998,
+      "max": 0.101028
+    },
+    "host_decode_wall_ms": {
+      "n": 204,
+      "min": 2.101898,
+      "median": 4.6286570000000005,
+      "p95": 15.27609465,
+      "max": 23.04286
+    },
+    "host_decode_cpu_ms": {
+      "n": 204,
+      "min": 2.084736,
+      "median": 2.598416,
+      "p95": 3.3301136,
+      "max": 3.850656
+    },
+    "diagnostic_wait_ms": {
+      "n": 204,
+      "min": 0.236392,
+      "median": 10.655411,
+      "p95": 19.85460695,
+      "max": 24.896907
+    },
+    "capture_to_ready_ms": {
+      "n": 204,
+      "min": 145.932943,
+      "median": 180.281358,
+      "p95": 209.66774804999997,
+      "max": 239.065616
+    },
+    "camera_depth_wait_ms": {
+      "n": 204,
+      "min": 0.036641,
+      "median": 32.258264999999994,
+      "p95": 39.32468835,
+      "max": 44.369656
+    },
+    "camera_depth_work_ms": {
+      "n": 204,
+      "min": 0.764154,
+      "median": 1.4232175,
+      "p95": 6.7426703,
+      "max": 19.696012
+    },
+    "camera_rgb_work_ms": {
+      "n": 204,
+      "min": 0.008576,
+      "median": 1.7896305,
+      "p95": 4.308696149999999,
+      "max": 8.726292
+    },
+    "camera_aux_work_ms": {
+      "n": 204,
+      "min": 0.074531,
+      "median": 0.092099,
+      "p95": 0.14204019999999998,
+      "max": 0.537331
+    },
+    "camera_nn_dequeue_ms": {
+      "n": 204,
+      "min": 0.009697,
+      "median": 0.0115685,
+      "p95": 0.01372885,
+      "max": 0.089827
+    },
+    "camera_nn_poll_interval_ms": {
+      "n": 204,
+      "min": 17.154685,
+      "median": 35.6605075,
+      "p95": 46.306648849999995,
+      "max": 54.539591
+    },
+    "result_build_wall_ms": {
+      "n": 204,
+      "min": 0.090212,
+      "median": 0.106852,
+      "p95": 0.15825225,
+      "max": 0.378541
+    },
+    "result_build_cpu_ms": {
+      "n": 204,
+      "min": 0.089792,
+      "median": 0.10496,
+      "p95": 0.1397984,
+      "max": 0.17984
+    }
+  },
+  "snapshots": {
+    "ready_to_snapshot_ms": {
+      "n": 292,
+      "min": 1.532694,
+      "median": 42.220265999999995,
+      "p95": 98.14007095,
+      "max": 130.07561
+    },
+    "capture_to_snapshot_ms": {
+      "n": 292,
+      "min": 157.401761,
+      "median": 225.18537800000001,
+      "p95": 279.06534375,
+      "max": 310.432926
+    },
+    "depth_fps_observed": {
+      "n": 292,
+      "min": 29.3,
+      "median": 29.9,
+      "p95": 30.3,
+      "max": 30.4
+    },
+    "snapshot_to_prepare_ms": {
+      "n": 292,
+      "min": 0.027009,
+      "median": 0.06125,
+      "p95": 0.09196779999999997,
+      "max": 0.349356
+    }
+  },
+  "delivery_ms": {
+    "clock_error_bound_ms": {
+      "n": 292,
+      "min": 7.5272305,
+      "median": 7.5272305,
+      "p95": 7.5272305,
+      "max": 7.5272305
+    },
+    "prepare_to_client_estimate_ms": {
+      "n": 292,
+      "min": 6.9759895,
+      "median": 17.301931,
+      "p95": 45.709344949999966,
+      "max": 170.0118225
+    },
+    "capture_to_client_estimate_ms": {
+      "n": 292,
+      "min": 176.6292575,
+      "median": 246.21414399999998,
+      "p95": 300.9265089,
+      "max": 420.0560165
+    },
+    "client_parse_wall_ms": {
+      "n": 292,
+      "min": 0.113877,
+      "median": 0.1669755,
+      "p95": 0.18369270000000001,
+      "max": 0.319976
+    },
+    "encode_wall_ms": {
+      "n": 292,
+      "min": 0.098595,
+      "median": 0.1279085,
+      "p95": 0.17726039999999996,
+      "max": 1.361552
+    },
+    "broadcast_wall_ms": {
+      "n": 292,
+      "min": 0.241704,
+      "median": 1.373809,
+      "p95": 8.4587822,
+      "max": 16.516388
+    }
+  },
+  "telemetry_interval_s": {
+    "n": 291,
+    "min": 0.00038699599099345505,
+    "median": 0.055423048994271085,
+    "p95": 0.18384912150213495,
+    "max": 0.3640691750042606
+  },
+  "no_foot_intervals": [],
+  "settings": [
+    {
+      "nn_w": 384,
+      "nn_h": 512,
+      "nn_fps": 12,
+      "mono_fps": 30,
+      "record_rgbd": true,
+      "subpixel": true,
+      "nn_kpts": 17,
+      "usb_speed": "SUPER",
+      "model_blob": "/home/jetson/x3_ws/src/blobs/yolo26n-pose-512/yolo26n-pose-512_4shave.blob",
+      "environment": {
+        "X3_OAK_DEPTH_FPS": null,
+        "X3_OAK_BLOB_SHAVES": "4",
+        "X3_OAK_NN_LATEST_OUTPUT": "1",
+        "X3_OAK_NN_THREADS": "2",
+        "OPENBLAS_NUM_THREADS": null,
+        "OMP_NUM_THREADS": "1"
+      }
+    }
+  ],
+  "motors_commanded": false,
+  "note": "Stages count distinct packets; snapshot ages count all readouts. Delivery estimates have clock-probe uncertainty and exclude browser rendering. Camera delivery combines device processing, queues and transfer; CPU time covers only the current thread.",
+  "missing_diagnostic_messages": 0,
+  "clock": {
+    "before": {
+      "samples": [
+        {
+          "offset_ns": -65782074943140.0,
+          "error_bound_ns": 14458669.0,
+          "round_trip_ns": 28921882,
+          "server_handling_ns": 4544,
+          "client_midpoint_ns": 66646605564140.0
+        },
+        {
+          "offset_ns": -65782093214999.5,
+          "error_bound_ns": 16557065.5,
+          "round_trip_ns": 33120180,
+          "server_handling_ns": 6049,
+          "client_midpoint_ns": 66646636644310.0
+        },
+        {
+          "offset_ns": -65782093607451.5,
+          "error_bound_ns": 15760762.5,
+          "round_trip_ns": 31527253,
+          "server_handling_ns": 5728,
+          "client_midpoint_ns": 66646669012360.5
+        },
+        {
+          "offset_ns": -65782090738345.5,
+          "error_bound_ns": 15612438.5,
+          "round_trip_ns": 31229773,
+          "server_handling_ns": 4896,
+          "client_midpoint_ns": 66646700438103.5
+        },
+        {
+          "offset_ns": -65782079311167.5,
+          "error_bound_ns": 7527230.5,
+          "round_trip_ns": 15059837,
+          "server_handling_ns": 5376,
+          "client_midpoint_ns": 66646723625450.5
+        }
+      ],
+      "best": {
+        "offset_ns": -65782079311167.5,
+        "error_bound_ns": 7527230.5,
+        "round_trip_ns": 15059837,
+        "server_handling_ns": 5376,
+        "client_midpoint_ns": 66646723625450.5
+      }
+    },
+    "after": {
+      "samples": [
+        {
+          "offset_ns": -65782080533399.5,
+          "error_bound_ns": 19065848.5,
+          "round_trip_ns": 38137073,
+          "server_handling_ns": 5376,
+          "client_midpoint_ns": 66669808766901.5
+        },
+        {
+          "offset_ns": -65782086132897.0,
+          "error_bound_ns": 12401639.0,
+          "round_trip_ns": 24810542,
+          "server_handling_ns": 7264,
+          "client_midpoint_ns": 66669840287699.0
+        },
+        {
+          "offset_ns": -65782082769119.5,
+          "error_bound_ns": 15398815.5,
+          "round_trip_ns": 30802112,
+          "server_handling_ns": 4481,
+          "client_midpoint_ns": 66669868133085.0
+        }
+      ],
+      "best": {
+        "offset_ns": -65782086132897.0,
+        "error_bound_ns": 12401639.0,
+        "round_trip_ns": 24810542,
+        "server_handling_ns": 7264,
+        "client_midpoint_ns": 66669840287699.0
+      }
+    },
+    "offset_change_ms": -6.8217295,
+    "consistent_with_probe_bounds": true
+  }
+}

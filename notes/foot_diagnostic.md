@@ -175,3 +175,55 @@ the output queue produced no material latency change. One inference thread
 reduced delivery slightly but lost updates and did not improve overall freshness.
 Smaller input also reduces aligned depth size; foot localization accuracy and
 occlusion recovery are still unvalidated. No experiment enables foot actuation.
+
+### Shared-depth ambiguity gate
+
+Before tracking, opposite ankles of the same detection are withheld when their
+selected component pixels overlap by at least 60% of BOTH components and their
+horizontal centers are within 0.06 m. Comparison uses actual selected depth
+pixels, not rectangle overlap. Both measurements count toward
+`rejected.ambiguous_shared_depth`; neither receives an independent marker or
+shadow constraint. No side is guessed from keypoint confidence. Single feet,
+separate components in overlapping crops, and different person detections are
+not rejected by this gate. Tracking resumes through normal warm-up when evidence
+separates. This does not retain an unlabeled obstacle during ambiguity, and is
+still diagnostic-only. Thresholds need live sideways/close-feet validation;
+saved telemetry has no raw depth support with which to replay this gate.
+
+### Foot smoothing experiment
+
+Tracker smoothing is in odom/world coordinates at capture timestamps. Velocity
+uses an exponential filter with 0.18 s time constant on consecutive RAW position
+differences. Position uses a 0.10 s time constant reduced by
+1 + |filtered velocity| / 0.15, so sustained movement receives less smoothing.
+Coefficients use actual dt. Identity jumps and missing/ambiguous observations
+reset the filter through normal track creation/loss. The distance between raw
+and filtered position is added to sigma and exposed as smoothing_lag_m; this
+is a lag allowance, not a statistically calibrated uncertainty bound.
+
+Synthetic tests cover stationary alternating 1 cm noise, steady 0.2 m/s motion,
+stop settling at 5/10/20 Hz, and dropout resets. These are not measured live
+performance. First repeat foot-still-smoothed, then a separately labelled
+slow-extension test before retaining or tuning coefficients. Smoothing does
+not add persistence and does not feed the production CBF.
+
+### Stability findings, 2026-10-02
+
+Sideways right-foot-nearer capture 145538 reported both feet only 1.1 cm apart
+(median); overlapping depth support made stable IDs misleading. Ambiguity gate
+run 151238 rejected both in 187/190 packets; front-facing run 151439 retained
+both in 172/172 without rejection. No independent foot truth was recorded.
+Smoothed stationary run 191303 retained both in 193/193, p95 position dispersion
+0.81/0.84 cm left/right versus 1.39/1.14 cm previously, but stance distance
+changed by ~20 cm. Movement runs 191745 and 191819 kept both in 184/186 and
+204/204 respectively, while IDs changed (four per side fast; one left and three
+right slow). User alternated lifting feet, holding ~4–5 s in the slower run;
+do not assume prescribed stationary time windows.
+
+Two fast-run left-ID changes follow no_compact_component rejections. Both
+slow-run right-ID changes show ~27 cm displacement over 83 ms, consistent with
+the 3 m/s raw-speed rejection. Physical motion vs depth-surface switching is
+unresolved without raw depth. Some intermediate packets are absent from the
+capture; do not infer every reset reason exactly. Next: explicit raw-position
+and association diagnostics, plus short identity-only retention, with fresh
+velocity warm-up and no stale obstacle publication. Do not loosen gates yet.

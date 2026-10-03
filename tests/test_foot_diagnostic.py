@@ -158,3 +158,66 @@ def test_worker_timestamped_pipeline_and_missing_depth():
     finally:
         diag.stop()
     assert not diag.thread.is_alive()
+
+
+def test_shared_depth_rejects_ambiguous_pair_and_recovers():
+    depth,intr,d=scene()
+    depth[430:451,230:251]=.5
+    d['keypoints'][14]=[242,350,.95]
+    d['keypoints'][16]=[242,440,.95]
+    feet,rejected=measure_feet([d],depth,intr,(480,640),(.108,.213,0))
+    assert feet==[] and rejected['ambiguous_shared_depth']==2
+    # Separate components can have overlapping ROIs without sharing support.
+    depth,intr,d=scene()
+    depth[435:446,225:236]=.5
+    depth[435:446,245:256]=.5
+    d['keypoints'][15]=[230,440,.95]
+    d['keypoints'][14]=[250,350,.95]
+    d['keypoints'][16]=[250,440,.95]
+    feet,rejected=measure_feet([d],depth,intr,(480,640),(.108,.213,0))
+    assert len(feet)==2 and not rejected.get('ambiguous_shared_depth')
+    assert all('_support_pixels' not in f for f in feet)
+
+
+def test_shared_depth_does_not_compare_separate_people():
+    depth,intr,d=scene();depth[430:451,230:251]=.5
+    import copy
+    other=copy.deepcopy(d)
+    other['keypoints'][16]=other['keypoints'][15]
+    other['keypoints'][14]=other['keypoints'][13]
+    other['keypoints'][15]=[0,0,0]
+    feet,rejected=measure_feet([d,other],depth,intr,(480,640),(.108,.213,0))
+    assert len(feet)==2 and not rejected.get('ambiguous_shared_depth')
+
+
+def test_smoothing_reduces_stationary_noise_without_holding_missing_feet():
+    tracker=FootTracker();pose=dict(x=0,y=0,theta=0)
+    raw=[];filtered=[];speeds=[]
+    for i in range(80):
+        x=1+(.01 if i%2 else -.01)
+        tracker.update([measurement(x)],i*.1,pose)
+        if i>10:
+            raw.append(x);filtered.append(tracker.tracks[0]['world'][0])
+            speeds.append(abs(tracker.tracks[0]['velocity'][0]))
+    assert np.std(filtered)<.65*np.std(raw)
+    assert np.percentile(speeds,95)<.06
+    tracker.update([],8,pose)
+    assert tracker.tracks==[]
+    tracker.update([measurement(1)],8.1,pose)
+    assert tracker.tracks[0]['count']==1
+    assert tracker.tracks[0]['smoothing_lag_m']==0
+
+
+def test_smoothing_motion_response_and_stop_at_variable_rates():
+    pose=dict(x=0,y=0,theta=0)
+    for dt in [.05,.1,.2]:
+        tracker=FootTracker()
+        for stamp in np.arange(0,1+dt/2,dt):
+            tracker.update([measurement(1-.2*stamp)],stamp,pose)
+        t=tracker.tracks[0]
+        assert abs(t['velocity'][0]+.2)<.01
+        assert abs(t['world'][0]-.8)<.015
+        assert t['smoothing_lag_m']>=abs(t['raw_world'][0]-t['world'][0])-1e-10
+        for stamp in np.arange(1+dt,1.6+dt/2,dt):
+            tracker.update([measurement(.8)],stamp,pose)
+        assert abs(tracker.tracks[0]['velocity'][0])<.01

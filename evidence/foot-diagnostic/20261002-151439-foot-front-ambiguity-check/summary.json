@@ -1,0 +1,401 @@
+{
+  "packet_receive_interval_ms": {
+    "n": 171,
+    "min": 15.749995000078343,
+    "median": 106.7236730013974,
+    "p95": 334.190616998967,
+    "max": 598.5503900010372
+  },
+  "source_capture_interval_ms": {
+    "n": 171,
+    "min": 83.289334,
+    "median": 83.322599,
+    "p95": 333.28794800000003,
+    "max": 583.249121
+  },
+  "unique_packets": 172,
+  "packets_with_feet": 172,
+  "statuses": {
+    "ok": 172
+  },
+  "telemetry_rows": 258,
+  "stages_ms": {
+    "pose_lookup_wall_ms": {
+      "n": 172,
+      "min": 0.059844,
+      "median": 0.073893,
+      "p95": 0.11581819999999995,
+      "max": 0.212653
+    },
+    "pose_lookup_cpu_ms": {
+      "n": 172,
+      "min": 0.05376,
+      "median": 0.066816,
+      "p95": 0.0828112,
+      "max": 0.115232
+    },
+    "depth_lookup_wall_ms": {
+      "n": 172,
+      "min": 0.024161,
+      "median": 0.0380185,
+      "p95": 0.0543128,
+      "max": 0.086917
+    },
+    "depth_lookup_cpu_ms": {
+      "n": 172,
+      "min": 0.023424,
+      "median": 0.037391999999999995,
+      "p95": 0.05077119999999999,
+      "max": 0.066432
+    },
+    "extraction_wall_ms": {
+      "n": 172,
+      "min": 4.061509,
+      "median": 17.567351000000002,
+      "p95": 55.29831969999992,
+      "max": 100.61682
+    },
+    "extraction_cpu_ms": {
+      "n": 172,
+      "min": 4.044832,
+      "median": 6.052432,
+      "p95": 8.461292799999999,
+      "max": 10.914304
+    },
+    "tracking_wall_ms": {
+      "n": 172,
+      "min": 0.247504,
+      "median": 0.3331895,
+      "p95": 0.846091499999999,
+      "max": 5.942141
+    },
+    "tracking_cpu_ms": {
+      "n": 172,
+      "min": 0.244448,
+      "median": 0.318032,
+      "p95": 0.46701599999999993,
+      "max": 0.641056
+    },
+    "shadow_cbf_wall_ms": {
+      "n": 172,
+      "min": 0.231887,
+      "median": 0.313028,
+      "p95": 1.4439808999999961,
+      "max": 10.547947
+    },
+    "shadow_cbf_cpu_ms": {
+      "n": 172,
+      "min": 0.230656,
+      "median": 0.300928,
+      "p95": 0.4672959999999999,
+      "max": 0.624896
+    },
+    "work_wall_ms": {
+      "n": 172,
+      "min": 4.785299,
+      "median": 18.9591565,
+      "p95": 56.92547704999991,
+      "max": 101.688089
+    },
+    "work_cpu_ms": {
+      "n": 172,
+      "min": 4.756672,
+      "median": 6.913168000000001,
+      "p95": 9.4274832,
+      "max": 12.078464
+    },
+    "camera_delivery_ms": {
+      "n": 172,
+      "min": 127.984176,
+      "median": 143.41322,
+      "p95": 162.78541794999998,
+      "max": 189.929359
+    },
+    "receipt_to_work_ms": {
+      "n": 172,
+      "min": 2.93686,
+      "median": 20.7110755,
+      "p95": 39.689438099999975,
+      "max": 85.378788
+    },
+    "host_predecode_ms": {
+      "n": 172,
+      "min": 0.028706,
+      "median": 0.042931,
+      "p95": 0.061332,
+      "max": 0.340662
+    },
+    "host_decode_wall_ms": {
+      "n": 172,
+      "min": 2.078183,
+      "median": 6.3057155,
+      "p95": 22.954788699999995,
+      "max": 69.936518
+    },
+    "host_decode_cpu_ms": {
+      "n": 172,
+      "min": 2.075424,
+      "median": 2.805456,
+      "p95": 3.8393904,
+      "max": 4.36896
+    },
+    "diagnostic_wait_ms": {
+      "n": 172,
+      "min": 0.280818,
+      "median": 12.69717,
+      "p95": 22.778133249999993,
+      "max": 58.002622
+    },
+    "capture_to_ready_ms": {
+      "n": 172,
+      "min": 147.602428,
+      "median": 189.4387475,
+      "p95": 227.93332049999992,
+      "max": 307.123658
+    },
+    "camera_depth_wait_ms": {
+      "n": 172,
+      "min": 0.041474,
+      "median": 28.947028,
+      "p95": 37.3900753,
+      "max": 44.891411
+    },
+    "camera_depth_work_ms": {
+      "n": 172,
+      "min": 0.762929,
+      "median": 1.4895665,
+      "p95": 10.755627499999996,
+      "max": 26.740384
+    },
+    "camera_rgb_work_ms": {
+      "n": 172,
+      "min": 0.010401,
+      "median": 0.053539500000000004,
+      "p95": 7.0521882999999965,
+      "max": 41.574442
+    },
+    "camera_aux_work_ms": {
+      "n": 172,
+      "min": 0.074469,
+      "median": 0.095206,
+      "p95": 0.14583239999999995,
+      "max": 0.69134
+    },
+    "camera_nn_dequeue_ms": {
+      "n": 172,
+      "min": 0.006913,
+      "median": 0.0087845,
+      "p95": 0.013686849999999997,
+      "max": 0.327509
+    },
+    "camera_nn_poll_interval_ms": {
+      "n": 172,
+      "min": 12.581375,
+      "median": 33.370504,
+      "p95": 51.36943239999996,
+      "max": 114.776449
+    },
+    "result_build_wall_ms": {
+      "n": 172,
+      "min": 0.086021,
+      "median": 0.105686,
+      "p95": 0.18149839999999998,
+      "max": 0.3638
+    },
+    "result_build_cpu_ms": {
+      "n": 172,
+      "min": 0.08528,
+      "median": 0.104032,
+      "p95": 0.1328176,
+      "max": 0.182816
+    }
+  },
+  "snapshots": {
+    "ready_to_snapshot_ms": {
+      "n": 258,
+      "min": 1.674411,
+      "median": 40.023723000000004,
+      "p95": 98.65723274999998,
+      "max": 164.464936
+    },
+    "capture_to_snapshot_ms": {
+      "n": 258,
+      "min": 157.063315,
+      "median": 230.860796,
+      "p95": 289.20219955,
+      "max": 373.845461
+    },
+    "depth_fps_observed": {
+      "n": 258,
+      "min": 27.5,
+      "median": 29.9,
+      "p95": 30.5,
+      "max": 31.2
+    },
+    "snapshot_to_prepare_ms": {
+      "n": 258,
+      "min": 0.02893,
+      "median": 0.060836,
+      "p95": 0.09166999999999999,
+      "max": 0.390585
+    }
+  },
+  "delivery_ms": {
+    "clock_error_bound_ms": {
+      "n": 258,
+      "min": 4.963692,
+      "median": 4.963692,
+      "p95": 4.963692,
+      "max": 4.963692
+    },
+    "prepare_to_client_estimate_ms": {
+      "n": 258,
+      "min": 4.993055,
+      "median": 7.33097,
+      "p95": 20.46574804999996,
+      "max": 114.996649
+    },
+    "capture_to_client_estimate_ms": {
+      "n": 258,
+      "min": 162.363771,
+      "median": 241.18479050000002,
+      "p95": 301.4149566999999,
+      "max": 381.175567
+    },
+    "client_parse_wall_ms": {
+      "n": 258,
+      "min": 0.093353,
+      "median": 0.15114100000000003,
+      "p95": 0.16824365,
+      "max": 1.083463
+    },
+    "encode_wall_ms": {
+      "n": 258,
+      "min": 0.106342,
+      "median": 0.13063249999999998,
+      "p95": 0.19554654999999987,
+      "max": 2.733617
+    },
+    "broadcast_wall_ms": {
+      "n": 258,
+      "min": 0.241807,
+      "median": 1.9395479999999998,
+      "p95": 9.374366349999981,
+      "max": 20.383434
+    }
+  },
+  "telemetry_interval_s": {
+    "n": 257,
+    "min": 0.0018582989941933192,
+    "median": 0.057136957002512645,
+    "p95": 0.28791184700094163,
+    "max": 0.542775050002092
+  },
+  "no_foot_intervals": [],
+  "settings": [
+    {
+      "nn_w": 384,
+      "nn_h": 512,
+      "nn_fps": 12,
+      "mono_fps": 30,
+      "record_rgbd": true,
+      "subpixel": true,
+      "nn_kpts": 17,
+      "usb_speed": "SUPER",
+      "model_blob": "/home/jetson/x3_ws/src/blobs/yolo26n-pose-512/yolo26n-pose-512_4shave.blob",
+      "environment": {
+        "X3_OAK_DEPTH_FPS": null,
+        "X3_OAK_BLOB_SHAVES": "4",
+        "X3_OAK_NN_LATEST_OUTPUT": "1",
+        "X3_OAK_NN_THREADS": "2",
+        "OPENBLAS_NUM_THREADS": null,
+        "OMP_NUM_THREADS": "1"
+      }
+    }
+  ],
+  "motors_commanded": false,
+  "note": "Stages count distinct packets; snapshot ages count all readouts. Delivery estimates have clock-probe uncertainty and exclude browser rendering. Camera delivery combines device processing, queues and transfer; CPU time covers only the current thread.",
+  "missing_diagnostic_messages": 0,
+  "clock": {
+    "before": {
+      "samples": [
+        {
+          "offset_ns": -45795064973110.0,
+          "error_bound_ns": 9902189.0,
+          "round_trip_ns": 19808090,
+          "server_handling_ns": 3712,
+          "client_midpoint_ns": 52026490187667.0
+        },
+        {
+          "offset_ns": -45795067003185.0,
+          "error_bound_ns": 6379110.0,
+          "round_trip_ns": 12763053,
+          "server_handling_ns": 4833,
+          "client_midpoint_ns": 52026506507615.5
+        },
+        {
+          "offset_ns": -45795069724025.0,
+          "error_bound_ns": 7010813.0,
+          "round_trip_ns": 14027130,
+          "server_handling_ns": 5504,
+          "client_midpoint_ns": 52026519943408.0
+        },
+        {
+          "offset_ns": -45795069069445.0,
+          "error_bound_ns": 4963692.0,
+          "round_trip_ns": 9932504,
+          "server_handling_ns": 5120,
+          "client_midpoint_ns": 52026531953044.0
+        },
+        {
+          "offset_ns": -45795073006651.0,
+          "error_bound_ns": 6067240.0,
+          "round_trip_ns": 12139952,
+          "server_handling_ns": 5472,
+          "client_midpoint_ns": 52026543014281.0
+        }
+      ],
+      "best": {
+        "offset_ns": -45795069069445.0,
+        "error_bound_ns": 4963692.0,
+        "round_trip_ns": 9932504,
+        "server_handling_ns": 5120,
+        "client_midpoint_ns": 52026531953044.0
+      }
+    },
+    "after": {
+      "samples": [
+        {
+          "offset_ns": -45795064404772.5,
+          "error_bound_ns": 12295303.5,
+          "round_trip_ns": 24597168,
+          "server_handling_ns": 6561,
+          "client_midpoint_ns": 52049692992607.0
+        },
+        {
+          "offset_ns": -45795071995722.0,
+          "error_bound_ns": 5785059.0,
+          "round_trip_ns": 11578150,
+          "server_handling_ns": 8032,
+          "client_midpoint_ns": 52049711120098.0
+        },
+        {
+          "offset_ns": -45795061817125.0,
+          "error_bound_ns": 12927347.0,
+          "round_trip_ns": 25859782,
+          "server_handling_ns": 5088,
+          "client_midpoint_ns": 52049729859083.0
+        }
+      ],
+      "best": {
+        "offset_ns": -45795071995722.0,
+        "error_bound_ns": 5785059.0,
+        "round_trip_ns": 11578150,
+        "server_handling_ns": 8032,
+        "client_midpoint_ns": 52049711120098.0
+      }
+    },
+    "offset_change_ms": -2.926277,
+    "consistent_with_probe_bounds": true
+  }
+}

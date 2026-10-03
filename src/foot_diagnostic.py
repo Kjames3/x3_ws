@@ -108,8 +108,33 @@ def measure_feet(detections, depth, intrinsics, nn_size, mount):
             out.append(dict(side=side, person_detection=person, xy=center,
                             radius_m=max(.16, spread+.04), sigma_m=max(.025, spread*.5),
                             height_m=float(np.median(height[use])), confidence=float(confidence),
-                            pixels=int(use.sum()), roi=[x0,y0,x1,y1]))
-    return out, dict(rejected)
+                            pixels=int(use.sum()), roi=[x0,y0,x1,y1],
+                            _support_pixels=(yy[use]*w+xx[use])))
+    # Only compare opposite ankles of the same detected person. ROI overlap
+    # alone is not evidence of duplication: compare the actual selected pixels.
+    ambiguous = set()
+    for i, a in enumerate(out):
+        for j in range(i):
+            b = out[j]
+            if a['person_detection'] != b['person_detection'] or a['side'] == b['side']:
+                continue
+            if np.linalg.norm(a['xy']-b['xy']) > .06:
+                continue
+            shared = np.intersect1d(a['_support_pixels'], b['_support_pixels'],
+                                    assume_unique=True).size
+            # Require substantial reuse relative to BOTH components. A small
+            # crop inside a much larger region is not enough to decide identity.
+            if shared >= .60 * max(a['pixels'], b['pixels']):
+                ambiguous.update((i, j))
+    for m in out:
+        m.pop('_support_pixels')
+    rejected['ambiguous_shared_depth'] += len(ambiguous)
+    if not ambiguous:
+        rejected.pop('ambiguous_shared_depth', None)
+    # Neither ankle has independent evidence here; confidence cannot tell us
+    # which physical foot owns this surface. Do not guess a side or feed two
+    # copies to the shadow CBF. The normal tracker path drops these tracks.
+    return [m for i, m in enumerate(out) if i not in ambiguous], dict(rejected)
 
 
 def rotation(pose):
@@ -145,18 +170,32 @@ class FootTracker:
         for j, m in enumerate(measurements):
             t = matches.get(j)
             velocity = np.zeros(2)
+            raw_world = m['world'].copy()
+            position = raw_world.copy()
+            smoothing_lag = 0.0
             count = 1
             if t is not None:
-                raw = (m['world']-t['world'])/(stamp-t['stamp'])
+                dt = stamp-t['stamp']
+                raw = (raw_world-t['raw_world'])/dt
                 if np.linalg.norm(raw) <= 3.0:
-                    velocity = .5*t['velocity']+.5*raw
+                    # Time-based coefficients preserve behavior across packet rates.
+                    # Differentiate raw observations, not the lagging position.
+                    velocity_alpha = -math.expm1(-dt/.18)
+                    velocity = t['velocity']+velocity_alpha*(raw-t['velocity'])
+                    # Reduce position lag once sustained motion is evident.
+                    position_tau = .10/(1+np.linalg.norm(velocity)/.15)
+                    position_alpha = -math.expm1(-dt/position_tau)
+                    position = t['world']+position_alpha*(raw_world-t['world'])
+                    smoothing_lag = float(np.linalg.norm(raw_world-position))
                     count = t['count']+1
                 else:
                     t = None  # identity jump, do not fabricate a high-speed threat
             ident = t['id'] if t is not None else self.next_id
             if t is None:
                 self.next_id += 1
-            tracks.append(dict(m, id=ident, velocity=velocity, count=count, stamp=stamp))
+            tracks.append(dict(m, world=position, raw_world=raw_world,
+                               smoothing_lag_m=smoothing_lag, id=ident,
+                               velocity=velocity, count=count, stamp=stamp))
         self.tracks = tracks
 
     def local(self, now, pose):
@@ -169,12 +208,12 @@ class FootTracker:
                 continue
             vel = rot@t['velocity']
             xy = rot@(t['world']+t['velocity']*min(age,.3)-origin)
-            sigma = t['sigma_m']+.20*age
+            sigma = t['sigma_m']+.20*age+t['smoothing_lag_m']
             out.append(dict(id=t['id'], side=t['side'], fwd=float(xy[0]), left=float(xy[1]),
                             vfwd=float(vel[0]), vleft=float(vel[1]), radius_m=t['radius_m'],
                             sigma_m=sigma, age_s=age, velocity_ready=t['count']>=3,
                             height_m=t['height_m'], confidence=t['confidence'], pixels=t['pixels'],
-                            roi=t['roi'], provisional=True, extent_kind='depth_region_with_0.16m_minimum_shoe_proxy'))
+                            roi=t['roi'], smoothing_lag_m=t['smoothing_lag_m'], provisional=True, extent_kind='depth_region_with_0.16m_minimum_shoe_proxy'))
         return out
 
 
