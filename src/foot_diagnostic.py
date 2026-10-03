@@ -38,6 +38,33 @@ class StageTimer:
                     work_start_monotonic_ns=self.start, result_ready_monotonic_ns=self.last)
 
 
+def select_ankle_component(z, valid, ankle, radius):
+    """Choose the nearest supported depth layer, not a crop-wide percentile.
+
+    Probe multiple layers; reject speckles and components remote from the ankle.
+    A foreground shoe can occupy less than 20% of the crop while the shin
+    dominates it. A single percentile then silently changes physical surfaces.
+    """
+    seeds = np.unique(np.percentile(z[valid], [1, 3, 5, 10, 20, 40, 60, 80]))
+    minimum = max(16, int(math.ceil(.01*valid.sum())))
+    best = None
+    best_depth = float('inf')
+    best_distance = float('inf')
+    for seed in seeds:
+        mask = (valid & (np.abs(z-seed) <= .10)).astype(np.uint8)
+        n, labels, stats, centers = cv2.connectedComponentsWithStats(mask, 8)
+        for j in range(1, n):
+            if (stats[j, cv2.CC_STAT_AREA] < minimum
+                    or np.linalg.norm(centers[j]-ankle) > radius):
+                continue
+            use = labels == j
+            depth = float(np.median(z[use]))
+            distance = float(np.linalg.norm(centers[j]-ankle))
+            if depth < best_depth-.02 or (abs(depth-best_depth) <= .02 and distance < best_distance):
+                best, best_depth, best_distance = use, depth, distance
+    return best
+
+
 def measure_feet(detections, depth, intrinsics, nn_size, mount):
     """Extract compact above-floor depth components near confident ankle pixels.
 
@@ -87,18 +114,10 @@ def measure_feet(detections, depth, intrinsics, nn_size, mount):
             if valid.sum() < 16:
                 rejected['no_above_floor_depth'] += 1
                 continue
-            # Prefer foreground support; do not use the torso's range. Reject
-            # isolated near pixels via connected-component support below.
-            near = float(np.percentile(z[valid], 20))
-            mask = (valid & (np.abs(z-near) <= .10)).astype(np.uint8)
-            n, labels, stats, centers = cv2.connectedComponentsWithStats(mask, 8)
-            candidates = [j for j in range(1, n) if stats[j, cv2.CC_STAT_AREA] >= 16
-                          and np.linalg.norm(centers[j]-[u-x0, v-y0]) <= radius*.85]
-            if not candidates:
+            use = select_ankle_component(z, valid, (u-x0, v-y0), radius)
+            if use is None:
                 rejected['no_compact_component'] += 1
                 continue
-            j = min(candidates, key=lambda q: np.linalg.norm(centers[q]-[u-x0, v-y0]))
-            use = labels == j
             xy = np.column_stack((mx+z[use]*cp-y[use]*sp, -x[use]))
             center = np.median(xy, axis=0)
             spread = float(np.percentile(np.linalg.norm(xy-center, axis=1), 95))
@@ -147,13 +166,20 @@ class FootTracker:
     def __init__(self):
         self.tracks = []
         self.next_id = 1
+        self.dormant = []
+        self.events = []
 
     def update(self, measurements, stamp, pose):
         rot = rotation(pose)
         origin = np.array([pose['x'], pose['y']])
         for m in measurements:
             m['world'] = origin+rot@m['xy']
-        old = [t for t in self.tracks if 0 < stamp-t['stamp'] <= .35]
+        previous = self.tracks + self.dormant
+        active_ids = {t['id'] for t in self.tracks}
+        self.events = [dict(reason='expired', id=t['id'], side=t['side'],
+                            gap_s=stamp-t['stamp']) for t in previous
+                       if not 0 < stamp-t['stamp'] <= .35]
+        old = [t for t in previous if 0 < stamp-t['stamp'] <= .35]
         costs = np.full((len(old), len(measurements)), 1e6)
         for i, t in enumerate(old):
             dt = stamp-t['stamp']
@@ -163,12 +189,35 @@ class FootTracker:
                     if dist <= .30:
                         costs[i,j] = dist
         matches = {}
-        if costs.size:
-            rows, cols = linear_sum_assignment(costs)
-            matches = {j: old[i] for i,j in zip(rows,cols) if costs[i,j] < 1e5}
+        # Associate active tracks first. Retained identities only compete for
+        # observations that no active track accepted.
+        for active_pass in (True, False):
+            indices = [i for i, t in enumerate(old)
+                       if (t['id'] in active_ids) == active_pass]
+            available = [j for j in range(len(measurements)) if j not in matches]
+            if indices and available:
+                rows, cols = linear_sum_assignment(costs[np.ix_(indices, available)])
+                for row, col in zip(rows, cols):
+                    i, j = indices[row], available[col]
+                    if costs[i, j] < 1e5:
+                        matches[j] = old[i]
         tracks = []
+        consumed = set()
         for j, m in enumerate(measurements):
             t = matches.get(j)
+            event = dict(side=m['side'], raw_world_xy=m['world'].tolist(),
+                         reason='new_no_candidate')
+            candidates = [v for v in old if v['side'] == m['side']]
+            if t is None and candidates:
+                event['reason'] = 'association_rejected'
+                event['candidates'] = [dict(id=v['id'], gap_s=stamp-v['stamp'],
+                    residual_m=float(np.linalg.norm(m['world']-(v['world']+
+                        v['velocity']*(stamp-v['stamp']))))) for v in candidates]
+            if t is not None:
+                consumed.add(t['id'])
+                event.update(previous_id=t['id'], gap_s=stamp-t['stamp'],
+                    residual_m=float(np.linalg.norm(m['world']-(t['world']+
+                        t['velocity']*(stamp-t['stamp'])))))
             velocity = np.zeros(2)
             raw_world = m['world'].copy()
             position = raw_world.copy()
@@ -177,7 +226,11 @@ class FootTracker:
             if t is not None:
                 dt = stamp-t['stamp']
                 raw = (raw_world-t['raw_world'])/dt
-                if np.linalg.norm(raw) <= 3.0:
+                event['raw_speed_mps'] = float(np.linalg.norm(raw))
+                if np.linalg.norm(raw) <= 3.0 and t['id'] not in active_ids:
+                    event['reason'] = 'reacquired_velocity_reset'
+                elif np.linalg.norm(raw) <= 3.0:
+                    event['reason'] = 'matched'
                     # Time-based coefficients preserve behavior across packet rates.
                     # Differentiate raw observations, not the lagging position.
                     velocity_alpha = -math.expm1(-dt/.18)
@@ -189,14 +242,38 @@ class FootTracker:
                     smoothing_lag = float(np.linalg.norm(raw_world-position))
                     count = t['count']+1
                 else:
+                    event['reason'] = 'raw_speed_rejected'
                     t = None  # identity jump, do not fabricate a high-speed threat
             ident = t['id'] if t is not None else self.next_id
             if t is None:
                 self.next_id += 1
+            event['id'] = ident
+            self.events.append(event)
             tracks.append(dict(m, world=position, raw_world=raw_world,
                                smoothing_lag_m=smoothing_lag, id=ident,
                                velocity=velocity, count=count, stamp=stamp))
+        observed_sides = {m['side'] for m in measurements}
+        self.dormant = []
+        for t in old:
+            if t['id'] in consumed:
+                continue
+            if t['side'] in observed_sides:
+                # Without persistent person IDs, we cannot prove this old
+                # same-side identity is independent of the current observation.
+                # Retire it conservatively rather than allow old-new-old revival.
+                self.events.append(dict(reason='superseded_identity_retired',
+                                        id=t['id'], side=t['side']))
+            else:
+                self.dormant.append(t)
+        for t in self.dormant:
+            self.events.append(dict(reason='missing_identity_retained', id=t['id'],
+                                    side=t['side'], gap_s=stamp-t['stamp']))
         self.tracks = tracks
+
+    def clear(self):
+        self.tracks = []
+        self.dormant = []
+        self.events = []
 
     def local(self, now, pose):
         rot = rotation(pose).T
@@ -382,7 +459,7 @@ class FootDiagnostic:
                     feet=self.tracker.local(now,pose)
                 else:
                     timer.mark('extraction')
-                    self.tracker.tracks=[]
+                    self.tracker.clear()
                 timer.mark('tracking')
                 shadow=shadow_cbf(feet)
                 timer.mark('shadow_cbf')
@@ -408,7 +485,7 @@ class FootDiagnostic:
                 settings['environment']={name:os.environ.get(name) for name in
                     ('X3_OAK_DEPTH_FPS','X3_OAK_BLOB_SHAVES','X3_OAK_NN_LATEST_OUTPUT','X3_OAK_NN_THREADS','OPENBLAS_NUM_THREADS','OMP_NUM_THREADS')}
                 result=dict(mode='diagnostic_only',status=status,feet=feet,shadow=shadow,
-                    rejected=rejected,capture_age_s=now-cap,depth_gap_s=abs(near[0]-sdk_cap) if near else None,
+                    tracking_events=list(self.tracker.events), rejected=rejected,capture_age_s=now-cap,depth_gap_s=abs(near[0]-sdk_cap) if near else None,
                     session_id=meta.get('session_id'), seq=meta.get('seq'),
                     update_ms=timing['work_wall_ms'], timing=timing, settings=settings)
                 with self.lock:
@@ -422,7 +499,7 @@ class FootDiagnostic:
                     result['update_ms'] = timing['work_wall_ms']
                     self.result=result;self.last_update=now
             except Exception as exc:
-                self.tracker.tracks=[]
+                self.tracker.clear()
                 with self.lock:
                     self.result=dict(mode='diagnostic_only',status='error',error=str(exc),feet=[],shadow=shadow_cbf([]))
                     self.last_update=time.monotonic()

@@ -227,3 +227,61 @@ unresolved without raw depth. Some intermediate packets are absent from the
 capture; do not infer every reset reason exactly. Next: explicit raw-position
 and association diagnostics, plus short identity-only retention, with fresh
 velocity warm-up and no stale obstacle publication. Do not loosen gates yet.
+
+### Identity-only retention and reset events
+
+Unmatched identities survive privately for at most 0.35 s since their last
+measurement, using the existing 0.30 m association and 3 m/s raw-speed gates.
+Only currently measured tracks appear in local feet or shadow CBF inputs.
+Reacquisition resets velocity to zero and requires three fresh observations
+before velocity_ready. Unsynchronized input clears active and retained state.
+No extension of physical obstacle persistence is implied.
+
+Each packet now contains tracking_events with raw_world_xy in odom metres,
+matched/reacquired/new/rejected/expired decisions, prior/new IDs and, where
+applicable, gap_s, predicted residual_m and raw_speed_mps. Missing identities
+are explicitly reported as retained. Capture scripts preserve these fields
+without changes. Exact depth-surface attribution still requires raw depth.
+
+### Retention correction after capture 193226
+
+Association now runs active tracks first, then retained tracks for remaining
+observations. Unmatched old identities are retired when their side is observed
+again, with superseded_identity_retired events. This prevents an old identity
+remaining available after a new same-side replacement has appeared. No distance,
+speed, smoothing, warm-up or retention-duration thresholds were loosened.
+
+Without persistent person IDs, this retirement rule is intentionally conservative
+across people too: an occluded foot may lose its retained identity if another
+person's same-side foot remains visible. Prefer loss of identity continuity to
+an unjustified revival. Fresh observations are still processed normally.
+Tests cover active-first matching, old-new-old replacement, and independent
+opposite-side disappearance/recovery. Live validation is pending.
+
+### Multi-layer ankle extraction experiment
+
+Replaced the single 20th-percentile seed with seeds at 1/3/5/10/20/40/60/80
+percentiles. Choose the nearest supported component; within 2 cm depth prefer
+its centroid nearer the ankle. Components need at least 16 pixels and 1% of
+valid crop support, with centroid within one crop radius of the ankle. The
+radius allowance was expanded from 0.85 to 1 to include a raised shoe near the
+crop edge. Existing height, spread and shared-support ambiguity gates remain.
+No temporal depth hold or relaxed tracker limits were added.
+
+Targeted replay of ten paired depth frames around five resets in foot-depth-r1,
+using reconstructed integer ankle-crop centers and calibrated depth, reduced
+forward-coordinate pair changes from roughly 0.306/0.278/0.298/0.256/0.320 m
+to 0.009/0.029/0.112/0.038/0.026 m. This is an approximate paired-frame replay,
+not an exact live depth/NN reconstruction or accuracy ground truth. Third pair
+still moves significantly and needs live review. Original RGB/depth bag stays
+on robot artifacts/c3-captures-segpose/foot-depth-r1. Additional component passes
+increase extraction work; live timing must be checked. Synthetic tests cover
+foreground occupancy changes, speckles, remote components, and distinct feet
+at equal depth; all 30 diagnostic tests pass.
+
+Live multi-layer capture 195849 retained the right foot's ID throughout and
+both feet in 163/163 packets, with zero raw-speed rejections. One left-foot
+association rejection remained (0.376 m). Extraction median increased from
+17.8 to 43.1 ms; capture-to-ready median 187 to 215 ms, p95 237 to 299 ms.
+The movements were not identical; optimize extraction without changing its
+selection behavior before attributing every improvement to the algorithm.

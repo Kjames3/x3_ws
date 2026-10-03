@@ -221,3 +221,95 @@ def test_smoothing_motion_response_and_stop_at_variable_rates():
         for stamp in np.arange(1+dt,1.6+dt/2,dt):
             tracker.update([measurement(.8)],stamp,pose)
         assert abs(tracker.tracks[0]['velocity'][0])<.01
+
+
+def test_identity_retention_has_no_stale_output_and_resets_velocity():
+    tracker=FootTracker();pose=dict(x=0,y=0,theta=0)
+    for stamp in [0,.1,.2]:tracker.update([measurement(1)],stamp,pose)
+    ident=tracker.tracks[0]['id']
+    tracker.update([],.3,pose)
+    assert tracker.local(.3,pose)==[] and tracker.dormant[0]['id']==ident
+    tracker.update([measurement(1.01)],.4,pose)
+    assert tracker.tracks[0]['id']==ident
+    assert not tracker.local(.4,pose)[0]['velocity_ready']
+    assert np.linalg.norm(tracker.tracks[0]['velocity'])==0
+    assert tracker.events[0]['reason']=='reacquired_velocity_reset'
+    tracker.update([measurement(1.01)],.5,pose)
+    tracker.update([measurement(1.01)],.6,pose)
+    assert tracker.local(.6,pose)[0]['velocity_ready']
+    tracker.update([],.7,pose)
+    tracker.update([measurement(1.01)],1.0,pose)
+    assert tracker.tracks[0]['id']!=ident
+    assert any(e['reason']=='expired' for e in tracker.events)
+    tracker.clear()
+    assert not tracker.tracks and not tracker.dormant
+
+
+def test_tracking_event_reports_speed_and_distance_rejection():
+    pose=dict(x=0,y=0,theta=0);tracker=FootTracker()
+    tracker.update([measurement(1)],0,pose)
+    tracker.update([measurement(1.27)],.08,pose)
+    e=tracker.events[0]
+    assert e['reason']=='raw_speed_rejected' and e['raw_speed_mps']>3
+    assert e['raw_world_xy']==[1.27,0]
+    tracker.update([measurement(2)],.16,pose)
+    assert tracker.events[0]['reason']=='association_rejected'
+    assert tracker.events[0]['candidates'][0]['residual_m']>.3
+    json.dumps(tracker.events,allow_nan=False)
+
+
+def test_replacement_retires_old_identity_before_return_to_old_position():
+    tracker=FootTracker();pose=dict(x=0,y=0,theta=0)
+    tracker.update([measurement(1)],0,pose)
+    original=tracker.tracks[0]['id']
+    tracker.update([measurement(1.4)],.1,pose)
+    replacement=tracker.tracks[0]['id']
+    assert replacement!=original and not tracker.dormant
+    assert any(e['reason']=='superseded_identity_retired' for e in tracker.events)
+    tracker.update([measurement(1)],.2,pose)
+    assert tracker.tracks[0]['id']!=original
+
+
+def test_active_identity_beats_closer_dormant_candidate():
+    tracker=FootTracker();pose=dict(x=0,y=0,theta=0)
+    # Two same-side tracks emulate separate people; one disappears.
+    tracker.update([measurement(1),measurement(1.1)],0,pose)
+    active,retained=tracker.tracks
+    tracker.tracks=[active];tracker.dormant=[retained]
+    tracker.update([measurement(1.09)],.1,pose)
+    assert tracker.tracks[0]['id']==active['id']
+    assert not tracker.dormant
+    assert any(e['reason']=='superseded_identity_retired' and e['id']==retained['id']
+               for e in tracker.events)
+
+
+def test_other_side_disappearance_is_still_retained():
+    tracker=FootTracker();pose=dict(x=0,y=0,theta=0)
+    tracker.update([measurement(1),measurement(1,.2,'right')],0,pose)
+    right=tracker.tracks[1]['id']
+    tracker.update([measurement(1)],.1,pose)
+    assert [t['id'] for t in tracker.dormant]==[right]
+    assert len(tracker.local(.1,pose))==1
+    tracker.update([measurement(1),measurement(1,.2,'right')],.2,pose)
+    assert tracker.tracks[1]['id']==right
+    assert not tracker.local(.2,pose)[1]['velocity_ready']
+
+
+def test_foreground_layer_survives_crop_occupancy_change():
+    from foot_diagnostic import select_ankle_component
+    for size in [12,18,24]:
+        z=np.full((73,73),1.3,dtype=np.float32)
+        z[40:40+size,28:28+size]=1.0
+        use=select_ankle_component(z,np.ones_like(z,dtype=bool),(36,36),36)
+        assert use is not None and np.median(z[use])==1.0
+
+
+def test_foreground_speckles_and_remote_corner_not_selected():
+    from foot_diagnostic import select_ankle_component
+    z=np.full((73,73),1.3,dtype=np.float32)
+    z[30:33,30:33]=.5
+    use=select_ankle_component(z,np.ones_like(z,dtype=bool),(36,36),36)
+    assert np.isclose(np.median(z[use]),1.3)
+    z[:15,:15]=.5
+    use=select_ankle_component(z,np.ones_like(z,dtype=bool),(36,36),36)
+    assert np.isclose(np.median(z[use]),1.3)
