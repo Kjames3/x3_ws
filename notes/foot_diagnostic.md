@@ -285,3 +285,31 @@ association rejection remained (0.376 m). Extraction median increased from
 17.8 to 43.1 ms; capture-to-ready median 187 to 215 ms, p95 237 to 299 ms.
 The movements were not identical; optimize extraction without changing its
 selection behavior before attributing every improvement to the algorithm.
+
+### Depth search optimization
+
+Cache candidate computations for identical seed masks within one ankle crop;
+skip a layer only when its minimum depth exceeds the current best by more
+than the existing 2 cm tie band (or support is below minimum). Candidate order,
+including repeated layers, remains unchanged. Pixel selection matched a frozen
+reference on 250 synthetic cases and 20 recorded ankle crops reconstructed from
+the ten inspected RGB/depth frames. Laptop microbenchmark median selector time
+1.19 -> 1.05 ms; p95 1.47 -> 1.49 ms (no demonstrated tail improvement).
+This is a modest optimization; Jetson live wall time and scheduling effects
+remain to be measured. No tracker or component-selection thresholds changed.
+
+Live optimized capture 20261002-200524-foot-depth-search-optimized:
+204 distinct packets; both feet in 203, one shared-depth ambiguity rejection
+at the start (~63 ms gap). Both retained identities reacquired with velocity
+reset. Moving right foot retained one ID throughout. Left foot changed IDs
+twice near 18 s, with association residuals 0.666 and 0.554 m; no raw-speed
+rejections. Depth-surface attribution for this left-foot excursion remains
+unresolved; inspect synchronized RGB/depth before changing tracking limits.
+
+Compared with 195849, extraction wall median/p95 improved 43.1/90.8 to
+29.0/68.6 ms; capture-to-ready 215.1/299.0 to 199.1/256.4 ms. Extraction CPU
+median improved 11.91 to 10.79 ms (~9%), but CPU p95 rose 15.24 to 16.66 ms.
+Do not attribute the whole wall-time improvement to optimization: scene and
+scheduling differed. Camera delivery stayed ~143 ms. Keep optimization; future
+work is the left-foot excursion, not further threshold relaxation. Foot input
+remains diagnostic-only and does not actuate the robot.

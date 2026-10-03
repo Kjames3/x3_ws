@@ -1,0 +1,407 @@
+{
+  "packet_receive_interval_ms": {
+    "n": 203,
+    "min": 0.3770949988393113,
+    "median": 75.62806400528643,
+    "p95": 256.11964919225994,
+    "max": 429.13621199841145
+  },
+  "source_capture_interval_ms": {
+    "n": 203,
+    "min": 83.293484,
+    "median": 83.321768,
+    "p95": 249.9648182,
+    "max": 416.6094
+  },
+  "unique_packets": 204,
+  "packets_with_feet": 203,
+  "statuses": {
+    "ok": 204
+  },
+  "telemetry_rows": 289,
+  "stages_ms": {
+    "pose_lookup_wall_ms": {
+      "n": 204,
+      "min": 0.05309,
+      "median": 0.0750585,
+      "p95": 0.1193826,
+      "max": 1.623744
+    },
+    "pose_lookup_cpu_ms": {
+      "n": 204,
+      "min": 0.0,
+      "median": 0.06667200000000001,
+      "p95": 0.0941024,
+      "max": 0.136128
+    },
+    "depth_lookup_wall_ms": {
+      "n": 204,
+      "min": 0.023905,
+      "median": 0.04133,
+      "p95": 0.072683,
+      "max": 1.435672
+    },
+    "depth_lookup_cpu_ms": {
+      "n": 204,
+      "min": 0.0,
+      "median": 0.040384,
+      "p95": 0.0632592,
+      "max": 0.08672
+    },
+    "extraction_wall_ms": {
+      "n": 204,
+      "min": 5.634652,
+      "median": 29.0134675,
+      "p95": 68.57642304999999,
+      "max": 128.560373
+    },
+    "extraction_cpu_ms": {
+      "n": 204,
+      "min": 5.397632,
+      "median": 10.790911999999999,
+      "p95": 16.6607712,
+      "max": 22.130112
+    },
+    "tracking_wall_ms": {
+      "n": 204,
+      "min": 0.110053,
+      "median": 0.587303,
+      "p95": 2.70579545,
+      "max": 15.687076
+    },
+    "tracking_cpu_ms": {
+      "n": 204,
+      "min": 0.104704,
+      "median": 0.535392,
+      "p95": 0.9112799999999998,
+      "max": 1.166272
+    },
+    "shadow_cbf_wall_ms": {
+      "n": 204,
+      "min": 0.013024,
+      "median": 0.3077245,
+      "p95": 1.06452505,
+      "max": 13.631092
+    },
+    "shadow_cbf_cpu_ms": {
+      "n": 204,
+      "min": 0.011584,
+      "median": 0.289456,
+      "p95": 0.48518719999999993,
+      "max": 0.738688
+    },
+    "work_wall_ms": {
+      "n": 204,
+      "min": 6.552032,
+      "median": 30.1740085,
+      "p95": 71.63956004999999,
+      "max": 130.271896
+    },
+    "work_cpu_ms": {
+      "n": 204,
+      "min": 6.30304,
+      "median": 12.046288,
+      "p95": 17.9717088,
+      "max": 23.531584
+    },
+    "camera_delivery_ms": {
+      "n": 204,
+      "min": 126.78468,
+      "median": 143.20032,
+      "p95": 164.5578944,
+      "max": 192.300456
+    },
+    "receipt_to_work_ms": {
+      "n": 204,
+      "min": 3.300161,
+      "median": 18.726138,
+      "p95": 49.8277863,
+      "max": 84.065167
+    },
+    "host_predecode_ms": {
+      "n": 204,
+      "min": 0.027777,
+      "median": 0.04325,
+      "p95": 0.07842449999999995,
+      "max": 0.486003
+    },
+    "host_decode_wall_ms": {
+      "n": 204,
+      "min": 2.170901,
+      "median": 5.0694455000000005,
+      "p95": 18.746435999999992,
+      "max": 31.768278
+    },
+    "host_decode_cpu_ms": {
+      "n": 204,
+      "min": 2.149344,
+      "median": 2.75848,
+      "p95": 4.1989968,
+      "max": 5.062624
+    },
+    "diagnostic_wait_ms": {
+      "n": 204,
+      "min": 0.330541,
+      "median": 12.841333,
+      "p95": 37.46400794999999,
+      "max": 75.958322
+    },
+    "capture_to_ready_ms": {
+      "n": 204,
+      "min": 150.847684,
+      "median": 199.0663555,
+      "p95": 256.4227182,
+      "max": 313.565106
+    },
+    "camera_depth_wait_ms": {
+      "n": 204,
+      "min": 5.519991,
+      "median": 32.141893,
+      "p95": 37.8285214,
+      "max": 59.100865
+    },
+    "camera_depth_work_ms": {
+      "n": 204,
+      "min": 0.777214,
+      "median": 2.417502,
+      "p95": 9.730863349999998,
+      "max": 14.952071
+    },
+    "camera_rgb_work_ms": {
+      "n": 204,
+      "min": 0.008992,
+      "median": 1.96214,
+      "p95": 5.648300049999999,
+      "max": 14.561752
+    },
+    "camera_aux_work_ms": {
+      "n": 204,
+      "min": 0.077763,
+      "median": 0.094883,
+      "p95": 0.14375554999999998,
+      "max": 0.244265
+    },
+    "camera_nn_dequeue_ms": {
+      "n": 204,
+      "min": 0.006624,
+      "median": 0.0088165,
+      "p95": 0.01135605,
+      "max": 0.05597
+    },
+    "camera_nn_poll_interval_ms": {
+      "n": 204,
+      "min": 7.719597,
+      "median": 37.093334999999996,
+      "p95": 47.593692499999996,
+      "max": 64.556821
+    },
+    "result_build_wall_ms": {
+      "n": 204,
+      "min": 0.092964,
+      "median": 0.10914,
+      "p95": 0.17028454999999998,
+      "max": 0.538485
+    },
+    "result_build_cpu_ms": {
+      "n": 204,
+      "min": 0.092064,
+      "median": 0.10711999999999999,
+      "p95": 0.14407999999999999,
+      "max": 0.181664
+    }
+  },
+  "snapshots": {
+    "ready_to_snapshot_ms": {
+      "n": 289,
+      "min": 1.599838,
+      "median": 36.450637,
+      "p95": 94.36410239999992,
+      "max": 159.381063
+    },
+    "capture_to_snapshot_ms": {
+      "n": 289,
+      "min": 152.950521,
+      "median": 241.628482,
+      "p95": 305.5167581999999,
+      "max": 370.755663
+    },
+    "depth_fps_observed": {
+      "n": 289,
+      "min": 29.3,
+      "median": 29.9,
+      "p95": 30.3,
+      "max": 30.4
+    },
+    "snapshot_to_prepare_ms": {
+      "n": 289,
+      "min": 0.029857,
+      "median": 0.062243,
+      "p95": 0.10599499999999996,
+      "max": 0.514164
+    }
+  },
+  "delivery_ms": {
+    "clock_error_bound_ms": {
+      "n": 289,
+      "min": 12.8215455,
+      "median": 12.8215455,
+      "p95": 12.8215455,
+      "max": 12.8215455
+    },
+    "prepare_to_client_estimate_ms": {
+      "n": 289,
+      "min": 14.2161495,
+      "median": 31.6033765,
+      "p95": 47.431317099999994,
+      "max": 230.0530705
+    },
+    "capture_to_client_estimate_ms": {
+      "n": 289,
+      "min": 180.6438135,
+      "median": 273.2700715,
+      "p95": 355.5675892999999,
+      "max": 505.2761705
+    },
+    "client_parse_wall_ms": {
+      "n": 289,
+      "min": 0.092002,
+      "median": 0.160906,
+      "p95": 0.18233759999999993,
+      "max": 1.081042
+    },
+    "encode_wall_ms": {
+      "n": 289,
+      "min": 0.093827,
+      "median": 0.133445,
+      "p95": 0.1945285999999999,
+      "max": 0.554517
+    },
+    "broadcast_wall_ms": {
+      "n": 289,
+      "min": 0.198151,
+      "median": 1.498427,
+      "p95": 8.862431799999992,
+      "max": 15.472795
+    }
+  },
+  "telemetry_interval_s": {
+    "n": 288,
+    "min": 0.0002795409964164719,
+    "median": 0.05801144150609616,
+    "p95": 0.18885962844287857,
+    "max": 0.42913621199841145
+  },
+  "no_foot_intervals": [
+    {
+      "start_s": 0.006452813002397306,
+      "end_s": 0.06953009900462348,
+      "duration_s": 0.06307728600222617
+    }
+  ],
+  "settings": [
+    {
+      "nn_w": 384,
+      "nn_h": 512,
+      "nn_fps": 12,
+      "mono_fps": 30,
+      "record_rgbd": true,
+      "subpixel": true,
+      "nn_kpts": 17,
+      "usb_speed": "SUPER",
+      "model_blob": "/home/jetson/x3_ws/src/blobs/yolo26n-pose-512/yolo26n-pose-512_4shave.blob",
+      "environment": {
+        "X3_OAK_DEPTH_FPS": null,
+        "X3_OAK_BLOB_SHAVES": "4",
+        "X3_OAK_NN_LATEST_OUTPUT": "1",
+        "X3_OAK_NN_THREADS": "2",
+        "OPENBLAS_NUM_THREADS": null,
+        "OMP_NUM_THREADS": "1"
+      }
+    }
+  ],
+  "motors_commanded": false,
+  "note": "Stages count distinct packets; snapshot ages count all readouts. Delivery estimates have clock-probe uncertainty and exclude browser rendering. Camera delivery combines device processing, queues and transfer; CPU time covers only the current thread.",
+  "missing_diagnostic_messages": 0,
+  "clock": {
+    "before": {
+      "samples": [
+        {
+          "offset_ns": -65782085665124.0,
+          "error_bound_ns": 31834628.0,
+          "round_trip_ns": 63673128,
+          "server_handling_ns": 3872,
+          "client_midpoint_ns": 69471297336094.0
+        },
+        {
+          "offset_ns": -65782074265641.5,
+          "error_bound_ns": 21609698.5,
+          "round_trip_ns": 43224677,
+          "server_handling_ns": 5280,
+          "client_midpoint_ns": 69471350832358.5
+        },
+        {
+          "offset_ns": -65782075984376.5,
+          "error_bound_ns": 26503077.5,
+          "round_trip_ns": 53011019,
+          "server_handling_ns": 4864,
+          "client_midpoint_ns": 69471399008505.5
+        },
+        {
+          "offset_ns": -65782084874005.5,
+          "error_bound_ns": 26001504.5,
+          "round_trip_ns": 52008066,
+          "server_handling_ns": 5057,
+          "client_midpoint_ns": 69471451565757.0
+        },
+        {
+          "offset_ns": -65782069809468.5,
+          "error_bound_ns": 12821545.5,
+          "round_trip_ns": 25647764,
+          "server_handling_ns": 4673,
+          "client_midpoint_ns": 69471490431035.0
+        }
+      ],
+      "best": {
+        "offset_ns": -65782069809468.5,
+        "error_bound_ns": 12821545.5,
+        "round_trip_ns": 25647764,
+        "server_handling_ns": 4673,
+        "client_midpoint_ns": 69471490431035.0
+      }
+    },
+    "after": {
+      "samples": [
+        {
+          "offset_ns": -65782078360656.5,
+          "error_bound_ns": 24602746.5,
+          "round_trip_ns": 49210805,
+          "server_handling_ns": 5312,
+          "client_midpoint_ns": 69494709122584.5
+        },
+        {
+          "offset_ns": -65782073846861.5,
+          "error_bound_ns": 12241186.5,
+          "round_trip_ns": 24485765,
+          "server_handling_ns": 3392,
+          "client_midpoint_ns": 69494746017379.5
+        },
+        {
+          "offset_ns": -65782078121934.0,
+          "error_bound_ns": 6797342.0,
+          "round_trip_ns": 13599869,
+          "server_handling_ns": 5185,
+          "client_midpoint_ns": 69494765093093.5
+        }
+      ],
+      "best": {
+        "offset_ns": -65782078121934.0,
+        "error_bound_ns": 6797342.0,
+        "round_trip_ns": 13599869,
+        "server_handling_ns": 5185,
+        "client_midpoint_ns": 69494765093093.5
+      }
+    },
+    "offset_change_ms": -8.3124655,
+    "consistent_with_probe_bounds": true
+  }
+}

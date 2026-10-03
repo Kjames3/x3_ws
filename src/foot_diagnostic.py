@@ -50,16 +50,28 @@ def select_ankle_component(z, valid, ankle, radius):
     best = None
     best_depth = float('inf')
     best_distance = float('inf')
+    layers = {}
     for seed in seeds:
-        mask = (valid & (np.abs(z-seed) <= .10)).astype(np.uint8)
-        n, labels, stats, centers = cv2.connectedComponentsWithStats(mask, 8)
-        for j in range(1, n):
-            if (stats[j, cv2.CC_STAT_AREA] < minimum
-                    or np.linalg.norm(centers[j]-ankle) > radius):
-                continue
-            use = labels == j
-            depth = float(np.median(z[use]))
-            distance = float(np.linalg.norm(centers[j]-ankle))
+        mask = valid & (np.abs(z-seed) <= .10)
+        # No component median can beat the current depth/tie-distance rule
+        # if every pixel lies beyond its 2 cm tie band. Use actual pixels to
+        # preserve float32 boundary behavior rather than seed arithmetic.
+        values = z[mask]
+        if values.size < minimum or float(values.min()) > best_depth+.02:
+            continue
+        key = mask.tobytes()
+        if key not in layers:
+            candidates = []
+            n, labels, stats, centers = cv2.connectedComponentsWithStats(mask.astype(np.uint8), 8)
+            for j in range(1, n):
+                distance = float(np.linalg.norm(centers[j]-ankle))
+                if stats[j, cv2.CC_STAT_AREA] < minimum or distance > radius:
+                    continue
+                use = labels == j
+                candidates.append((float(np.median(z[use])), distance, use))
+            layers[key] = candidates
+        # Preserve candidate order, including repeated layers and depth ties.
+        for depth, distance, use in layers[key]:
             if depth < best_depth-.02 or (abs(depth-best_depth) <= .02 and distance < best_distance):
                 best, best_depth, best_distance = use, depth, distance
     return best
