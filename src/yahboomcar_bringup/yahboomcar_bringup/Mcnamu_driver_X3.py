@@ -104,6 +104,14 @@ class yahboomcar_driver(Node):
 		#create timer
 		self.timer = self.create_timer(0.1, self.pub_data)
 
+		# Raw wheel encoder counts, stamped when a new report is first seen.
+		# The board reports them a few tens of times a second; polling at
+		# 100 Hz times each report to within 10 ms. position = counts in the
+		# board's motor order M1..M4 (wired FL, RL, FR, RR).
+		self.encPublisher = self.create_publisher(JointState, "wheel_encoders", 50)
+		self._enc_last = None
+		self.enc_timer = self.create_timer(0.01, self.pub_encoders)
+
 		#create and init variable
 		self.edition = Float32()
 		self.edition.data = 1.0
@@ -177,6 +185,17 @@ class yahboomcar_driver(Node):
 			for i in range(3): self.car.set_beep(1)
 		else:
 			for i in range(3): self.car.set_beep(0)
+
+	def pub_encoders(self):
+		counts = self.car.get_motor_encoder()
+		if counts == self._enc_last:
+			return
+		self._enc_last = counts
+		msg = JointState()
+		msg.header.stamp = self.get_clock().now().to_msg()
+		msg.name = ["m1_fl", "m2_rl", "m3_fr", "m4_rr"]
+		msg.position = [float(c) for c in counts]
+		self.encPublisher.publish(msg)
 
 	#pub data
 	def pub_data(self):
