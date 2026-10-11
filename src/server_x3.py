@@ -453,9 +453,13 @@ CBF_SAFE_DISTANCE_M = float(os.environ.get('X3_CBF_SAFE_DISTANCE_M', 0.30))
 _fp = os.environ.get('X3_CBF_FOOTPRINT', '0.16,0.13,0.11,0.11').strip().lower()
 CBF_FOOTPRINT = None if _fp == 'circle' else tuple(float(v) for v in _fp.split(','))
 # Yaw error of the lidar mount, added to every lidar bearing before it becomes
-# a CBF obstacle. Measure with src/lidar_yaw_calib.py. The URDF's laser_joint
-# (what SLAM, Nav2 and RViz use) still says exactly 180 deg.
-LIDAR_YAW_OFFSET_RAD = math.radians(float(os.environ.get('X3_LIDAR_YAW_OFFSET_DEG', 0.0)))
+# a CBF obstacle. Measured 2026-10-11 with src/lidar_yaw_calib.py: +4.85 deg
+# (four 0.9 m legs: 4.36, 5.26, 4.48, 5.32; forward legs read ~0.9 deg less
+# than backward ones). The same day a wall held square to the nose read +5.4
+# and to the tail +4.8; mapping work had it at 3.8-4.3. Uncorrected, a point
+# 0.5 m away sits 4 cm off to the side. The URDF's laser_joint (what SLAM,
+# Nav2 and RViz use) still says exactly 180 deg.
+LIDAR_YAW_OFFSET_RAD = math.radians(float(os.environ.get('X3_LIDAR_YAW_OFFSET_DEG', 4.85)))
 # Clearance kept round that outline.
 CBF_MARGIN_M = float(os.environ.get('X3_CBF_MARGIN_M', 0.10))
 
@@ -765,11 +769,11 @@ class ROS2Bridge:
         # workaround goes away once the Lidar is raised above the chassis.
         self.cbf = HolonomicCBFFilter(safe_distance=CBF_SAFE_DISTANCE_M, gamma=CBF_GAMMA,
                                       footprint=CBF_FOOTPRINT, margin=CBF_MARGIN_M)
-        logger.info("CBF: gamma %.2f, %s, deadband %.2f m/s, min %.3f m/s", CBF_GAMMA,
+        logger.info("CBF: gamma %.2f, %s, lidar yaw %+.2f deg, deadband %.2f m/s, min %.3f m/s", CBF_GAMMA,
                     "circle %.2f m" % CBF_SAFE_DISTANCE_M if CBF_FOOTPRINT is None else
                     "footprint %s m + %.2f m margin" % (
                         "/".join("%.2f" % v for v in CBF_FOOTPRINT), CBF_MARGIN_M),
-                    CMD_DEADBAND_MPS, CMD_MIN_MPS)
+                    math.degrees(LIDAR_YAW_OFFSET_RAD), CMD_DEADBAND_MPS, CMD_MIN_MPS)
         self._latest_obstacles = []
         # When that list was last REFRESHED.  Without this the CBF cannot
         # tell a live obstacle from one frozen by a /scan dropout.
