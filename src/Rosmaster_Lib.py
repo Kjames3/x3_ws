@@ -87,6 +87,7 @@ class Rosmaster(object):
         self.__roll = 0
         self.__pitch = 0
 
+        self.__encoder_seq = 0   # counts encoder reports, so a reader can tell a new one
         self.__encoder_m1 = 0
         self.__encoder_m2 = 0
         self.__encoder_m3 = 0
@@ -194,6 +195,7 @@ class Rosmaster(object):
             self.__encoder_m2 = struct.unpack('i', bytearray(ext_data[4:8]))[0]
             self.__encoder_m3 = struct.unpack('i', bytearray(ext_data[8:12]))[0]
             self.__encoder_m4 = struct.unpack('i', bytearray(ext_data[12:16]))[0]
+            self.__encoder_seq += 1
 
         else:
             if ext_type == self.FUNC_UART_SERVO:
@@ -1146,6 +1148,13 @@ class Rosmaster(object):
         m1, m2, m3, m4 = self.__encoder_m1, self.__encoder_m2, self.__encoder_m3, self.__encoder_m4
         # self.__encoder_m1, self.__encoder_m2, self.__encoder_m3, self.__encoder_m4 = 0, 0, 0, 0
         return m1, m2, m3, m4
+
+    # Encoder counts together with the number of encoder reports received so
+    # far (the board sends one every 40 ms). Read seq first: a report landing
+    # between the two reads then shows up as new on the next call.
+    def get_motor_encoder_report(self):
+        seq = self.__encoder_seq
+        return (self.__encoder_m1, self.__encoder_m2, self.__encoder_m3, self.__encoder_m4), seq
 
     # 获取小车的运动PID参数, 返回[kp, ki, kd]
     # Get the motion PID parameters of the dolly and return [kp, ki, kd]

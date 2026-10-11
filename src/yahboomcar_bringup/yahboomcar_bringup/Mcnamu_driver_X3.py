@@ -9,6 +9,8 @@ import threading
 from math import pi
 from time import sleep
 from .Rosmaster_Lib import Rosmaster
+from .wheel_speed_control import (WheelSpeedController, mecanum_targets,
+	limit_targets)
 
 #ros lib
 import rclpy
@@ -104,12 +106,23 @@ class yahboomcar_driver(Node):
 		#create timer
 		self.timer = self.create_timer(0.1, self.pub_data)
 
-		# Raw wheel encoder counts, stamped when a new report is first seen.
-		# The board reports them a few tens of times a second; polling at
-		# 100 Hz times each report to within 10 ms. position = counts in the
-		# board's motor order M1..M4 (wired FL, RL, FR, RR).
+		# Closed-loop wheel speed (wheel_speed_control.py). False keeps the
+		# original open-loop PWM mixing in cmd_vel_callback. Switchable live:
+		#   ros2 param set /driver_node speed_control true
+		self.declare_parameter('speed_control', False)
+		# Fastest rim speed asked of any wheel; PWM 100 gives about 1.0 m/s.
+		self.declare_parameter('max_wheel_speed', 0.8)
+		self.speed_ctrl = WheelSpeedController()
+		self._speed_control_on = False
+		self._enc_seq = None
+		self._enc_time = self.get_clock().now()
+
+		# Wheel encoders, once per board report (every 40 ms), in the board's
+		# motor order M1..M4 = FL, RL, FR, RR. position = raw counts (they
+		# DEcrease driving forward), velocity = rim speed m/s (forward +),
+		# effort = [PWM sent M1..M4, then the ramped speed targets M1..M4]
+		# while speed_control is on.
 		self.encPublisher = self.create_publisher(JointState, "wheel_encoders", 50)
-		self._enc_last = None
 		self.enc_timer = self.create_timer(0.01, self.pub_encoders)
 
 		#create and init variable
@@ -139,6 +152,13 @@ class yahboomcar_driver(Node):
 
 		# Mecanum wheel mixing: M1=FL, M2=FR, M3=RL, M4=RR
 		L     = self.get_parameter('wheel_separation_factor').value
+		if self.get_parameter('speed_control').value:
+			# Closed loop: only set the wheel speed targets here; pub_encoders
+			# sends the PWM, once per encoder report.
+			self.speed_ctrl.set_targets(limit_targets(
+				mecanum_targets(vx, vy, omega, L),
+				self.get_parameter('max_wheel_speed').value))
+			return
 		# SCALE: maps m/s → PWM units [-100, 100].  At SCALE=200, 0.5 m/s → 100 PWM.
 		SCALE = 200.0
 		GAIN_FL = self.get_parameter('gain_fl').value
@@ -187,21 +207,50 @@ class yahboomcar_driver(Node):
 			for i in range(3): self.car.set_beep(0)
 
 	def pub_encoders(self):
-		counts = self.car.get_motor_encoder()
-		if counts == self._enc_last:
+		"""100 Hz poll; acts once per new encoder report from the board."""
+		now = self.get_clock().now()
+		counts, seq = self.car.get_motor_encoder_report()
+		on = bool(self.get_parameter('speed_control').value)
+		if on != self._speed_control_on:
+			# Either way round, start from rest: stop the motors and forget
+			# what the controller had measured.
+			self._speed_control_on = on
+			self.speed_ctrl.reset()
+			self.speed_ctrl.set_targets([0.0] * 4)
+			self.car.set_motor(0, 0, 0, 0)
+			self.get_logger().info('wheel speed control %s' % ('ON' if on else 'OFF (open-loop PWM)'))
+		if seq == self._enc_seq:
+			# No report for a while with the loop closed: the speeds are
+			# unknown, so do not keep driving on the last PWM.
+			if on and (now - self._enc_time).nanoseconds > 0.3e9 and any(self.speed_ctrl.pwm):
+				self.speed_ctrl.reset()
+				self.car.set_motor(0, 0, 0, 0)
+				self.get_logger().warn('no encoder report for 0.3 s; motors stopped')
 			return
-		self._enc_last = counts
+		self._enc_seq = seq
+		self._enc_time = now
+
 		msg = JointState()
-		msg.header.stamp = self.get_clock().now().to_msg()
+		msg.header.stamp = now.to_msg()
 		msg.name = ["m1_fl", "m2_rl", "m3_fr", "m4_rr"]
 		msg.position = [float(c) for c in counts]
+		if on:
+			# Same 0.5 s watchdog as the open-loop path: no command, no motion.
+			if (now - self.last_cmd_time).nanoseconds / 1e9 > self.watchdog_timeout:
+				self.speed_ctrl.set_targets([0.0] * 4)
+			pwm = self.speed_ctrl.update(counts, seq)
+			self.car.set_motor(*pwm)
+			msg.velocity = [float(v) for v in self.speed_ctrl.speeds]
+			msg.effort = [float(p) for p in pwm] + [float(r) for r in self.speed_ctrl.ramped]
 		self.encPublisher.publish(msg)
 
 	#pub data
 	def pub_data(self):
 		# Safety watchdog: if no command received for > 0.5s, stop motors
 		dt = (self.get_clock().now() - self.last_cmd_time).nanoseconds / 1e9
-		if dt > self.watchdog_timeout:
+		if dt > self.watchdog_timeout and not self.get_parameter('speed_control').value:
+			# (closed loop: pub_encoders zeroes the targets, which brakes the
+			# wheels and then releases them)
 			self.car.set_motor(0, 0, 0, 0)
 
 		time_stamp = Clock().now()
