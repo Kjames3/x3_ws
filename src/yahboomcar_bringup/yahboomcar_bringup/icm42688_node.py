@@ -29,6 +29,11 @@ import smbus2
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
 
+try:
+    from .gyro_bias import BiasTracker, GlitchFilter
+except ImportError:                                 # run as a plain script
+    from gyro_bias import BiasTracker, GlitchFilter
+
 WHO_AM_I, EXPECTED = 0x75, 0x47
 PWR_MGMT0, GYRO_CONFIG0, ACCEL_CONFIG0 = 0x4E, 0x4F, 0x50
 ACCEL_DATA_X1 = 0x1F
@@ -67,6 +72,10 @@ class ICM42688Node(Node):
         self.declare_parameter('calibration_file', '')
         self.declare_parameter('apply_bias', True)
         self.declare_parameter('apply_accel_scale', True)
+        # The calibration file's bias goes stale (+8.8 deg/min on z five weeks
+        # after it was taken), so it is only the starting value: the bias is
+        # re-estimated whenever the robot is plainly still. See gyro_bias.py.
+        self.declare_parameter('track_bias', True)
         # Measured on this robot 2026-09-01 at 1 kHz: driving at 0.30 m/s puts
         # 85.6% of gyro energy above 100 Hz (peak 177 Hz). Sampled at 200 Hz
         # that folds to ~23 Hz and is indistinguishable from real rotation.
@@ -79,6 +88,10 @@ class ICM42688Node(Node):
         self.addr = int(p('i2c_addr').value)
 
         self._load_calibration()
+        self.track_bias = self.apply_bias and bool(p('track_bias').value)
+        self.tracker = BiasTracker(self.gbias, window=int(round(rate)))
+        self.glitch = GlitchFilter()
+        self._logged_bias = list(self.gbias)
 
         self.bus = smbus2.SMBus(int(p('i2c_bus').value))
         wai = self.bus.read_byte_data(self.addr, WHO_AM_I)
@@ -105,7 +118,8 @@ class ICM42688Node(Node):
             f'{rate:.0f} Hz -> {p("topic").value} (frame {self.frame_id})')
         self.get_logger().info(
             f'  gyro bias {"applied" if self.apply_bias else "NOT applied"}: '
-            f'[{self.gbias[0]:+.5f}, {self.gbias[1]:+.5f}, {self.gbias[2]:+.5f}] rad/s')
+            f'[{self.gbias[0]:+.5f}, {self.gbias[1]:+.5f}, {self.gbias[2]:+.5f}] rad/s'
+            f'{" (start value, tracked while still)" if self.track_bias else ""}')
 
     def _configure_aaf(self, bw):
         """Set the gyro+accel anti-alias filter to `bw` Hz (see AAF_TABLE)."""
@@ -187,6 +201,7 @@ class ICM42688Node(Node):
             self._bad += 1
             if self._bad in (1, 10, 100) or self._bad % 1000 == 0:
                 self.get_logger().warn(f'i2c read failed x{self._bad}: {e}')
+            self.tracker.reset_window()
             return
 
         def s16(i):
@@ -197,6 +212,21 @@ class ICM42688Node(Node):
         ax, ay, az = s16(0) * k_a, s16(2) * k_a, s16(4) * k_a
         k_g = DEG2RAD / GYRO_LSB_PER_DPS
         gx, gy, gz = s16(6) * k_g, s16(8) * k_g, s16(10) * k_g
+        if not self.glitch.accept((gx, gy, gz)):
+            # a lone full-scale sample; publishing it is 10 deg of false yaw
+            n = self.glitch.rejected
+            if n in (1, 10, 100) or n % 1000 == 0:
+                self.get_logger().warn(
+                    f'gyro glitch dropped x{n}: [{gx:+.2f}, {gy:+.2f}, {gz:+.2f}] rad/s')
+            self.tracker.reset_window()
+            return
+        if self.track_bias and self.tracker.update((gx, gy, gz), (ax, ay, az)):
+            self.gbias = self.tracker.bias
+            if max(abs(b - l) for b, l in zip(self.gbias, self._logged_bias)) > 2.0e-4:
+                self._logged_bias = list(self.gbias)
+                self.get_logger().info(
+                    f'gyro bias now [{self.gbias[0]:+.5f}, {self.gbias[1]:+.5f}, '
+                    f'{self.gbias[2]:+.5f}] rad/s ({self.tracker.updates} still windows)')
         if self.apply_bias:
             gx -= self.gbias[0]; gy -= self.gbias[1]; gz -= self.gbias[2]
 
