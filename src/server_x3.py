@@ -428,7 +428,15 @@ TOF_CBF_HOLD_S = 0.3
 # to 0.005 changes nothing on the floor.  Measured 2026-09-22: cmd 0.01-0.02
 # drove at ~0.11 m/s, and the robot hit a box the CBF was tracking.  Keep in
 # step with the driver's min_pwm / SCALE.
-CMD_DEADBAND_MPS = 28.0 / 200.0
+CMD_DEADBAND_MPS = float(os.environ.get('X3_CMD_DEADBAND_MPS', 28.0 / 200.0))
+# That figure does not hold on every floor: on the apartment's wood,
+# 2026-10-11, commands of 0.01-0.04 m/s ran at 0.23-0.27 m/s (about
+# 0.22 + 1.2 * cmd).  X3_CMD_DEADBAND_MPS overrides it per site.
+# Smallest command the driver acts on: it ignores |v| <= 0.001 m/s.
+CMD_MIN_MPS = 0.002
+# CBF tuning, overridable per site without a code change (scripts/cbf_tune.sh).
+CBF_GAMMA = float(os.environ.get('X3_CBF_GAMMA', 1.0))
+CBF_SAFE_DISTANCE_M = float(os.environ.get('X3_CBF_SAFE_DISTANCE_M', 0.30))
 
 # Which websocket asked for the running sweep, so it can be cancelled when
 # that client goes away, and a wall-clock backstop for every other way a
@@ -734,7 +742,9 @@ class ROS2Bridge:
         # the robot with the wall still visible. Lower toward ~0.15 m for tighter
         # doorways (at the cost of a thinner stop margin). This whole range-gate
         # workaround goes away once the Lidar is raised above the chassis.
-        self.cbf = HolonomicCBFFilter(safe_distance=0.30, gamma=1.0)
+        self.cbf = HolonomicCBFFilter(safe_distance=CBF_SAFE_DISTANCE_M, gamma=CBF_GAMMA)
+        logger.info("CBF: gamma %.2f, safe distance %.2f m, deadband %.2f m/s",
+                    CBF_GAMMA, CBF_SAFE_DISTANCE_M, CMD_DEADBAND_MPS)
         self._latest_obstacles = []
         # When that list was last REFRESHED.  Without this the CBF cannot
         # tell a live obstacle from one frozen by a /scan dropout.
@@ -1102,7 +1112,7 @@ class ROS2Bridge:
         best = int(np.argmax(worst))
         if worst[best] <= float(np.min(-c)) + 1e-9:
             return 0.0, 0.0
-        s_cmd = max(float(executed[best]) - CMD_DEADBAND_MPS, 1e-3)
+        s_cmd = max(float(executed[best]) - CMD_DEADBAND_MPS, CMD_MIN_MPS)
         return dx * s_cmd, dy * s_cmd
 
     def move(self, vx: float, vy: float, omega: float):

@@ -11,6 +11,7 @@ name and run against stubs.  They are the real code, not copies.
 """
 import ast
 import math
+import os
 import sys
 import threading
 import time
@@ -28,7 +29,7 @@ SERVER = REPO / 'src' / 'server_x3.py'
 CONSTANTS = ('TOF_CBF_MIN_Z_M', 'TOF_FLOOR_DEFICIT_MM', 'TOF_FLOOR_TILT_MM',
              'TOF_CBF_MAX_RANGE_M', 'TOF_CBF_GRID_M', 'TOF_CBF_PERSIST_FRAMES',
              'TOF_CBF_HOLD_S', 'CMD_DEADBAND_MPS', 'CBF_SPEED_RANGE_M',
-             'CBF_MOVER_MIN_SPEED')
+             'CBF_MOVER_MIN_SPEED', 'CMD_MIN_MPS')
 FUNCTIONS = ('_tof_floor_deficit', '_cbf_movers')
 METHODS = ('_limit_for_deadband', 'set_tof_obstacles')
 
@@ -52,7 +53,7 @@ def _lift():
                     found.add(sub.name)
     missing = set(CONSTANTS + FUNCTIONS + METHODS) - found
     assert not missing, f'no longer in server_x3.py (renamed?): {sorted(missing)}'
-    ns = {'np': np, 'math': math, 'time': time,
+    ns = {'np': np, 'math': math, 'time': time, 'os': os,
           # Geometry is covered by test_tof_array; here a point's low edge is
           # the point itself, so heights are whatever the test passes in.
           'tof_zone_low_edge_points': lambda p: np.asarray(p, dtype=np.float64),
@@ -196,6 +197,17 @@ def test_escape_from_inside_the_safe_distance_is_not_zeroed(bridge, srv):
         s = math.hypot(*out)
         executed = (out[0] * (1 + srv['CMD_DEADBAND_MPS'] / s), out[1] * (1 + srv['CMD_DEADBAND_MPS'] / s))
         assert _worst(bridge.cbf, executed, walls) > _worst(bridge.cbf, (0.0, 0.0), walls)
+
+
+def test_slowest_escape_is_a_command_the_driver_acts_on(bridge, srv):
+    # 2026-10-11 squeeze test: 0.27 m behind, open ahead.  The escape wanted is
+    # slower than the deadband, so the slowest executable speed is chosen; it
+    # was sent as 0.001 m/s, which Mcnamu_driver_X3 ignores (|v| <= 0.001), and
+    # the robot sat inside the safe distance for 33 s.
+    walls = [(-0.267, 0.0), (0.57, 0.0)]
+    vx, vy = bridge.cbf.filter_velocity(0.0, 0.0, (0.0, 0.0), walls)
+    out = bridge.limit(vx, vy, walls)
+    assert out[0] >= srv['CMD_MIN_MPS'] > 0.001 and out[1] == pytest.approx(0.0)
 
 
 def test_escape_that_the_deadband_would_overshoot_becomes_a_stop(bridge, srv):
