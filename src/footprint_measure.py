@@ -11,6 +11,9 @@ number X3_CBF_FOOTPRINT wants: half length, half width.
 Use a flat wall at least 0.4 m tall (the lidar scans 0.32 m up) with a metre
 of bare wall either side. Push until the FIRST part of the robot touches --
 the ToF bracket at the nose, the widest wheel at a side -- and keep it square.
+The lidar cannot see closer than 0.12 m, so it never sees the wall straight
+ahead of itself; the fit uses the wall to either side, which is why it needs
+that metre of bare wall.
 The robot does not drive: server_x3.py holds its commands while this runs, so
 the motors are released and it rolls freely. Each side takes about 3 s.
 """
@@ -70,7 +73,10 @@ def wall_distance(points, direction):
         near = np.abs(resid) < 0.015
         if near.sum() < 10:
             return None
-    return a / math.sqrt(1 + b * b), math.degrees(math.atan(b)), int(near.sum())
+    skew = math.degrees(math.atan(b))
+    if a <= 0.0 or abs(skew) > 20.0:
+        return None                 # that is some other wall seen edge-on, not one facing this side
+    return a / math.sqrt(1 + b * b), skew, int(near.sum())
 
 
 def main():
