@@ -22,8 +22,12 @@ ekf_filter_node:
         world_frame: odom
 
         odom0: /odom_raw
-        odom0_config: [true, true, false,
-                       false, false, true,
+        # Velocities only (vx, vy, vyaw). /odom_raw's absolute x, y and yaw are
+        # base_node's 10 Hz integration of single gyro samples; fusing that yaw
+        # made /odom heading copy it (29 deg off over two apartment laps,
+        # 2026-10-03) instead of the 200 Hz gyro on imu0.
+        odom0_config: [false, false, false,
+                       false, false, false,
                        true, true, false,
                        false, false, true,
                        false, false, false]
