@@ -29,6 +29,7 @@ Mouse (GUI)
     Right/Middle     pan (screen-relative, 1:1 with the cursor)
     Shift+Left       pan
     Wheel            zoom, proportional to wheel travel
+    Left Click       in measure mode: pick a point (two picks give a distance)
 
 Keys (GUI)
 ----------
@@ -37,6 +38,10 @@ Keys (GUI)
     [ or ]           smaller / larger points
     c                cycle colour: height / RGB (PLY with colour) / flat
     p                show / hide the robot trajectory
+    v                octomap voxels at their real size / as small points
+    o                orthographic / perspective view
+    m                measure mode on / off
+    s                save a screenshot of the view to ~/Pictures
     r                rescan directories
     q or Esc         quit
 """
@@ -131,7 +136,8 @@ def _load_octomap(path):
     if not ok:
         raise RuntimeError("octomap library failed to read the file.")
     pts, _ = tree.extractPointCloud()
-    info = {"Resolution": f"{tree.getResolution():.4f} m"}
+    # private key: voxel edge, so the view can draw points at their real size
+    info = {"Resolution": f"{tree.getResolution():.4f} m", "_voxel": float(tree.getResolution())}
     return [("occupied", np.asarray(pts, dtype=np.float32))], info
 
 
@@ -350,6 +356,13 @@ def find_maps(roots) -> list:
     return found
 
 
+def _mtime(path):
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
+
+
 class MapSummary:
     def __init__(self, path: str):
         self.path = path
@@ -359,9 +372,11 @@ class MapSummary:
             self.size = os.path.getsize(path)
         except OSError:
             pass
+        self.mtime = _mtime(path)
 
     def label(self) -> str:
-        return f"{self.name}\n   {human_size(self.size)}"
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(self.mtime))
+        return f"{self.name}\n   {human_size(self.size)}   {when}"
 
 
 COLOR_MODES = ["height", "rgb", "flat"]
@@ -373,6 +388,8 @@ _PATH = [(1.00, 1.00, 0.30), (1.00, 0.35, 0.85)]
 
 class OctomapGLWidget(QOpenGLWidget):
     """3D point cloud renderer using PyOpenGL."""
+
+    measured = QtCore.pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -393,6 +410,11 @@ class OctomapGLWidget(QOpenGLWidget):
         self.color_mode = "height"
         self.z_clip = (-np.inf, np.inf)
         self.show_traj = True
+        self.voxel_mode = True      # octomap points at the voxel's real size
+        self.ortho = False
+        self.measure_mode = False
+        self.picks = []             # up to two picked points
+        self._dragged = 0
 
         self.last_pos = None
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
@@ -406,6 +428,7 @@ class OctomapGLWidget(QOpenGLWidget):
         """Show one map, or two overlaid in contrasting flat colours."""
         self.scene = clouds
         self.z_clip = (-np.inf, np.inf)
+        self.picks = []
         self.rebuild()
         if fit:
             self.fit_camera()
@@ -434,7 +457,7 @@ class OctomapGLWidget(QOpenGLWidget):
                 z0, z1 = np.percentile(z, [1, 99])
                 zn = np.clip((z - z0) / max(z1 - z0, 1e-6), 0, 1)
                 cols = np.column_stack((1.0 - zn, np.full_like(zn, 0.8), zn))
-            self.draw.append((pts, np.ascontiguousarray(cols, dtype=np.float32)))
+            self.draw.append((pts, np.ascontiguousarray(cols, dtype=np.float32), c.get("voxel")))
         self.points = self.draw[0][0] if self.draw else np.zeros((0, 3), dtype=np.float32)
         self.update()
 
@@ -464,27 +487,57 @@ class OctomapGLWidget(QOpenGLWidget):
         gl.glViewport(0, 0, w, h)
         self._set_projection(w, h)
 
-    def _set_projection(self, w, h):
-        gl.glMatrixMode(gl.GL_PROJECTION)
-        gl.glLoadIdentity()
+    def _proj_matrix(self, w, h):
+        """Row-major projection for the current zoom, perspective or orthographic."""
         ratio = w / float(h) if h > 0 else 1.0
+        if self.ortho:
+            # Same framing as the perspective view at the target's distance.
+            hh = max(self.camera_dist, 1e-6) * np.tan(np.radians(self.fov) * 0.5)
+            depth = max(self.camera_dist * 50.0, 100.0)
+            return np.array([
+                [1.0 / (hh * ratio), 0, 0, 0],
+                [0, 1.0 / hh, 0, 0],
+                [0, 0, -1.0 / depth, 0],
+                [0, 0, 0, 1.0],
+            ])
         # Scale the depth range with the zoom level: a fixed 0.1 near plane
         # clips the map away when you zoom in close, and a fixed 1000 far
         # plane wastes depth precision on a 5 m room.
         near = max(1e-3, self.camera_dist * 0.005)
         far = max(near * 1e4, self.camera_dist * 50.0)
-        fov = self.fov
-        f = 1.0 / np.tan(fov * np.pi / 360.0)
+        f = 1.0 / np.tan(self.fov * np.pi / 360.0)
         zf = (far + near) / (near - far)
         zd = (2 * far * near) / (near - far)
-        proj = np.array([
+        return np.array([
             [f / ratio, 0, 0, 0],
             [0, f, 0, 0],
             [0, 0, zf, zd],
             [0, 0, -1.0, 0],
-        ], dtype=np.float32)
-        gl.glMultMatrixf(proj.T)
+        ])
+
+    def _set_projection(self, w, h):
+        gl.glMatrixMode(gl.GL_PROJECTION)
+        gl.glLoadIdentity()
+        gl.glMultMatrixf(self._proj_matrix(w, h).astype(np.float32).T)
         gl.glMatrixMode(gl.GL_MODELVIEW)
+
+    def _set_point_size(self, voxel):
+        """Fixed pixel size, or the on-screen size of a `voxel`-metre cube."""
+        if not (self.voxel_mode and voxel):
+            gl.glPointParameterfv(gl.GL_POINT_DISTANCE_ATTENUATION, [1.0, 0.0, 0.0])
+            gl.glPointSize(self.point_size)
+            return
+        # Pixels covered by the voxel at 1 m; 1.3 closes the gaps a cube seen
+        # corner-on would otherwise leave between screen-aligned squares.
+        px_h = self.height() * self.devicePixelRatioF()
+        k = 1.3 * voxel * px_h / (2.0 * np.tan(np.radians(self.fov) * 0.5))
+        if self.ortho:
+            gl.glPointParameterfv(gl.GL_POINT_DISTANCE_ATTENUATION, [1.0, 0.0, 0.0])
+            gl.glPointSize(max(1.0, k / max(self.camera_dist, 1e-6)))
+        else:
+            # size = k / distance
+            gl.glPointParameterfv(gl.GL_POINT_DISTANCE_ATTENUATION, [0.0, 0.0, 1.0])
+            gl.glPointSize(k)
 
     def paintGL(self):
         # The projection depends on camera_dist, so refresh it every frame.
@@ -500,14 +553,15 @@ class OctomapGLWidget(QOpenGLWidget):
         # Draw a small grid at origin
         self._draw_grid()
 
-        gl.glPointSize(self.point_size)
         gl.glEnableClientState(gl.GL_VERTEX_ARRAY)
         gl.glEnableClientState(gl.GL_COLOR_ARRAY)
-        for pts, cols in self.draw:
+        for pts, cols, voxel in self.draw:
+            self._set_point_size(voxel)
             gl.glVertexPointer(3, gl.GL_FLOAT, 0, pts)
             gl.glColorPointer(3, gl.GL_FLOAT, 0, cols)
             gl.glDrawArrays(gl.GL_POINTS, 0, len(pts))
         gl.glDisableClientState(gl.GL_COLOR_ARRAY)
+        gl.glPointParameterfv(gl.GL_POINT_DISTANCE_ATTENUATION, [1.0, 0.0, 0.0])
 
         if self.show_traj:
             # Drawn over the cloud: a path hidden inside walls is no use.
@@ -527,6 +581,64 @@ class OctomapGLWidget(QOpenGLWidget):
                 gl.glEnd()
             gl.glEnable(gl.GL_DEPTH_TEST)
         gl.glDisableClientState(gl.GL_VERTEX_ARRAY)
+
+        if self.picks:
+            gl.glDisable(gl.GL_DEPTH_TEST)
+            gl.glColor3f(1.0, 1.0, 1.0)
+            if len(self.picks) == 2:
+                gl.glLineWidth(2.0)
+                gl.glBegin(gl.GL_LINES)
+                for q in self.picks:
+                    gl.glVertex3f(*q)
+                gl.glEnd()
+            gl.glPointSize(9.0)
+            gl.glBegin(gl.GL_POINTS)
+            for q in self.picks:
+                gl.glVertex3f(*q)
+            gl.glEnd()
+            gl.glEnable(gl.GL_DEPTH_TEST)
+
+    def pick(self, x, y):
+        """The drawn point under widget pixel (x, y), nearest the camera, or None."""
+        if not self.draw:
+            return None
+        pts = np.concatenate([d[0] for d in self.draw])
+        w, h = max(self.width(), 1), max(self.height(), 1)
+        m = self._proj_matrix(w, h) @ self._orbit_view().T.astype(np.float64)
+        clip = pts @ m[:, :3].T + m[:, 3]
+        cw = clip[:, 3]
+        ok = cw > 1e-9
+        sx = (clip[:, 0] / np.where(ok, cw, 1.0) + 1.0) * 0.5 * w
+        sy = (1.0 - clip[:, 1] / np.where(ok, cw, 1.0)) * 0.5 * h
+        d2 = (sx - x) ** 2 + (sy - y) ** 2
+        near = ok & (d2 < 8.0 ** 2)
+        if not near.any():
+            return None
+        idx = np.flatnonzero(near)
+        depth = clip[idx, 2] / cw[idx]
+        return pts[idx[np.argmin(depth)]].astype(np.float64)
+
+    def set_measure_mode(self, on):
+        self.measure_mode = on
+        self.picks = []
+        self.measured.emit("Measure: click two points" if on else "")
+        self.update()
+
+    def _add_pick(self, x, y):
+        q = self.pick(x, y)
+        if q is None:
+            self.measured.emit("Measure: no point under the cursor")
+            return
+        if len(self.picks) >= 2:
+            self.picks = []
+        self.picks.append(q)
+        if len(self.picks) == 1:
+            self.measured.emit("Measure: first point (%.2f, %.2f, %.2f), click the second" % tuple(q))
+        else:
+            d = self.picks[1] - self.picks[0]
+            self.measured.emit("Measure: %.3f m   (dx %.3f, dy %.3f, dz %.3f, horizontal %.3f)" % (
+                np.linalg.norm(d), d[0], d[1], d[2], np.hypot(d[0], d[1])))
+        self.update()
 
     def _basis(self):
         """(eye, forward, screen-right, screen-up) for the current orbit."""
@@ -597,8 +709,13 @@ class OctomapGLWidget(QOpenGLWidget):
     def mousePressEvent(self, event):
         self.setFocus()
         self.last_pos = event.pos()
+        self._dragged = 0
 
     def mouseReleaseEvent(self, event):
+        # A click that did not drag is a pick; a drag still orbits.
+        if (self.measure_mode and event.button() == QtCore.Qt.LeftButton
+                and self._dragged < 4 and not (event.modifiers() & QtCore.Qt.ShiftModifier)):
+            self._add_pick(event.x(), event.y())
         self.last_pos = None
 
     def mouseMoveEvent(self, event):
@@ -607,6 +724,7 @@ class OctomapGLWidget(QOpenGLWidget):
         dx = event.x() - self.last_pos.x()
         dy = event.y() - self.last_pos.y()
         self.last_pos = event.pos()
+        self._dragged += abs(dx) + abs(dy)
 
         if self._is_pan_drag(event):
             # Screen-relative pan: move the target along the camera's own right
@@ -715,13 +833,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # None of these take keyboard focus, so the view's keys keep working.
         self.color_box = QtWidgets.QComboBox()
-        self.color_box.addItems(["Colour: height", "Colour: RGB", "Colour: flat"])
+        self.color_box.addItems(["Colour (C): height", "Colour (C): RGB", "Colour (C): flat"])
         self.color_box.currentIndexChanged.connect(self._on_color_changed)
 
         self.compare_box = QtWidgets.QComboBox()
         self.compare_box.currentIndexChanged.connect(self._on_compare_changed)
 
-        self.traj_check = QtWidgets.QCheckBox("Show trajectory")
+        self.traj_check = QtWidgets.QCheckBox("Trajectory (P)")
         self.traj_check.setChecked(True)
         self.traj_check.toggled.connect(self._on_traj_toggled)
 
@@ -730,7 +848,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self.z_hi = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         for s in (self.z_lo, self.z_hi):
             s.valueChanged.connect(self._on_clip_changed)
+        self.voxel_check = QtWidgets.QCheckBox("Voxel size (V)")
+        self.voxel_check.setChecked(True)
+        self.voxel_check.toggled.connect(self._on_voxel_toggled)
+        self.ortho_check = QtWidgets.QCheckBox("Orthographic (O)")
+        self.ortho_check.toggled.connect(self._on_ortho_toggled)
+        self.measure_check = QtWidgets.QCheckBox("Measure (M)")
+        self.measure_check.toggled.connect(self.gl_widget_measure)
+        self.newest_check = QtWidgets.QCheckBox("Newest first")
+        self.newest_check.setChecked(True)
+        self.newest_check.toggled.connect(lambda _on: self.rescan())
+        checks = QtWidgets.QGridLayout()
+        for i, w in enumerate((self.traj_check, self.voxel_check, self.ortho_check,
+                               self.measure_check, self.newest_check)):
+            checks.addWidget(w, i // 2, i % 2)
+
         for w in (self.layer_box, self.color_box, self.compare_box, self.traj_check,
+                  self.voxel_check, self.ortho_check, self.measure_check, self.newest_check,
                   self.z_lo, self.z_hi):
             w.setFocusPolicy(QtCore.Qt.NoFocus)
 
@@ -738,14 +872,23 @@ class MainWindow(QtWidgets.QMainWindow):
         left_layout.addWidget(self.layer_box)
         left_layout.addWidget(self.color_box)
         left_layout.addWidget(self.compare_box)
-        left_layout.addWidget(self.traj_check)
+        left_layout.addLayout(checks)
         left_layout.addWidget(self.clip_label)
         left_layout.addWidget(self.z_lo)
         left_layout.addWidget(self.z_hi)
         left_layout.addWidget(self.info_text)
 
+        keys = QtWidgets.QLabel(
+            "F fit   T top-down   Y side-on   [ ] point size\n"
+            "S screenshot   R rescan   Q quit\n"
+            "Drag orbit   Right-drag / Shift-drag pan   Wheel zoom")
+        keys.setFont(QtGui.QFont("monospace", 8))
+        keys.setWordWrap(True)
+        left_layout.addWidget(keys)
+
         # Right panel
         self.gl_widget = OctomapGLWidget()
+        self.gl_widget.measured.connect(self.statusBar().showMessage)
 
         splitter.addWidget(left_widget)
         splitter.addWidget(self.gl_widget)
@@ -756,6 +899,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def rescan(self):
         paths = find_maps(self.roots)
+        if self.newest_check.isChecked():
+            paths.sort(key=_mtime, reverse=True)
         self.maps = [MapSummary(p) for p in paths]
         self.model = MapListModel(self.maps)
         self.list_view.setModel(self.model)
@@ -811,6 +956,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.load_secs = time.time() - t0
         self.layer_rgb = extra.pop("_rgb", None)
+        self.voxel = extra.pop("_voxel", None)
         self.traj = load_poses(path)
         self.load_info = extra
         self.layers = layers
@@ -862,7 +1008,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _push_scene(self, fit):
         name, pts = self.layers[self.layer_box.currentIndex()]
         rgb = self.layer_rgb if self.layer_rgb is not None and len(self.layer_rgb) == len(pts) else None
-        clouds = [{"xyz": pts, "rgb": rgb, "traj": self.traj}]
+        clouds = [{"xyz": pts, "rgb": rgb, "traj": self.traj, "voxel": self.voxel}]
         if self.overlay is not None:
             clouds.append(self.overlay)
         # Two maps are told apart by flat colours, so the mode does not apply.
@@ -903,14 +1049,34 @@ class MainWindow(QtWidgets.QMainWindow):
         self.gl_widget.show_traj = on
         self.gl_widget.update()
 
+    def _on_voxel_toggled(self, on):
+        self.gl_widget.voxel_mode = on
+        self.gl_widget.update()
+
+    def _on_ortho_toggled(self, on):
+        self.gl_widget.ortho = on
+        self.gl_widget.update()
+
+    def gl_widget_measure(self, on):
+        self.gl_widget.set_measure_mode(on)
+
+    def save_screenshot(self):
+        folder = os.path.expanduser("~/Pictures")
+        if not os.path.isdir(folder):
+            folder = os.path.expanduser("~")
+        stem = os.path.splitext(os.path.basename(self.current_map_path or "map"))[0]
+        path = os.path.join(folder, f"{stem}_{time.strftime('%Y%m%d_%H%M%S')}.png")
+        ok = self.gl_widget.grabFramebuffer().save(path)
+        self.statusBar().showMessage(f"Saved {path}" if ok else f"Could not save {path}")
+
     def _on_compare_changed(self, index):
         path = self.compare_box.itemData(index)
         self.overlay = None
         if path and self.layers:
             try:
-                layers, _ = load_cloud(path)
+                layers, extra = load_cloud(path)
                 self.overlay = {"xyz": layers[0][1], "rgb": None, "traj": load_poses(path),
-                                "name": os.path.basename(path)}
+                                "voxel": extra.get("_voxel"), "name": os.path.basename(path)}
             except Exception as exc:
                 self.info_text.setPlainText(f"Error loading the compared map:\n{exc}")
                 return
@@ -928,6 +1094,14 @@ class MainWindow(QtWidgets.QMainWindow):
             self.color_box.setCurrentIndex((self.color_box.currentIndex() + 1) % len(COLOR_MODES))
         elif k == QtCore.Qt.Key_P:
             self.traj_check.toggle()
+        elif k == QtCore.Qt.Key_V:
+            self.voxel_check.toggle()
+        elif k == QtCore.Qt.Key_O:
+            self.ortho_check.toggle()
+        elif k == QtCore.Qt.Key_M:
+            self.measure_check.toggle()
+        elif k == QtCore.Qt.Key_S:
+            self.save_screenshot()
         else:
             super().keyPressEvent(event)
 
