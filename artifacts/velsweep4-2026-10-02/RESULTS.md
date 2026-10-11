@@ -32,3 +32,33 @@ Findings:
 
 Recommended drop-in candidate: `prow_j20_deploy` (40 in / 2 out, same as v3).
 Not yet replayed on real captures or load-tested on the robot's torch.
+
+## Replay on real lab captures (2026-10-02)
+
+`src/velsweep_replay.py`: each model as arm A of the C3 replay (deployed
+`VelocityEstimator._step`, weights swapped), 18 runs (`c3-captures/*-r[23]`),
+scored against the YOLO11x reference (not ground truth). Raw: `replay/`.
+
+| Metric | v3 | prow_j20_deploy | prow_j10_deploy |
+|---|---|---|---|
+| Non-person outputs > 0.15 m/s, cross | 39.1% | 25.2% | 27.0% |
+| Non-person outputs > 0.15 m/s, stand | 32.1% | 22.7% | 24.1% |
+| Non-person outputs > 0.15 m/s, approach | 35.5% | 27.0% | 26.7% |
+| Non-person outputs > 0.15 m/s, empty | 9.0% | 6.3% | 7.0% |
+| Standing person > 0.15 m/s, 1.8–3 m | 7.4% | 2.5% | 3.8% |
+| Standing person > 0.15 m/s, 3–4 m | 47.2% | 32.5% | 34.0% |
+| Approach speed ratio, 0.5–1.8 m | 0.60 | 0.56 | 0.59 |
+| Approach speed ratio, 1.8–3 m | 0.87 | 0.85 | 0.86 |
+| Approach speed ratio, 3–4 m | 0.66 | 0.63 | 0.63 |
+| Go delay (median of run medians) | 0.45 s | 0.65 s | 0.65 s |
+
+Recall is identical for all three (same blobs, same tracker).
+
+- False motion drops by roughly a quarter to a third, far less than the synthetic
+  32% -> 1%. Real phantoms come from unstable blob segmentation, not pixel noise.
+- Cost: walking speed reads a few points lower and a start registers 0.2 s later.
+- `prow_j10_deploy` keeps almost all of the false-motion gain with less under-read
+  than j20, so it is the better trade on real data.
+- All three under-read walking badly (0.56–0.87) and miss crossings (recall 3–45%):
+  that is the depth-blob input, which no weights fix. C3 arm C remains the answer
+  for people.
