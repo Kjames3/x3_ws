@@ -20,6 +20,7 @@ import time
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 
 LASER_X = 0.055          # lidar ahead of the base centre; laser_joint yaw = pi
@@ -31,7 +32,8 @@ class Reader(Node):
     def __init__(self):
         super().__init__('footprint_measure')
         self.scans = []
-        self.create_subscription(LaserScan, '/scan', self.on_scan, 10)
+        # the lidar publishes best-effort; a reliable subscriber gets nothing
+        self.create_subscription(LaserScan, '/scan', self.on_scan, qos_profile_sensor_data)
 
     def on_scan(self, m):
         r = np.asarray(m.ranges, np.float64)
