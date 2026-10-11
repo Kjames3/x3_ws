@@ -127,12 +127,22 @@ class HolonomicCBFFilter:
         obs = np.asarray(obstacles, dtype=np.float64).reshape(-1, 2)
         rel = np.asarray(robot_pos, dtype=np.float64) - obs
         d = np.hypot(rel[:, 0], rel[:, 1])
-        keep = d > 1e-6                       # on top of the robot: no direction
+        # Drop what has no usable direction: a NaN or infinite point (an
+        # infinite one would put NaN into the LP, which raises), and a point on
+        # top of the robot.
+        keep = np.isfinite(d) & (d > 1e-6)
         rel, d = rel[keep], d[keep]
         n = rel / d[:, None]
-        c = -self.gamma * (d * d - self.safe_distance ** 2) / (2.0 * d)
+        # -gamma*h/(2d) grows as 1/d inside the safe distance: a point 1 mm from
+        # the centre would demand a 45 m/s retreat and, in the fallback, outvote
+        # every other obstacle. Cap it at gamma*d_safe, what the plain-distance
+        # barrier (d - d_safe) asks for at zero range. Reached only inside
+        # 0.13 m at d_safe 0.30, closer than the scan's 0.12 m gate lets through.
+        c = np.minimum(-self.gamma * (d * d - self.safe_distance ** 2) / (2.0 * d),
+                       self.gamma * self.safe_distance)
         if obstacle_velocities is not None:
             vel = np.asarray(obstacle_velocities, dtype=np.float64).reshape(-1, 2)[keep]
+            vel = np.where(np.isfinite(vel), vel, 0.0)   # unknown: treat as static
             c = c + np.einsum('ij,ij->i', n, vel)
         return n, c
 
@@ -157,12 +167,19 @@ class HolonomicCBFFilter:
             tuple: (safe_v_x, safe_v_y)
         """
         self.last_relaxation = 0.0
-        if np.asarray(obstacles).size == 0:
-            return v_nom_x, v_nom_y
-
         u_nom = np.array([v_nom_x, v_nom_y], dtype=np.float64)
-        n_obs, c_obs = self.constraint_rows(robot_pos, obstacles, obstacle_velocities)
+        if not np.all(np.isfinite(u_nom)):
+            u_nom = np.zeros(2)
         c_spd = np.full(4, -self.speed_limit(omega) / _SQRT2)
+        if np.asarray(obstacles).size == 0:
+            # Nothing to avoid, but the wheel limit still holds. A command
+            # inside it comes back untouched.
+            if abs(u_nom[0]) + abs(u_nom[1]) <= self.speed_limit(omega):
+                return float(u_nom[0]), float(u_nom[1])
+            u = _project(u_nom, _DIAMOND, c_spd)
+            return float(u[0]), float(u[1])
+
+        n_obs, c_obs = self.constraint_rows(robot_pos, obstacles, obstacle_velocities)
         n_all = np.vstack((n_obs, _DIAMOND))
 
         u = _project(u_nom, n_all, np.concatenate((c_obs, c_spd)))

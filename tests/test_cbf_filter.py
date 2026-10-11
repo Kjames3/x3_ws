@@ -190,3 +190,50 @@ def test_a_full_scan_solves_quickly():
     for _ in range(20):
         cbf.filter_velocity(0.3, 0.1, (0.0, 0.0), obstacles)
     assert (time.perf_counter() - t0) / 20 < 0.01
+
+
+def test_wheel_limit_applies_with_no_obstacles_too():
+    cbf = HolonomicCBFFilter(max_wheel_speed=0.5)
+    assert cbf.filter_velocity(0.45, 0.0, (0.0, 0.0), []) == (0.45, 0.0)
+    vx, vy = cbf.filter_velocity(0.45, 0.45, (0.0, 0.0), [])
+    assert (vx, vy) == pytest.approx((0.25, 0.25))
+    vx, vy = cbf.filter_velocity(0.45, 0.0, (0.0, 0.0), [], omega=1.0)
+    assert (vx, vy) == pytest.approx((0.335, 0.0))
+
+
+@pytest.mark.parametrize('bad', [float('nan'), float('inf'), -float('inf')])
+def test_non_finite_points_are_ignored_on_every_path(bad):
+    cbf = HolonomicCBFFilter()
+    clean_far, clean_tight = [(0.9, 0.0)], [(0.25, 0.0), (-0.20, 0.0)]
+    for clean in (clean_far, clean_tight):               # QP path, then LP fallback
+        want = cbf.filter_velocity(0.2, 0.0, (0.0, 0.0), clean)
+        for junk in ((bad, 0.2), (0.2, bad), (bad, bad)):
+            assert cbf.filter_velocity(0.2, 0.0, (0.0, 0.0), [junk] + clean) == pytest.approx(want)
+    assert cbf.filter_velocity(0.2, 0.0, (0.0, 0.0), [(bad, bad)]) == (0.2, 0.0)
+
+
+def test_non_finite_velocity_and_command_do_not_propagate():
+    cbf = HolonomicCBFFilter()
+    box = [(0.5, 0.0)]
+    assert cbf.filter_velocity(0.1, 0.0, (0.0, 0.0), box, [(float('nan'), 0.0)]) == \
+        pytest.approx(cbf.filter_velocity(0.1, 0.0, (0.0, 0.0), box))
+    out = cbf.filter_velocity(float('nan'), 0.0, (0.0, 0.0), box)
+    assert out == pytest.approx(cbf.filter_velocity(0.0, 0.0, (0.0, 0.0), box))
+    assert all(math.isfinite(v) for v in cbf.filter_velocity(float('inf'), 0.0, (0.0, 0.0), []))
+
+
+@pytest.mark.parametrize('d', [0.29, 0.2, 0.12, 0.05, 0.01, 1e-4])
+def test_demand_inside_the_safe_distance_is_bounded(d):
+    cbf = HolonomicCBFFilter()
+    _, c = cbf.constraint_rows((0.0, 0.0), [(d, 0.0)])
+    assert 0.0 < c[0] <= cbf.gamma * cbf.safe_distance + 1e-12
+    vx, vy = cbf.filter_velocity(0.0, 0.0, (0.0, 0.0), [(d, 0.0)])
+    assert -0.3 - 1e-9 <= vx < 0.0 and vy == pytest.approx(0.0)
+    assert cbf.last_relaxation == 0.0
+
+
+def test_a_point_at_the_centre_does_not_outvote_a_wall_behind():
+    """Before the cap this retreated at full speed into the wall 0.25 m back."""
+    cbf = HolonomicCBFFilter()
+    vx, vy = cbf.filter_velocity(0.0, 0.0, (0.0, 0.0), [(0.001, 0.0), (-0.25, 0.0)])
+    assert -0.15 < vx < -0.10 and vy == pytest.approx(0.0, abs=1e-6)
