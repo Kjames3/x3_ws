@@ -185,7 +185,32 @@ class HolonomicCBFFilter:
         u = _project(u_nom, n_all, np.concatenate((c_obs, c_spd)))
         if u is None:
             u = self._least_violation(u_nom, n_obs, c_obs, c_spd, n_all)
+            self._log_infeasible(u, n_obs, c_obs, robot_pos, obstacles, obstacle_velocities)
         return float(u[0]), float(u[1])
+
+    def _log_infeasible(self, u, n_obs, c_obs, robot_pos, obstacles, obstacle_velocities):
+        """Say which obstacle the fallback could not satisfy, at most every 2 s."""
+        global _last_fail_log
+        now = time.monotonic()
+        if now - _last_fail_log < 2.0 or not len(c_obs):
+            return
+        _last_fail_log = now
+        obs = np.asarray(obstacles, dtype=np.float64).reshape(-1, 2)
+        rel = obs - np.asarray(robot_pos, dtype=np.float64)
+        d = np.hypot(rel[:, 0], rel[:, 1])
+        keep = np.isfinite(d) & (d > 1e-6)
+        vel = np.zeros_like(obs) if obstacle_velocities is None else \
+            np.asarray(obstacle_velocities, dtype=np.float64).reshape(-1, 2)
+        vel = np.where(np.isfinite(vel), vel, 0.0)
+        i = int(np.argmin(n_obs @ u - c_obs))
+        movers = int(np.count_nonzero(np.any(vel[keep] != 0.0, axis=1)))
+        logger.warning(
+            "CBF infeasible (%d constraints, %d moving): least-violating command "
+            "(%.2f, %.2f), worst closing-speed violation %.2f m/s at obstacle "
+            "(%.2f, %.2f) m moving (%.2f, %.2f) m/s; nearest obstacle %.2f m",
+            len(c_obs), movers, u[0], u[1], self.last_relaxation,
+            rel[keep][i, 0], rel[keep][i, 1], vel[keep][i, 0], vel[keep][i, 1],
+            float(d[keep].min()))
 
     def _least_violation(self, u_nom, n_obs, c_obs, c_spd, n_all):
         """Infeasible: relax every obstacle constraint equally, as little as possible.
@@ -229,9 +254,5 @@ class HolonomicCBFFilter:
             return np.zeros(2)
         t = float(res.x[2])
         self.last_relaxation = -t
-        if now - _last_fail_log > 2.0:
-            _last_fail_log = now
-            logger.warning("CBF infeasible (%d constraints): least-violating command, "
-                           "worst closing-speed violation %.2f m/s", k, -t)
         u = _project(u_nom, n_all, np.concatenate((c_obs + t - 1e-7, c_spd)))
         return u if u is not None else np.asarray(res.x[:2], dtype=np.float64)
