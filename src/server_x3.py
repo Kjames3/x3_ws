@@ -3658,7 +3658,7 @@ def _step_toward(current: float, target: float, accel: float, decel: float) -> f
 _standalone_test_cache = (False, 0.0)   # (last_result, last_scan_monotonic)
 _STANDALONE_TEST_SCAN_INTERVAL = 1.0    # seconds between full /proc scans
 _STANDALONE_TESTS = ('ab_comparison_test.py', 'point_to_point_test.py', 'strafe_drift_test.py',
-                     'base_speed_test.py')
+                     'base_speed_test.py', 'footprint_measure.py')
 
 def _is_standalone_test_running() -> bool:
     # Scanning every process' cmdline is expensive (~260 /proc reads). motion_loop
