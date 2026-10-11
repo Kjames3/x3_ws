@@ -110,6 +110,11 @@ class yahboomcar_driver(Node):
 		# original open-loop PWM mixing in cmd_vel_callback. Switchable live:
 		#   ros2 param set /driver_node speed_control true
 		self.declare_parameter('speed_control', False)
+		# Rim speed per rad/s of yaw, for the closed loop. The geometric
+		# 0.1645 (wheel_separation_factor) turned at 0.77 of the command with
+		# every wheel on its target (gyro, 2026-10-11: 0.467 for 0.6 rad/s,
+		# 0.92 for 1.2), so the effective value is 0.1645 / 0.766.
+		self.declare_parameter('yaw_wheel_separation', 0.215)
 		# Fastest rim speed asked of any wheel; PWM 100 gives about 1.0 m/s.
 		self.declare_parameter('max_wheel_speed', 0.8)
 		self.speed_ctrl = WheelSpeedController()
@@ -156,7 +161,8 @@ class yahboomcar_driver(Node):
 			# Closed loop: only set the wheel speed targets here; pub_encoders
 			# sends the PWM, once per encoder report.
 			self.speed_ctrl.set_targets(limit_targets(
-				mecanum_targets(vx, vy, omega, L),
+				mecanum_targets(vx, vy, omega,
+					self.get_parameter('yaw_wheel_separation').value),
 				self.get_parameter('max_wheel_speed').value))
 			return
 		# SCALE: maps m/s → PWM units [-100, 100].  At SCALE=200, 0.5 m/s → 100 PWM.

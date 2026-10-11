@@ -27,9 +27,11 @@ from rcl_interfaces.srv import SetParameters
 from rclpy.node import Node
 from sensor_msgs.msg import Imu, JointState
 
-L = 0.165
+L = 0.215     # the driver's yaw_wheel_separation
 # (label, vx, vy, omega, seconds)
 QUICK = [('fwd 0.10', 0.10, 0, 0, 3.0), ('back 0.10', -0.10, 0, 0, 3.0)]
+TURN = [('turn L 0.6', 0, 0, 0.6, 3.0), ('turn R 0.6', 0, 0, -0.6, 3.0),
+        ('turn L 1.2', 0, 0, 1.2, 2.0), ('turn R 1.2', 0, 0, -1.2, 2.0)]
 FULL = QUICK + [
     ('fwd 0.05', 0.05, 0, 0, 4.0), ('back 0.05', -0.05, 0, 0, 4.0),
     ('fwd 0.20', 0.20, 0, 0, 2.5), ('back 0.20', -0.20, 0, 0, 2.5),
@@ -100,7 +102,7 @@ def mean(rows, a, b, col):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--yes-path-is-clear', action='store_true')
-    ap.add_argument('--profile', choices=('quick', 'full'), default='quick')
+    ap.add_argument('--profile', choices=('quick', 'turn', 'full'), default='quick')
     ap.add_argument('--keep-on', action='store_true', help='leave speed_control on afterwards')
     ap.add_argument('--json')
     a = ap.parse_args()
@@ -108,7 +110,7 @@ def main():
         raise SystemExit('refusing to drive: pass --yes-path-is-clear')
     rclpy.init()
     n = Test()
-    steps = QUICK if a.profile == 'quick' else FULL
+    steps = {'quick': QUICK, 'turn': TURN, 'full': FULL}[a.profile]
     results, aborted = [], None
     try:
         n.command(0, 0, 0, 1.5, guard=False)       # let the server notice and yield

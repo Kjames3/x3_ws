@@ -110,6 +110,11 @@ def generate_launch_description():
             'serial_port': serial_port,
             # (half_wheelbase + half_track) from URDF: (0.08 + 0.0845) = 0.1645 m
             'wheel_separation_factor': 0.165,
+            # Hold each wheel at its commanded speed from its encoder
+            # (wheel_speed_control.py). False = the old open-loop PWM, which
+            # ran at about 0.22 + 2*cmd m/s on wood. The gain_* values below
+            # apply to the open-loop path only.
+            'speed_control': True,
             # Per-wheel gain: reduces faster motor side to correct drift/circle.
             # Robot drifts right → right is stronger → gain_fr/rr < 1.0.
             # Tune with: ros2 param set /driver_node gain_fr 0.93

@@ -432,8 +432,12 @@ CMD_DEADBAND_MPS = float(os.environ.get('X3_CMD_DEADBAND_MPS', 28.0 / 200.0))
 # That figure does not hold on every floor: on the apartment's wood,
 # 2026-10-11, commands of 0.01-0.04 m/s ran at 0.23-0.27 m/s (about
 # 0.22 + 1.2 * cmd).  X3_CMD_DEADBAND_MPS overrides it per site.
-# Smallest command the driver acts on: it ignores |v| <= 0.001 m/s.
-CMD_MIN_MPS = 0.002
+# Smallest command worth sending. The open-loop driver ignores |v| <= 0.001
+# m/s and runs anything above it at the deadband speed, so 0.002 is enough
+# there. With the driver's closed-loop wheel speed (speed_control) a command
+# is the speed, the deadband is 0, and this is the slowest speed the base
+# holds smoothly (0.05 m/s tracked cleanly on 2026-10-11; 0.03 is the floor).
+CMD_MIN_MPS = float(os.environ.get('X3_CMD_MIN_MPS', 0.002))
 # CBF tuning, overridable per site without a code change (scripts/cbf_tune.sh).
 CBF_GAMMA = float(os.environ.get('X3_CBF_GAMMA', 1.0))
 CBF_SAFE_DISTANCE_M = float(os.environ.get('X3_CBF_SAFE_DISTANCE_M', 0.30))

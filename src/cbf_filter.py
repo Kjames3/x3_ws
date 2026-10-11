@@ -100,7 +100,7 @@ def _project(u_nom, n, c):
 
 class HolonomicCBFFilter:
     def __init__(self, safe_distance=0.3, gamma=1.0, max_wheel_speed=0.5,
-                 wheel_separation=0.165):
+                 wheel_separation=0.215):
         """
         Args:
             safe_distance (float): minimum allowed distance to any obstacle
@@ -111,8 +111,9 @@ class HolonomicCBFFilter:
             max_wheel_speed (float): wheel rim speed the base can deliver under
                 load (m/s). The 205 rpm motors on 65 mm wheels do 0.70 m/s with
                 no load.
-            wheel_separation (float): half wheelbase + half track (m), as
-                Mcnamu_driver_X3's wheel_separation_factor.
+            wheel_separation (float): wheel rim speed per rad/s of yaw (m),
+                as Mcnamu_driver_X3's yaw_wheel_separation (measured; the
+                geometric half wheelbase + half track is 0.1645).
         """
         self.safe_distance = safe_distance
         self.gamma = gamma

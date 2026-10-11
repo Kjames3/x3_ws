@@ -92,6 +92,11 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'wheel_separation_factor': 0.165,
+            # Hold each wheel at its commanded speed from its encoder
+            # (wheel_speed_control.py). False = the old open-loop PWM, which
+            # ran at about 0.22 + 2*cmd m/s on wood. The gain_* values below
+            # apply to the open-loop path only.
+            'speed_control': True,
             'gain_fl': 1.00,
             'gain_fr': 0.95,
             'gain_rl': 1.00,
