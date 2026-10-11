@@ -110,8 +110,9 @@ def main():
     if all(k in out for k in ('left', 'right')):
         print('  width  %.3f m' % (out['left'] + out['right']))
     if len(out) == 4:
-        print('  footprint for the CBF (half length, half width): %.2f,%.2f' % (
-            math.ceil(max(out['front'], out['rear']) * 100) / 100, math.ceil(max(out['left'], out['right']) * 100) / 100))
+        up = lambda v: math.ceil(v * 100 - 0.2) / 100          # round up to the centimetre
+        print('  footprint for the CBF (front,rear,left,right): %s' % ','.join(
+            '%.2f' % up(out[k]) for k in ('front', 'rear', 'left', 'right')))
     n.destroy_node()
     rclpy.shutdown()
 

@@ -106,8 +106,10 @@ class HolonomicCBFFilter:
         Args:
             safe_distance (float): circle mode (footprint None): minimum
                 distance from the robot's CENTRE to any obstacle point (m).
-            footprint ((half_length, half_width) or None): the chassis as a
-                rectangle in the body frame (x forward). When given, obstacle
+            footprint ((half_length, half_width), (front, rear, left, right)
+                or None): the chassis as a rectangle in the body frame (x
+                forward); the four-value form gives each side's distance from
+                the base origin when they differ. When given, obstacle
                 points are kept `margin` clear of that OUTLINE instead of a
                 circle round the centre, with the barrier h = d - margin, d the
                 distance from the point to the rectangle. A point beside a
@@ -133,7 +135,15 @@ class HolonomicCBFFilter:
                 geometric half wheelbase + half track is 0.1645).
         """
         self.safe_distance = safe_distance
-        self.footprint = None if footprint is None else (float(footprint[0]), float(footprint[1]))
+        # (half_length, half_width) centred on the base origin, or
+        # (front, rear, left, right): each side's distance from the origin.
+        if footprint is None:
+            self.footprint = None
+        else:
+            f = [float(v) for v in footprint]
+            front, rear, left, right = (f[0], f[0], f[1], f[1]) if len(f) == 2 else f
+            self.footprint = (0.5 * (front + rear), 0.5 * (left + right))      # half sizes
+            self._footprint_centre = np.array([0.5 * (front - rear), 0.5 * (left - right)])
         self.margin = float(margin)
         self.hold_band = float(hold_band)
         self.gamma = gamma
@@ -193,7 +203,7 @@ class HolonomicCBFFilter:
         p = np.asarray(obstacles, dtype=np.float64).reshape(-1, 2) \
             - np.asarray(robot_pos, dtype=np.float64)
         keep = np.all(np.isfinite(p), axis=1)
-        p = p[keep]
+        p = p[keep] - self._footprint_centre         # rectangle-centred from here on
         half = np.asarray(self.footprint)
         q = np.abs(p) - half                         # > 0 beyond that pair of faces
         a = np.clip(p, -half, half)                  # nearest point when outside
@@ -210,6 +220,7 @@ class HolonomicCBFFilter:
             out[rows, axis] = sign
             a[rows, axis] = sign * half[axis]
         n = -out
+        a = a + self._footprint_centre               # back to the base origin: the yaw lever arm
         spare = d - self.margin
         # outside the margin: approach limit. Inside it: nothing for the first
         # hold_band, then a retreat that grows from zero.

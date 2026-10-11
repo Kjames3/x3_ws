@@ -441,12 +441,14 @@ CMD_MIN_MPS = float(os.environ.get('X3_CMD_MIN_MPS', 0.002))
 # CBF tuning, overridable per site without a code change (scripts/cbf_tune.sh).
 CBF_GAMMA = float(os.environ.get('X3_CBF_GAMMA', 1.0))
 CBF_SAFE_DISTANCE_M = float(os.environ.get('X3_CBF_SAFE_DISTANCE_M', 0.30))
-# The chassis outline the CBF keeps obstacles clear of: half length, half
-# width in metres (body x forward), from the URDF -- body -0.155..0.145 plus
-# the ToF bracket at the nose, wheels out to about +-0.11. 'circle' goes back
-# to CBF_SAFE_DISTANCE_M round the centre, which stalls in a 0.76 m doorway
-# unless the robot is within ~6 cm of its middle.
-_fp = os.environ.get('X3_CBF_FOOTPRINT', '0.18,0.12').strip().lower()
+# The chassis outline the CBF keeps obstacles clear of: each side's distance
+# from the base centre in metres -- front, rear, left, right (body x forward).
+# Measured 2026-10-11 by pushing each side against a wall and reading it with
+# the lidar (src/footprint_measure.py): 0.164, 0.112, 0.102, 0.097, rounded up.
+# The nose is the ToF bracket. Two values mean half length, half width.
+# 'circle' goes back to CBF_SAFE_DISTANCE_M round the centre, which stalls in
+# a 0.76 m doorway unless the robot is within ~6 cm of its middle.
+_fp = os.environ.get('X3_CBF_FOOTPRINT', '0.17,0.12,0.11,0.11').strip().lower()
 CBF_FOOTPRINT = None if _fp == 'circle' else tuple(float(v) for v in _fp.split(','))
 # Clearance kept round that outline.
 CBF_MARGIN_M = float(os.environ.get('X3_CBF_MARGIN_M', 0.10))
@@ -759,8 +761,8 @@ class ROS2Bridge:
                                       footprint=CBF_FOOTPRINT, margin=CBF_MARGIN_M)
         logger.info("CBF: gamma %.2f, %s, deadband %.2f m/s, min %.3f m/s", CBF_GAMMA,
                     "circle %.2f m" % CBF_SAFE_DISTANCE_M if CBF_FOOTPRINT is None else
-                    "footprint %.2f x %.2f m + %.2f m margin" % (
-                        2 * CBF_FOOTPRINT[0], 2 * CBF_FOOTPRINT[1], CBF_MARGIN_M),
+                    "footprint %s m + %.2f m margin" % (
+                        "/".join("%.2f" % v for v in CBF_FOOTPRINT), CBF_MARGIN_M),
                     CMD_DEADBAND_MPS, CMD_MIN_MPS)
         self._latest_obstacles = []
         # When that list was last REFRESHED.  Without this the CBF cannot

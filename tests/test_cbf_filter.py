@@ -393,3 +393,28 @@ def test_rectangle_handles_non_finite_points_and_a_full_scan():
     for _ in range(20):
         cbf.filter_twist(0.3, 0.1, 0.5, (0.0, 0.0), scan)
     assert (time.perf_counter() - t0) / 20 < 0.01
+
+
+def test_four_value_footprint_puts_each_side_where_it_was_measured():
+    cbf = HolonomicCBFFilter(gamma=2.0, footprint=(0.17, 0.12, 0.11, 0.10), margin=0.10)
+    for point, face in (((0.50, 0.0), 0.17), ((-0.50, 0.0), 0.12), ((0.0, 0.50), 0.11), ((0.0, -0.50), 0.10)):
+        n, c = cbf.constraint_rows((0.0, 0.0), [point])
+        assert c[0] == pytest.approx(-2.0 * (0.50 - face - 0.10))
+    # reversing is allowed 5 cm closer than driving forward
+    assert cbf.filter_velocity(-0.3, 0.0, (0.0, 0.0), [(-0.12 - 0.10 - 0.05, 0.0)])[0] == pytest.approx(-0.10)
+    assert cbf.filter_velocity(0.3, 0.0, (0.0, 0.0), [(0.17 + 0.10 + 0.05, 0.0)])[0] == pytest.approx(0.10)
+    # the two-value form is the symmetric case of it
+    a = HolonomicCBFFilter(gamma=2.0, footprint=(0.18, 0.12)).constraint_rows((0, 0), [(0.4, 0.3), (-0.3, 0.1)], None, 0.7)
+    b = HolonomicCBFFilter(gamma=2.0, footprint=(0.18, 0.18, 0.12, 0.12)).constraint_rows((0, 0), [(0.4, 0.3), (-0.3, 0.1)], None, 0.7)
+    assert np.allclose(a[0], b[0]) and np.allclose(a[1], b[1])
+
+
+def test_yaw_lever_arm_is_taken_about_the_base_origin():
+    """Front-left corner of an off-centre outline, turning left: the corner
+    at (0.17, 0.11) moves at omega x r = (-0.11, 0.17) * omega."""
+    cbf = HolonomicCBFFilter(gamma=2.0, footprint=(0.17, 0.12, 0.11, 0.10), margin=0.10)
+    point = (0.17 + 0.3, 0.11 + 0.4)                       # out = (0.6, 0.8), d = 0.5
+    _, c0 = cbf.constraint_rows((0.0, 0.0), [point], None, 0.0)
+    _, c1 = cbf.constraint_rows((0.0, 0.0), [point], None, 1.0)
+    closing = 0.6 * -0.11 + 0.8 * 0.17                     # corner speed toward the point
+    assert c1[0] - c0[0] == pytest.approx(closing)
