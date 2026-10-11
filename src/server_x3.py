@@ -444,12 +444,18 @@ CBF_SAFE_DISTANCE_M = float(os.environ.get('X3_CBF_SAFE_DISTANCE_M', 0.30))
 # The chassis outline the CBF keeps obstacles clear of: each side's distance
 # from the base centre in metres -- front, rear, left, right (body x forward).
 # Measured 2026-10-11 by pushing each side against a wall and reading it with
-# the lidar (src/footprint_measure.py): 0.164, 0.112, 0.102, 0.097, rounded up.
+# the lidar (src/footprint_measure.py): 0.153, 0.124, 0.102, 0.097, rounded up.
+# Front and rear are relative to where _scan_cb puts the lidar (x = 0.0435),
+# so a lidar point and this outline share any error in that figure.
 # The nose is the ToF bracket. Two values mean half length, half width.
 # 'circle' goes back to CBF_SAFE_DISTANCE_M round the centre, which stalls in
 # a 0.76 m doorway unless the robot is within ~6 cm of its middle.
-_fp = os.environ.get('X3_CBF_FOOTPRINT', '0.17,0.12,0.11,0.11').strip().lower()
+_fp = os.environ.get('X3_CBF_FOOTPRINT', '0.16,0.13,0.11,0.11').strip().lower()
 CBF_FOOTPRINT = None if _fp == 'circle' else tuple(float(v) for v in _fp.split(','))
+# Yaw error of the lidar mount, added to every lidar bearing before it becomes
+# a CBF obstacle. Measure with src/lidar_yaw_calib.py. The URDF's laser_joint
+# (what SLAM, Nav2 and RViz use) still says exactly 180 deg.
+LIDAR_YAW_OFFSET_RAD = math.radians(float(os.environ.get('X3_LIDAR_YAW_OFFSET_DEG', 0.0)))
 # Clearance kept round that outline.
 CBF_MARGIN_M = float(os.environ.get('X3_CBF_MARGIN_M', 0.10))
 
@@ -838,7 +844,9 @@ class ROS2Bridge:
     def _scan_cb(self, msg):
         import math as _math
         obstacles = []
-        angle = msg.angle_min
+        # LIDAR_YAW_OFFSET_RAD: the mount's measured yaw error, added to every
+        # bearing (a rotation commutes with the 180 deg flip below).
+        angle = msg.angle_min + LIDAR_YAW_OFFSET_RAD
         for r in msg.ranges:
             if 0.12 < r < 1.0:
                 # Transform from laser_link (yaw=180 deg) to base_link
@@ -3660,7 +3668,7 @@ def _step_toward(current: float, target: float, accel: float, decel: float) -> f
 _standalone_test_cache = (False, 0.0)   # (last_result, last_scan_monotonic)
 _STANDALONE_TEST_SCAN_INTERVAL = 1.0    # seconds between full /proc scans
 _STANDALONE_TESTS = ('ab_comparison_test.py', 'point_to_point_test.py', 'strafe_drift_test.py',
-                     'base_speed_test.py', 'footprint_measure.py')
+                     'base_speed_test.py', 'footprint_measure.py', 'lidar_yaw_calib.py')
 
 def _is_standalone_test_running() -> bool:
     # Scanning every process' cmdline is expensive (~260 /proc reads). motion_loop

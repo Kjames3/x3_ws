@@ -26,7 +26,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 
-LASER_X = 0.055          # lidar ahead of the base centre; laser_joint yaw = pi
+LASER_X = 0.0435         # lidar ahead of the base centre, as server_x3._scan_cb; yaw = pi
 SIDES = (('front', 0.0, 'the NOSE'), ('rear', math.pi, 'the TAIL'),
          ('left', math.pi / 2, 'the LEFT side'), ('right', -math.pi / 2, 'the RIGHT side'))
 
