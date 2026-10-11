@@ -27,8 +27,9 @@ from cbf_filter import HolonomicCBFFilter  # noqa: E402
 SERVER = REPO / 'src' / 'server_x3.py'
 CONSTANTS = ('TOF_CBF_MIN_Z_M', 'TOF_FLOOR_DEFICIT_MM', 'TOF_FLOOR_TILT_MM',
              'TOF_CBF_MAX_RANGE_M', 'TOF_CBF_GRID_M', 'TOF_CBF_PERSIST_FRAMES',
-             'TOF_CBF_HOLD_S', 'CMD_DEADBAND_MPS')
-FUNCTIONS = ('_tof_floor_deficit',)
+             'TOF_CBF_HOLD_S', 'CMD_DEADBAND_MPS', 'CBF_SPEED_RANGE_M',
+             'CBF_MOVER_MIN_SPEED')
+FUNCTIONS = ('_tof_floor_deficit', '_cbf_movers')
 METHODS = ('_limit_for_deadband', 'set_tof_obstacles')
 
 
@@ -152,6 +153,23 @@ def test_deadband_limit_ignores_obstacles_behind(bridge):
 def test_deadband_limit_leaves_zero_and_empty_alone(bridge):
     assert bridge.limit(0.0, 0.0, [(0.35, 0.0)]) == (0.0, 0.0)
     assert bridge.limit(0.20, 0.0, []) == (0.20, 0.0)
+
+
+def _track(category, speed=0.6, z=1.0, x=0.2, vx=-0.6, vy=0.0):
+    return {'category': category, 'speed': speed, 'z': z, 'x': x, 'vx': vx, 'vy': vy}
+
+
+def test_only_people_carry_a_velocity_into_the_cbf(srv):
+    movers = srv['_cbf_movers']([_track('person'), _track('dynamic'), _track('static'), _track(None)])
+    assert movers == [((1.0, -0.2), (-0.6, 0.0))]
+
+
+def test_slow_or_distant_people_are_not_movers(srv):
+    f = srv['_cbf_movers']
+    assert f([_track('person', speed=0.15)]) == []
+    assert f([_track('person', z=1.81)]) == []
+    assert len(f([_track('person', speed=0.16, z=1.8)])) == 1
+    assert f([]) == []
 
 
 def _worst(cbf, u, obstacles, velocities=None):

@@ -298,6 +298,45 @@ velocity_estimation_enabled = True  # A/B toggle: False = reactive, True = predi
 # change and needs a driving test -- see F7, where a stale obstacle set drove
 # the robot into a wall.
 CBF_SPEED_RANGE_M = 1.8
+# Slowest estimated speed that counts as moving for the CBF.
+CBF_MOVER_MIN_SPEED = 0.15
+
+
+def _cbf_movers(estimates):
+    """Velocity-estimator tracks the CBF treats as MOVING obstacles.
+
+    Returns [((x, y), (vx, vy)), ...] in base axes.  The estimator's history is
+    ego-compensated, so this is the obstacle's own velocity: the v_i of the
+    constraint n.(u - v_i) + gamma*h/(2d) >= 0.  (Until 2026-10-11 a mover's
+    positions 0.5/1.0/1.5 s ahead were added as three static points instead.)
+
+    Everything left out here still reaches the CBF at its current position
+    through /scan and the ToF arrays; it only loses the velocity term.
+
+    - Range.  The gate used to live inside the estimator, which meant the
+      limit the CBF needs also silenced telemetry and made every accuracy
+      measurement wrong (a walker at 1.5-3.5 m read -30% because 82% of its
+      frames were forced to 0.0).  It is applied HERE, at the only
+      safety-critical consumer.
+    - People only.  A velocity now moves the robot directly, command or no
+      command, so only tracks the camera's detector confirmed as a person
+      carry one.  "static" depth blobs (door frames, chair legs, wall ends)
+      jitter past 0.15 m/s and made the robot swerve at nothing; on 2026-10-11
+      a "dynamic" track -- a shopping bag stirred by the air conditioner --
+      made the parked robot back away.  Untagged tracks (no live detector)
+      are left out for the same reason.
+    """
+    movers = []
+    for est in estimates:
+        if est.get("z", 0.0) > CBF_SPEED_RANGE_M:
+            continue
+        if est.get("category") != "person":
+            continue
+        if est.get("speed", 0.0) > CBF_MOVER_MIN_SPEED:
+            x = float(est.get("z", est.get("y", 0.0)))
+            y = -float(est.get("x", 0.0))
+            movers.append(((x, y), (float(est.get("vx", 0.0)), float(est.get("vy", 0.0)))))
+    return movers
 # Person tags from YOLO older than this are ignored (tracks read "unknown").
 YOLO_TAG_STALE_S = 1.0
 _p2p_proc = None           # point-to-point test subprocess handle
@@ -1081,40 +1120,7 @@ class ROS2Bridge:
         moving = []     # ((x, y), (vx, vy)) of tracked movers, base frame
         if velocity_estimation_enabled and velocity_estimator is not None:
             try:
-                estimates = velocity_estimator.get_estimates()
-                for est in estimates:
-                    speed = est.get("speed", 0.0)
-                    # SAFETY GATE. This used to live inside the estimator, which
-                    # meant the range limit the CBF needs also silenced telemetry
-                    # and made every accuracy measurement wrong (a walker at
-                    # 1.5-3.5 m read -30% because 82% of its frames were forced
-                    # to 0.0). The estimator now reports its full range and the
-                    # limit is applied HERE, at the only safety-critical
-                    # consumer, so driving behaviour is unchanged: a track beyond
-                    # this range used to arrive with speed 0.0 and fail the 0.15
-                    # test, and now it is rejected outright. Same obstacles.
-                    if est.get("z", 0.0) > CBF_SPEED_RANGE_M:
-                        continue
-                    # Only people and confirmed movers ("dynamic", e.g. the
-                    # Roomba) get predicted motion. Static depth blobs (door
-                    # frames, chair legs, wall ends) jitter past 0.15 m/s and
-                    # made the robot swerve at nothing. Their current position
-                    # still reaches the CBF via /scan and the ToF arrays; they
-                    # only lose the forward prediction. category None (no live
-                    # detector) keeps the old untagged behaviour.
-                    if est.get("category") == "static":
-                        continue
-                    if speed > 0.15:
-                        ox = est.get("z", est.get("y", 0.0))
-                        oy = -est.get("x", 0.0)
-                        rx = float(ox)
-                        ry = float(oy)
-                        # The estimator's history is ego-compensated, so
-                        # this is the obstacle's own velocity in base axes:
-                        # the v_i of the constraint n.(u - v_i) + ... >= 0.
-                        # (Until 2026-10-11 its positions 0.5/1.0/1.5 s
-                        # ahead were added as three static points instead.)
-                        moving.append(((rx, ry), (est.get("vx", 0.0), est.get("vy", 0.0))))
+                moving = _cbf_movers(velocity_estimator.get_estimates())
             except Exception as e:
                 logger.warning(f"Failed to add predictive obstacles: {e}")
         
