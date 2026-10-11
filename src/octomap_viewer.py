@@ -12,6 +12,12 @@ Formats
     .ply             ascii and binary_little_endian
     .xyz/.pts/.csv   plain text, first three columns
 
+Trajectory
+----------
+    A `<name>_poses.txt` next to `<name>_octomap.bt` / `<name>_cloud.ply`
+    (rtabmap-export --poses --poses_format 11) is drawn as the robot path,
+    green dot at the start and red at the end.
+
 Usage
 -----
     python3 src/octomap_viewer.py                       # GUI, scans the default dirs
@@ -29,6 +35,8 @@ Keys (GUI)
     f                fit the view to the cloud
     t / y            top-down / side-on view
     [ or ]           smaller / larger points
+    c                cycle colour: height / RGB (PLY with colour) / flat
+    p                show / hide the robot trajectory
     r                rescan directories
     q or Esc         quit
 """
@@ -249,15 +257,23 @@ def _load_ply(path):
                 raise RuntimeError(f"PLY vertices have no '{ax}' property.")
         if fmt == "ascii":
             data = np.loadtxt(fh, dtype=np.float64, max_rows=nvert, ndmin=2)
-            xyz = data[:, [names.index(a) for a in ("x", "y", "z")]]
+            col = lambda n: data[:, names.index(n)]
         elif fmt == "binary_little_endian":
             rec = np.frombuffer(fh.read(), dtype=np.dtype(props), count=nvert)
-            xyz = np.column_stack([rec["x"], rec["y"], rec["z"]])
+            col = lambda n: rec[n]
         else:
             raise RuntimeError(f"PLY format '{fmt}' is not supported.")
+        xyz = np.column_stack([col(a) for a in ("x", "y", "z")])
+        rgb = None
+        if all(c in names for c in ("red", "green", "blue")):
+            rgb = np.column_stack([col(c) for c in ("red", "green", "blue")]).astype(np.uint8)
     xyz = np.asarray(xyz, dtype=np.float32)
-    xyz = xyz[np.isfinite(xyz).all(axis=1)]
-    return [("points", xyz)], {"Format": fmt}
+    keep = np.isfinite(xyz).all(axis=1)
+    info = {"Format": fmt}
+    if rgb is not None:
+        # private key: per-point colour for the single "points" layer
+        info["_rgb"] = rgb[keep]
+    return [("points", xyz[keep])], info
 
 
 def _load_text(path):
@@ -285,6 +301,29 @@ def load_cloud(path):
     if loader is None:
         raise RuntimeError(f"unsupported extension '{ext}'.")
     return loader(path)
+
+
+# Map-name endings rtabmap-export adds; the poses file shares the part before them.
+_POSE_SUFFIXES = ("_octomap", "_lidar_cloud", "_cloud")
+
+
+def load_poses(map_path):
+    """Robot path (N,3) from the `<name>_poses.txt` beside a map, or None.
+
+    Expects rtabmap-export's format 11: `stamp x y z qx qy qz qw [id]`.
+    """
+    stem = os.path.splitext(map_path)[0]
+    for suf in _POSE_SUFFIXES:
+        if stem.endswith(suf):
+            stem = stem[:-len(suf)]
+            break
+    try:
+        poses = np.loadtxt(stem + "_poses.txt", comments="#", ndmin=2)
+    except (OSError, ValueError):
+        return None
+    if poses.shape[0] < 2 or poses.shape[1] < 4:
+        return None
+    return np.ascontiguousarray(poses[:, 1:4], dtype=np.float32)
 
 
 def find_maps(roots) -> list:
@@ -325,6 +364,13 @@ class MapSummary:
         return f"{self.name}\n   {human_size(self.size)}"
 
 
+COLOR_MODES = ["height", "rgb", "flat"]
+
+# Flat cloud colours and path colours, primary map then the compared one.
+_FLAT = [(0.35, 0.80, 1.00), (1.00, 0.60, 0.20)]
+_PATH = [(1.00, 1.00, 0.30), (1.00, 0.35, 0.85)]
+
+
 class OctomapGLWidget(QOpenGLWidget):
     """3D point cloud renderer using PyOpenGL."""
 
@@ -340,28 +386,57 @@ class OctomapGLWidget(QOpenGLWidget):
         self.target = np.zeros(3, dtype=np.float64)  # what the orbit turns around
         self.point_size = 2.0
 
+        # scene: [{"xyz", "rgb" or None, "traj" or None}], primary map first.
+        # draw: the z-clipped, coloured arrays actually sent to GL.
+        self.scene = []
+        self.draw = []
+        self.color_mode = "height"
+        self.z_clip = (-np.inf, np.inf)
+        self.show_traj = True
+
         self.last_pos = None
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
         self.setMouseTracking(False)
 
     def set_points(self, points):
-        self.points = np.asarray(points, dtype=np.float32)
-        # Give points a nice depth-based color map or just uniform color
-        if len(self.points) > 0:
-            z = self.points[:, 2]
-            z_min, z_max = z.min(), z.max()
-            span = z_max - z_min if z_max > z_min else 1.0
-            z_norm = (z - z_min) / span
-            # Turbo-like or just green-to-blue gradient
-            self.colors = np.column_stack((
-                np.clip(1.0 - z_norm, 0, 1),
-                np.ones_like(z_norm) * 0.8,
-                np.clip(z_norm, 0, 1)
-            )).astype(np.float32)
+        pts = np.asarray(points, dtype=np.float32).reshape(-1, 3)
+        self.set_scene([{"xyz": pts, "rgb": None, "traj": None}])
+
+    def set_scene(self, clouds, fit=True):
+        """Show one map, or two overlaid in contrasting flat colours."""
+        self.scene = clouds
+        self.z_clip = (-np.inf, np.inf)
+        self.rebuild()
+        if fit:
             self.fit_camera()
-        else:
-            self.colors = np.zeros((0, 3), dtype=np.float32)
-            self.update()
+
+    def rebuild(self):
+        """Re-apply the z clip and colour mode to the scene."""
+        lo, hi = self.z_clip
+        compare = len(self.scene) > 1
+        self.draw = []
+        for i, c in enumerate(self.scene):
+            xyz = c["xyz"]
+            if len(xyz) == 0:
+                continue
+            keep = (xyz[:, 2] >= lo) & (xyz[:, 2] <= hi)
+            pts = np.ascontiguousarray(xyz[keep])
+            if len(pts) == 0:
+                continue
+            if compare or self.color_mode == "flat":
+                cols = np.tile(np.float32(_FLAT[i % len(_FLAT)]), (len(pts), 1))
+            elif self.color_mode == "rgb" and c.get("rgb") is not None:
+                cols = c["rgb"][keep].astype(np.float32) / 255.0
+            else:
+                # Percentiles of what is visible, so a few stray points (or
+                # whatever the clip removed) cannot flatten the gradient.
+                z = pts[:, 2]
+                z0, z1 = np.percentile(z, [1, 99])
+                zn = np.clip((z - z0) / max(z1 - z0, 1e-6), 0, 1)
+                cols = np.column_stack((1.0 - zn, np.full_like(zn, 0.8), zn))
+            self.draw.append((pts, np.ascontiguousarray(cols, dtype=np.float32)))
+        self.points = self.draw[0][0] if self.draw else np.zeros((0, 3), dtype=np.float32)
+        self.update()
 
     def fit_camera(self):
         """Frame the whole cloud: centre on its bounding box and pull back to fit.
@@ -425,19 +500,32 @@ class OctomapGLWidget(QOpenGLWidget):
         # Draw a small grid at origin
         self._draw_grid()
 
-        if len(self.points) == 0:
-            return
-
         gl.glPointSize(self.point_size)
         gl.glEnableClientState(gl.GL_VERTEX_ARRAY)
         gl.glEnableClientState(gl.GL_COLOR_ARRAY)
-        
-        gl.glVertexPointer(3, gl.GL_FLOAT, 0, self.points)
-        gl.glColorPointer(3, gl.GL_FLOAT, 0, self.colors)
-        
-        gl.glDrawArrays(gl.GL_POINTS, 0, len(self.points))
-        
+        for pts, cols in self.draw:
+            gl.glVertexPointer(3, gl.GL_FLOAT, 0, pts)
+            gl.glColorPointer(3, gl.GL_FLOAT, 0, cols)
+            gl.glDrawArrays(gl.GL_POINTS, 0, len(pts))
         gl.glDisableClientState(gl.GL_COLOR_ARRAY)
+
+        if self.show_traj:
+            # Drawn over the cloud: a path hidden inside walls is no use.
+            gl.glDisable(gl.GL_DEPTH_TEST)
+            for i, c in enumerate(self.scene):
+                traj = c.get("traj")
+                if traj is None:
+                    continue
+                gl.glLineWidth(2.5)
+                gl.glColor3f(*_PATH[i % len(_PATH)])
+                gl.glVertexPointer(3, gl.GL_FLOAT, 0, traj)
+                gl.glDrawArrays(gl.GL_LINE_STRIP, 0, len(traj))
+                gl.glPointSize(11.0)
+                gl.glBegin(gl.GL_POINTS)
+                gl.glColor3f(0.2, 1.0, 0.3); gl.glVertex3f(*traj[0])
+                gl.glColor3f(1.0, 0.2, 0.2); gl.glVertex3f(*traj[-1])
+                gl.glEnd()
+            gl.glEnable(gl.GL_DEPTH_TEST)
         gl.glDisableClientState(gl.GL_VERTEX_ARRAY)
 
     def _basis(self):
@@ -588,6 +676,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.roots = roots
         self.current_map_path = None
         self.layers = []
+        self.layer_rgb = None
+        self.traj = None
+        self.overlay = None     # second map drawn over the first, or None
 
         self.setWindowTitle("3D Map Viewer")
         self.resize(1200, 800)
@@ -622,8 +713,35 @@ class MainWindow(QtWidgets.QMainWindow):
         self.info_text.setFont(QtGui.QFont("monospace", 10))
         self.info_text.setMaximumHeight(200)
 
+        # None of these take keyboard focus, so the view's keys keep working.
+        self.color_box = QtWidgets.QComboBox()
+        self.color_box.addItems(["Colour: height", "Colour: RGB", "Colour: flat"])
+        self.color_box.currentIndexChanged.connect(self._on_color_changed)
+
+        self.compare_box = QtWidgets.QComboBox()
+        self.compare_box.currentIndexChanged.connect(self._on_compare_changed)
+
+        self.traj_check = QtWidgets.QCheckBox("Show trajectory")
+        self.traj_check.setChecked(True)
+        self.traj_check.toggled.connect(self._on_traj_toggled)
+
+        self.clip_label = QtWidgets.QLabel("Z clip")
+        self.z_lo = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.z_hi = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        for s in (self.z_lo, self.z_hi):
+            s.valueChanged.connect(self._on_clip_changed)
+        for w in (self.layer_box, self.color_box, self.compare_box, self.traj_check,
+                  self.z_lo, self.z_hi):
+            w.setFocusPolicy(QtCore.Qt.NoFocus)
+
         left_layout.addWidget(self.list_view)
         left_layout.addWidget(self.layer_box)
+        left_layout.addWidget(self.color_box)
+        left_layout.addWidget(self.compare_box)
+        left_layout.addWidget(self.traj_check)
+        left_layout.addWidget(self.clip_label)
+        left_layout.addWidget(self.z_lo)
+        left_layout.addWidget(self.z_hi)
         left_layout.addWidget(self.info_text)
 
         # Right panel
@@ -642,7 +760,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.model = MapListModel(self.maps)
         self.list_view.setModel(self.model)
         self.list_view.selectionModel().selectionChanged.connect(self._on_selection_changed)
-        
+
+        self.overlay = None
+        self.compare_box.blockSignals(True)
+        self.compare_box.clear()
+        self.compare_box.addItem("Compare with: (none)", None)
+        for m in self.maps:
+            self.compare_box.addItem(f"Compare with: {m.name}", m.path)
+        self.compare_box.blockSignals(False)
+
         if not self.maps:
             searched = "\n".join(
                 f"  - {os.path.expanduser(r)}" for r in self.roots
@@ -684,6 +810,8 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         self.load_secs = time.time() - t0
+        self.layer_rgb = extra.pop("_rgb", None)
+        self.traj = load_poses(path)
         self.load_info = extra
         self.layers = layers
 
@@ -700,7 +828,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if 0 <= index < len(self.layers):
             self._show_layer(index)
 
-    def _show_layer(self, index):
+    def _show_layer(self, index, fit=True):
         name, pts = self.layers[index]
         path = self.current_map_path
         info = [
@@ -715,11 +843,80 @@ class MainWindow(QtWidgets.QMainWindow):
             info.append("Bounds x: %.2f .. %.2f m" % (lo[0], hi[0]))
             info.append("       y: %.2f .. %.2f m" % (lo[1], hi[1]))
             info.append("       z: %.2f .. %.2f m" % (lo[2], hi[2]))
+        if self.layer_rgb is not None:
+            info.append("Colour: RGB available")
+        if self.traj is not None:
+            t = self.traj
+            path_m = float(np.linalg.norm(np.diff(t[:, :2], axis=0), axis=1).sum())
+            info.append(f"Path: {len(t)} poses, {path_m:.1f} m")
+            info.append("End vs start: %.3f m" % np.linalg.norm(t[-1, :2] - t[0, :2]))
+        if self.overlay is not None:
+            info.append(f"Compared with: {self.overlay['name']}")
+            info.append("  this map blue, the other orange")
         for k, v in self.load_info.items():
             info.append(f"{k}: {v}")
         info.append(f"Load time: {self.load_secs:.2f} s")
         self.info_text.setPlainText("\n".join(info))
-        self.gl_widget.set_points(pts)
+        self._push_scene(fit)
+
+    def _push_scene(self, fit):
+        name, pts = self.layers[self.layer_box.currentIndex()]
+        rgb = self.layer_rgb if self.layer_rgb is not None and len(self.layer_rgb) == len(pts) else None
+        clouds = [{"xyz": pts, "rgb": rgb, "traj": self.traj}]
+        if self.overlay is not None:
+            clouds.append(self.overlay)
+        # Two maps are told apart by flat colours, so the mode does not apply.
+        self.color_box.setEnabled(self.overlay is None)
+        self.gl_widget.set_scene(clouds, fit=fit)
+        self._reset_clip()
+
+    def _reset_clip(self):
+        zs = [c["xyz"][:, 2] for c in self.gl_widget.scene if len(c["xyz"])]
+        lo = int(np.floor(min(z.min() for z in zs) * 100)) if zs else 0
+        hi = int(np.ceil(max(z.max() for z in zs) * 100)) if zs else 0
+        for s, v in ((self.z_lo, lo), (self.z_hi, hi)):
+            s.blockSignals(True)
+            s.setRange(lo, hi)      # centimetres
+            s.setValue(v)
+            s.blockSignals(False)
+        self._update_clip_label()
+
+    def _update_clip_label(self):
+        self.clip_label.setText("Z clip: %.2f .. %.2f m" % (
+            self.z_lo.value() / 100.0, self.z_hi.value() / 100.0))
+
+    def _on_clip_changed(self, _value):
+        if self.z_lo.value() > self.z_hi.value():
+            other = self.z_hi if self.sender() is self.z_lo else self.z_lo
+            other.blockSignals(True)
+            other.setValue(self.sender().value())
+            other.blockSignals(False)
+        self.gl_widget.z_clip = (self.z_lo.value() / 100.0, self.z_hi.value() / 100.0)
+        self.gl_widget.rebuild()
+        self._update_clip_label()
+
+    def _on_color_changed(self, index):
+        self.gl_widget.color_mode = COLOR_MODES[index]
+        self.gl_widget.rebuild()
+
+    def _on_traj_toggled(self, on):
+        self.gl_widget.show_traj = on
+        self.gl_widget.update()
+
+    def _on_compare_changed(self, index):
+        path = self.compare_box.itemData(index)
+        self.overlay = None
+        if path and self.layers:
+            try:
+                layers, _ = load_cloud(path)
+                self.overlay = {"xyz": layers[0][1], "rgb": None, "traj": load_poses(path),
+                                "name": os.path.basename(path)}
+            except Exception as exc:
+                self.info_text.setPlainText(f"Error loading the compared map:\n{exc}")
+                return
+        if self.layers:
+            # Keep the camera where it is: the point is to look at the same spot.
+            self._show_layer(self.layer_box.currentIndex(), fit=False)
 
     def keyPressEvent(self, event):
         k = event.key()
@@ -727,6 +924,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.close()
         elif k == QtCore.Qt.Key_R:
             self.rescan()
+        elif k == QtCore.Qt.Key_C:
+            self.color_box.setCurrentIndex((self.color_box.currentIndex() + 1) % len(COLOR_MODES))
+        elif k == QtCore.Qt.Key_P:
+            self.traj_check.toggle()
         else:
             super().keyPressEvent(event)
 
