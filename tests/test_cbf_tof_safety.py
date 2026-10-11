@@ -221,6 +221,16 @@ def test_executed_speed_check_follows_the_rectangular_footprint(srv):
     assert vx == pytest.approx(2.0 * 0.20 - db) and vy == 0.0
 
 
+def test_a_command_shortened_below_the_minimum_speed_becomes_a_stop(srv):
+    b = SimpleNamespace(cbf=HolonomicCBFFilter(gamma=2.0, footprint=(0.18, 0.12), margin=0.10))
+    srv['CMD_DEADBAND_MPS'], srv['CMD_MIN_MPS'] = 0.0, 0.03     # closed-loop base
+    f = srv['_limit_for_deadband']
+    assert f(b, 0.2, 0.0, [(0.18 + 0.10 + 0.010, 0.0)]) == (0.0, 0.0)      # 0.02 m/s allowed
+    vx, _ = f(b, 0.2, 0.0, [(0.18 + 0.10 + 0.030, 0.0)])                   # 0.06 m/s allowed
+    assert vx == pytest.approx(0.06)
+    assert f(b, 0.02, 0.0, [(1.5, 0.0)]) == (0.02, 0.0)          # the operator's own crawl is left alone
+
+
 def test_escape_that_the_deadband_would_overshoot_becomes_a_stop(bridge, srv):
     # 0.29 m ahead and 0.31 m behind: the tiny retreat the CBF wants would be
     # executed 0.14 m/s faster, straight at the wall behind. Stopping is better.

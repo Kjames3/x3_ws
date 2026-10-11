@@ -1121,6 +1121,9 @@ class ROS2Bridge:
             s_max = float(np.min(c[limiting] / n_dot_d[limiting])) - CMD_DEADBAND_MPS
             if s_max <= 0.0:
                 return 0.0, 0.0
+            if s_max < min(s, CMD_MIN_MPS):
+                # Slower than the base can hold: it would creep in jerks.
+                return 0.0, 0.0
             if s_max < s:
                 return dx * s_max, dy * s_max
             return vx, vy
