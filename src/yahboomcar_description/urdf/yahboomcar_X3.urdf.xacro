@@ -197,7 +197,7 @@
         <axis xyz="0 1 0"/>
         <limit lower="-2.0944" upper="2.0944" effort="1.6" velocity="6.5"/>
     </joint>
-    <xacro:fixed_joint name="laser_joint" parent="lidar_tilt_link" child="laser_link" xyz="0 0 0.022" rpy="0 0 3.14159265"/>
+    <xacro:fixed_joint name="laser_joint" parent="lidar_tilt_link" child="laser_link" xyz="0 0 0.022" rpy="0 0 3.226241"/>  <!-- 180 + 4.85 deg measured mount yaw, see yahboomcar_X3.urdf -->
 
     <xacro:common_link name="camera_link" material="White" path="sensor">
         <inertial>
