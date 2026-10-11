@@ -100,7 +100,8 @@ def _project(u_nom, n, c):
 
 class HolonomicCBFFilter:
     def __init__(self, safe_distance=0.3, gamma=1.0, max_wheel_speed=0.5,
-                 wheel_separation=0.215, footprint=None, margin=0.10):
+                 wheel_separation=0.215, footprint=None, margin=0.10,
+                 hold_band=0.03):
         """
         Args:
             safe_distance (float): circle mode (footprint None): minimum
@@ -113,6 +114,14 @@ class HolonomicCBFFilter:
                 side face then puts no limit on driving forward, which is what
                 a doorway needs, and yaw matters: turning swings the corners.
             margin (float): rectangle mode: clearance kept round the outline (m).
+            hold_band (float): rectangle mode: how far inside the margin a
+                point may sit before the robot is made to back away (m).
+                Within the band the robot may not close any further but is
+                not pushed either. Without it the robot hunts at the margin:
+                range noise of a centimetre or two and the 0.3 s it takes to
+                stop put it just inside, the filter backs it out, the held
+                command drives it in again (box test 2026-10-11, +-5 cm/s
+                at about 1 Hz for as long as the stick was held).
             gamma (float): 1/s. A static obstacle may be approached at up to
                 roughly gamma * (distance - safe_distance), so larger is less
                 conservative and brakes later.
@@ -126,6 +135,7 @@ class HolonomicCBFFilter:
         self.safe_distance = safe_distance
         self.footprint = None if footprint is None else (float(footprint[0]), float(footprint[1]))
         self.margin = float(margin)
+        self.hold_band = float(hold_band)
         self.gamma = gamma
         self.max_wheel_speed = max_wheel_speed
         self.wheel_separation = wheel_separation
@@ -178,7 +188,7 @@ class HolonomicCBFFilter:
 
         A point inside the rectangle (a sensor return from above the chassis)
         is pushed out through its nearest face, and counts as d = 0, so the
-        most a single point ever asks for is gamma * margin.
+        most a single point ever asks for is gamma * (margin - hold_band).
         """
         p = np.asarray(obstacles, dtype=np.float64).reshape(-1, 2) \
             - np.asarray(robot_pos, dtype=np.float64)
@@ -200,7 +210,10 @@ class HolonomicCBFFilter:
             out[rows, axis] = sign
             a[rows, axis] = sign * half[axis]
         n = -out
-        c = -self.gamma * (d - self.margin)
+        spare = d - self.margin
+        # outside the margin: approach limit. Inside it: nothing for the first
+        # hold_band, then a retreat that grows from zero.
+        c = -self.gamma * np.where(spare >= 0.0, spare, np.minimum(spare + self.hold_band, 0.0))
         if omega:
             c = c - omega * (-a[:, 1] * n[:, 0] + a[:, 0] * n[:, 1])
         if obstacle_velocities is not None:

@@ -297,14 +297,41 @@ def test_approach_speed_is_gamma_times_spare_clearance():
 
 
 def test_inside_the_margin_asks_for_a_bounded_retreat():
-    cbf = rect(gamma=2.0)
-    for gap in (0.08, 0.03, 0.0):
+    cbf = rect(gamma=2.0)                      # margin 0.10, hold band 0.03
+    for gap in (0.05, 0.03, 0.0):
         vx, vy = cbf.filter_velocity(0.0, 0.0, (0.0, 0.0), [(0.18 + gap, 0.0)])
-        assert vx == pytest.approx(-2.0 * (0.10 - gap)) and vy == pytest.approx(0.0, abs=1e-9)
+        assert vx == pytest.approx(-2.0 * (0.07 - gap)) and vy == pytest.approx(0.0, abs=1e-9)
     # a return from inside the outline: out through the nearest face, same bound
     vx, vy = cbf.filter_velocity(0.0, 0.0, (0.0, 0.0), [(0.10, 0.02)])
-    assert (vx, vy) == pytest.approx((-0.2, 0.0), abs=1e-9)
+    assert (vx, vy) == pytest.approx((-0.14, 0.0), abs=1e-9)
     assert cbf.last_relaxation == 0.0
+
+
+def test_just_inside_the_margin_holds_still_instead_of_hunting():
+    cbf = rect(gamma=2.0)
+    for gap in (0.099, 0.09, 0.08, 0.071):
+        box = [(0.18 + gap, 0.0)]
+        assert cbf.filter_velocity(0.0, 0.0, (0.0, 0.0), box) == (0.0, 0.0)      # not pushed back
+        vx, vy = cbf.filter_velocity(0.2, 0.0, (0.0, 0.0), box)                  # and not let closer
+        assert vx == pytest.approx(0.0, abs=1e-9) and vy == pytest.approx(0.0, abs=1e-9)
+        vx, _ = cbf.filter_velocity(-0.2, 0.0, (0.0, 0.0), box)                  # free to leave
+        assert vx == pytest.approx(-0.2)
+
+
+def test_held_command_settles_at_a_box_with_noise_and_lag():
+    """Stick held forward at a box, range noise of 1.5 cm, 0.25 s speed lag."""
+    rng = np.random.default_rng(3)
+    cbf, x, v, dt = rect(gamma=2.0), 1.0, 0.0, 0.033
+    speeds = []
+    for k in range(600):
+        seen = x + rng.normal(0.0, 0.015)
+        cmd, _ = cbf.filter_velocity(0.2, 0.0, (0.0, 0.0), [(seen, 0.0)])
+        v += (cmd - v) * dt / 0.25
+        x -= v * dt
+        if k > 400:
+            speeds.append(v)
+    assert x > 0.18 + 0.05                         # stopped short of the box
+    assert max(abs(s) for s in speeds) < 0.03      # and stays put, no back-and-forth
 
 
 def test_turning_beside_a_wall_moves_away_or_turns_less():
