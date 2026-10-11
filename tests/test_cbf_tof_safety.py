@@ -210,6 +210,17 @@ def test_slowest_escape_is_a_command_the_driver_acts_on(bridge, srv):
     assert out[0] >= srv['CMD_MIN_MPS'] > 0.001 and out[1] == pytest.approx(0.0)
 
 
+def test_executed_speed_check_follows_the_rectangular_footprint(srv):
+    # Jambs beside the outline: no limit forward. A box ahead: shortened to
+    # gamma * spare clearance. Same rows as the filter itself.
+    b = SimpleNamespace(cbf=HolonomicCBFFilter(gamma=2.0, footprint=(0.18, 0.12), margin=0.10))
+    limit = lambda vx, vy, obs, w=0.0: srv['_limit_for_deadband'](b, vx, vy, obs, None, w)
+    db = srv['CMD_DEADBAND_MPS']
+    assert limit(0.2, 0.0, [(0.0, 0.26), (0.0, -0.26)]) == (0.2, 0.0)
+    vx, vy = limit(0.5, 0.0, [(0.18 + 0.10 + 0.20, 0.0)])
+    assert vx == pytest.approx(2.0 * 0.20 - db) and vy == 0.0
+
+
 def test_escape_that_the_deadband_would_overshoot_becomes_a_stop(bridge, srv):
     # 0.29 m ahead and 0.31 m behind: the tiny retreat the CBF wants would be
     # executed 0.14 m/s faster, straight at the wall behind. Stopping is better.

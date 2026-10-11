@@ -100,11 +100,19 @@ def _project(u_nom, n, c):
 
 class HolonomicCBFFilter:
     def __init__(self, safe_distance=0.3, gamma=1.0, max_wheel_speed=0.5,
-                 wheel_separation=0.215):
+                 wheel_separation=0.215, footprint=None, margin=0.10):
         """
         Args:
-            safe_distance (float): minimum allowed distance to any obstacle
-                point (m). 0.3 for the X3 chassis plus padding.
+            safe_distance (float): circle mode (footprint None): minimum
+                distance from the robot's CENTRE to any obstacle point (m).
+            footprint ((half_length, half_width) or None): the chassis as a
+                rectangle in the body frame (x forward). When given, obstacle
+                points are kept `margin` clear of that OUTLINE instead of a
+                circle round the centre, with the barrier h = d - margin, d the
+                distance from the point to the rectangle. A point beside a
+                side face then puts no limit on driving forward, which is what
+                a doorway needs, and yaw matters: turning swings the corners.
+            margin (float): rectangle mode: clearance kept round the outline (m).
             gamma (float): 1/s. A static obstacle may be approached at up to
                 roughly gamma * (distance - safe_distance), so larger is less
                 conservative and brakes later.
@@ -116,6 +124,8 @@ class HolonomicCBFFilter:
                 geometric half wheelbase + half track is 0.1645).
         """
         self.safe_distance = safe_distance
+        self.footprint = None if footprint is None else (float(footprint[0]), float(footprint[1]))
+        self.margin = float(margin)
         self.gamma = gamma
         self.max_wheel_speed = max_wheel_speed
         self.wheel_separation = wheel_separation
@@ -123,8 +133,14 @@ class HolonomicCBFFilter:
         # was feasible. For telemetry and tests.
         self.last_relaxation = 0.0
 
-    def constraint_rows(self, robot_pos, obstacles, obstacle_velocities=None):
-        """(n, c) with one row per obstacle: the command must keep n @ u >= c."""
+    def constraint_rows(self, robot_pos, obstacles, obstacle_velocities=None, omega=0.0):
+        """(n, c) with one row per obstacle: the command must keep n @ u >= c.
+
+        omega is the yaw rate the robot will turn at. It only matters for a
+        rectangular footprint, where turning moves the outline.
+        """
+        if self.footprint is not None:
+            return self._rectangle_rows(robot_pos, obstacles, obstacle_velocities, omega)
         obs = np.asarray(obstacles, dtype=np.float64).reshape(-1, 2)
         rel = np.asarray(robot_pos, dtype=np.float64) - obs
         d = np.hypot(rel[:, 0], rel[:, 1])
@@ -146,6 +162,78 @@ class HolonomicCBFFilter:
             vel = np.where(np.isfinite(vel), vel, 0.0)   # unknown: treat as static
             c = c + np.einsum('ij,ij->i', n, vel)
         return n, c
+
+    def _rectangle_rows(self, robot_pos, obstacles, obstacle_velocities, omega):
+        """Rows for the rectangular footprint. Obstacles are in body axes.
+
+        For each point p: a = the nearest point of the rectangle, d = |p - a|,
+        out = (p - a)/d. With the robot moving at u and turning at omega, and
+        the obstacle moving at v,
+
+            dd/dt = out . (v - u - omega * z x a)
+
+        and the barrier d - margin gives  dd/dt + gamma (d - margin) >= 0, i.e.
+
+            n . u >= n . v - gamma (d - margin) - omega (z x a) . n,   n = -out.
+
+        A point inside the rectangle (a sensor return from above the chassis)
+        is pushed out through its nearest face, and counts as d = 0, so the
+        most a single point ever asks for is gamma * margin.
+        """
+        p = np.asarray(obstacles, dtype=np.float64).reshape(-1, 2) \
+            - np.asarray(robot_pos, dtype=np.float64)
+        keep = np.all(np.isfinite(p), axis=1)
+        p = p[keep]
+        half = np.asarray(self.footprint)
+        q = np.abs(p) - half                         # > 0 beyond that pair of faces
+        a = np.clip(p, -half, half)                  # nearest point when outside
+        diff = p - a
+        d = np.hypot(diff[:, 0], diff[:, 1])
+        out = np.zeros_like(p)
+        outside = d > 1e-9
+        out[outside] = diff[outside] / d[outside, None]
+        inside = ~outside
+        if inside.any():
+            axis = np.argmax(q[inside], axis=1)      # the face it is nearest to
+            rows = np.flatnonzero(inside)
+            sign = np.where(p[rows, axis] >= 0.0, 1.0, -1.0)
+            out[rows, axis] = sign
+            a[rows, axis] = sign * half[axis]
+        n = -out
+        c = -self.gamma * (d - self.margin)
+        if omega:
+            c = c - omega * (-a[:, 1] * n[:, 0] + a[:, 0] * n[:, 1])
+        if obstacle_velocities is not None:
+            vel = np.asarray(obstacle_velocities, dtype=np.float64).reshape(-1, 2)[keep]
+            vel = np.where(np.isfinite(vel), vel, 0.0)
+            c = c + np.einsum('ij,ij->i', n, vel)
+        return n, c
+
+    def filter_twist(self, v_nom_x, v_nom_y, omega, robot_pos, obstacles,
+                     obstacle_velocities=None):
+        """filter_velocity for the whole command: returns (vx, vy, omega).
+
+        The yaw rate is the operator's and is kept whenever some translation
+        makes it safe. With a rectangular footprint a turn can itself be the
+        problem (a corner swinging into a wall). When the solve is infeasible
+        at the commanded rate, half of it and none of it are tried, and the
+        fastest turn that is feasible -- or failing that, the one needing the
+        least relaxation -- is returned with its translation.
+        """
+        vx, vy = self.filter_velocity(v_nom_x, v_nom_y, robot_pos, obstacles,
+                                      obstacle_velocities, omega=omega)
+        if self.footprint is None or not omega or self.last_relaxation == 0.0:
+            return vx, vy, omega
+        best = (self.last_relaxation, vx, vy, omega)
+        for w in (0.5 * omega, 0.0):
+            vx, vy = self.filter_velocity(v_nom_x, v_nom_y, robot_pos, obstacles,
+                                          obstacle_velocities, omega=w)
+            if self.last_relaxation == 0.0:
+                return vx, vy, w
+            if self.last_relaxation < best[0] - 1e-9:
+                best = (self.last_relaxation, vx, vy, w)
+        self.last_relaxation = best[0]
+        return best[1], best[2], best[3]
 
     def speed_limit(self, omega=0.0):
         """Largest |vx| + |vy| the wheels can deliver while turning at omega."""
@@ -180,7 +268,7 @@ class HolonomicCBFFilter:
             u = _project(u_nom, _DIAMOND, c_spd)
             return float(u[0]), float(u[1])
 
-        n_obs, c_obs = self.constraint_rows(robot_pos, obstacles, obstacle_velocities)
+        n_obs, c_obs = self.constraint_rows(robot_pos, obstacles, obstacle_velocities, omega)
         n_all = np.vstack((n_obs, _DIAMOND))
 
         u = _project(u_nom, n_all, np.concatenate((c_obs, c_spd)))
@@ -199,7 +287,7 @@ class HolonomicCBFFilter:
         obs = np.asarray(obstacles, dtype=np.float64).reshape(-1, 2)
         rel = obs - np.asarray(robot_pos, dtype=np.float64)
         d = np.hypot(rel[:, 0], rel[:, 1])
-        keep = np.isfinite(d) & (d > 1e-6)
+        keep = np.isfinite(d) & ((d > 1e-6) | (self.footprint is not None))
         vel = np.zeros_like(obs) if obstacle_velocities is None else \
             np.asarray(obstacle_velocities, dtype=np.float64).reshape(-1, 2)
         vel = np.where(np.isfinite(vel), vel, 0.0)

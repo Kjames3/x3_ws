@@ -441,6 +441,15 @@ CMD_MIN_MPS = float(os.environ.get('X3_CMD_MIN_MPS', 0.002))
 # CBF tuning, overridable per site without a code change (scripts/cbf_tune.sh).
 CBF_GAMMA = float(os.environ.get('X3_CBF_GAMMA', 1.0))
 CBF_SAFE_DISTANCE_M = float(os.environ.get('X3_CBF_SAFE_DISTANCE_M', 0.30))
+# The chassis outline the CBF keeps obstacles clear of: half length, half
+# width in metres (body x forward), from the URDF -- body -0.155..0.145 plus
+# the ToF bracket at the nose, wheels out to about +-0.11. 'circle' goes back
+# to CBF_SAFE_DISTANCE_M round the centre, which stalls in a 0.76 m doorway
+# unless the robot is within ~6 cm of its middle.
+_fp = os.environ.get('X3_CBF_FOOTPRINT', '0.18,0.12').strip().lower()
+CBF_FOOTPRINT = None if _fp == 'circle' else tuple(float(v) for v in _fp.split(','))
+# Clearance kept round that outline.
+CBF_MARGIN_M = float(os.environ.get('X3_CBF_MARGIN_M', 0.10))
 
 # Which websocket asked for the running sweep, so it can be cancelled when
 # that client goes away, and a wall-clock backstop for every other way a
@@ -746,9 +755,13 @@ class ROS2Bridge:
         # the robot with the wall still visible. Lower toward ~0.15 m for tighter
         # doorways (at the cost of a thinner stop margin). This whole range-gate
         # workaround goes away once the Lidar is raised above the chassis.
-        self.cbf = HolonomicCBFFilter(safe_distance=CBF_SAFE_DISTANCE_M, gamma=CBF_GAMMA)
-        logger.info("CBF: gamma %.2f, safe distance %.2f m, deadband %.2f m/s",
-                    CBF_GAMMA, CBF_SAFE_DISTANCE_M, CMD_DEADBAND_MPS)
+        self.cbf = HolonomicCBFFilter(safe_distance=CBF_SAFE_DISTANCE_M, gamma=CBF_GAMMA,
+                                      footprint=CBF_FOOTPRINT, margin=CBF_MARGIN_M)
+        logger.info("CBF: gamma %.2f, %s, deadband %.2f m/s, min %.3f m/s", CBF_GAMMA,
+                    "circle %.2f m" % CBF_SAFE_DISTANCE_M if CBF_FOOTPRINT is None else
+                    "footprint %.2f x %.2f m + %.2f m margin" % (
+                        2 * CBF_FOOTPRINT[0], 2 * CBF_FOOTPRINT[1], CBF_MARGIN_M),
+                    CMD_DEADBAND_MPS, CMD_MIN_MPS)
         self._latest_obstacles = []
         # When that list was last REFRESHED.  Without this the CBF cannot
         # tell a live obstacle from one frozen by a /scan dropout.
@@ -1075,7 +1088,7 @@ class ROS2Bridge:
             self._tof_obstacles[name] = (xy, now)
         return keep
 
-    def _limit_for_deadband(self, vx, vy, obstacles, velocities=None):
+    def _limit_for_deadband(self, vx, vy, obstacles, velocities=None, omega=0.0):
         """Re-check the CBF output at the speed the base will EXECUTE.
 
         The driver runs direction d at speed s + CMD_DEADBAND_MPS for a command
@@ -1097,7 +1110,7 @@ class ROS2Bridge:
         if s < 1e-6 or not len(obstacles):
             return vx, vy
         dx, dy = vx / s, vy / s
-        n, c = self.cbf.constraint_rows((0.0, 0.0), obstacles, velocities)
+        n, c = self.cbf.constraint_rows((0.0, 0.0), obstacles, velocities, omega)
         if not len(c):
             return vx, vy
         n_dot_d = n[:, 0] * dx + n[:, 1] * dy
@@ -1169,10 +1182,12 @@ class ROS2Bridge:
             if moving:
                 velocities = [(0.0, 0.0)] * len(obstacles) + [v for _, v in moving]
                 obstacles = obstacles + [p for p, _ in moving]
-            safe_vx, safe_vy = self.cbf.filter_velocity(
-                vx, vy, (0.0, 0.0), obstacles, velocities, omega=omega)
+            # With the rectangular footprint a turn can swing a corner into
+            # something, so the yaw rate may come back smaller than asked.
+            safe_vx, safe_vy, omega = self.cbf.filter_twist(
+                vx, vy, omega, (0.0, 0.0), obstacles, velocities)
             safe_vx, safe_vy = self._limit_for_deadband(
-                safe_vx, safe_vy, obstacles, velocities)
+                safe_vx, safe_vy, obstacles, velocities, omega)
 
         msg = Twist()
         msg.linear.x  = float(safe_vx)    * self.LINEAR_SCALE

@@ -237,3 +237,132 @@ def test_a_point_at_the_centre_does_not_outvote_a_wall_behind():
     cbf = HolonomicCBFFilter()
     vx, vy = cbf.filter_velocity(0.0, 0.0, (0.0, 0.0), [(0.001, 0.0), (-0.25, 0.0)])
     assert -0.15 < vx < -0.10 and vy == pytest.approx(0.0, abs=1e-6)
+
+
+# ------------------------------------------------- rectangular footprint
+HALF = (0.18, 0.12)
+
+
+def rect(gamma=2.0, margin=0.10, **kw):
+    return HolonomicCBFFilter(gamma=gamma, footprint=HALF, margin=margin, **kw)
+
+
+def clearance(point):
+    """Distance from a body-frame point to the rectangle (0 inside)."""
+    dx = max(abs(point[0]) - HALF[0], 0.0)
+    dy = max(abs(point[1]) - HALF[1], 0.0)
+    return math.hypot(dx, dy)
+
+
+def test_rectangle_rows_point_away_from_the_nearest_outline_point():
+    cbf = rect()
+    n, c = cbf.constraint_rows((0.0, 0.0), [(0.50, 0.0), (0.0, 0.40), (0.48, 0.52), (-0.30, -0.05)])
+    assert n[0] == pytest.approx((-1.0, 0.0)) and c[0] == pytest.approx(-2.0 * (0.32 - 0.10))
+    assert n[1] == pytest.approx((0.0, -1.0)) and c[1] == pytest.approx(-2.0 * (0.28 - 0.10))
+    assert n[2] == pytest.approx((-0.6, -0.8)) and c[2] == pytest.approx(-2.0 * (0.50 - 0.10))   # front-left corner
+    assert n[3] == pytest.approx((1.0, 0.0)) and c[3] == pytest.approx(-2.0 * (0.12 - 0.10))
+
+
+def test_jambs_beside_the_robot_do_not_limit_driving_forward():
+    """The doorway case: a 0.30 m circle stalls here; the outline does not."""
+    jambs = [(x, y) for x in (-0.10, 0.0, 0.10) for y in (0.26, -0.26)]
+    assert rect().filter_velocity(0.2, 0.0, (0.0, 0.0), jambs) == pytest.approx((0.2, 0.0))
+    circle = HolonomicCBFFilter(gamma=2.0)
+    vx, _ = circle.filter_velocity(0.2, 0.0, (0.0, 0.0), jambs)
+    assert vx < 0.05 or circle.last_relaxation > 0.0
+
+
+def test_off_centre_in_a_doorway_still_passes():
+    # 0.76 m doorway, robot 14 cm left of centre: jambs at +0.24 and -0.52.
+    jambs = [(x, y) for x in (0.05, 0.15, 0.25) for y in (0.24, -0.52)]
+    vx, vy = rect().filter_velocity(0.2, 0.0, (0.0, 0.0), jambs)
+    # the jamb point just ahead of the front-left corner trims the speed a little
+    assert 0.15 < vx <= 0.2 and abs(vy) < 0.05
+    assert rect().last_relaxation == 0.0
+
+
+def test_front_obstacle_stops_the_robot_at_the_margin():
+    cbf, x, dt = rect(), 1.2, 0.02
+    for _ in range(3000):
+        vx, _ = cbf.filter_velocity(0.3, 0.0, (0.0, 0.0), [(x, 0.0)])
+        x -= vx * dt
+    assert x == pytest.approx(HALF[0] + 0.10, abs=0.005)       # nose 10 cm short
+    assert vx < 0.01
+
+
+def test_approach_speed_is_gamma_times_spare_clearance():
+    cbf = rect(gamma=2.0)
+    vx, _ = cbf.filter_velocity(0.5, 0.0, (0.0, 0.0), [(0.18 + 0.10 + 0.15, 0.0)])
+    assert vx == pytest.approx(2.0 * 0.15)
+
+
+def test_inside_the_margin_asks_for_a_bounded_retreat():
+    cbf = rect(gamma=2.0)
+    for gap in (0.08, 0.03, 0.0):
+        vx, vy = cbf.filter_velocity(0.0, 0.0, (0.0, 0.0), [(0.18 + gap, 0.0)])
+        assert vx == pytest.approx(-2.0 * (0.10 - gap)) and vy == pytest.approx(0.0, abs=1e-9)
+    # a return from inside the outline: out through the nearest face, same bound
+    vx, vy = cbf.filter_velocity(0.0, 0.0, (0.0, 0.0), [(0.10, 0.02)])
+    assert (vx, vy) == pytest.approx((-0.2, 0.0), abs=1e-9)
+    assert cbf.last_relaxation == 0.0
+
+
+def test_turning_beside_a_wall_moves_away_or_turns_less():
+    """Wall 4 cm outside the margin on the left; a left turn swings the
+    rear-left corner toward it."""
+    wall = [(x / 100.0, 0.26) for x in range(-40, 41, 4)]
+    cbf = rect()
+    assert cbf.filter_twist(0.0, 0.0, 0.0, (0.0, 0.0), wall) == pytest.approx((0.0, 0.0, 0.0))
+    vx, vy, w = cbf.filter_twist(0.0, 0.0, 1.0, (0.0, 0.0), wall)
+    assert vy < -0.01 or abs(w) < 1.0          # strafes off the wall, or eases the turn
+    n, c = cbf.constraint_rows((0.0, 0.0), wall, None, w)
+    assert np.min(n @ np.array([vx, vy]) - c) >= -cbf.last_relaxation - 1e-6
+
+
+def test_turn_is_eased_when_no_translation_can_make_it_safe():
+    # Boxed in on both sides inside the margin: translation cannot buy room.
+    walls = [(x / 100.0, y) for x in range(-30, 31, 5) for y in (0.17, -0.17)]
+    cbf = rect()
+    _, _, w = cbf.filter_twist(0.0, 0.0, 1.5, (0.0, 0.0), walls)
+    assert abs(w) < 1.5
+
+
+def test_yaw_is_untouched_in_open_space_and_in_circle_mode():
+    assert rect().filter_twist(0.1, 0.0, 1.0, (0.0, 0.0), [(1.5, 0.0)]) == pytest.approx((0.1, 0.0, 1.0))
+    circle = HolonomicCBFFilter()
+    assert circle.filter_twist(0.0, 0.0, 1.0, (0.0, 0.0), [(0.25, 0.0), (-0.2, 0.0)])[2] == 1.0
+
+
+@pytest.mark.parametrize('seed', range(30))
+def test_rectangle_command_never_closes_faster_than_allowed(seed):
+    rng = np.random.default_rng(1200 + seed)
+    k = int(rng.integers(1, 200))
+    pts = rng.uniform(-1.0, 1.0, (k, 2))
+    pts = pts[[clearance(p) > 0.12 for p in pts]]
+    if not len(pts):
+        return
+    cbf = rect()
+    u_nom = rng.uniform(-0.4, 0.4, 2)
+    w = float(rng.uniform(-1.0, 1.0))
+    vx, vy, w_out = cbf.filter_twist(u_nom[0], u_nom[1], w, (0.0, 0.0), pts)
+    n, c = cbf.constraint_rows((0.0, 0.0), pts, None, w_out)
+    assert np.min(n @ np.array([vx, vy]) - c) >= -cbf.last_relaxation - 1e-6
+    # one small step of the real motion keeps every point outside the margin
+    dt = 0.02
+    cth, sth = math.cos(-w_out * dt), math.sin(-w_out * dt)
+    moved = (pts - np.array([vx, vy]) * dt) @ np.array([[cth, sth], [-sth, cth]])
+    if cbf.last_relaxation == 0.0:
+        assert min(clearance(p) for p in moved) >= 0.10 - 1e-3
+
+
+def test_rectangle_handles_non_finite_points_and_a_full_scan():
+    cbf = rect()
+    assert cbf.filter_velocity(0.2, 0.0, (0.0, 0.0), [(float('inf'), 0.1), (float('nan'), 0.0)]) == (0.2, 0.0)
+    rng = np.random.default_rng(5)
+    th = np.linspace(-math.pi, math.pi, 2100)
+    r = 0.45 + 0.4 * rng.random(2100)
+    scan = np.c_[r * np.cos(th), r * np.sin(th)]
+    t0 = time.perf_counter()
+    for _ in range(20):
+        cbf.filter_twist(0.3, 0.1, 0.5, (0.0, 0.0), scan)
+    assert (time.perf_counter() - t0) / 20 < 0.01
