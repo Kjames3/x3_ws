@@ -1022,33 +1022,49 @@ class ROS2Bridge:
             self._tof_obstacles[name] = (xy, now)
         return keep
 
-    def _limit_for_deadband(self, vx, vy, obstacles):
+    def _limit_for_deadband(self, vx, vy, obstacles, velocities=None):
         """Re-check the CBF output at the speed the base will EXECUTE.
 
         The driver runs direction d at speed s + CMD_DEADBAND_MPS for a command
-        of speed s.  Each CBF constraint is linear in u, a.u + gamma*h >= 0 with
-        a = -2*(o - r), so along d it bounds s from above wherever a.d < 0.
-        Returns the command shortened to the tightest bound, or zero when even
-        the bare deadband speed would breach one.  Never lengthens it, never
-        turns it, so it cannot add motion the CBF did not allow.
+        of speed s.  Each CBF constraint is linear in u, n.u >= c (see
+        cbf_filter), so along d it bounds the executed speed.
+
+        When standing still satisfies every constraint (static obstacles, all
+        outside the safe distance) this returns the command shortened to the
+        tightest bound, or zero when even the bare deadband speed would breach
+        one.  Never lengthens it, never turns it, so it cannot add motion the
+        CBF did not allow.
+
+        When standing still already violates one (inside the safe distance, or
+        an obstacle closing) zero is not the safe answer, so the executed speed
+        along d with the best worst-case margin is used, and zero only when no
+        executable speed beats stopping.
         """
         s = math.hypot(vx, vy)
-        if s < 1e-6 or not obstacles:
+        if s < 1e-6 or not len(obstacles):
             return vx, vy
         dx, dy = vx / s, vy / s
-        o = np.asarray(obstacles, dtype=np.float64)
-        a_dot_d = -2.0 * (o[:, 0] * dx + o[:, 1] * dy)
-        h = (o * o).sum(axis=1) - self.cbf.safe_distance ** 2
-        limiting = a_dot_d < 0
-        if not limiting.any():
+        n, c = self.cbf.constraint_rows((0.0, 0.0), obstacles, velocities)
+        if not len(c):
             return vx, vy
-        s_max = float(np.min(self.cbf.gamma * h[limiting] / -a_dot_d[limiting])) \
-            - CMD_DEADBAND_MPS
-        if s_max <= 0.0:
+        n_dot_d = n[:, 0] * dx + n[:, 1] * dy
+        if np.all(c <= 1e-9):
+            limiting = n_dot_d < 0
+            if not limiting.any():
+                return vx, vy
+            s_max = float(np.min(c[limiting] / n_dot_d[limiting])) - CMD_DEADBAND_MPS
+            if s_max <= 0.0:
+                return 0.0, 0.0
+            if s_max < s:
+                return dx * s_max, dy * s_max
+            return vx, vy
+        executed = np.linspace(CMD_DEADBAND_MPS, s + CMD_DEADBAND_MPS, 33)
+        worst = np.min(n_dot_d[:, None] * executed[None, :] - c[:, None], axis=0)
+        best = int(np.argmax(worst))
+        if worst[best] <= float(np.min(-c)) + 1e-9:
             return 0.0, 0.0
-        if s_max < s:
-            return dx * s_max, dy * s_max
-        return vx, vy
+        s_cmd = max(float(executed[best]) - CMD_DEADBAND_MPS, 1e-3)
+        return dx * s_cmd, dy * s_cmd
 
     def move(self, vx: float, vy: float, omega: float):
         from geometry_msgs.msg import Twist
@@ -1062,6 +1078,7 @@ class ROS2Bridge:
                 if now - stamp < TOF_CBF_STALE_S:
                     obstacles.extend(map(tuple, xy.tolist()))
             
+        moving = []     # ((x, y), (vx, vy)) of tracked movers, base frame
         if velocity_estimation_enabled and velocity_estimator is not None:
             try:
                 estimates = velocity_estimator.get_estimates()
@@ -1092,10 +1109,12 @@ class ROS2Bridge:
                         oy = -est.get("x", 0.0)
                         rx = float(ox)
                         ry = float(oy)
-                        rvx = est.get("vx", 0.0)
-                        rvy = est.get("vy", 0.0)
-                        for t in [0.5, 1.0, 1.5]:
-                            obstacles.append((rx + rvx * t, ry + rvy * t))
+                        # The estimator's history is ego-compensated, so
+                        # this is the obstacle's own velocity in base axes:
+                        # the v_i of the constraint n.(u - v_i) + ... >= 0.
+                        # (Until 2026-10-11 its positions 0.5/1.0/1.5 s
+                        # ahead were added as three static points instead.)
+                        moving.append(((rx, ry), (est.get("vx", 0.0), est.get("vy", 0.0))))
             except Exception as e:
                 logger.warning(f"Failed to add predictive obstacles: {e}")
         
@@ -1126,8 +1145,14 @@ class ROS2Bridge:
         else:
             self._warned_stale_obst = False
             # Robot is at (0,0) in its local frame, matching the obstacle coords.
-            safe_vx, safe_vy = self.cbf.filter_velocity(vx, vy, (0.0, 0.0), obstacles)
-            safe_vx, safe_vy = self._limit_for_deadband(safe_vx, safe_vy, obstacles)
+            velocities = None
+            if moving:
+                velocities = [(0.0, 0.0)] * len(obstacles) + [v for _, v in moving]
+                obstacles = obstacles + [p for p, _ in moving]
+            safe_vx, safe_vy = self.cbf.filter_velocity(
+                vx, vy, (0.0, 0.0), obstacles, velocities, omega=omega)
+            safe_vx, safe_vy = self._limit_for_deadband(
+                safe_vx, safe_vy, obstacles, velocities)
 
         msg = Twist()
         msg.linear.x  = float(safe_vx)    * self.LINEAR_SCALE

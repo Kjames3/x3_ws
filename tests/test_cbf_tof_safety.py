@@ -73,7 +73,7 @@ def bridge(srv):
         _lock=threading.Lock(), _tof_streak={}, _tof_cells={}, _tof_obstacles={},
         # Sensor frame == base frame: tests place points directly in base xyz.
         _tof_extrinsic=lambda name: (np.eye(3), np.zeros(3)))
-    b.limit = lambda vx, vy, obs: srv['_limit_for_deadband'](b, vx, vy, obs)
+    b.limit = lambda vx, vy, obs, vel=None: srv['_limit_for_deadband'](b, vx, vy, obs, vel)
     b.set_tof = lambda *a, **k: srv['set_tof_obstacles'](b, *a, **k)
     return b
 
@@ -152,6 +152,58 @@ def test_deadband_limit_ignores_obstacles_behind(bridge):
 def test_deadband_limit_leaves_zero_and_empty_alone(bridge):
     assert bridge.limit(0.0, 0.0, [(0.35, 0.0)]) == (0.0, 0.0)
     assert bridge.limit(0.20, 0.0, []) == (0.20, 0.0)
+
+
+def _worst(cbf, u, obstacles, velocities=None):
+    n, c = cbf.constraint_rows((0.0, 0.0), obstacles, velocities)
+    return float(np.min(n @ np.asarray(u, dtype=np.float64) - c))
+
+
+def test_retreat_from_a_closing_obstacle_is_not_zeroed(bridge, srv):
+    # Parked, a mover 0.5 m ahead closing at 0.3 m/s.  The CBF asks for a
+    # retreat; the executed-speed check must let it through, not stop.
+    obs, vel = [(0.5, 0.0)], [(-0.3, 0.0)]
+    vx, vy = bridge.cbf.filter_velocity(0.0, 0.0, (0.0, 0.0), obs, vel)
+    out = bridge.limit(vx, vy, obs, vel)
+    assert out[0] < 0.0 and out[1] == pytest.approx(0.0)
+    executed = (out[0] - srv['CMD_DEADBAND_MPS'], 0.0)
+    assert _worst(bridge.cbf, executed, obs, vel) >= -1e-9
+
+
+def test_escape_from_inside_the_safe_distance_is_not_zeroed(bridge, srv):
+    walls = [(0.25, 0.0), (-0.20, 0.0)]
+    vx, vy = bridge.cbf.filter_velocity(0.0, 0.0, (0.0, 0.0), walls)
+    out = bridge.limit(vx, vy, walls)
+    if out != (0.0, 0.0):
+        s = math.hypot(*out)
+        executed = (out[0] * (1 + srv['CMD_DEADBAND_MPS'] / s), out[1] * (1 + srv['CMD_DEADBAND_MPS'] / s))
+        assert _worst(bridge.cbf, executed, walls) > _worst(bridge.cbf, (0.0, 0.0), walls)
+
+
+def test_escape_that_the_deadband_would_overshoot_becomes_a_stop(bridge, srv):
+    # 0.29 m ahead and 0.31 m behind: the tiny retreat the CBF wants would be
+    # executed 0.14 m/s faster, straight at the wall behind. Stopping is better.
+    walls = [(0.29, 0.0), (-0.31, 0.0)]
+    vx, vy = bridge.cbf.filter_velocity(0.0, 0.0, (0.0, 0.0), walls)
+    assert bridge.limit(vx, vy, walls) == (0.0, 0.0)
+
+
+@pytest.mark.parametrize('seed', range(40))
+def test_executed_command_is_safe_or_no_worse_than_stopping(bridge, srv, seed):
+    rng = np.random.default_rng(seed)
+    k = int(rng.integers(1, 40))
+    r, th = rng.uniform(0.15, 0.9, k), rng.uniform(-math.pi, math.pi, k)
+    obs = [tuple(p) for p in np.c_[r * np.cos(th), r * np.sin(th)]]
+    vel = [tuple(v) for v in rng.uniform(-0.6, 0.6, (k, 2))]
+    cmd = rng.uniform(-0.3, 0.3, 2)
+    vx, vy = bridge.cbf.filter_velocity(cmd[0], cmd[1], (0.0, 0.0), obs, vel)
+    out = bridge.limit(vx, vy, obs, vel)
+    s = math.hypot(*out)
+    if s > 0:
+        k_exec = 1 + srv['CMD_DEADBAND_MPS'] / s
+        executed = (out[0] * k_exec, out[1] * k_exec)
+        # satisfies every constraint, or (when stopping does not) beats stopping
+        assert _worst(bridge.cbf, executed, obs, vel) >= min(0.0, _worst(bridge.cbf, (0.0, 0.0), obs, vel)) - 1e-9
 
 
 def test_cbf_then_deadband_stops_short_of_a_box(bridge, srv):
