@@ -1128,7 +1128,7 @@ class ROS2Bridge:
         return keep
 
     def _limit_for_deadband(self, vx, vy, obstacles, velocities=None, omega=0.0,
-                            radii=None, gammas=None):
+                            radii=None, gammas=None, soft=None):
         """Re-check the CBF output at the speed the base will EXECUTE.
 
         The driver runs direction d at speed s + CMD_DEADBAND_MPS for a command
@@ -1144,13 +1144,16 @@ class ROS2Bridge:
         When standing still already violates one (inside the safe distance, or
         an obstacle closing) zero is not the safe answer, so the executed speed
         along d with the best worst-case margin is used, and zero only when no
-        executable speed beats stopping.
+        executable speed beats stopping. Speeds that keep every firm (not
+        soft) constraint are preferred to ones that do not: a person's
+        constraint never buys speed toward a wall.
         """
         s = math.hypot(vx, vy)
         if s < 1e-6 or not len(obstacles):
             return vx, vy
         dx, dy = vx / s, vy / s
-        n, c = self.cbf.constraint_rows((0.0, 0.0), obstacles, velocities, omega, radii, gammas)
+        n, c, keep = self.cbf.constraint_rows((0.0, 0.0), obstacles, velocities, omega,
+                                              radii, gammas, with_keep=True)
         if not len(c):
             return vx, vy
         n_dot_d = n[:, 0] * dx + n[:, 1] * dy
@@ -1168,7 +1171,13 @@ class ROS2Bridge:
                 return dx * s_max, dy * s_max
             return vx, vy
         executed = np.linspace(CMD_DEADBAND_MPS, s + CMD_DEADBAND_MPS, 33)
-        worst = np.min(n_dot_d[:, None] * executed[None, :] - c[:, None], axis=0)
+        margin = n_dot_d[:, None] * executed[None, :] - c[:, None]
+        worst = np.min(margin, axis=0)
+        firm = None if soft is None else ~np.asarray(soft, dtype=bool)[keep]
+        if firm is not None and firm.any() and not firm.all():
+            firm_ok = np.min(margin[firm], axis=0) >= -1e-6
+            if firm_ok.any():
+                worst = np.where(firm_ok, worst, -np.inf)
         best = int(np.argmax(worst))
         if worst[best] <= float(np.min(-c)) + 1e-9:
             return 0.0, 0.0
@@ -1221,18 +1230,20 @@ class ROS2Bridge:
         else:
             self._warned_stale_obst = False
             # Robot is at (0,0) in its local frame, matching the obstacle coords.
-            velocities = radii = gammas = None
+            velocities = radii = gammas = soft = None
             if moving:
                 velocities = [(0.0, 0.0)] * len(obstacles) + [v for _, v in moving]
                 radii = [0.0] * len(obstacles) + [CBF_PERSON_RADIUS_M] * len(moving)
                 gammas = [self.cbf.gamma] * len(obstacles) + [CBF_PERSON_GAMMA] * len(moving)
+                # Lidar and ToF points are firm; a person's row gives way first.
+                soft = [False] * len(obstacles) + [True] * len(moving)
                 obstacles = obstacles + [p for p, _ in moving]
             # With the rectangular footprint a turn can swing a corner into
             # something, so the yaw rate may come back smaller than asked.
             safe_vx, safe_vy, omega = self.cbf.filter_twist(
-                vx, vy, omega, (0.0, 0.0), obstacles, velocities, radii, gammas)
+                vx, vy, omega, (0.0, 0.0), obstacles, velocities, radii, gammas, soft)
             safe_vx, safe_vy = self._limit_for_deadband(
-                safe_vx, safe_vy, obstacles, velocities, omega, radii, gammas)
+                safe_vx, safe_vy, obstacles, velocities, omega, radii, gammas, soft)
 
         msg = Twist()
         msg.linear.x  = float(safe_vx)    * self.LINEAR_SCALE

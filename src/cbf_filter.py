@@ -24,6 +24,12 @@ base can retreat) stopping is not safe either, so the constraints are all
 relaxed by the same smallest amount t* that makes them satisfiable -- the
 command that minimises the worst violation -- and the program is solved again.
 
+Obstacles may be marked soft (a tracked person, known from a camera track that
+can be wrong). Then only the soft constraints are relaxed, as long as the
+others can all be met: the robot gives way to a person as far as the walls
+allow and no further. The equal relaxation is left for when the firm
+constraints conflict among themselves (squeezed between two boxes).
+
 The speed limit is the mecanum wheel limit |vx| + |vy| + L |omega| <= v_wheel:
 every wheel's rim speed is a signed sum of those three terms.
 """
@@ -154,7 +160,7 @@ class HolonomicCBFFilter:
         self.last_relaxation = 0.0
 
     def constraint_rows(self, robot_pos, obstacles, obstacle_velocities=None, omega=0.0,
-                        obstacle_radii=None, obstacle_gammas=None):
+                        obstacle_radii=None, obstacle_gammas=None, with_keep=False):
         """(n, c) with one row per obstacle: the command must keep n @ u >= c.
 
         omega is the yaw rate the robot will turn at. It only matters for a
@@ -167,10 +173,14 @@ class HolonomicCBFFilter:
         retreat at v / gamma from the margin, so a smaller gamma gives way
         earlier (walking test 2026-10-12: at gamma 2 a 1 m/s walker got a
         0.05-0.10 m/s retreat from 0.7 m, after they had stopped).
+
+        with_keep: also return the boolean mask of the obstacles that got a
+        row (non-finite ones do not), to line per-obstacle data up with rows.
         """
         if self.footprint is not None:
-            return self._rectangle_rows(robot_pos, obstacles, obstacle_velocities, omega,
-                                        obstacle_radii, obstacle_gammas)
+            n, c, keep = self._rectangle_rows(robot_pos, obstacles, obstacle_velocities, omega,
+                                              obstacle_radii, obstacle_gammas)
+            return (n, c, keep) if with_keep else (n, c)
         obs = np.asarray(obstacles, dtype=np.float64).reshape(-1, 2)
         rel = np.asarray(robot_pos, dtype=np.float64) - obs
         d = np.hypot(rel[:, 0], rel[:, 1])
@@ -195,7 +205,7 @@ class HolonomicCBFFilter:
             vel = np.asarray(obstacle_velocities, dtype=np.float64).reshape(-1, 2)[keep]
             vel = np.where(np.isfinite(vel), vel, 0.0)   # unknown: treat as static
             c = c + np.einsum('ij,ij->i', n, vel)
-        return n, c
+        return (n, c, keep) if with_keep else (n, c)
 
     def _rectangle_rows(self, robot_pos, obstacles, obstacle_velocities, omega,
                         obstacle_radii=None, obstacle_gammas=None):
@@ -253,10 +263,11 @@ class HolonomicCBFFilter:
             vel = np.asarray(obstacle_velocities, dtype=np.float64).reshape(-1, 2)[keep]
             vel = np.where(np.isfinite(vel), vel, 0.0)
             c = c + np.einsum('ij,ij->i', n, vel)
-        return n, c
+        return n, c, keep
 
     def filter_twist(self, v_nom_x, v_nom_y, omega, robot_pos, obstacles,
-                     obstacle_velocities=None, obstacle_radii=None, obstacle_gammas=None):
+                     obstacle_velocities=None, obstacle_radii=None, obstacle_gammas=None,
+                     obstacle_soft=None):
         """filter_velocity for the whole command: returns (vx, vy, omega).
 
         The yaw rate is the operator's and is kept whenever some translation
@@ -269,7 +280,8 @@ class HolonomicCBFFilter:
         vx, vy = self.filter_velocity(v_nom_x, v_nom_y, robot_pos, obstacles,
                                       obstacle_velocities, omega=omega,
                                       obstacle_radii=obstacle_radii,
-                                      obstacle_gammas=obstacle_gammas)
+                                      obstacle_gammas=obstacle_gammas,
+                                      obstacle_soft=obstacle_soft)
         if self.footprint is None or not omega or self.last_relaxation == 0.0:
             return vx, vy, omega
         best = (self.last_relaxation, vx, vy, omega)
@@ -277,7 +289,8 @@ class HolonomicCBFFilter:
             vx, vy = self.filter_velocity(v_nom_x, v_nom_y, robot_pos, obstacles,
                                           obstacle_velocities, omega=w,
                                           obstacle_radii=obstacle_radii,
-                                          obstacle_gammas=obstacle_gammas)
+                                          obstacle_gammas=obstacle_gammas,
+                                          obstacle_soft=obstacle_soft)
             if self.last_relaxation == 0.0:
                 return vx, vy, w
             if self.last_relaxation < best[0] - 1e-9:
@@ -291,7 +304,7 @@ class HolonomicCBFFilter:
 
     def filter_velocity(self, v_nom_x, v_nom_y, robot_pos, obstacles,
                         obstacle_velocities=None, omega=0.0,
-                        obstacle_radii=None, obstacle_gammas=None):
+                        obstacle_radii=None, obstacle_gammas=None, obstacle_soft=None):
         """
         Filters the requested velocity so it keeps clear of the obstacles.
 
@@ -303,6 +316,8 @@ class HolonomicCBFFilter:
                 None when they are all static
             omega (float): commanded yaw rate (rad/s); it uses up wheel speed
             obstacle_radii, obstacle_gammas: see constraint_rows
+            obstacle_soft: True per obstacle whose constraint gives way first
+                when not everything can be satisfied, or None for none
 
         Returns:
             tuple: (safe_v_x, safe_v_y)
@@ -320,13 +335,20 @@ class HolonomicCBFFilter:
             u = _project(u_nom, _DIAMOND, c_spd)
             return float(u[0]), float(u[1])
 
-        n_obs, c_obs = self.constraint_rows(robot_pos, obstacles, obstacle_velocities, omega,
-                                            obstacle_radii, obstacle_gammas)
+        n_obs, c_obs, keep = self.constraint_rows(robot_pos, obstacles, obstacle_velocities, omega,
+                                                  obstacle_radii, obstacle_gammas, with_keep=True)
         n_all = np.vstack((n_obs, _DIAMOND))
 
         u = _project(u_nom, n_all, np.concatenate((c_obs, c_spd)))
         if u is None:
-            u = self._least_violation(u_nom, n_obs, c_obs, c_spd, n_all)
+            u = None
+            soft = None if obstacle_soft is None else np.asarray(obstacle_soft, dtype=bool)[keep]
+            if soft is not None and soft.any() and not soft.all() and _project(
+                    u_nom, np.vstack((n_obs[~soft], _DIAMOND)),
+                    np.concatenate((c_obs[~soft], c_spd))) is not None:
+                u = self._least_violation(u_nom, n_obs, c_obs, c_spd, n_all, soft)
+            if u is None:
+                u = self._least_violation(u_nom, n_obs, c_obs, c_spd, n_all)
             self._log_infeasible(u, n_obs, c_obs, robot_pos, obstacles, obstacle_velocities)
         return float(u[0]), float(u[1])
 
@@ -354,14 +376,19 @@ class HolonomicCBFFilter:
             rel[keep][i, 0], rel[keep][i, 1], vel[keep][i, 0], vel[keep][i, 1],
             float(d[keep].min()))
 
-    def _least_violation(self, u_nom, n_obs, c_obs, c_spd, n_all):
+    def _least_violation(self, u_nom, n_obs, c_obs, c_spd, n_all, soft=None):
         """Infeasible: relax every obstacle constraint equally, as little as possible.
 
         maximise t  subject to  n_i . u - c_i >= t  and the speed limit, then
         the command nearest u_nom among those that achieve t.
+
+        With a soft mask only those rows take the t; the others stay as they
+        are. Returns None if that cannot be solved (the caller then relaxes
+        everything).
         """
         global _last_fail_log
         k = len(c_obs)
+        slack = np.ones(k) if soft is None else soft.astype(np.float64)
         # The LP has three unknowns, so a handful of rows decide it. Solve it on
         # the rows that are worst at standstill, then add any row the answer
         # violates and repeat; when none is left the answer is exact for all of
@@ -372,20 +399,22 @@ class HolonomicCBFFilter:
         for _ in range(50):
             m = int(live.sum())
             a_ub = np.zeros((m + 4, 3))
-            a_ub[:m, :2], a_ub[:m, 2] = -n_obs[live], 1.0
+            a_ub[:m, :2], a_ub[:m, 2] = -n_obs[live], slack[live]
             a_ub[m:, :2] = -_DIAMOND
             res = linprog([0.0, 0.0, -1.0], A_ub=a_ub,
                           b_ub=-np.concatenate((c_obs[live], c_spd)),
                           bounds=[(None, None), (None, None), (None, 0.0)], method='highs')
             if res.status != 0:
                 break
-            short = (n_obs @ res.x[:2] - c_obs) - res.x[2]
+            short = (n_obs @ res.x[:2] - c_obs) - res.x[2] * slack
             short[live] = 0.0
             if short.min() >= -1e-9:
                 break
             worst = np.argsort(short)[:_LP_BATCH]
             live[worst[short[worst] < -1e-9]] = True
         now = time.monotonic()
+        if res.status != 0 and soft is not None:
+            return None
         if res.status != 0:
             # Not expected: this LP always has a solution. Stop, and say so.
             if now - _last_fail_log > 2.0:
@@ -396,5 +425,5 @@ class HolonomicCBFFilter:
             return np.zeros(2)
         t = float(res.x[2])
         self.last_relaxation = -t
-        u = _project(u_nom, n_all, np.concatenate((c_obs + t - 1e-7, c_spd)))
+        u = _project(u_nom, n_all, np.concatenate((c_obs + t * slack - 1e-7, c_spd)))
         return u if u is not None else np.asarray(res.x[:2], dtype=np.float64)

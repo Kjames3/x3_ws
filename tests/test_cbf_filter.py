@@ -453,3 +453,65 @@ def test_circle_mode_adds_the_radius_to_the_safe_distance():
     cbf = HolonomicCBFFilter(safe_distance=0.30, gamma=1.0)
     _, c = cbf.constraint_rows((0.0, 0.0), [(0.55, 0.0)], None, 0.0, [0.25], [1.0])
     assert c[0] == pytest.approx(0.0)
+
+
+def _cornered():
+    """Wall 0.20 m behind the tail, a person 0.9 m ahead closing at 1 m/s."""
+    wall = [(-0.33, y) for y in np.linspace(-0.4, 0.4, 17)]
+    obstacles = wall + [(0.9, 0.0)]
+    vel = [(0.0, 0.0)] * len(wall) + [(-1.0, 0.0)]
+    radii = [0.0] * len(wall) + [0.25]
+    gammas = [2.0] * len(wall) + [1.0]
+    soft = [False] * len(wall) + [True]
+    return obstacles, vel, radii, gammas, soft
+
+
+def test_a_person_does_not_buy_speed_toward_a_wall():
+    cbf = HolonomicCBFFilter(gamma=2.0, footprint=FP, margin=0.10)
+    obstacles, vel, radii, gammas, soft = _cornered()
+    n, c = cbf.constraint_rows((0.0, 0.0), obstacles, vel, 0.0, radii, gammas)
+    firm = ~np.array(soft)
+    # all relaxed alike: backs up faster than the wall allows
+    u_eq = np.array(cbf.filter_velocity(0.0, 0.0, (0.0, 0.0), obstacles, vel, 0.0, radii, gammas))
+    assert cbf.last_relaxation > 0 and np.min(n[firm] @ u_eq - c[firm]) < -0.05
+    # person soft: the wall's limit holds exactly, 2.0 * (0.20 - 0.10) m/s
+    u = np.array(cbf.filter_velocity(0.0, 0.0, (0.0, 0.0), obstacles, vel, 0.0, radii, gammas, soft))
+    assert np.min(n[firm] @ u - c[firm]) >= -1e-6
+    assert u[0] == pytest.approx(-0.20, abs=1e-4) and abs(u[1]) < 1e-6
+    assert cbf.last_relaxation > 0
+
+
+def test_soft_marks_change_nothing_when_everything_can_be_met():
+    cbf = HolonomicCBFFilter(gamma=2.0, footprint=FP, margin=0.10)
+    obstacles, vel, radii, gammas = [(-1.5, 0.0), (1.2, 0.0)], [(0, 0), (-1.0, 0.0)], [0.0, 0.25], [2.0, 1.0]
+    a = cbf.filter_velocity(0.0, 0.0, (0.0, 0.0), obstacles, vel, 0.0, radii, gammas)
+    b = cbf.filter_velocity(0.0, 0.0, (0.0, 0.0), obstacles, vel, 0.0, radii, gammas, [False, True])
+    assert a == b and cbf.last_relaxation == 0.0
+
+
+def test_firm_constraints_that_conflict_still_get_the_equal_relaxation():
+    cbf = HolonomicCBFFilter(gamma=2.0, footprint=FP, margin=0.10)
+    obstacles = [(0.20, 0.0), (-0.17, 0.0), (0.9, 0.0)]      # both inside the margin
+    vel, soft = [(0, 0), (0, 0), (-1.0, 0.0)], [False, False, True]
+    a = cbf.filter_velocity(0.0, 0.0, (0.0, 0.0), obstacles, vel)
+    b = cbf.filter_velocity(0.0, 0.0, (0.0, 0.0), obstacles, vel, obstacle_soft=soft)
+    assert a == pytest.approx(b) and cbf.last_relaxation > 0
+
+
+@pytest.mark.parametrize('seed', range(40))
+def test_soft_relaxation_never_breaks_a_firm_row_that_could_be_kept(seed):
+    rng = np.random.default_rng(seed)
+    cbf = HolonomicCBFFilter(gamma=2.0, footprint=FP, margin=0.10)
+    k = int(rng.integers(3, 40))
+    ang, r = rng.uniform(0, 2 * np.pi, k), rng.uniform(0.3, 1.5, k)
+    obstacles = list(zip(r * np.cos(ang), r * np.sin(ang))) + [(float(rng.uniform(0.5, 1.2)), float(rng.uniform(-0.3, 0.3)))]
+    vel = [(0.0, 0.0)] * k + [(-float(rng.uniform(0.8, 2.0)), 0.0)]
+    radii, gammas, soft = [0.0] * k + [0.25], [2.0] * k + [1.0], [False] * k + [True]
+    u_nom = rng.uniform(-0.3, 0.3, 2)
+    n, c = cbf.constraint_rows((0.0, 0.0), obstacles, vel, 0.0, radii, gammas)
+    u = np.array(cbf.filter_velocity(u_nom[0], u_nom[1], (0.0, 0.0), obstacles, vel, 0.0, radii, gammas, soft))
+    firm_feasible = _project(u_nom, np.vstack((n[:k], -np.array([[1, 1], [1, -1], [-1, 1], [-1, -1]]) / math.sqrt(2))),
+                             np.concatenate((c[:k], np.full(4, -0.5 / math.sqrt(2))))) is not None
+    if firm_feasible:
+        assert np.min(n[:k] @ u - c[:k]) >= -1e-5
+    assert abs(u[0]) + abs(u[1]) <= 0.5 + 1e-6
