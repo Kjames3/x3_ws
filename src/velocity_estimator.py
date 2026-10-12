@@ -1119,7 +1119,8 @@ class VelocityEstimator:
                         print(f"\n[Estimator] Calculated {len(estimates)} velocity estimate(s):")
                         for est in estimates:
                             print(f"  - ID {est['id']}: Centroid=(x={est['x']:.2f}, y={est['y']:.2f}, z={est['z']:.2f})m | "
-                                  f"Vel=(vx={est['vx']:.2f}, vy={est['vy']:.2f})m/s | Speed={est['speed']:.2f}m/s")
+                                  f"Vel=(vx={est['vx']:.2f}, vy={est['vy']:.2f})m/s | Speed={est['speed']:.2f}m/s | "
+                                  f"cat={est.get('category')}")
 
                 # 7. Overlay decisions on depth frame and display window if DISPLAY is set
                 if "DISPLAY" in os.environ and depth_frame is not None:
