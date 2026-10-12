@@ -300,6 +300,10 @@ velocity_estimation_enabled = True  # A/B toggle: False = reactive, True = predi
 CBF_SPEED_RANGE_M = 1.8
 # Slowest estimated speed that counts as moving for the CBF.
 CBF_MOVER_MIN_SPEED = 0.15
+# A track's velocity moves the robot, so it has to be a velocity of that
+# person. Frames are the estimator's (10 Hz).
+CBF_MOVER_MIN_PERSON_FRAMES = 5   # tagged a person for this long
+CBF_MOVER_JUMP_HOLD_FRAMES = 10   # since the track last jumped: one history window
 
 
 def _cbf_movers(estimates):
@@ -325,12 +329,23 @@ def _cbf_movers(estimates):
       a "dynamic" track -- a shopping bag stirred by the air conditioner --
       made the parked robot back away.  Untagged tracks (no live detector)
       are left out for the same reason.
+    - That person's own velocity.  Crossing 1 m in front of a bag 2.4 m away
+      (2026-10-12, walk-pr-r4) pulled the bag's track to the walker's depth
+      and handed it the person tag: a 1 m/s head-on approach that was not
+      there, kept for another second after the walker had gone. The parked
+      robot backed off 0.25 m. So no velocity from a track that was not
+      matched this frame, that has been a person for under half a second, or
+      that jumped within the last history window.
     """
     movers = []
     for est in estimates:
         if est.get("z", 0.0) > CBF_SPEED_RANGE_M:
             continue
         if est.get("category") != "person":
+            continue
+        if (est.get("age", 0) > 0
+                or est.get("person_frames", CBF_MOVER_MIN_PERSON_FRAMES) < CBF_MOVER_MIN_PERSON_FRAMES
+                or est.get("jump_age", CBF_MOVER_JUMP_HOLD_FRAMES) < CBF_MOVER_JUMP_HOLD_FRAMES):
             continue
         if est.get("speed", 0.0) > CBF_MOVER_MIN_SPEED:
             x = float(est.get("z", est.get("y", 0.0)))

@@ -29,7 +29,8 @@ SERVER = REPO / 'src' / 'server_x3.py'
 CONSTANTS = ('TOF_CBF_MIN_Z_M', 'TOF_FLOOR_DEFICIT_MM', 'TOF_FLOOR_TILT_MM',
              'TOF_CBF_MAX_RANGE_M', 'TOF_CBF_GRID_M', 'TOF_CBF_PERSIST_FRAMES',
              'TOF_CBF_HOLD_S', 'CMD_DEADBAND_MPS', 'CBF_SPEED_RANGE_M',
-             'CBF_MOVER_MIN_SPEED', 'CMD_MIN_MPS')
+             'CBF_MOVER_MIN_SPEED', 'CMD_MIN_MPS',
+             'CBF_MOVER_MIN_PERSON_FRAMES', 'CBF_MOVER_JUMP_HOLD_FRAMES')
 FUNCTIONS = ('_tof_floor_deficit', '_cbf_movers')
 METHODS = ('_limit_for_deadband', 'set_tof_obstacles')
 
@@ -163,6 +164,15 @@ def _track(category, speed=0.6, z=1.0, x=0.2, vx=-0.6, vy=0.0):
 def test_only_people_carry_a_velocity_into_the_cbf(srv):
     movers = srv['_cbf_movers']([_track('person'), _track('dynamic'), _track('static'), _track(None)])
     assert movers == [((1.0, -0.2), (-0.6, 0.0))]
+
+
+def test_a_stale_new_or_jumped_person_track_is_not_a_mover(srv):
+    f = srv['_cbf_movers']
+    ok = dict(_track('person'), age=0, person_frames=5, jump_age=10)
+    assert len(f([ok])) == 1
+    assert f([dict(ok, age=1)]) == []
+    assert f([dict(ok, person_frames=4)]) == []
+    assert f([dict(ok, jump_age=9)]) == []
 
 
 def test_slow_or_distant_people_are_not_movers(srv):

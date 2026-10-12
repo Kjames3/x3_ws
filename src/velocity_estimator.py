@@ -88,6 +88,13 @@ MOTION_K_SIGMA          = 3.0
 MOTION_MIN_DISP_M       = 0.20
 MOTION_MIN_STRAIGHTNESS = 0.5
 MOTION_CONFIRM          = 3
+# A matched detection this far from its track in one frame (4 m/s at INFER_HZ)
+# is another object taking the track over, not the object moving: someone
+# crossing 1 m in front of a bag at 2.4 m pulled the bag's track to their own
+# depth, which read as a 1 m/s head-on approach (2026-10-12, walk-pr-r4).
+# Reported per track as 'jump_age' (frames since the last one) so a consumer
+# can ignore the velocity until the history window has refilled.
+TRACK_JUMP_M            = 0.4
 MOTION_RELEASE_FRAMES   = 20
 # No motion evidence beyond this depth. Blobs near the 4.0 m extraction
 # ceiling are slices of far walls: as the cutoff wanders along the wall the
@@ -185,6 +192,9 @@ class ObstacleTracker:
                 if track['person_miss'] >= PERSON_RELEASE_FRAMES:
                     track['person'] = False
                     track['person_score'] = 0
+                    track['person_frames'] = 0
+                else:
+                    track['person_frames'] += 1
                 return
             step = 1 if conf >= PERSON_CONFIRM_CONF else -1
             track['person_score'] = min(PERSON_SCORE_MAX,
@@ -220,6 +230,7 @@ class ObstacleTracker:
             best = int(np.argmin(dists))
             
             if dists[best] < self.max_dist:
+                track['jump_age'] = 0 if dists[best] > TRACK_JUMP_M else track['jump_age'] + 1
                 idx = unmatched.pop(best)
                 cx_l, cy_l, cz = centroids_m[idx]
                 cx_g, cy_g, _  = centroids_g[idx]
@@ -285,6 +296,8 @@ class ObstacleTracker:
                 'person_score': 0,
                 'person': False,        # latched confirmation
                 'person_miss': 0,       # consecutive misses while latched
+                'person_frames': 0,     # matched frames since the latch
+                'jump_age': WINDOW_SIZE,  # matched frames since a TRACK_JUMP_M step
                 'moving': False,        # latched motion confirmation
                 'motion_hits': 0,       # consecutive frames with motion evidence
                 'motion_miss': 0,       # consecutive frames without, while latched
@@ -296,6 +309,9 @@ class ObstacleTracker:
                       'centroid_global': t['centroid_global'],
                       'history_global': t['history_global'],
                       'visible_count': t['visible_count'],  # Return visible count (Idea 109)
+                      'age': t['age'],          # frames since it was last matched
+                      'person_frames': t['person_frames'],
+                      'jump_age': t['jump_age'],
                       'is_person': (None if person_flags is None
                                     else t['person']),
                       'moving': t['moving']}
@@ -1002,6 +1018,9 @@ class VelocityEstimator:
         for est in estimates:
             tr = tracks[est['id']]
             est['is_person'] = tr.get('is_person')
+            for key in ('age', 'person_frames', 'jump_age'):
+                if key in tr:
+                    est[key] = tr[key]
             # person > dynamic > static. None only when no detector is live
             # AND the track has not shown motion: we cannot tell.
             if est['is_person']:
@@ -1120,7 +1139,8 @@ class VelocityEstimator:
                         for est in estimates:
                             print(f"  - ID {est['id']}: Centroid=(x={est['x']:.2f}, y={est['y']:.2f}, z={est['z']:.2f})m | "
                                   f"Vel=(vx={est['vx']:.2f}, vy={est['vy']:.2f})m/s | Speed={est['speed']:.2f}m/s | "
-                                  f"cat={est.get('category')}")
+                                  f"cat={est.get('category')} age={est.get('age')} "
+                                  f"pf={est.get('person_frames')} jump={est.get('jump_age')}")
 
                 # 7. Overlay decisions on depth frame and display window if DISPLAY is set
                 if "DISPLAY" in os.environ and depth_frame is not None:

@@ -183,3 +183,17 @@ def test_ceiling_slice_sliding_sideways_is_not_motion():
     xs = [1.30, 1.31, 1.32, 0.92, 0.64, 0.28, -0.10, -0.25, -0.40, -0.43]
     h = [(3.95, -x, 3.95) for x in xs]
     assert not motion_evidence(h, 3.95)
+
+
+def test_track_reports_freshness_person_time_and_jumps():
+    import velocity_estimator as ve
+    tr = ve.ObstacleTracker()
+    p = lambda z: [(0.0, 0.0, z)]
+    for _ in range(8):
+        out = tr.update(p(2.4), p(2.4), [0.9])
+    (t,) = out.values()
+    assert t['age'] == 0 and t['person_frames'] >= 5 and t['jump_age'] >= ve.WINDOW_SIZE
+    (t,) = tr.update([(0.0, 0.0, 1.7)], [(0.7, 0.0, 1.7)], [0.9]).values()   # taken over
+    assert t['jump_age'] == 0
+    (t,) = tr.update([], [], []).values()                                    # not seen
+    assert t['age'] == 1
