@@ -94,7 +94,13 @@ MOTION_CONFIRM          = 3
 # depth, which read as a 1 m/s head-on approach (2026-10-12, walk-pr-r4).
 # Reported per track as 'jump_age' (frames since the last one) so a consumer
 # can ignore the velocity until the history window has refilled.
+# Only a track that was at rest can be taken over this way to any effect, and
+# a walker 1 m away steps this far in a frame on their own (their blob changes
+# shape as they fill the view: 4 of 6 real approaches in walk-g-r2 tripped
+# the bare step test and lost their retreat), so the track must also have
+# moved less than TRACK_REST_M over its history window.
 TRACK_JUMP_M            = 0.4
+TRACK_REST_M            = 0.25
 MOTION_RELEASE_FRAMES   = 20
 # No motion evidence beyond this depth. Blobs near the 4.0 m extraction
 # ceiling are slices of far walls: as the cutoff wanders along the wall the
@@ -230,7 +236,11 @@ class ObstacleTracker:
             best = int(np.argmin(dists))
             
             if dists[best] < self.max_dist:
-                track['jump_age'] = 0 if dists[best] > TRACK_JUMP_M else track['jump_age'] + 1
+                hist = track['history_global']
+                at_rest = len(hist) < 2 or math.hypot(hist[-1][0] - hist[0][0],
+                                                      hist[-1][1] - hist[0][1]) < TRACK_REST_M
+                track['jump_age'] = (0 if dists[best] > TRACK_JUMP_M and at_rest
+                                     else track['jump_age'] + 1)
                 idx = unmatched.pop(best)
                 cx_l, cy_l, cz = centroids_m[idx]
                 cx_g, cy_g, _  = centroids_g[idx]

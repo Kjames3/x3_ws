@@ -197,3 +197,13 @@ def test_track_reports_freshness_person_time_and_jumps():
     assert t['jump_age'] == 0
     (t,) = tr.update([], [], []).values()                                    # not seen
     assert t['age'] == 1
+
+
+def test_a_walker_stepping_far_in_one_frame_is_not_a_jump():
+    import velocity_estimator as ve
+    tr = ve.ObstacleTracker()
+    for k in range(10):                      # 1 m/s straight at the robot
+        z = 3.0 - 0.1 * k
+        tr.update([(0.0, 0.0, z)], [(z, 0.0, z)], [0.9])
+    (t,) = tr.update([(0.0, 0.0, 1.55)], [(1.55, 0.0, 1.55)], [0.9]).values()   # 0.55 m step
+    assert t['jump_age'] > 0
