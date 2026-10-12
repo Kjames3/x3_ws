@@ -153,14 +153,24 @@ class HolonomicCBFFilter:
         # was feasible. For telemetry and tests.
         self.last_relaxation = 0.0
 
-    def constraint_rows(self, robot_pos, obstacles, obstacle_velocities=None, omega=0.0):
+    def constraint_rows(self, robot_pos, obstacles, obstacle_velocities=None, omega=0.0,
+                        obstacle_radii=None, obstacle_gammas=None):
         """(n, c) with one row per obstacle: the command must keep n @ u >= c.
 
         omega is the yaw rate the robot will turn at. It only matters for a
         rectangular footprint, where turning moves the outline.
+
+        obstacle_radii (m) and obstacle_gammas (1/s), one per obstacle or None:
+        an obstacle that is a tracked body rather than a surface point (a
+        person, known only by a centroid) is kept clear by its radius as well,
+        and may have its own gamma. A walker closing at v first asks for a
+        retreat at v / gamma from the margin, so a smaller gamma gives way
+        earlier (walking test 2026-10-12: at gamma 2 a 1 m/s walker got a
+        0.05-0.10 m/s retreat from 0.7 m, after they had stopped).
         """
         if self.footprint is not None:
-            return self._rectangle_rows(robot_pos, obstacles, obstacle_velocities, omega)
+            return self._rectangle_rows(robot_pos, obstacles, obstacle_velocities, omega,
+                                        obstacle_radii, obstacle_gammas)
         obs = np.asarray(obstacles, dtype=np.float64).reshape(-1, 2)
         rel = np.asarray(robot_pos, dtype=np.float64) - obs
         d = np.hypot(rel[:, 0], rel[:, 1])
@@ -170,20 +180,25 @@ class HolonomicCBFFilter:
         keep = np.isfinite(d) & (d > 1e-6)
         rel, d = rel[keep], d[keep]
         n = rel / d[:, None]
+        gamma, safe = self.gamma, self.safe_distance
+        if obstacle_gammas is not None:
+            gamma = np.asarray(obstacle_gammas, dtype=np.float64)[keep]
+        if obstacle_radii is not None:
+            safe = safe + np.asarray(obstacle_radii, dtype=np.float64)[keep]
         # -gamma*h/(2d) grows as 1/d inside the safe distance: a point 1 mm from
         # the centre would demand a 45 m/s retreat and, in the fallback, outvote
         # every other obstacle. Cap it at gamma*d_safe, what the plain-distance
         # barrier (d - d_safe) asks for at zero range. Reached only inside
         # 0.13 m at d_safe 0.30, closer than the scan's 0.12 m gate lets through.
-        c = np.minimum(-self.gamma * (d * d - self.safe_distance ** 2) / (2.0 * d),
-                       self.gamma * self.safe_distance)
+        c = np.minimum(-gamma * (d * d - safe ** 2) / (2.0 * d), gamma * safe)
         if obstacle_velocities is not None:
             vel = np.asarray(obstacle_velocities, dtype=np.float64).reshape(-1, 2)[keep]
             vel = np.where(np.isfinite(vel), vel, 0.0)   # unknown: treat as static
             c = c + np.einsum('ij,ij->i', n, vel)
         return n, c
 
-    def _rectangle_rows(self, robot_pos, obstacles, obstacle_velocities, omega):
+    def _rectangle_rows(self, robot_pos, obstacles, obstacle_velocities, omega,
+                        obstacle_radii=None, obstacle_gammas=None):
         """Rows for the rectangular footprint. Obstacles are in body axes.
 
         For each point p: a = the nearest point of the rectangle, d = |p - a|,
@@ -199,6 +214,8 @@ class HolonomicCBFFilter:
         A point inside the rectangle (a sensor return from above the chassis)
         is pushed out through its nearest face, and counts as d = 0, so the
         most a single point ever asks for is gamma * (margin - hold_band).
+        A body's radius comes off d, down to zero and no further, so the same
+        bound holds for it.
         """
         p = np.asarray(obstacles, dtype=np.float64).reshape(-1, 2) \
             - np.asarray(robot_pos, dtype=np.float64)
@@ -221,10 +238,15 @@ class HolonomicCBFFilter:
             a[rows, axis] = sign * half[axis]
         n = -out
         a = a + self._footprint_centre               # back to the base origin: the yaw lever arm
+        gamma = self.gamma
+        if obstacle_gammas is not None:
+            gamma = np.asarray(obstacle_gammas, dtype=np.float64)[keep]
+        if obstacle_radii is not None:
+            d = np.maximum(d - np.asarray(obstacle_radii, dtype=np.float64)[keep], 0.0)
         spare = d - self.margin
         # outside the margin: approach limit. Inside it: nothing for the first
         # hold_band, then a retreat that grows from zero.
-        c = -self.gamma * np.where(spare >= 0.0, spare, np.minimum(spare + self.hold_band, 0.0))
+        c = -gamma * np.where(spare >= 0.0, spare, np.minimum(spare + self.hold_band, 0.0))
         if omega:
             c = c - omega * (-a[:, 1] * n[:, 0] + a[:, 0] * n[:, 1])
         if obstacle_velocities is not None:
@@ -234,7 +256,7 @@ class HolonomicCBFFilter:
         return n, c
 
     def filter_twist(self, v_nom_x, v_nom_y, omega, robot_pos, obstacles,
-                     obstacle_velocities=None):
+                     obstacle_velocities=None, obstacle_radii=None, obstacle_gammas=None):
         """filter_velocity for the whole command: returns (vx, vy, omega).
 
         The yaw rate is the operator's and is kept whenever some translation
@@ -245,13 +267,17 @@ class HolonomicCBFFilter:
         least relaxation -- is returned with its translation.
         """
         vx, vy = self.filter_velocity(v_nom_x, v_nom_y, robot_pos, obstacles,
-                                      obstacle_velocities, omega=omega)
+                                      obstacle_velocities, omega=omega,
+                                      obstacle_radii=obstacle_radii,
+                                      obstacle_gammas=obstacle_gammas)
         if self.footprint is None or not omega or self.last_relaxation == 0.0:
             return vx, vy, omega
         best = (self.last_relaxation, vx, vy, omega)
         for w in (0.5 * omega, 0.0):
             vx, vy = self.filter_velocity(v_nom_x, v_nom_y, robot_pos, obstacles,
-                                          obstacle_velocities, omega=w)
+                                          obstacle_velocities, omega=w,
+                                          obstacle_radii=obstacle_radii,
+                                          obstacle_gammas=obstacle_gammas)
             if self.last_relaxation == 0.0:
                 return vx, vy, w
             if self.last_relaxation < best[0] - 1e-9:
@@ -264,7 +290,8 @@ class HolonomicCBFFilter:
         return max(self.max_wheel_speed - self.wheel_separation * abs(omega), 0.0)
 
     def filter_velocity(self, v_nom_x, v_nom_y, robot_pos, obstacles,
-                        obstacle_velocities=None, omega=0.0):
+                        obstacle_velocities=None, omega=0.0,
+                        obstacle_radii=None, obstacle_gammas=None):
         """
         Filters the requested velocity so it keeps clear of the obstacles.
 
@@ -275,6 +302,7 @@ class HolonomicCBFFilter:
             obstacle_velocities: (vx, vy) per obstacle in the same frame, or
                 None when they are all static
             omega (float): commanded yaw rate (rad/s); it uses up wheel speed
+            obstacle_radii, obstacle_gammas: see constraint_rows
 
         Returns:
             tuple: (safe_v_x, safe_v_y)
@@ -292,7 +320,8 @@ class HolonomicCBFFilter:
             u = _project(u_nom, _DIAMOND, c_spd)
             return float(u[0]), float(u[1])
 
-        n_obs, c_obs = self.constraint_rows(robot_pos, obstacles, obstacle_velocities, omega)
+        n_obs, c_obs = self.constraint_rows(robot_pos, obstacles, obstacle_velocities, omega,
+                                            obstacle_radii, obstacle_gammas)
         n_all = np.vstack((n_obs, _DIAMOND))
 
         u = _project(u_nom, n_all, np.concatenate((c_obs, c_spd)))

@@ -418,3 +418,38 @@ def test_yaw_lever_arm_is_taken_about_the_base_origin():
     _, c1 = cbf.constraint_rows((0.0, 0.0), [point], None, 1.0)
     closing = 0.6 * -0.11 + 0.8 * 0.17                     # corner speed toward the point
     assert c1[0] - c0[0] == pytest.approx(closing)
+
+
+FP = (0.16, 0.13, 0.11, 0.11)
+
+
+def test_a_person_makes_the_parked_robot_give_way_earlier_than_a_point():
+    # walking test 2026-10-12: 1 m/s straight at the nose, 1.2 m from the centre
+    cbf = HolonomicCBFFilter(gamma=2.0, footprint=FP, margin=0.10)
+    walker, vel = [(1.2, 0.0)], [(-1.0, 0.0)]
+    assert cbf.filter_velocity(0.0, 0.0, (0.0, 0.0), walker, vel) == (0.0, 0.0)
+    vx, vy = cbf.filter_velocity(0.0, 0.0, (0.0, 0.0), walker, vel,
+                                 obstacle_radii=[0.25], obstacle_gammas=[1.0])
+    # d = 1.2 - 0.16 - 0.25 = 0.79, so n.u >= 1.0 - 1.0 * (0.79 - 0.10)
+    assert vx == pytest.approx(-0.31, abs=1e-6) and vy == pytest.approx(0.0, abs=1e-9)
+
+
+def test_radius_and_gamma_apply_only_to_their_own_row():
+    cbf = HolonomicCBFFilter(gamma=2.0, footprint=FP, margin=0.10)
+    obstacles = [(0.6, 0.0), (0.0, 0.5), (-0.7, 0.0)]
+    n0, c0 = cbf.constraint_rows((0.0, 0.0), obstacles)
+    n1, c1 = cbf.constraint_rows((0.0, 0.0), obstacles, None, 0.0, [0.0, 0.0, 0.25], [2.0, 2.0, 1.0])
+    assert np.allclose(n0, n1) and np.allclose(c0[:2], c1[:2])
+    assert c1[2] == pytest.approx(-1.0 * (0.7 - 0.13 - 0.25 - 0.10))
+
+
+def test_a_body_overlapping_the_outline_asks_no_more_than_a_touching_point():
+    cbf = HolonomicCBFFilter(gamma=1.0, footprint=FP, margin=0.10, hold_band=0.03)
+    _, c = cbf.constraint_rows((0.0, 0.0), [(0.30, 0.0)], None, 0.0, [0.25], [1.0])
+    assert c[0] == pytest.approx(0.07)
+
+
+def test_circle_mode_adds_the_radius_to_the_safe_distance():
+    cbf = HolonomicCBFFilter(safe_distance=0.30, gamma=1.0)
+    _, c = cbf.constraint_rows((0.0, 0.0), [(0.55, 0.0)], None, 0.0, [0.25], [1.0])
+    assert c[0] == pytest.approx(0.0)

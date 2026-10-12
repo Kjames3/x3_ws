@@ -462,6 +462,14 @@ CBF_FOOTPRINT = None if _fp == 'circle' else tuple(float(v) for v in _fp.split('
 LIDAR_YAW_OFFSET_RAD = math.radians(float(os.environ.get('X3_LIDAR_YAW_OFFSET_DEG', 4.85)))
 # Clearance kept round that outline.
 CBF_MARGIN_M = float(os.environ.get('X3_CBF_MARGIN_M', 0.10))
+# A walking person reaches the CBF as one point at the torso's depth, with
+# legs and feet ahead of it, so it is kept clear by a body radius too, and it
+# has its own gamma: the retreat starts at (closing speed / gamma) from the
+# margin. Walking test 2026-10-12 with neither (point, gamma 2): a 1 m/s walker
+# got 0.05-0.10 m/s of retreat from 0.7 m, and the lidar had their legs 5 cm
+# from the outline while the track read 0.55 m.
+CBF_PERSON_RADIUS_M = float(os.environ.get('X3_CBF_PERSON_RADIUS_M', 0.25))
+CBF_PERSON_GAMMA = float(os.environ.get('X3_CBF_PERSON_GAMMA', 1.0))
 
 # Which websocket asked for the running sweep, so it can be cancelled when
 # that client goes away, and a wall-clock backstop for every other way a
@@ -769,11 +777,13 @@ class ROS2Bridge:
         # workaround goes away once the Lidar is raised above the chassis.
         self.cbf = HolonomicCBFFilter(safe_distance=CBF_SAFE_DISTANCE_M, gamma=CBF_GAMMA,
                                       footprint=CBF_FOOTPRINT, margin=CBF_MARGIN_M)
-        logger.info("CBF: gamma %.2f, %s, lidar yaw %+.2f deg, deadband %.2f m/s, min %.3f m/s", CBF_GAMMA,
+        logger.info("CBF: gamma %.2f, %s, lidar yaw %+.2f deg, deadband %.2f m/s, min %.3f m/s, "
+                    "person radius %.2f m gamma %.2f", CBF_GAMMA,
                     "circle %.2f m" % CBF_SAFE_DISTANCE_M if CBF_FOOTPRINT is None else
                     "footprint %s m + %.2f m margin" % (
                         "/".join("%.2f" % v for v in CBF_FOOTPRINT), CBF_MARGIN_M),
-                    math.degrees(LIDAR_YAW_OFFSET_RAD), CMD_DEADBAND_MPS, CMD_MIN_MPS)
+                    math.degrees(LIDAR_YAW_OFFSET_RAD), CMD_DEADBAND_MPS, CMD_MIN_MPS,
+                    CBF_PERSON_RADIUS_M, CBF_PERSON_GAMMA)
         self._latest_obstacles = []
         # When that list was last REFRESHED.  Without this the CBF cannot
         # tell a live obstacle from one frozen by a /scan dropout.
@@ -1102,7 +1112,8 @@ class ROS2Bridge:
             self._tof_obstacles[name] = (xy, now)
         return keep
 
-    def _limit_for_deadband(self, vx, vy, obstacles, velocities=None, omega=0.0):
+    def _limit_for_deadband(self, vx, vy, obstacles, velocities=None, omega=0.0,
+                            radii=None, gammas=None):
         """Re-check the CBF output at the speed the base will EXECUTE.
 
         The driver runs direction d at speed s + CMD_DEADBAND_MPS for a command
@@ -1124,7 +1135,7 @@ class ROS2Bridge:
         if s < 1e-6 or not len(obstacles):
             return vx, vy
         dx, dy = vx / s, vy / s
-        n, c = self.cbf.constraint_rows((0.0, 0.0), obstacles, velocities, omega)
+        n, c = self.cbf.constraint_rows((0.0, 0.0), obstacles, velocities, omega, radii, gammas)
         if not len(c):
             return vx, vy
         n_dot_d = n[:, 0] * dx + n[:, 1] * dy
@@ -1195,16 +1206,18 @@ class ROS2Bridge:
         else:
             self._warned_stale_obst = False
             # Robot is at (0,0) in its local frame, matching the obstacle coords.
-            velocities = None
+            velocities = radii = gammas = None
             if moving:
                 velocities = [(0.0, 0.0)] * len(obstacles) + [v for _, v in moving]
+                radii = [0.0] * len(obstacles) + [CBF_PERSON_RADIUS_M] * len(moving)
+                gammas = [self.cbf.gamma] * len(obstacles) + [CBF_PERSON_GAMMA] * len(moving)
                 obstacles = obstacles + [p for p, _ in moving]
             # With the rectangular footprint a turn can swing a corner into
             # something, so the yaw rate may come back smaller than asked.
             safe_vx, safe_vy, omega = self.cbf.filter_twist(
-                vx, vy, omega, (0.0, 0.0), obstacles, velocities)
+                vx, vy, omega, (0.0, 0.0), obstacles, velocities, radii, gammas)
             safe_vx, safe_vy = self._limit_for_deadband(
-                safe_vx, safe_vy, obstacles, velocities, omega)
+                safe_vx, safe_vy, obstacles, velocities, omega, radii, gammas)
 
         msg = Twist()
         msg.linear.x  = float(safe_vx)    * self.LINEAR_SCALE

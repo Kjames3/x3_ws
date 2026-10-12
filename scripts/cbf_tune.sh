@@ -14,13 +14,15 @@
 #   margin    m; clearance kept round the footprint (default 0.10)
 #   lidar_yaw deg; yaw error of the lidar mount (src/lidar_yaw_calib.py), added
 #             to lidar bearings for the CBF
+#   person_radius m; body radius added round a tracked walking person (default 0.25)
+#   person_gamma  1/s; gamma for a walking person: smaller gives way earlier (default 1.0)
 #   safe      m; circle mode only: minimum distance from the centre
 #   deadband  m/s; speed the base adds to any nonzero command on this floor
 #             (0 with the driver's closed-loop speed_control)
 #   min       m/s; slowest command worth sending (0.03 with speed_control)
 set -euo pipefail
 DROPIN=/etc/systemd/system/x3_server.service.d/98-cbf-tune.conf
-[ $# -ge 1 ] || { sed -n 2,21p "$0"; exit 1; }
+[ $# -ge 1 ] || { sed -n 2,23p "$0"; exit 1; }
 if [ "$1" = off ]; then
     sudo rm -f "$DROPIN"
 else
@@ -38,10 +40,12 @@ else
             margin)   var=X3_CBF_MARGIN_M;;
             lidar_yaw) var=X3_LIDAR_YAW_OFFSET_DEG;;
             gamma)    var=X3_CBF_GAMMA;;
+            person_radius) var=X3_CBF_PERSON_RADIUS_M;;
+            person_gamma)  var=X3_CBF_PERSON_GAMMA;;
             safe)     var=X3_CBF_SAFE_DISTANCE_M;;
             deadband) var=X3_CMD_DEADBAND_MPS;;
             min)      var=X3_CMD_MIN_MPS;;
-            *) echo "unknown setting '$key' (gamma, safe, footprint, margin, lidar_yaw, deadband, min)" >&2; exit 1;;
+            *) echo "unknown setting '$key' (gamma, safe, footprint, margin, lidar_yaw, person_radius, person_gamma, deadband, min)" >&2; exit 1;;
         esac
         body+=$'\n'"Environment=$var=$val"
     done
