@@ -1,5 +1,13 @@
 # Project Improvement Ideas Log
 
+> [!info] This log is also published as one note per idea
+> This file stays the source of truth. `scripts/split_ideas.py` derives one note per
+> idea in [`ideas/notes/`](notes/) with a namespaced id (`JA-`, covering 1–340) and a
+> resolved **Implemented / candidate** status; browse them from [`ideas/INDEX.md`](INDEX.md).
+> Edit *this* file and re-run the script — never edit the generated notes.
+>
+> **Heads up:** `June_performance_ideas.md` numbers a *different* set of ideas 1–120, so a bare "Idea 81" is ambiguous between the two logs.
+
 This log tracks ideas and architectural enhancements for the EE244 Computational Learning Project (Predictive Local Planning via Onboard Velocity Estimation).
 
 ---
