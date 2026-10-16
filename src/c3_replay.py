@@ -185,7 +185,10 @@ def run(directory, output, tracker_config=None, tracker_config_c=None,
         meas_b = []
         for x, y, z in cents:
             xy, rot = pt.camera_point_to_odom([x, y, z], ofc)
-            meas_b.append((xy, pt.rotate_cov_to_odom(pt.measurement_cov_camera(z, floor), rot)))
+            cov = pt.measurement_cov_camera(
+                z, floor, depth_noise_coef=trk_b.config['depth_noise_coef'],
+                spread_scale=trk_b.config['measurement_spread_scale'])
+            meas_b.append((xy, pt.rotate_cov_to_odom(cov, rot)))
         for o in trk_b.update(t_ns / 1e9, meas_b):
             out['B'].append(dict(o, t_ns=t_ns, z=forward_depth((o['x'], o['y']), ofc)))
         if detections is not None:
@@ -202,7 +205,8 @@ def run(directory, output, tracker_config=None, tracker_config_c=None,
                 xy, rot = pt.camera_point_to_odom(p, ofc)
                 # extra_sigma_m: optional per-box distrust (c3_edge_test.py's soft-edge variants).
                 cov = pt.measurement_cov_camera(
-                    m['z'], floor_c, math.hypot(m['spread_m'], b.get('extra_sigma_m', 0.0)))
+                    m['z'], floor_c, math.hypot(m['spread_m'], b.get('extra_sigma_m', 0.0)),
+                    trk_c.config['depth_noise_coef'], trk_c.config['measurement_spread_scale'])
                 meas_c.append((xy, pt.rotate_cov_to_odom(cov, rot)))
             for o in trk_c.update(t_ns / 1e9, meas_c):
                 out['C'].append(dict(o, t_ns=t_ns, z=forward_depth((o['x'], o['y']), ofc)))

@@ -89,7 +89,8 @@ def replay(frames, config):
             trk.reset()
             continue
         meas = [(np.array(m['xy']),
-                 pt.rotate_cov_to_odom(pt.measurement_cov_camera(m['z'], floor, m['spread']),
+                 pt.rotate_cov_to_odom(pt.measurement_cov_camera(m['z'], floor, m['spread'],
+                     trk.config['depth_noise_coef'], trk.config['measurement_spread_scale']),
                                        np.array(m['rot'])))
                 for m in f['meas']]
         for o in trk.update(f['t_ns'] / 1e9, meas):

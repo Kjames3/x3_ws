@@ -40,19 +40,20 @@ POSE_HISTORY_S = 2.0
 
 
 class C3Live:
-    def __init__(self, oak, pose_fn, mount_x, mount_z=0.0, log_path=None):
+    def __init__(self, oak, pose_fn, mount_x, mount_z=0.0, log_path=None, tracker_config=None):
         """pose_fn() -> {'x','y','theta'} in odom, or None when stale.
 
         log_path: optional NDJSON debug log of raw measurements and the pose
         stream (25 Hz), so placement can be recomputed offline with any
-        timing offset.
+        timing offset. tracker_config optionally overrides the frozen baseline;
+        measurement covariance uses its depth coefficient, floor and spread scale.
         """
         self._log = open(log_path, 'a', buffering=1) if log_path else None
         self._log_pose_n = 0
         self.oak = oak
         self.pose_fn = pose_fn
         self.mount_x = mount_x
-        self.tracker = pt.KalmanTracker(ARM_C_CONFIG)
+        self.tracker = pt.KalmanTracker(dict(ARM_C_CONFIG, **(tracker_config or {})))
         self._lock = threading.Lock()
         self._tracks = []
         self._stats = {'updates': 0, 'update_ms_avg': 0.0, 'update_ms_max': 0.0, 'hz': 0.0}
@@ -102,7 +103,7 @@ class C3Live:
         fx, fy, cx, cy = fx * sx, fy * sy, cx * sx, cy * sy
         c, s = math.cos(pose['theta']), math.sin(pose['theta'])
         rot = np.array([[c, -s], [s, c]])
-        floor = ARM_C_CONFIG['meas_sigma_floor_m']
+        floor = self.tracker.config['meas_sigma_floor_m']
         out = []
         for i, d in enumerate(detections):
             if d.get('label') != 'person' or not d.get('bbox'):
@@ -118,7 +119,9 @@ class C3Live:
                                    'mask': bool(m.get('mask')),
                                    'left': round(left, 4)})
             xy = rot @ np.array([fwd, left]) + np.array([pose['x'], pose['y']])
-            cov = rot @ pt.measurement_cov_camera(m['z'], floor, m['spread_m']) @ rot.T
+            cov = rot @ pt.measurement_cov_camera(
+                m['z'], floor, m['spread_m'], self.tracker.config['depth_noise_coef'],
+                self.tracker.config['measurement_spread_scale']) @ rot.T
             out.append((xy, cov))
         return out
 
@@ -237,7 +240,7 @@ class C3Live:
                              'depth_shape': list(depth.shape), 'meas': self._meas_log})
                 dg['meas'] += len(meas)
                 prev_t = self.tracker.last_t
-                if prev_t is not None and stamp - prev_t > ARM_C_CONFIG['max_dt_s']:
+                if prev_t is not None and stamp - prev_t > self.tracker.config['max_dt_s']:
                     dg['reset_gap'] += 1   # update() will reset rather than predict
                 # Tracking runs at capture time, but the GUI draws rings around
                 # the robot as it is NOW: convert with the newest pose.

@@ -28,6 +28,8 @@ DEFAULT_CONFIG = {
     'confirmed_max_age_s': 1.0,     # expiry without a measurement
     'max_dt_s': 0.5,                # a longer gap resets instead of predicting
     'max_tracks': 10,
+    'depth_noise_coef': 0.0025,    # legacy baseline; configurable for Pro W evaluation
+    'measurement_spread_scale': 1.0,  # spatial depth spread is not centroid uncertainty
     'meas_sigma_floor_m': 0.25,     # blob centroid jitter floor; tuned on trial05
 }
 
@@ -40,14 +42,22 @@ DEPTH_RANGE_M = (0.5, 4.0)
 SUBSAMPLE_MIN_VALID = 200
 
 
-def measurement_cov_camera(z_m, floor_sigma_m=0.03, extra_sigma_m=0.0):
+def measurement_cov_camera(z_m, floor_sigma_m=0.03, extra_sigma_m=0.0,
+                           depth_noise_coef=0.0025, spread_scale=1.0):
     """Planar (forward, left) covariance for a point at depth z.
 
-    Depth sigma follows the characterized OAK stereo model sigma ~ 0.0025 Z^2
-    with ``floor_sigma_m`` as the floor for segmentation/centroid jitter.
+    ``depth_noise_coef * Z^2`` is a configurable range-dependent term.
+    Defaults preserve the legacy estimator. ``spread_scale`` controls how much
+    within-object depth spread counts as centroid uncertainty; pixel noise and
+    object shape spread are not automatically centroid error. Tune on held-out
+    measurements before selecting a Pro W coefficient.
     """
-    s_depth = math.hypot(max(floor_sigma_m, 0.0025 * z_m * z_m), extra_sigma_m)
-    s_lat = math.hypot(floor_sigma_m, extra_sigma_m)
+    if any(not math.isfinite(v) or v < 0 for v in
+           (floor_sigma_m, extra_sigma_m, depth_noise_coef, spread_scale)):
+        raise ValueError('measurement uncertainty parameters must be finite and nonnegative')
+    extra = extra_sigma_m * spread_scale
+    s_depth = math.hypot(max(floor_sigma_m, depth_noise_coef * z_m * z_m), extra)
+    s_lat = math.hypot(floor_sigma_m, extra)
     return np.diag([s_depth ** 2, s_lat ** 2])
 
 
@@ -205,12 +215,14 @@ class KalmanTracker:
             k = t['P'] @ h.T @ np.linalg.inv(s)
             t['x'] = t['x'] + k @ (np.asarray(z) - h @ t['x'])
             t['P'] = (np.eye(4) - k @ h) @ t['P']
+            t['measurement_index'] = int(j)
             t['last_meas_t'] = t_s
             t['hits'] += 1
             t['misses'] = 0
             t['recent'].append(True)
         for i, t in enumerate(self.tracks):
             if i not in matched_t:
+                t['measurement_index'] = None
                 t['misses'] += 1
                 t['recent'].append(False)
             t['recent'] = t['recent'][-cfg['confirm_window']:]
@@ -233,7 +245,7 @@ class KalmanTracker:
             p[2, 2] = p[3, 3] = sv
             self.tracks.append({'id': self.next_id, 'x': np.array([z[0], z[1], 0.0, 0.0]),
                                 'P': p, 'last_meas_t': t_s, 'hits': 1, 'misses': 0,
-                                'recent': [True], 'confirmed': False})
+                                'recent': [True], 'confirmed': False, 'measurement_index': j})
             self.next_id += 1
         out = []
         for t in self.tracks:
@@ -244,5 +256,6 @@ class KalmanTracker:
                         'cov': t['P'].tolist(),
                         'obs_age_s': float(t_s - t['last_meas_t']),
                         'measured': t['last_meas_t'] == t_s,
+                        'measurement_index': t['measurement_index'],
                         'confirmed': t['confirmed']})
         return out
