@@ -3727,16 +3727,12 @@ _STANDALONE_TEST_SCAN_INTERVAL = 1.0    # seconds between full /proc scans
 _STANDALONE_TESTS = ('ab_comparison_test.py', 'point_to_point_test.py', 'strafe_drift_test.py',
                      'base_speed_test.py', 'footprint_measure.py', 'lidar_yaw_calib.py')
 
-def _is_standalone_test_running() -> bool:
-    # Scanning every process' cmdline is expensive (~260 /proc reads). motion_loop
-    # calls this at ~30 Hz, so cache the result and only re-scan at ~1 Hz — an
-    # externally-launched test appearing/disappearing within 1 s is harmless.
-    global _standalone_test_cache
-    now = time.monotonic()
-    last_result, last_scan = _standalone_test_cache
-    if now - last_scan < _STANDALONE_TEST_SCAN_INTERVAL:
-        return last_result
+_standalone_scan_busy = False
 
+
+def _scan_standalone_tests():
+    """Walk /proc for a standalone test driver; runs on a worker thread."""
+    global _standalone_test_cache, _standalone_scan_busy
     import psutil
     result = False
     try:
@@ -3753,8 +3749,24 @@ def _is_standalone_test_running() -> bool:
                         break
     except Exception:
         pass
-    _standalone_test_cache = (result, now)
-    return result
+    _standalone_test_cache = (result, time.monotonic())
+    _standalone_scan_busy = False
+
+
+def _is_standalone_test_running() -> bool:
+    # Scanning every process' cmdline costs 150-200 ms on the Orin (~260 /proc
+    # reads). motion_loop calls this at ~30 Hz from the event loop, so the scan
+    # runs on a worker thread about once a second and callers get the last
+    # result. Doing it inline froze /cmd_vel and /pedestrian_states for ~0.2-0.4 s
+    # every second. A test appearing/disappearing within 1 s is harmless.
+    global _standalone_scan_busy
+    last_result, last_scan = _standalone_test_cache
+    if (not _standalone_scan_busy
+            and time.monotonic() - last_scan >= _STANDALONE_TEST_SCAN_INTERVAL):
+        _standalone_scan_busy = True
+        threading.Thread(target=_scan_standalone_tests, name='standalone_scan',
+                         daemon=True).start()
+    return last_result
 
 
 async def motion_loop():
