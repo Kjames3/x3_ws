@@ -19,7 +19,8 @@ import logging
 import os
 import math
 from pathlib import Path
-from collections import deque
+from collections import deque, Counter
+from estimator_dropout_log import DropoutLog
 from velocity_timing import resample_positions, MAX_SAMPLE_GAP_S
 
 logger = logging.getLogger(__name__)
@@ -380,6 +381,8 @@ class VelocityEstimator:
         self._prev_estimates = {}
         self._timed_histories = {}
         self._last_capture_t = None
+        self.dropout_log = DropoutLog()
+        self._frame_gates = Counter()   # gate status -> tracks this frame
         self._last_depth_key = None
         self.timing_stats = dict(accepted=0, duplicates=0, invalid=0,
                                  missing_pose=0, window_wait=0, gap_resets=0)
@@ -811,6 +814,8 @@ class VelocityEstimator:
         contribute 0.0 -- so an offline scorer that only saw ungated tracks
         would compute a different max and fail to reproduce the live numbers.
         """
+        if status != "ok":
+            self._frame_gates[status] += 1
         if self._feature_log_path is None:
             return
         row = {
@@ -869,6 +874,7 @@ class VelocityEstimator:
         ``(estimates, tracks)``.
         """
         step_dt = 1.0 / INFER_HZ
+        self._frame_gates.clear()
         if capture_t is not None:
             if not math.isfinite(capture_t):
                 self._reset_timed_tracks()
@@ -1098,6 +1104,24 @@ class VelocityEstimator:
                 est['category'] = None
         return estimates, tracks
 
+    def _note_frame(self, centroids, tracks, estimates):
+        """Feed the dropout log: how many people this frame, or why none."""
+        people = [e for e in estimates if e.get('is_person') is not False]
+        if people:
+            near = min(e['z'] for e in people)
+            self.dropout_log.frame(time.monotonic(), len(people), nearest=near,
+                                   ids=[e['id'] for e in people])
+            return
+        if estimates:
+            reasons = {'non_person_only': 1}
+        elif not len(centroids):
+            reasons = {'no_centroids': 1}
+        elif not tracks:
+            reasons = {'no_tracks': 1}
+        else:
+            reasons = dict(self._frame_gates) or {'gated_other': 1}
+        self.dropout_log.frame(time.monotonic(), 0, reasons)
+
     def _inference_loop(self):
         dt = 1.0 / INFER_HZ
         logger.info("VelocityEstimator: inference loop started")
@@ -1117,6 +1141,7 @@ class VelocityEstimator:
                             not math.isfinite(obs['capture_t']) or
                             not 0 <= now - obs['capture_t'] <= MAX_DEPTH_FRAME_AGE_S):
                         self.timing_stats['invalid'] += 1
+                        self.dropout_log.frame(now, 0, {'depth_invalid': 1})
                         self._reset_timed_tracks()
                         time.sleep(max(0.001, dt - (time.monotonic() - t0)))
                         continue
@@ -1167,6 +1192,7 @@ class VelocityEstimator:
                             self._logged_stale_depth = True
                         with self._lock:
                             self._estimates = []
+                        self.dropout_log.frame(time.monotonic(), 0, {'depth_stale': 1})
                         self._tracker.reset()
                         elapsed = time.monotonic() - t0
                         time.sleep(max(0.001, dt - elapsed))
@@ -1182,6 +1208,7 @@ class VelocityEstimator:
                             self._reset_timed_tracks()
                         with self._lock:
                             self._estimates = []
+                        self.dropout_log.frame(time.monotonic(), 0, {'no_depth_in_band': 1})
                         elapsed = time.monotonic() - t0
                         time.sleep(max(0.001, (1.0 / INFER_HZ) - elapsed))
                         continue
@@ -1221,6 +1248,7 @@ class VelocityEstimator:
                         self._logged_missing_pose = True
                     with self._lock:
                         self._estimates = []
+                    self.dropout_log.frame(time.monotonic(), 0, {'no_pose': 1})
                     self._tracker.reset()
                     elapsed = time.monotonic() - t0
                     time.sleep(max(0.001, dt - elapsed))
@@ -1234,6 +1262,7 @@ class VelocityEstimator:
 
                 with self._lock:
                     self._estimates = estimates
+                self._note_frame(centroids_m, tracks, estimates)
 
                 # 6. Print calculated velocities (throttled to 2Hz)
                 if self.estimation_enabled and estimates:
