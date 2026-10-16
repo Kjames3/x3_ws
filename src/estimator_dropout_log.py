@@ -29,7 +29,7 @@ class DropoutLog:
         if n_person > 0:
             if self._since is not None:
                 dur = t - self._since
-                if dur >= self.min_report_s:
+                if dur >= self.min_report_s and self._seen[1]:   # only after a person was seen
                     self.dropouts += 1
                     self.longest_s = max(self.longest_s, dur)
                     self.log.info(
@@ -45,7 +45,7 @@ class DropoutLog:
         if self._since is None:
             self._since = t
         self._reasons.update(reasons or {'unknown': 1})
-        if not self._warned and t - self._since >= self.warn_after_s:
+        if not self._warned and self._seen[1] and t - self._since >= self.warn_after_s:
             self._warned = True
             self.log.warning("no person estimate for %.1f s so far (last seen %s, ids %s): %s",
                              t - self._since, _m(self._seen[0]), list(self._seen[1]),

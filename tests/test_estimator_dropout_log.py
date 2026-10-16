@@ -43,3 +43,10 @@ def test_long_dropout_warns_once_while_still_empty():
 def test_totals_count_every_empty_frame():
     d, _ = run([(0.0, 0, dict(reasons={'a': 1})), (0.1, 0, dict(reasons={'a': 1, 'b': 1}))])
     assert d.totals['a'] == 2 and d.totals['b'] == 1
+
+
+def test_nothing_is_reported_before_a_person_was_ever_seen():
+    fr = [(0.1 * k, 0, dict(reasons={'non_person_only': 1})) for k in range(0, 40)]
+    fr += [(4.0, 1, dict(nearest=1.8, ids=[7]))]
+    d, m = run(fr)
+    assert m == [] and d.dropouts == 0
