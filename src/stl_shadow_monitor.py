@@ -17,8 +17,9 @@ Specs (robustness rho >= 0 means satisfied; margin in the signal's units):
   phi_hold    a track last seen within NEAR_M must not vanish: G (near(id) -> F[0,HOLD_S] seen(id))
               reported as events: 'lost' (nothing near within BREAK_DIST after)
               or 'id_break' (a new id appears near the old one within BREAK_S)
-  phi_react   closing > CLOSE_V inside NEAR_M -> F[0,REACT_S] (command moves away)
-              rho = REACT_S - delay, per onset episode
+  phi_react   relative closing speed > PERSON_GAMMA * (clearance - D_MIN), the CBF's own
+              person-row bound -> F[0,REACT_S] closing back within it
+              rho = REACT_S - delay, per episode; track loss is reported separately
 
 The pedestrian velocity field is not used: its frame is not documented in the
 publisher, so closing speed is differenced from positions.
@@ -43,9 +44,12 @@ NEAR_M = 1.5
 HOLD_S = 0.5
 BREAK_S = 1.0
 BREAK_DIST = 0.6
-CLOSE_V = 0.3
 REACT_S = 0.5
-AWAY_V = 0.02
+PERSON_GAMMA = 1.0                     # CBF_PERSON_GAMMA
+ONSET_EXCESS = 0.15                    # m/s over the bound: closing speed from 0.4 s of positions is good to ~0.1
+RESTORE_TOL = 0.05
+RESTORE_HOLD_S = 0.2
+EPISODE_MAX_S = 3.0
 GRID_HZ = 20.0
 
 
@@ -126,30 +130,76 @@ def closing_speed(ped, window=0.4):
     return out
 
 
-def reaction_delays(ped, cmd):
-    """Onset = closing > CLOSE_V inside NEAR_M; response = a command component away from the person."""
-    cs = closing_speed(ped)
-    cmd_t = np.array([c[0] for c in cmd])
-    episodes = []
-    onset = None
-    for (t, v, r), (_, pts) in zip(cs, ped):
-        hot = pts and v > CLOSE_V and r < NEAR_M
-        if hot and (onset is None or t - onset['last'] > 2.0):
-            i, x, y = min(pts, key=lambda p: math.hypot(p[1], p[2]))
-            onset = dict(t=t, last=t, range=r, closing=v, dir=(x / r, y / r), delay=None)
-            episodes.append(onset)
-        elif hot:
-            onset['last'] = t
-    for e in episodes:
-        j = np.searchsorted(cmd_t, e['t'])
-        for tt, vx, vy in cmd[j:]:
-            if tt > e['t'] + 3.0:
-                break
-            if -(vx * e['dir'][0] + vy * e['dir'][1]) > AWAY_V:
-                e['delay'] = tt - e['t']
-                break
-        e['rho'] = (REACT_S - e['delay']) if e['delay'] is not None else None
-    return episodes
+def clearance_closing(ped, window=0.4):
+    """Per-message (t, clearance, closing speed, id, (x, y)) of the nearest person.
+
+    Closing speed is -d(clearance)/dt over ``window`` for one track id, so it is
+    relative: a robot already backing away lowers it. None before two samples.
+    """
+    out, hist = [], []
+    for t, pts in ped:
+        if not pts:
+            hist.clear()
+            out.append((t, None, None, None, None))
+            continue
+        i, x, y = min(pts, key=lambda p: clearance((p[1], p[2])))
+        c = clearance((x, y))
+        hist = [h for h in hist if h[1] == i and t - h[0] <= window] + [(t, i, c)]
+        v = None
+        if len(hist) >= 2 and hist[-1][0] - hist[0][0] > 0.15:
+            v = -(hist[-1][2] - hist[0][2]) / (hist[-1][0] - hist[0][0])
+        out.append((t, c, v, i, (x, y)))
+    return out
+
+
+def binding_speed(c, gamma=PERSON_GAMMA):
+    """Fastest relative approach the CBF person row allows at clearance c (m/s)."""
+    return gamma * (c - D_MIN)
+
+
+def reaction_episodes(ped, gamma=PERSON_GAMMA):
+    """Episodes where the CBF's person constraint is violated by the current motion.
+
+    Onset: relative closing speed > gamma * (clearance - D_MIN) + ONSET_EXCESS, i.e. the row
+    n.(u - v) >= -gamma h is violated and the controller has to act. Because the
+    speed is relative, a robot already retreating does not trigger it.
+
+    Outcome of each episode:
+      restored    closing falls back within the allowed speed (+RESTORE_TOL) for
+                  RESTORE_HOLD_S; delay = time from onset; rho = REACT_S - delay
+      track_lost  the person disappears for more than HOLD_S before that
+      unrestored  neither by the end of the run (or EPISODE_MAX_S)
+    """
+    cc = clearance_closing(ped)
+    eps, cur = [], None
+    for k, (t, c, v, i, xy) in enumerate(cc):
+        if cur is not None:
+            ok = c is not None and v is not None and v <= binding_speed(c, gamma) + RESTORE_TOL
+            if c is None:
+                if t - cur['last_seen'] > HOLD_S:
+                    cur.update(status='track_lost', end=t)
+            elif ok:
+                cur.setdefault('ok_since', t)
+                if t - cur['ok_since'] >= RESTORE_HOLD_S:
+                    cur.update(status='restored', end=cur['ok_since'], delay=cur['ok_since'] - cur['t'])
+            else:
+                cur.pop('ok_since', None)
+            if c is not None:
+                cur['last_seen'] = t
+            if cur.get('status') is None and t - cur['t'] > EPISODE_MAX_S:
+                cur.update(status='unrestored', end=t)
+            if cur.get('status'):
+                cur = None
+        if cur is None and c is not None and v is not None and c < NEAR_M and v > binding_speed(c, gamma) + ONSET_EXCESS:
+            if eps and t - eps[-1]['end'] < 1.0:
+                continue   # one sustained approach, not a new onset
+            cur = dict(t=t, clearance=c, closing=v, allowed=binding_speed(c, gamma), last_seen=t, status=None)
+            eps.append(cur)
+    for e in eps:
+        if e.get('status') is None:
+            e.update(status='unrestored', end=cc[-1][0])
+        e['rho'] = (REACT_S - e['delay']) if e['status'] == 'restored' else None
+    return eps
 
 
 def load_bag(db):
@@ -192,9 +242,10 @@ def evaluate(ped, cmd):
     res['phi_fresh'] = dict(rho=float(MAX_AGE - np.nanmax(age)), max_age=float(np.nanmax(age)),
                             gaps_over=int((gaps > MAX_AGE).sum()))
     res['phi_hold'] = track_events(ped)
-    eps = reaction_delays(ped, cmd)
-    res['phi_react'] = [dict(t=e['t'] - t0, range=e['range'], closing=e['closing'],
-                             delay=e['delay'], rho=e['rho']) for e in eps]
+    eps = reaction_episodes(ped)
+    res['phi_react'] = [dict(t=e['t'] - t0, clearance=e['clearance'], closing=e['closing'],
+                             allowed=e['allowed'], status=e['status'], delay=e.get('delay'),
+                             rho=e['rho']) for e in eps]
     return res
 
 
@@ -210,9 +261,14 @@ def report(name, r):
     brk = [e for e in r['phi_hold'] if e['kind'] == 'id_break']
     print('  phi_hold   %d lost, %d id_break (ids last seen inside %.1f m)' % (len(lost), len(brk), NEAR_M))
     for e in r['phi_react']:
-        d = 'none within 3 s' if e['delay'] is None else '%.2f s (rho %+.2f)' % (e['delay'], e['rho'])
-        print('  phi_react  onset t=%.1f s range %.2f m closing %.2f m/s -> response %s'
-              % (e['t'], e['range'], e['closing'], d))
+        d = {'restored': 'restored in %.2f s (rho %+.2f)' % (e['delay'] or 0, e['rho'] or 0),
+             'track_lost': 'person track lost', 'unrestored': 'not restored within %.0f s' % EPISODE_MAX_S}[e['status']]
+        print('  phi_react  t=%.1f s clearance %.2f m closing %.2f > allowed %.2f m/s -> %s'
+              % (e['t'], e['clearance'], e['closing'], e['allowed'], d))
+    n = len(r['phi_react'])
+    if n:
+        print('  phi_react  %d episodes: %d restored, %d track lost, %d unrestored'
+              % (n, *(sum(e['status'] == k for e in r['phi_react']) for k in ('restored', 'track_lost', 'unrestored'))))
 
 
 def main():

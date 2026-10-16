@@ -18,25 +18,48 @@ def _walk(speed, t_end=4.0, hz=10):
 
 
 def test_clear_violation_is_signed():
-    ped = _walk(1.0)
+    ped = [(t, [(0, 2.0 - t, 0.0)]) for t in np.arange(0, 4.0, 0.1)]
     r = m.evaluate(ped, [(0.0, 0.0, 0.0), (4.0, 0.0, 0.0)])
     assert r['phi_clear']['rho'] < 0          # person reaches the robot
     ped = [(t, [(0, 3.0, 0.0)]) for t in np.arange(0, 3, 0.1)]
     assert m.evaluate(ped, [(0.0, 0.0, 0.0)])['phi_clear']['rho'] > 0
 
 
-def test_reaction_delay_measured_from_onset():
-    ped = _walk(1.0)
-    cmd = [(t, -0.2 if t >= 1.0 else 0.0, 0.0) for t in np.arange(0, 4, 0.05)]
-    eps = m.reaction_delays(ped, cmd)
-    assert len(eps) == 1 and eps[0]['delay'] is not None
-    onset = eps[0]['t']
-    assert eps[0]['delay'] == pytest.approx(1.0 - onset, abs=0.06)
+def _approach_then_retreat(v_in, t_turn, t_end=6.0, hz=10):
+    """Person walks straight at the robot at v_in from 3 m; the robot (stationary
+    until t_turn) then retreats at v_in, so the relative closing speed drops to 0."""
+    ped, d = [], 3.0
+    for t in np.arange(0, t_end, 1 / hz):
+        ped.append((t, [(0, m.LIDAR_X + d, 0.0)]))
+        d -= v_in / hz * (1.0 if t < t_turn else 0.0)
+    return ped
 
 
-def test_no_reaction_is_reported_as_none():
-    eps = m.reaction_delays(_walk(1.0), [(t, 0.0, 0.0) for t in np.arange(0, 4, 0.05)])
-    assert eps and eps[0]['delay'] is None and eps[0]['rho'] is None
+def test_no_episode_while_the_person_is_far_and_slow():
+    ped = [(t, [(0, 3.0 - 0.3 * t, 0.0)]) for t in np.arange(0, 4, 0.1)]
+    assert m.reaction_episodes(ped) == []
+
+
+def test_episode_restored_when_relative_closing_falls():
+    # fast walker at 1.2 m/s: violates gamma*(clearance-D_MIN) once close enough
+    ped = _approach_then_retreat(1.2, t_turn=1.3)
+    eps = m.reaction_episodes(ped)
+    assert eps and eps[0]['status'] == 'restored'
+    assert eps[0]['closing'] > eps[0]['allowed']
+    assert 0.0 < eps[0]['delay'] < 1.5
+
+
+def test_never_restored_is_reported():
+    ped = [(t, [(0, m.LIDAR_X + 3.0 - 1.2 * t, 0.0)]) for t in np.arange(0, 2.2, 0.1)]
+    eps = m.reaction_episodes(ped)
+    assert eps and eps[0]['status'] in ('unrestored', 'track_lost')
+
+
+def test_track_loss_is_not_called_a_slow_reaction():
+    ped = [(t, [(0, m.LIDAR_X + 3.0 - 1.2 * t, 0.0)]) for t in np.arange(0, 1.6, 0.1)]
+    ped += [(t, []) for t in np.arange(1.6, 4, 0.1)]
+    eps = m.reaction_episodes(ped)
+    assert eps and eps[0]['status'] == 'track_lost'
 
 
 def test_id_break_vs_loss():
