@@ -148,7 +148,9 @@ parser.add_argument('--webrtc-camera', action='store_true', dest='webrtc_camera'
                          'full framerate; launches mediamtx. GUI shows the WebRTC <video>.')
 parser.add_argument('--auto-nav2-map', type=str, default=None, dest='auto_nav2_map',
                     metavar='MAP.yaml',
-                    help='Launch Nav2 + AMCL on this map at startup. OFF by '
+                    help='Launch Nav2 + AMCL on this map at startup, or "auto" to '
+                         'recognise the site (config/site_maps.json) from the '
+                         'first scans and use its map for the session. OFF by '
                          'default: AMCL publishes map->odom, and so does '
                          'slam_toolbox, so leaving this on breaks mapping and '
                          'makes RViz drop odom-framed messages.')
@@ -891,6 +893,7 @@ class ROS2Bridge:
         with self._lock:
             self._latest_obstacles = obstacles
             self._obstacles_stamp = time.monotonic()
+            self._latest_scan = msg     # raw scan, for site recognition
 
     def _image_cb(self, msg):
         """Convert sensor_msgs/Image (RGB_INT8 from Fortress) to cv2 BGR ndarray."""
@@ -1982,7 +1985,10 @@ def initialize_hardware():
         # starting SLAM produced two publishers fighting over one transform:
         # RViz could not transform odom-framed octomap data to a `map` fixed
         # frame, its filter queue filled, and the 3D map lagged by seconds.
-        if AUTO_NAV2_MAP:
+        if AUTO_NAV2_MAP == 'auto':
+            threading.Thread(target=_auto_site_nav2, args=(bridge, nav2_client),
+                             name="auto-site", daemon=True).start()
+        elif AUTO_NAV2_MAP:
             if not os.path.isfile(AUTO_NAV2_MAP):
                 logger.error("--auto-nav2-map %s does not exist; not launching "
                              "Nav2", AUTO_NAV2_MAP)
@@ -2437,6 +2443,60 @@ def _load_map_data(yaml_name: str) -> dict | None:
     except Exception as exc:
         logger.warning(f"[map] Failed to load {yaml_name}: {exc}")
         return None
+
+
+def _auto_site_nav2(bridge, nav2_client) -> None:
+    """
+    --auto-nav2-map auto: work out which site the robot is in (lab or
+    apartment, config/site_maps.json) from the first scans, then launch Nav2 +
+    AMCL on that map and seed AMCL with the matched pose.  Runs once; the map
+    stays for the session.  Refuses rather than guesses: on an unclear match
+    nothing launches and the GUI works as before.
+    """
+    import numpy as _np
+    from map_prior import SiteIdentifier, load_sites, scan_to_points
+    try:
+        ident = SiteIdentifier(load_sites())
+    except Exception as exc:
+        logger.error("[auto-site] could not load site maps: %s", exc)
+        return
+    result = None
+    for attempt in range(10):
+        time.sleep(2.0)
+        with bridge._lock:
+            scan = getattr(bridge, '_latest_scan', None)
+        if scan is None:
+            continue
+        # laser_link -> base_link: 180 deg flip plus the measured mount yaw
+        pts = scan_to_points(_np.asarray(scan.ranges), scan.angle_min,
+                             scan.angle_increment, scan.range_min, 6.0,
+                             0.0435, 0.0, math.pi + LIDAR_YAW_OFFSET_RAD)
+        result = ident.identify(pts)
+        logger.info("[auto-site] attempt %d: %s", attempt + 1, result)
+        if result.accepted:
+            break
+    if result is None or not result.accepted:
+        logger.warning("[auto-site] no clear site; Nav2 not launched. Pick the "
+                       "map in the GUI.")
+        return
+    logger.info("[auto-site] site=%s -> launching Nav2 + AMCL on %s",
+                result.site, result.map_path)
+    if not nav2_client.launch_nav2(use_sim_time=False,
+                                   map_path=result.map_path, slam=False):
+        return
+    if not result.pose.accepted:
+        logger.warning("[auto-site] pose inside %s is ambiguous; set it by hand",
+                       result.site)
+        return
+    # AMCL drops /initialpose published before it subscribes.
+    pub = nav2_client._initial_pose_pub
+    for _ in range(60):
+        if pub.get_subscription_count() > 0:
+            break
+        time.sleep(1.0)
+    time.sleep(2.0)
+    p = result.pose
+    nav2_client.set_initial_pose(p.x, p.y, p.yaw)
 
 
 def _resolve_map_path(yaml_name: str) -> str | None:

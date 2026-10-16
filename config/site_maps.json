@@ -1,0 +1,7 @@
+{
+  "_comment": "Maps the robot can recognise at startup (src/map_prior.py identify_site). Relative paths are under src/yahboomcar_nav/maps.",
+  "sites": {
+    "lab": "RealLab2.yaml",
+    "apartment": "newApartment1.yaml"
+  }
+}

@@ -1,0 +1,212 @@
+{
+ "empty-r2": {
+  "scans": 900,
+  "site": {
+   "site": "lab",
+   "margin": 2.136920375685284,
+   "per_site": {
+    "lab": 0.8030383586883545,
+    "apartment": 0.5791086554527283
+   },
+   "pose_reason": "scan match"
+  },
+  "match_score_median": 0.8160503208637238,
+  "match_score_p5": 0.8019497573375702,
+  "path_m": 24.891274878886307,
+  "by_d_tol": {
+   "0.10": {
+    "static_med": 0.7784067933683785,
+    "new_med": 0.0052716950527169504,
+    "new_p95": 0.014766669049647638,
+    "unknown_med": 0.0,
+    "learned_med": 0.21579804560260588,
+    "new_pts_med": 13.0,
+    "new_pts_p95": 36.0
+   },
+   "0.15": {
+    "static_med": 0.8108218063466233,
+    "new_med": 0.0036855036855036856,
+    "new_p95": 0.006918162451116072,
+    "unknown_med": 0.0,
+    "learned_med": 0.18518518518518517,
+    "new_pts_med": 9.0,
+    "new_pts_p95": 17.0
+   }
+  }
+ },
+ "empty-r3": {
+  "scans": 893,
+  "site": {
+   "site": "lab",
+   "margin": 2.3769845876474194,
+   "per_site": {
+    "lab": 0.8161858320236206,
+    "apartment": 0.5630765557289124
+   },
+   "pose_reason": "scan match"
+  },
+  "match_score_median": 0.8200283646583557,
+  "match_score_p5": 0.8044493079185486,
+  "path_m": 21.803089445550697,
+  "by_d_tol": {
+   "0.10": {
+    "static_med": 0.7859719520006092,
+    "new_med": 0.005149534763302004,
+    "new_p95": 0.009968698965704953,
+    "unknown_med": 0.0,
+    "learned_med": 0.20890139904897276,
+    "new_pts_med": 13.0,
+    "new_pts_p95": 25.0
+   },
+   "0.15": {
+    "static_med": 0.8112458078451052,
+    "new_med": 0.0040128410914927765,
+    "new_p95": 0.006771021875007452,
+    "unknown_med": 0.0,
+    "learned_med": 0.18463987266215678,
+    "new_pts_med": 10.0,
+    "new_pts_p95": 17.0
+   }
+  }
+ },
+ "cross-1.2m-r2": {
+  "scans": 458,
+  "site": {
+   "site": "lab",
+   "margin": 2.230437240396195,
+   "per_site": {
+    "lab": 0.8302406072616577,
+    "apartment": 0.6213623285293579
+   },
+   "pose_reason": "scan match"
+  },
+  "match_score_median": 0.8631302714347839,
+  "match_score_p5": 0.8335748523473739,
+  "path_m": 8.125226427350881,
+  "by_d_tol": {
+   "0.10": {
+    "static_med": 0.8202356102593632,
+    "new_med": 0.025143767823980142,
+    "new_p95": 0.05078098146618087,
+    "unknown_med": 0.0,
+    "learned_med": 0.15416769290480584,
+    "new_pts_med": 63.5,
+    "new_pts_p95": 126.0
+   },
+   "0.15": {
+    "static_med": 0.8707831348746122,
+    "new_med": 0.02360637544273908,
+    "new_p95": 0.04758106710227295,
+    "unknown_med": 0.0,
+    "learned_med": 0.10505204619647569,
+    "new_pts_med": 59.0,
+    "new_pts_p95": 118.75
+   }
+  }
+ },
+ "cross-2.4m-r2": {
+  "scans": 458,
+  "site": {
+   "site": "lab",
+   "margin": 2.2225585633609026,
+   "per_site": {
+    "lab": 0.8291451930999756,
+    "apartment": 0.6202651858329773
+   },
+   "pose_reason": "scan match"
+  },
+  "match_score_median": 0.8162733614444733,
+  "match_score_p5": 0.7984896123409271,
+  "path_m": 11.2163131950809,
+  "by_d_tol": {
+   "0.10": {
+    "static_med": 0.755061124655084,
+    "new_med": 0.021678054921800326,
+    "new_p95": 0.03839579314823521,
+    "unknown_med": 0.0,
+    "learned_med": 0.223621015003505,
+    "new_pts_med": 54.0,
+    "new_pts_p95": 95.75
+   },
+   "0.15": {
+    "static_med": 0.8153010033444816,
+    "new_med": 0.016870863726779754,
+    "new_p95": 0.031931734317046066,
+    "unknown_med": 0.0,
+    "learned_med": 0.16792828865487816,
+    "new_pts_med": 42.0,
+    "new_pts_p95": 80.0
+   }
+  }
+ },
+ "cross-3.5m-r2": {
+  "scans": 476,
+  "site": {
+   "site": "lab",
+   "margin": 2.407213668002531,
+   "per_site": {
+    "lab": 0.8134934902191162,
+    "apartment": 0.5510389804840088
+   },
+   "pose_reason": "scan match"
+  },
+  "match_score_median": 0.8148567974567413,
+  "match_score_p5": 0.7946929931640625,
+  "path_m": 7.881401904703768,
+  "by_d_tol": {
+   "0.10": {
+    "static_med": 0.7705020125097805,
+    "new_med": 0.011111112860782448,
+    "new_p95": 0.024389646808691663,
+    "unknown_med": 0.0,
+    "learned_med": 0.21864439324116744,
+    "new_pts_med": 28.0,
+    "new_pts_p95": 61.849999999999966
+   },
+   "0.15": {
+    "static_med": 0.8059582978320553,
+    "new_med": 0.009523811023527812,
+    "new_p95": 0.02147459532416719,
+    "unknown_med": 0.0,
+    "learned_med": 0.18410618862879619,
+    "new_pts_med": 24.0,
+    "new_pts_p95": 54.0
+   }
+  }
+ },
+ "approach-r2": {
+  "scans": 463,
+  "site": {
+   "site": "lab",
+   "margin": 2.1885269497871485,
+   "per_site": {
+    "lab": 0.8028873205184937,
+    "apartment": 0.568613588809967
+   },
+   "pose_reason": "scan match"
+  },
+  "match_score_median": 0.796495795249939,
+  "match_score_p5": 0.768447744846344,
+  "path_m": 12.70421221553428,
+  "by_d_tol": {
+   "0.10": {
+    "static_med": 0.7580325267750893,
+    "new_med": 0.021293375394321766,
+    "new_p95": 0.047995060288942515,
+    "unknown_med": 0.0,
+    "learned_med": 0.2199203187250996,
+    "new_pts_med": 54.0,
+    "new_pts_p95": 121.5
+   },
+   "0.15": {
+    "static_med": 0.7861433720464558,
+    "new_med": 0.020078740157480315,
+    "new_p95": 0.046622983150643824,
+    "unknown_med": 0.0,
+    "learned_med": 0.19213973799126638,
+    "new_pts_med": 51.0,
+    "new_pts_p95": 117.0
+   }
+  }
+ }
+}
