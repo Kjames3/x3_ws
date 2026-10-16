@@ -4522,6 +4522,8 @@ async def main():
 
     threading.Thread(target=_system_sampler, name='system_sampler',
                      daemon=True).start()
+    import loop_stall_probe
+    _stall_beat = asyncio.ensure_future(loop_stall_probe.start(threading.get_ident()))
 
     # Graceful shutdown: on SIGINT/SIGTERM (e.g. `systemctl restart`) set the flag so
     # the async loops exit, gather() returns, and the finally-block cleanup() runs —
