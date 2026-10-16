@@ -227,6 +227,7 @@ class OakDCamera:
         self._latest_depth_color = None   # lazily colourised from raw
         self._latest_raw_depth = None     # float32, metres
         self._last_depth_time = 0.0
+        self._latest_depth_observation = None
         self._latest_imu = None
         self._latest_detections = []
         self._latest_detections_t = 0.0   # monotonic, last NN packet decoded
@@ -576,9 +577,13 @@ class OakDCamera:
                             else:
                                 depth_packet = inDepth
                                 depth_mm = inDepth.getFrame()
-                            # getTimestamp() is the host-synced capture time on the
-                            # same clock as time.monotonic() (checked: 0.001 ms).
-                            self._process_depth(depth_mm, depth_packet.getTimestamp().total_seconds())
+                            # Use the same explicit SDK-to-monotonic mapping as
+                            # the recorder; keep capture and receipt distinct.
+                            depth_meta = self._packet_meta(depth_packet)
+                            self._process_depth(
+                                depth_mm, depth_meta['host_monotonic_estimate_ns'] / 1e9,
+                                frame_id=(self._capture_session, depth_meta['seq']),
+                                receipt_t=depth_meta['receipt_monotonic_ns'] / 1e9)
                             fps_n += 1
                             fps_win_n += 1
                             _now = time.monotonic()
@@ -779,7 +784,7 @@ class OakDCamera:
         with self._lock:
             return self._latest_detections, self._latest_detection_meta
 
-    def _process_depth(self, depth_mm, capture_t=None):
+    def _process_depth(self, depth_mm, capture_t=None, frame_id=None, receipt_t=None):
         raw_m = depth_mm.astype(np.float32) / 1000.0
         if self._inv_depth_offset:
             raw_m /= 1.0 + self._inv_depth_offset * raw_m   # 0 (invalid) stays 0
@@ -789,6 +794,15 @@ class OakDCamera:
                 self._depth_history.append((capture_t, raw_m))
             self._latest_depth_color = None   # invalidate; colourise lazily on demand
             self._last_depth_time = time.monotonic()
+            size = self._depth_intr_size
+            intr = ((self._depth_fx, self._depth_fy, self._depth_cx, self._depth_cy,
+                     *size) if size is not None else None)
+            self._latest_depth_observation = {
+                'depth': raw_m, 'intrinsics': intr, 'capture_t': capture_t,
+                'frame_id': frame_id if frame_id is not None else capture_t,
+                'session_id': getattr(self, '_capture_session', None),
+                'receipt_t': receipt_t if receipt_t is not None else self._last_depth_time,
+            }
 
     def _colourise(self, raw_m):
         clean = np.where(raw_m <= 0.1, DEPTH_MAX_M, raw_m)
@@ -1252,6 +1266,15 @@ class OakDCamera:
             if self._latest_raw_depth is raw:
                 self._latest_depth_color = coloured
         return coloured
+
+    def get_depth_observation(self):
+        """Atomic snapshot. Arrays are replaced, never modified by the producer.
+
+        Consumers must treat the depth array as read-only.
+        """
+        with self._lock:
+            obs = self._latest_depth_observation
+            return dict(obs) if obs is not None else None
 
     def get_detection_capture_time(self):
         """Monotonic capture time of the frame behind the latest detections."""

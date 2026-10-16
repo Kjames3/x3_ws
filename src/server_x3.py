@@ -93,6 +93,7 @@ from drivers_x3 import (
 from nav2_client import Nav2Client
 from frontier_explorer import FrontierExplorer
 from velocity_estimator import VelocityEstimator
+from velocity_timing import PoseHistory
 from pathlib import Path
 
 # =============================================================================
@@ -824,8 +825,9 @@ class ROS2Bridge:
         self._node.create_subscription(Image,          '/camera/image_raw', self._image_cb,  1)
         self._node.create_subscription(Image,          '/camera/depth_image', self._depth_cb, 1)
         self._node.create_subscription(Image,          '/camera/depth/image_raw', self._depth_cb, 1)
+        self._velocity_pose_history = PoseHistory()
         self._node.create_subscription(Odometry,       '/odom',             self._odom_cb,  10)
-        self._node.create_subscription(Odometry,       '/odom_raw',         self._odom_cb,  10)
+        self._node.create_subscription(Odometry,       '/odom_raw',         lambda msg: self._odom_cb(msg, fused=False),  10)
         self._node.create_subscription(Float32,        '/voltage',          self._voltage_cb, 10)
         self._node.create_subscription(OccupancyGrid,  '/map',              self._map_cb,    _map_qos)
         from rclpy.qos import qos_profile_sensor_data
@@ -976,7 +978,7 @@ class ROS2Bridge:
             return float('inf')
         return time.monotonic() - self._last_depth_write_time
 
-    def _odom_cb(self, msg):
+    def _odom_cb(self, msg, fused=True):
         """Extract position (metres), yaw (radians), and body twist from nav_msgs/Odometry."""
         self._odom_stamp = time.monotonic()  # Idea 225: record arrival time for staleness guard
         import math
@@ -984,6 +986,14 @@ class ROS2Bridge:
         q = msg.pose.pose.orientation
         yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
                          1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        if fused:
+            # Convert ROS acquisition time to host monotonic using the node's
+            # clock (also respects use_sim_time). No receipt-time substitution.
+            ros_now = self._node.get_clock().now().nanoseconds / 1e9
+            source_t = msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9
+            if source_t > 0 and 0 <= ros_now - source_t <= 0.5:
+                capture_t = time.monotonic() - (ros_now - source_t)
+                self._velocity_pose_history.add(capture_t, p.x, p.y, yaw)
         with self._lock:
             self._pose_m = {"x": p.x, "y": p.y, "theta": yaw}
             self._twist = {
@@ -2138,7 +2148,9 @@ def initialize_hardware():
                 return None
             return list(last_detections)
 
-        velocity_estimator = VelocityEstimator(get_current_depth_source, lidar, robot_pose_fn=get_robot_pose_and_twist, model_path=model_path, detections_fn=get_latest_yolo_detections)
+        velocity_estimator = VelocityEstimator(get_current_depth_source, lidar, robot_pose_fn=get_robot_pose_and_twist, model_path=model_path, detections_fn=get_latest_yolo_detections,
+            robot_pose_at_fn=(ros_bridge._velocity_pose_history.at
+                              if ros_bridge is not None else None))
         velocity_estimator.start()
         logger.info("VelocityEstimator started successfully")
     except Exception as e:
@@ -3632,6 +3644,8 @@ async def broadcast_loop():
                 "is_auto_driving": is_auto_driving,
                 "detections": last_detections,
                 "velocity_estimates": velocity_estimates,
+                "velocity_timing": (dict(velocity_estimator.timing_stats)
+                                    if velocity_estimator is not None else {}),
                 "c3_tracks": c3_tracks,
                 "c3_stats": c3_stats,
                 "foot_diagnostic": foot_diagnostic.snapshot() if foot_diagnostic is not None else None,

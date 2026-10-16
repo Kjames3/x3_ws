@@ -20,6 +20,7 @@ import os
 import math
 from pathlib import Path
 from collections import deque
+from velocity_timing import resample_positions, MAX_SAMPLE_GAP_S
 
 logger = logging.getLogger(__name__)
 
@@ -343,7 +344,7 @@ class VelocityEstimator:
         estimator.stop()
     """
 
-    def __init__(self, camera, lidar, robot_pose_fn=None, model_path=None, detections_fn=None):
+    def __init__(self, camera, lidar, robot_pose_fn=None, model_path=None, detections_fn=None, robot_pose_at_fn=None):
         """
         camera:        AstraCamera instance (or ROS2Bridge)
         lidar:         YDLidarDriver instance (or ROS2Bridge)
@@ -353,10 +354,13 @@ class VelocityEstimator:
         model_path:    optional string path to the TorchScript model file
         detections_fn: optional callable returning list of latest camera detections
                        for visual-LiDAR fusion gating.
+        robot_pose_at_fn: callable(monotonic_capture_time) returning a pose dict
+                          or None; required for timestamped depth with odometry.
         """
         self.camera        = camera
         self.lidar         = lidar
         self.robot_pose_fn = robot_pose_fn
+        self.robot_pose_at_fn = robot_pose_at_fn
         self.model_path    = model_path or MODEL_PATH
         self.detections_fn = detections_fn
 
@@ -374,6 +378,11 @@ class VelocityEstimator:
         self._thread    = None
         self._last_print_time = 0.0
         self._prev_estimates = {}
+        self._timed_histories = {}
+        self._last_capture_t = None
+        self._last_depth_key = None
+        self.timing_stats = dict(accepted=0, duplicates=0, invalid=0,
+                                 missing_pose=0, window_wait=0, gap_resets=0)
         self._logged_missing_intrinsics = False
         self._logged_stale_depth = False
         self._logged_missing_pose = False
@@ -807,6 +816,7 @@ class VelocityEstimator:
         row = {
             "frame": self._feature_frame,
             "t": time.monotonic(),
+            "capture_t": getattr(self, '_last_capture_t', None),
             "tid": int(tid),
             "z": float(centroid[2]),
             "visible_count": int(visible_count),
@@ -842,13 +852,36 @@ class VelocityEstimator:
         except Exception as exc:
             logger.error("VelocityEstimator: failed writing feature log: %s", exc)
 
-    def _step(self, centroids_m, rx_rob, ry_rob, rtheta_rob, person_flags=None):
+    def _reset_timed_tracks(self):
+        self._tracker.reset()
+        self._prev_estimates.clear()
+        self._timed_histories.clear()
+        self._last_capture_t = None
+        with self._lock:
+            self._estimates = []
+
+    def _step(self, centroids_m, rx_rob, ry_rob, rtheta_rob, person_flags=None,
+              capture_t=None):
         """Track, infer and clamp one frame of camera-local centroids.
 
         Split out of the inference loop so offline replay (c3_replay.py)
         runs exactly the deployed tracker/MLP/gating chain. Returns
         ``(estimates, tracks)``.
         """
+        step_dt = 1.0 / INFER_HZ
+        if capture_t is not None:
+            if not math.isfinite(capture_t):
+                self._reset_timed_tracks()
+                return [], {}
+            previous = self._last_capture_t
+            if previous is not None:
+                if capture_t <= previous:
+                    return [], {}  # repeated/out-of-order data is not a measurement
+                step_dt = capture_t - previous
+                if step_dt > MAX_SAMPLE_GAP_S:
+                    self.timing_stats['gap_resets'] += 1
+                    self._reset_timed_tracks()
+            self._last_capture_t = capture_t
         # Compute global coordinates of centroids (Idea 1, 11, & 121)
         centroids_g = []
         cos_r = math.cos(rtheta_rob)
@@ -866,6 +899,21 @@ class VelocityEstimator:
         if person_flags is not None and len(person_flags) != len(centroids_m):
             person_flags = None
         tracks = self._tracker.update(centroids_m, centroids_g, person_flags)
+        timed_windows = {}
+        if capture_t is not None:
+            self._timed_histories = {tid: h for tid, h in self._timed_histories.items()
+                                     if tid in tracks}
+            for tid, track in tracks.items():
+                if track['age'] != 0:
+                    continue
+                history = self._timed_histories.setdefault(tid, deque(maxlen=64))
+                if history and capture_t - history[-1][0] > MAX_SAMPLE_GAP_S:
+                    history.clear()
+                    self._prev_estimates.pop(tid, None)
+                history.append((capture_t, track['centroid_global']))
+                window = resample_positions(history, WINDOW_SIZE)
+                if window is not None:
+                    timed_windows[tid] = window
 
         # 5. Run MLP inference on active tracks (batched) (Idea 46)
         estimates = []
@@ -880,6 +928,11 @@ class VelocityEstimator:
                 self._feature_frame % 300 == 0):
             self._flush_feature_log()
         for tid, track in tracks.items():
+            if capture_t is not None and tid not in timed_windows:
+                self.timing_stats['window_wait'] += 1
+                self._record_track(tid, track['centroid'], track['visible_count'],
+                                   'gated_timing')
+                continue
             # Filter out tracks that do not satisfy the track initiation gate (Idea 109)
             if track.get('visible_count', 1) < 3:
                 self._record_track(tid, track['centroid'],
@@ -935,7 +988,7 @@ class VelocityEstimator:
                 continue
 
             # Reconstruct relative history for this track in the robot's current frame (Idea 1 & 11)
-            hist_g_arr = np.array(list(track['history_global']), dtype=np.float32)  # shape (T, 3)
+            hist_g_arr = np.array(timed_windows[tid] if capture_t is not None else list(track['history_global']), dtype=np.float32)  # shape (T, 3)
             if len(hist_g_arr) == 0:
                 continue
             dxy = hist_g_arr[:, :2] - np.array([rx_rob, ry_rob], dtype=np.float32)  # (T, 2)
@@ -1012,7 +1065,7 @@ class VelocityEstimator:
                 })
 
         # Idea 152: clamp velocity change between frames to max human acceleration (3 m/s²)
-        max_delta = 3.0 / INFER_HZ  # max speed change per frame = 0.3 m/s at 10Hz
+        max_delta = 3.0 * step_dt  # acceleration bound uses actual capture interval
         for est in estimates:
             tid = est['id']
             if tid in self._prev_estimates:
@@ -1026,6 +1079,8 @@ class VelocityEstimator:
                 est['speed'] = float(np.sqrt(est['vx']**2 + est['vy']**2))
         self._prev_estimates = {est['id']: est for est in estimates}
         for est in estimates:
+            if capture_t is not None:
+                est['capture_t'] = capture_t
             tr = tracks[est['id']]
             est['is_person'] = tr.get('is_person')
             for key in ('age', 'person_frames', 'jump_age'):
@@ -1053,16 +1108,52 @@ class VelocityEstimator:
             try:
                 # 1. Get depth and raw depth frames
                 cam_src = self.camera() if callable(self.camera) else self.camera
-                depth_frame = cam_src.get_depth_frame() if (cam_src is not None and hasattr(cam_src, 'get_depth_frame')) else None
-                raw_depth_frame = cam_src.get_raw_depth_frame() if (cam_src is not None and hasattr(cam_src, 'get_raw_depth_frame')) else None
-                depth_intrinsics = cam_src.get_depth_intrinsics() if (cam_src is not None and hasattr(cam_src, 'get_depth_intrinsics')) else None
+                capture_t = None
+                capture_pose = None
+                if cam_src is not None and hasattr(cam_src, 'get_depth_observation'):
+                    obs = cam_src.get_depth_observation()
+                    now = time.monotonic()
+                    if (obs is None or obs['capture_t'] is None or
+                            not math.isfinite(obs['capture_t']) or
+                            not 0 <= now - obs['capture_t'] <= MAX_DEPTH_FRAME_AGE_S):
+                        self.timing_stats['invalid'] += 1
+                        self._reset_timed_tracks()
+                        time.sleep(max(0.001, dt - (time.monotonic() - t0)))
+                        continue
+                    key = (id(cam_src), obs.get('session_id'), obs['frame_id'])
+                    if key == self._last_depth_key:
+                        self.timing_stats['duplicates'] += 1
+                        time.sleep(max(0.001, dt - (time.monotonic() - t0)))
+                        continue
+                    if self._last_depth_key is not None and key[:2] != self._last_depth_key[:2]:
+                        self._reset_timed_tracks()
+                    self._last_depth_key = key
+                    capture_t = obs['capture_t']
+                    if self.robot_pose_fn is not None:
+                        pose_at = self.robot_pose_at_fn
+                        capture_pose = pose_at(capture_t) if pose_at is not None else None
+                        if capture_pose is None:
+                            self.timing_stats['missing_pose'] += 1
+                            self._reset_timed_tracks()
+                            time.sleep(max(0.001, dt - (time.monotonic() - t0)))
+                            continue
+                    else:
+                        capture_pose = {'x': 0.0, 'y': 0.0, 'theta': 0.0}
+                    depth_frame = None  # extraction uses the atomic raw observation
+                    raw_depth_frame, depth_intrinsics = obs['depth'], obs['intrinsics']
+                    self.timing_stats['accepted'] += 1
+                else:
+                    # Legacy Astra/ROS camera sources keep their existing contract.
+                    depth_frame = cam_src.get_depth_frame() if (cam_src is not None and hasattr(cam_src, 'get_depth_frame')) else None
+                    raw_depth_frame = cam_src.get_raw_depth_frame() if (cam_src is not None and hasattr(cam_src, 'get_raw_depth_frame')) else None
+                    depth_intrinsics = cam_src.get_depth_intrinsics() if (cam_src is not None and hasattr(cam_src, 'get_depth_intrinsics')) else None
 
                 # Reject a stalled camera. Without this the loop keeps
                 # re-projecting the last frame at INFER_HZ; the centroids are
                 # frozen but the odometry used to place them in the global frame
                 # is not, so a moving robot manufactures obstacle motion out of a
                 # dead camera. Drop the estimates rather than publish stale ones.
-                if cam_src is not None and hasattr(cam_src, 'get_depth_frame_age'):
+                if capture_t is None and cam_src is not None and hasattr(cam_src, 'get_depth_frame_age'):
                     try:
                         frame_age = cam_src.get_depth_frame_age()
                     except Exception:
@@ -1087,6 +1178,8 @@ class VelocityEstimator:
                 # Fast-path: skip all processing when no valid depth data exists
                 if raw_depth_frame is not None and raw_depth_frame.size > 0:
                     if not np.any((raw_depth_frame >= 0.5) & (raw_depth_frame <= 4.0)):
+                        if capture_t is not None:
+                            self._reset_timed_tracks()
                         with self._lock:
                             self._estimates = []
                         elapsed = time.monotonic() - t0
@@ -1099,7 +1192,9 @@ class VelocityEstimator:
 
                 # 3. Query robot pose for global mapping & slip compensation (Idea 1 & 11)
                 robot_data = None
-                if self.robot_pose_fn is not None:
+                if capture_pose is not None:
+                    robot_data = {'pose': capture_pose}
+                elif self.robot_pose_fn is not None:
                     try:
                         robot_data = self.robot_pose_fn()
                     except Exception as e:
@@ -1135,7 +1230,7 @@ class VelocityEstimator:
                     self._logged_missing_pose = False
 
                 estimates, tracks = self._step(centroids_m, rx_rob, ry_rob, rtheta_rob,
-                                               self._last_person_flags)
+                                               self._last_person_flags, capture_t=capture_t)
 
                 with self._lock:
                     self._estimates = estimates
