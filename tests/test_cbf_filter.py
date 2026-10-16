@@ -12,6 +12,7 @@ from scipy.optimize import minimize
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 
+import cbf_filter  # noqa: E402
 from cbf_filter import HolonomicCBFFilter, _project  # noqa: E402
 
 
@@ -474,11 +475,27 @@ def test_a_person_does_not_buy_speed_toward_a_wall():
     # all relaxed alike: backs up faster than the wall allows
     u_eq = np.array(cbf.filter_velocity(0.0, 0.0, (0.0, 0.0), obstacles, vel, 0.0, radii, gammas))
     assert cbf.last_relaxation > 0 and np.min(n[firm] @ u_eq - c[firm]) < -0.05
-    # person soft: the wall's limit holds exactly, 2.0 * (0.20 - 0.10) m/s
+    # person soft: the wall's limit is never exceeded, 2.0 * (0.20 - 0.10) m/s;
+    # the retreat may fall short of it by the fallback's effort tolerance
     u = np.array(cbf.filter_velocity(0.0, 0.0, (0.0, 0.0), obstacles, vel, 0.0, radii, gammas, soft))
     assert np.min(n[firm] @ u - c[firm]) >= -1e-6
-    assert u[0] == pytest.approx(-0.20, abs=1e-4) and abs(u[1]) < 1e-6
+    assert -0.20 - 1e-4 <= u[0] <= -0.20 + cbf_filter._LP_EFFORT_TOL + 1e-4 and abs(u[1]) < 1e-6
     assert cbf.last_relaxation > 0
+
+
+def test_fallback_does_not_slide_sideways_for_a_sliver_of_retreat():
+    """Wall skewed by 20 deg behind, person closing from ahead: the exact optimum
+    slides sideways along the wall to gain a little retreat; the tolerance does not."""
+    cbf = HolonomicCBFFilter(gamma=2.0, footprint=FP, margin=0.10)
+    th = math.radians(20)
+    pts = [(-0.33 - s * math.sin(th), s * math.cos(th)) for s in np.linspace(-0.4, 0.4, 17)]
+    obstacles = pts + [(0.6, 0.0)]
+    vel = [(0.0, 0.0)] * len(pts) + [(-1.0, 0.0)]
+    radii = [0.0] * len(pts) + [0.25]
+    gammas = [2.0] * len(pts) + [1.0]
+    soft = [False] * len(pts) + [True]
+    u = cbf.filter_velocity(0.0, 0.0, (0.0, 0.0), obstacles, vel, 0.0, radii, gammas, soft)
+    assert abs(u[1]) < 0.02   # was 0.12 m/s sideways for 0.05 m/s more retreat
 
 
 def test_soft_marks_change_nothing_when_everything_can_be_met():

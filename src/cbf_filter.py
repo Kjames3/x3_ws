@@ -48,6 +48,7 @@ _EPS = 1e-9
 _SQRT2 = math.sqrt(2.0)
 _SHUFFLE_AFTER = 6       # _project passes in sorted order before shuffling
 _LP_BATCH = 48          # rows added per round of the fallback LP
+_LP_EFFORT_TOL = 0.05   # m/s of extra relaxation the fallback trades for a command nearer u_nom
 # The four faces of |vx| + |vy| <= V, as unit normals pointing inward.
 _DIAMOND = -np.array([[1.0, 1.0], [1.0, -1.0], [-1.0, 1.0], [-1.0, -1.0]]) / _SQRT2
 
@@ -424,6 +425,13 @@ class HolonomicCBFFilter:
             self.last_relaxation = float('nan')
             return np.zeros(2)
         t = float(res.x[2])
-        self.last_relaxation = -t
-        u = _project(u_nom, n_all, np.concatenate((c_obs + t * slack - 1e-7, c_spd)))
+        # Soft (person) rows only: accept a relaxation a little worse than the
+        # optimum so the command nearest u_nom wins; otherwise the LP spends a
+        # large sideways slide to gain a few cm/s of retreat. Never accept less
+        # than standing still gives, and leave firm-vs-firm exact.
+        t_eff = t
+        if soft is not None and soft.any():
+            t_eff = max(t - _LP_EFFORT_TOL, float((-c_obs[soft]).min()))
+        self.last_relaxation = -t_eff
+        u = _project(u_nom, n_all, np.concatenate((c_obs + t_eff * slack - 1e-7, c_spd)))
         return u if u is not None else np.asarray(res.x[:2], dtype=np.float64)
