@@ -127,6 +127,7 @@ def test_a_moving_robot_does_not_turn_the_walls_into_foreground():
 def test_true_age_exposes_republished_estimates():
     rec = np.arange(0, 2.0, 0.05)
     st = np.floor(rec / 0.1) * 0.1 - 0.27          # a fresh estimate every 0.1 s, sent at 20 Hz
+    st = st + np.random.default_rng(0).uniform(0, 3e-4, len(st))   # clock-read jitter
     a = m.true_age(rec, st)
     assert 0.45 < a['dup_share'] < 0.55
     assert a['max_age'] == pytest.approx(0.27 + 0.05, abs=0.01)

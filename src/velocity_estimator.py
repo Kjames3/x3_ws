@@ -1087,6 +1087,9 @@ class VelocityEstimator:
                         logger.info("VelocityEstimator: person id %s back on the model after "
                                     "coasting %.2f s", tid, capture_t - began)
 
+        if capture_t is not None:
+            self._end_stale_coasts(tracks, estimates, capture_t)
+
         # Idea 152: clamp velocity change between frames to max human acceleration (3 m/s²)
         max_delta = 3.0 * step_dt  # acceleration bound uses actual capture interval
         for est in estimates:
@@ -1120,6 +1123,20 @@ class VelocityEstimator:
             else:
                 est['category'] = None
         return estimates, tracks
+
+    def _end_stale_coasts(self, tracks, estimates, capture_t):
+        """Close out coasts that ended without a model output (track gone or expired)."""
+        live = {e['id'] for e in estimates if e.get('coasted')}
+        for tid in [t for t in self._coasting if t not in live]:
+            began = self._coasting[tid]
+            if tid in tracks and any(e['id'] == tid for e in estimates):
+                continue   # a model estimate this frame: the model branch logs it
+            self._coasting.pop(tid)
+            why = 'track gone' if tid not in tracks else 'coast expired'
+            logger.info("VelocityEstimator: person id %s stopped coasting after %.2f s (%s)",
+                        tid, capture_t - began, why)
+        for tid in [t for t in self._last_model if t not in tracks]:
+            del self._last_model[tid]
 
     def _coast_estimate(self, tid, track, capture_t):
         """Hold the last model velocity for a matched track whose window is rebuilding.

@@ -218,3 +218,23 @@ def test_ros_stamp_places_capture_at_its_age():
     assert ros_stamp_ns(10_000_000_000, 50.0, 40.0) is None      # implausibly old
     assert ros_stamp_ns(10_000_000_000, 50.0, float('nan')) is None
     assert ros_stamp_ns(10_000_000_000, 50.0, None) is None
+
+
+def test_coast_that_ends_without_the_model_is_closed_out(caplog):
+    import logging
+    est = estimator()
+    for t in np.arange(0, 1.5, .1):
+        est._step([(0, 0, 3 - t)], 0, 0, 0, [True], capture_t=float(t))
+    t = 1.4
+    for _ in range(4):
+        t += .1
+        est._step([], 0, 0, 0, [], capture_t=float(t))
+    t += .1
+    with caplog.at_level(logging.INFO):
+        est._step([(0, 0, 3 - t)], 0, 0, 0, [True], capture_t=float(t))      # starts coasting
+        assert est._coasting
+        for _ in range(40):                                                    # person leaves; tracker drops it
+            t += .1
+            est._step([], 0, 0, 0, [], capture_t=float(t))
+    assert not est._coasting and not est._last_model
+    assert any('stopped coasting' in r.message for r in caplog.records)

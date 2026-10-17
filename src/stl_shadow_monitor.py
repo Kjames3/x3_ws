@@ -329,7 +329,9 @@ def true_age(rec, st):
     only repeat the previous stamp (a republished cached estimate)."""
     ok = st > 0
     age = (rec - st)[ok]
-    dup = float((np.diff(st[ok]) == 0).mean()) if ok.sum() > 1 else 0.0
+    # the publisher derives the stamp from two clock reads, so a republished capture
+    # differs by microseconds: call stamps within 2 ms the same estimate
+    dup = float((np.abs(np.diff(st[ok])) < 2e-3).mean()) if ok.sum() > 1 else 0.0
     return dict(rho=float(TRUE_AGE_MAX - age.max()), max_age=float(age.max()),
                 p50=float(np.median(age)), p95=float(np.percentile(age, 95)),
                 dup_share=dup, n=int(ok.sum()))
