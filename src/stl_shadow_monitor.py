@@ -17,6 +17,8 @@ Specs (robustness rho >= 0 means satisfied; margin in the signal's units):
   phi_hold    a track last seen within NEAR_M must not vanish: G (near(id) -> F[0,HOLD_S] seen(id))
               reported as events: 'lost' (nothing near within BREAK_DIST after)
               or 'id_break' (a new id appears near the old one within BREAK_S)
+  phi_cover   (--lidar) a lidar foreground object ahead must have a person estimate within
+              COVER_S; the beam background is its 90th-percentile range over the run
   phi_react   relative closing speed > PERSON_GAMMA * (clearance - D_MIN), the CBF's own
               person-row bound -> F[0,REACT_S] closing back within it
               rho = REACT_S - delay, per episode; track loss is reported separately
@@ -51,6 +53,11 @@ RESTORE_TOL = 0.05
 RESTORE_HOLD_S = 0.2
 EPISODE_MAX_S = 3.0
 GRID_HZ = 20.0
+FG_DROP_M = 0.30        # a return this much nearer than its beam's background is foreground
+SECTOR_X = (0.05, 2.0)  # lidar presence sector in base_link: ahead of the robot ...
+SECTOR_Y = 0.8          # ... and within this half-width
+COVER_S = 0.5           # a foreground object ahead needs a person estimate within this long
+MIN_FG_POINTS = 3
 
 
 def rect_distance(x, y, fp=FOOTPRINT):
@@ -202,6 +209,148 @@ def reaction_episodes(ped, gamma=PERSON_GAMMA):
     return eps
 
 
+CELL_M = 0.10
+STATIC_FRAC = 0.35      # a world cell occupied in this share of scans is background
+
+
+def _cells(pts):
+    return np.floor(pts / CELL_M).astype(np.int64)
+
+
+def scan_foreground(ranges, angle_min, inc, t, poses):
+    """ranges: (n_scans, n_beams), NaN for no return; poses: (n_scans, 3) odom x, y, yaw
+    at each scan. Returns per-scan nearest foreground point (x, y, n) in base_link
+    inside the front sector, or None.
+
+    Points go to the odom frame and are binned in CELL_M cells; a cell occupied in
+    at least STATIC_FRAC of all scans (or next to one) is background, so the robot
+    may move. A walker that dwells in a cell for over a third of the run would be
+    absorbed; the cornered runs do not.
+    """
+    r = np.asarray(ranges, float)
+    k = np.arange(r.shape[1])
+    ang = angle_min + k * inc + math.pi          # laser_joint is yawed by pi
+    cx, cy = np.cos(ang), np.sin(ang)
+    per_scan, counts = [], {}
+    for i in range(r.shape[0]):
+        ri = r[i]
+        ok = np.isfinite(ri) & (ri > 0.12)
+        bx = LIDAR_X + ri[ok] * cx[ok]
+        by = ri[ok] * cy[ok]
+        px, py, th = poses[i]
+        ox = px + bx * math.cos(th) - by * math.sin(th)
+        oy = py + bx * math.sin(th) + by * math.cos(th)
+        cells = _cells(np.column_stack([ox, oy]))
+        keys = cells[:, 0] * 100003 + cells[:, 1]
+        per_scan.append((bx, by, cells, keys))
+        for u in np.unique(keys):
+            counts[u] = counts.get(u, 0) + 1
+    need = STATIC_FRAC * r.shape[0]
+    static = {u for u, c in counts.items() if c >= need}
+    out = []
+    for i, (bx, by, cells, keys) in enumerate(per_scan):
+        near_static = np.zeros(len(keys), bool)
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                nk = (cells[:, 0] + dx) * 100003 + (cells[:, 1] + dy)
+                near_static |= np.fromiter((u in static for u in nk), bool, len(nk))
+        sel = (~near_static) & (bx > SECTOR_X[0]) & (bx < SECTOR_X[1]) & (np.abs(by) < SECTOR_Y)
+        if sel.sum() < MIN_FG_POINTS:
+            out.append((t[i], None))
+            continue
+        j = np.flatnonzero(sel)[np.argmin(np.hypot(bx[sel], by[sel]))]
+        out.append((t[i], (float(bx[j]), float(by[j]), int(sel.sum()))))
+    return out
+
+
+def cross_check(fg, ped):
+    """Compare the lidar foreground with the person estimate.
+
+    fg:  [(t, (x, y, n) | None)] from scan_foreground
+    ped: [(t, [(id, x, y), ...])]
+    Returns presence coverage, uncovered intervals and the range disagreement.
+    """
+    pt = np.array([p[0] for p in ped])
+    seen = [(i, t) for i, (t, f) in enumerate(fg) if f is not None]
+    covered, missed, diffs = 0, [], []
+    open_ = None
+    for i, (t, f) in enumerate(fg):
+        j = np.searchsorted(pt, t, side='right') - 1
+        recent = [q for q in ped[max(j - 12, 0):j + 1] if t - q[0] <= COVER_S and q[1]]
+        if f is None:
+            if open_ is not None:
+                missed.append(open_)
+                open_ = None
+            continue
+        if recent:
+            covered += 1
+            est = min(recent[-1][1], key=lambda q: math.hypot(q[1], q[2]))
+            diffs.append(math.hypot(est[1], est[2]) - math.hypot(f[0], f[1]))
+            if open_ is not None:
+                missed.append(open_)
+                open_ = None
+        elif open_ is None:
+            open_ = dict(t=t, end=t, range=math.hypot(f[0], f[1]), n=f[2])
+        else:
+            open_['end'] = t
+    if open_ is not None:
+        missed.append(open_)
+    return dict(lidar_frames=len(seen), covered=covered,
+                coverage=(covered / len(seen)) if seen else None,
+                missed=[m for m in missed if m['end'] - m['t'] >= 0.0],
+                range_diff=(dict(median=float(np.median(diffs)), p90_abs=float(np.percentile(np.abs(diffs), 90)),
+                                 n=len(diffs)) if diffs else None))
+
+
+def load_odom(db):
+    from rclpy.serialization import deserialize_message
+    from rosidl_runtime_py.utilities import get_message
+    c = sqlite3.connect('file:%s?mode=ro' % db, uri=True)
+    row = c.execute("select id,type from topics where name='/odom'").fetchone()
+    if row is None:
+        return None
+    T = get_message(row[1])
+    rows = []
+    for ts, d in c.execute('select timestamp,data from messages where topic_id=? order by timestamp', (row[0],)):
+        m = deserialize_message(d, T)
+        q = m.pose.pose.orientation
+        rows.append((ts * 1e-9, m.pose.pose.position.x, m.pose.pose.position.y,
+                     math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))))
+    return np.array(rows)
+
+
+def poses_at(odom, t):
+    yaw = np.unwrap(odom[:, 3])
+    return np.column_stack([np.interp(t, odom[:, 0], odom[:, 1]), np.interp(t, odom[:, 0], odom[:, 2]),
+                            np.interp(t, odom[:, 0], yaw)])
+
+
+def load_scans(db):
+    from rclpy.serialization import deserialize_message
+    from rosidl_runtime_py.utilities import get_message
+    c = sqlite3.connect('file:%s?mode=ro' % db, uri=True)
+    row = c.execute("select id,type from topics where name='/scan'").fetchone()
+    if row is None:
+        return None
+    T = get_message(row[1])
+    t, rs, am, inc = [], [], None, None
+    for ts, d in c.execute('select timestamp,data from messages where topic_id=? order by timestamp', (row[0],)):
+        m = deserialize_message(d, T)
+        r = np.asarray(m.ranges, float)
+        r[~np.isfinite(r) | (r <= 0)] = np.nan
+        if rs and len(r) != len(rs[0]):
+            continue
+        t.append(ts * 1e-9)
+        rs.append(r)
+        am, inc = m.angle_min, m.angle_increment
+    if not rs:
+        return None
+    odom = load_odom(db)
+    t = np.array(t)
+    poses = poses_at(odom, t) if odom is not None else np.zeros((len(t), 3))
+    return t, np.array(rs), am, inc, poses
+
+
 def load_bag(db):
     from rclpy.serialization import deserialize_message
     from rosidl_runtime_py.utilities import get_message
@@ -225,12 +374,12 @@ def load_bag(db):
     return out['/pedestrian_states'], out['/cmd_vel']
 
 
-def evaluate(ped, cmd):
+def evaluate(ped, cmd, scans=None):
     t0, t1 = ped[0][0], ped[-1][0]
     grid = np.arange(t0, t1, 1.0 / GRID_HZ)
     clr, age, rng = clearance_series(ped, grid)
     seen = np.isfinite(clr)
-    res = dict(duration=t1 - t0, person_time=float(seen.mean() * (t1 - t0)),
+    res = dict(t0=t0, duration=t1 - t0, person_time=float(seen.mean() * (t1 - t0)),
                tracks=len({i for _, pts in ped for i, _, _ in pts}))
     if seen.any():
         k = int(np.nanargmin(clr))
@@ -246,6 +395,9 @@ def evaluate(ped, cmd):
     res['phi_react'] = [dict(t=e['t'] - t0, clearance=e['clearance'], closing=e['closing'],
                              allowed=e['allowed'], status=e['status'], delay=e.get('delay'),
                              rho=e['rho']) for e in eps]
+    if scans is not None:
+        t, rs, am, inc, poses = scans
+        res['phi_cover'] = cross_check(scan_foreground(rs, am, inc, t, poses), ped)
     return res
 
 
@@ -265,6 +417,19 @@ def report(name, r):
              'track_lost': 'person track lost', 'unrestored': 'not restored within %.0f s' % EPISODE_MAX_S}[e['status']]
         print('  phi_react  t=%.1f s clearance %.2f m closing %.2f > allowed %.2f m/s -> %s'
               % (e['t'], e['clearance'], e['closing'], e['allowed'], d))
+    c = r.get('phi_cover')
+    if c:
+        if c['coverage'] is None:
+            print('  phi_cover  no lidar foreground ahead of the robot')
+        else:
+            long = [m for m in c['missed'] if m['end'] - m['t'] >= 0.3]
+            print('  phi_cover  lidar sees something ahead in %d scans, person estimate present in %.0f%%; '
+                  '%d uncovered stretches >= 0.3 s%s' % (c['lidar_frames'], 100 * c['coverage'], len(long),
+                  ''.join(' [t=%.1f +%.1f s at %.2f m]' % (m['t'] - r['t0'], m['end'] - m['t'], m['range']) for m in long[:6])))
+            if c['range_diff']:
+                d = c['range_diff']
+                print('  phi_cover  estimate minus lidar range: median %+.2f m, p90 |diff| %.2f m (n=%d)'
+                      % (d['median'], d['p90_abs'], d['n']))
     n = len(r['phi_react'])
     if n:
         print('  phi_react  %d episodes: %d restored, %d track lost, %d unrestored'
@@ -275,16 +440,18 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('paths', nargs='+')
     ap.add_argument('--json', action='store_true')
+    ap.add_argument('--lidar', action='store_true', help='cross-check against /scan foreground')
     a = ap.parse_args()
     allr = {}
     for p in a.paths:
         p = Path(p)
         db = next(iter(sorted(p.glob('bag/*.db3')))) if p.is_dir() else p
         ped, cmd = load_bag(db)
+        scans = load_scans(db) if a.lidar else None
         if len(ped) < 2:
             print('== %s: no pedestrian data' % p)
             continue
-        allr[str(p)] = evaluate(ped, cmd)
+        allr[str(p)] = evaluate(ped, cmd, scans)
         if not a.json:
             report(p.name, allr[str(p)])
     if a.json:

@@ -68,3 +68,57 @@ def test_id_break_vs_loss():
     assert [e['kind'] for e in m.track_events(brk)] == ['id_break']
     lost = a + [(t, []) for t in np.arange(1, 3, 0.1)]
     assert [e['kind'] for e in m.track_events(lost)] == ['lost']
+
+
+def _scan_run(n_scans=60, n_beams=360, wall=3.0, person_from=20, person_to=40, person_r=1.0):
+    """Wall at 3 m everywhere; a narrow object appears dead ahead for some scans."""
+    inc = 2 * np.pi / n_beams
+    am = -np.pi
+    r = np.full((n_scans, n_beams), wall)
+    ang = am + np.arange(n_beams) * inc + np.pi
+    ahead = np.abs(np.arctan2(np.sin(ang), np.cos(ang))) < 0.15
+    r[person_from:person_to, ahead] = person_r
+    return r, am, inc, np.arange(n_scans) * 0.14
+
+
+def test_foreground_ignores_the_wall_and_finds_the_object():
+    r, am, inc, t = _scan_run()
+    fg = m.scan_foreground(r, am, inc, t, np.zeros((len(t), 3)))
+    assert all(f is None for _, f in fg[:20]) and all(f is None for _, f in fg[40:])
+    x, y, n = fg[30][1]
+    assert x == pytest.approx(m.LIDAR_X + 1.0, abs=0.05) and abs(y) < 0.2 and n >= 3
+
+
+def test_cross_check_reports_covered_and_missed_presence():
+    r, am, inc, t = _scan_run()
+    fg = m.scan_foreground(r, am, inc, t, np.zeros((len(t), 3)))
+    # estimator sees the person for the first half of the lidar's window only
+    ped = [(tt, [(0, m.LIDAR_X + 1.0, 0.0)] if tt < t[30] else []) for tt in np.arange(0, 8.4, 0.06)]
+    c = m.cross_check(fg, ped)
+    assert c['lidar_frames'] == 20 and 0.3 < c['coverage'] < 0.9
+    assert c['missed'] and c['missed'][0]['t'] > t[30]
+    assert abs(c['range_diff']['median']) < 0.1
+
+
+def test_nothing_ahead_means_no_coverage_requirement():
+    r, am, inc, t = _scan_run(person_from=0, person_to=0)
+    c = m.cross_check(m.scan_foreground(r, am, inc, t, np.zeros((len(t), 3))), [(0.0, [])])
+    assert c['lidar_frames'] == 0 and c['coverage'] is None
+
+
+def test_a_moving_robot_does_not_turn_the_walls_into_foreground():
+    """Walls at x=+3 and x=-3 in odom; the robot backs away 1 m. Per-beam ranges
+    change a lot, but the world cells do not."""
+    n_scans, n_beams = 60, 360
+    inc, am = 2 * np.pi / n_beams, -np.pi
+    ang = am + np.arange(n_beams) * inc + np.pi
+    xs = -np.linspace(0, 1.0, n_scans)
+    r = np.full((n_scans, n_beams), np.nan)
+    for i, xr in enumerate(xs):
+        dx, dy = np.cos(ang), np.sin(ang)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            hit = np.where(dx > 1e-6, (3.0 - xr) / dx, np.where(dx < -1e-6, (-3.0 - xr) / dx, np.nan))
+        r[i] = np.where((hit > 0) & (hit < 12), hit, np.nan)
+    poses = np.column_stack([xs, np.zeros(n_scans), np.zeros(n_scans)])
+    fg = m.scan_foreground(r, am, inc, np.arange(n_scans) * 0.14, poses)
+    assert sum(f is not None for _, f in fg) <= 2
