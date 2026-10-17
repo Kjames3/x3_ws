@@ -159,3 +159,54 @@ def test_uniform_timed_window_matches_legacy_features():
     timed = next(r['feats'] for r in reversed(est._feature_rows) if r['status'] == 'ok')
     legacy, _ = est._build_window_features([(0, 0, 2 + .5*t) for t in np.arange(10)*.1])
     np.testing.assert_allclose(timed, legacy.ravel(), atol=3e-7)
+
+
+def _walk_then_flicker(est, flicker_s, t_walk=1.5):
+    """Person walking toward the robot at 1 m/s, then no centroid for flicker_s."""
+    last = None
+    for t in np.arange(0, t_walk, .1):
+        out, _ = est._step([(0, 0, 3 - t)], 0, 0, 0, [True], capture_t=float(t))
+        last = out
+    return last, t_walk - .1
+
+
+def test_matched_track_coasts_on_last_velocity_while_the_window_rebuilds():
+    est = estimator()
+    out, t = _walk_then_flicker(est, 0)
+    assert out and not out[0].get('coasted')
+    vx = out[0]['vx']
+    # centroid missing for 0.4 s of frames (> MAX_SAMPLE_GAP_S) then back: history clears
+    for _ in range(4):
+        t += .1
+        est._step([], 0, 0, 0, [], capture_t=float(t))
+    t += .1
+    out, _ = est._step([(0, 0, 3 - t)], 0, 0, 0, [True], capture_t=float(t))
+    assert out and out[0]['coasted'] and out[0]['vx'] == vx
+    assert est.timing_stats['coasted'] >= 1 and est.timing_stats['window_wait'] >= 1
+
+
+def test_coasting_stops_after_coast_max():
+    est = estimator()
+    out, t = _walk_then_flicker(est, 0)
+    for _ in range(4):
+        t += .1
+        est._step([], 0, 0, 0, [], capture_t=float(t))
+    # matched again but the window is still rebuilding: keep matching for > COAST_MAX_S
+    coasted = []
+    for k in range(1, 20):
+        t += .1
+        out, _ = est._step([(0, 0, 3 - t)], 0, 0, 0, [True], capture_t=float(t))
+        coasted.append(any(e.get('coasted') for e in out))
+    assert coasted[0] and not coasted[-1]   # coasts at first, then the window is ready or coasting expired
+    assert est.timing_stats['coasted'] <= 15
+
+
+def test_never_coasts_without_a_prior_model_output_or_for_non_people():
+    est = estimator()
+    out, _ = est._step([(0, 0, 2)], 0, 0, 0, [True], capture_t=0.)
+    assert not any(e.get('coasted') for e in out)
+    est = estimator()
+    for t in np.arange(0, 1.5, .1):
+        est._step([(0, 0, 3 - t)], 0, 0, 0, [False], capture_t=float(t))
+    out, _ = est._step([(0, 0, 1.4)], 0, 0, 0, [False], capture_t=1.9)
+    assert not any(e.get('coasted') for e in out)

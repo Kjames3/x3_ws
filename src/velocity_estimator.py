@@ -43,6 +43,10 @@ INFER_HZ      = 10          # target inference rate
 # fabricated obstacle motion. 0.5 s is 5 inference periods and ~15 frames at the
 # measured ~29 fps depth rate, so it only trips on a real stall.
 MAX_DEPTH_FRAME_AGE_S = 0.5
+# After a centroid flicker the timed window needs ~0.9 s of consecutive samples
+# before the model can run again. For that long a matched track keeps its last
+# model velocity (flagged coasted) instead of dropping out of the estimates.
+COAST_MAX_S = 1.5
 MIN_BLOB_AREA = 500         # pixels — ignore tiny depth blobs
 # Track at most N obstacles simultaneously. Was 5: parked in the apartment the
 # tracker sat at 3-5 tracks (5 in 6% of frames, 36% with the Roomba running),
@@ -383,9 +387,10 @@ class VelocityEstimator:
         self._last_capture_t = None
         self.dropout_log = DropoutLog()
         self._frame_gates = Counter()   # gate status -> tracks this frame
+        self._last_model = {}           # tid -> (capture_t, vx, vy) from the last model run
         self._last_depth_key = None
         self.timing_stats = dict(accepted=0, duplicates=0, invalid=0,
-                                 missing_pose=0, window_wait=0, gap_resets=0)
+                                 missing_pose=0, window_wait=0, gap_resets=0, coasted=0)
         self._logged_missing_intrinsics = False
         self._logged_stale_depth = False
         self._logged_missing_pose = False
@@ -861,6 +866,7 @@ class VelocityEstimator:
         self._tracker.reset()
         self._prev_estimates.clear()
         self._timed_histories.clear()
+        self._last_model.clear()
         self._last_capture_t = None
         with self._lock:
             self._estimates = []
@@ -938,6 +944,9 @@ class VelocityEstimator:
                 self.timing_stats['window_wait'] += 1
                 self._record_track(tid, track['centroid'], track['visible_count'],
                                    'gated_timing')
+                coast = self._coast_estimate(tid, track, capture_t)
+                if coast is not None:
+                    estimates.append(coast)
                 continue
             # Filter out tracks that do not satisfy the track initiation gate (Idea 109)
             if track.get('visible_count', 1) < 3:
@@ -1069,6 +1078,8 @@ class VelocityEstimator:
                     'vy':    round(vy * conf, 3),
                     'speed': round(speed * conf, 3),
                 })
+                if capture_t is not None:
+                    self._last_model[tid] = (capture_t, round(vx * conf, 3), round(vy * conf, 3))
 
         # Idea 152: clamp velocity change between frames to max human acceleration (3 m/s²)
         max_delta = 3.0 * step_dt  # acceleration bound uses actual capture interval
@@ -1103,6 +1114,25 @@ class VelocityEstimator:
             else:
                 est['category'] = None
         return estimates, tracks
+
+    def _coast_estimate(self, tid, track, capture_t):
+        """Hold the last model velocity for a matched track whose window is rebuilding.
+
+        Only a track seen this frame (age 0) coasts, and only within COAST_MAX_S of
+        its last real model output, so no new velocity is ever invented: an
+        unmatched track still publishes nothing.
+        """
+        last = self._last_model.get(tid)
+        if (last is None or track.get('age', 0) != 0 or
+                not track.get('is_person') or
+                capture_t - last[0] > COAST_MAX_S):
+            return None
+        cx, cy, cz = track['centroid']
+        vx, vy = last[1], last[2]
+        self.timing_stats['coasted'] += 1
+        return {'id': tid, 'x': round(cx, 3), 'y': round(cy, 3), 'z': round(cz, 3),
+                'vx': vx, 'vy': vy, 'speed': float(math.hypot(vx, vy)),
+                'coasted': True, 'coast_age_s': round(capture_t - last[0], 2)}
 
     def _note_frame(self, centroids, tracks, estimates):
         """Feed the dropout log: how many people this frame, or why none."""
