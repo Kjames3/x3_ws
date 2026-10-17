@@ -65,3 +65,18 @@ class PoseHistory:
         dyaw = math.atan2(math.sin(b[3] - a[3]), math.cos(b[3] - a[3]))
         return {'x': a[1] + f * (b[1] - a[1]),
                 'y': a[2] + f * (b[2] - a[2]), 'theta': a[3] + f * dyaw}
+
+
+def ros_stamp_ns(ros_now_ns, mono_now, capture_t):
+    """ROS time (ns) of a monotonic capture instant, or None when it is unusable.
+
+    ``ros_now_ns`` and ``mono_now`` must be read together; the capture is placed
+    at its age before that moment. Rejects negative or implausibly old ages.
+    """
+    if capture_t is None or not math.isfinite(capture_t):
+        return None
+    age = mono_now - capture_t
+    if not 0.0 <= age <= 5.0:
+        return None
+    return int(ros_now_ns - age * 1e9)
+

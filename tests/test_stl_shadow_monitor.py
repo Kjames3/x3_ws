@@ -122,3 +122,19 @@ def test_a_moving_robot_does_not_turn_the_walls_into_foreground():
     poses = np.column_stack([xs, np.zeros(n_scans), np.zeros(n_scans)])
     fg = m.scan_foreground(r, am, inc, np.arange(n_scans) * 0.14, poses)
     assert sum(f is not None for _, f in fg) <= 2
+
+
+def test_true_age_exposes_republished_estimates():
+    rec = np.arange(0, 2.0, 0.05)
+    st = np.floor(rec / 0.1) * 0.1 - 0.27          # a fresh estimate every 0.1 s, sent at 20 Hz
+    a = m.true_age(rec, st)
+    assert 0.45 < a['dup_share'] < 0.55
+    assert a['max_age'] == pytest.approx(0.27 + 0.05, abs=0.01)
+    assert a['rho'] > 0
+
+
+def test_true_age_flags_a_stale_estimate():
+    rec = np.arange(0, 2.0, 0.1)
+    st = rec - 0.2
+    st[10:] = rec[10] - 0.2                         # estimate frozen from t=1.0
+    assert m.true_age(rec, st)['rho'] < 0

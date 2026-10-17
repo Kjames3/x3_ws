@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from velocity_timing import PoseHistory, resample_positions
+from velocity_timing import PoseHistory, resample_positions, ros_stamp_ns
 from velocity_estimator import VelocityEstimator
 from oakd_driver import OakDCamera
 
@@ -210,3 +210,11 @@ def test_never_coasts_without_a_prior_model_output_or_for_non_people():
         est._step([(0, 0, 3 - t)], 0, 0, 0, [False], capture_t=float(t))
     out, _ = est._step([(0, 0, 1.4)], 0, 0, 0, [False], capture_t=1.9)
     assert not any(e.get('coasted') for e in out)
+
+
+def test_ros_stamp_places_capture_at_its_age():
+    assert ros_stamp_ns(10_000_000_000, 50.0, 49.7) == 9_700_000_000
+    assert ros_stamp_ns(10_000_000_000, 50.0, 50.2) is None      # from the future
+    assert ros_stamp_ns(10_000_000_000, 50.0, 40.0) is None      # implausibly old
+    assert ros_stamp_ns(10_000_000_000, 50.0, float('nan')) is None
+    assert ros_stamp_ns(10_000_000_000, 50.0, None) is None

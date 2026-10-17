@@ -93,7 +93,7 @@ from drivers_x3 import (
 from nav2_client import Nav2Client
 from frontier_explorer import FrontierExplorer
 from velocity_estimator import VelocityEstimator
-from velocity_timing import PoseHistory
+from velocity_timing import PoseHistory, ros_stamp_ns
 from pathlib import Path
 
 # =============================================================================
@@ -1471,6 +1471,17 @@ class ROS2Bridge:
             vol_marker.color.g = 1.0
             vol_marker.color.b = 1.0
             marker_array.markers.append(vol_marker)
+
+        # Stamp with the newest estimate's depth-capture time (it was 0 before, so a
+        # republished cached estimate looked fresh). Estimates without a capture
+        # time (Astra/ROS depth sources) keep stamp 0.
+        captured = [e['capture_t'] for e in estimates if e.get('capture_t') is not None]
+        if captured:
+            ns = ros_stamp_ns(self._node.get_clock().now().nanoseconds, time.monotonic(), max(captured))
+            if ns is not None:
+                pose_array.header.stamp.sec = ns // 1_000_000_000
+                pose_array.header.stamp.nanosec = ns % 1_000_000_000
+                state_array.header.stamp = pose_array.header.stamp
 
         self._pedestrian_pub.publish(pose_array)
         self._pedestrian_marker_pub.publish(marker_array)

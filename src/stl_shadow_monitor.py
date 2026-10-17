@@ -17,6 +17,8 @@ Specs (robustness rho >= 0 means satisfied; margin in the signal's units):
   phi_hold    a track last seen within NEAR_M must not vanish: G (near(id) -> F[0,HOLD_S] seen(id))
               reported as events: 'lost' (nothing near within BREAK_DIST after)
               or 'id_break' (a new id appears near the old one within BREAK_S)
+  phi_age     (stamped bags) data age at receipt <= TRUE_AGE_MAX, from the header stamp = depth
+              capture time; phi_fresh only sees message arrival and misses republished estimates
   phi_cover   (--lidar) a lidar foreground object ahead must have a person estimate within
               COVER_S; the beam background is its 90th-percentile range over the run
   phi_react   relative closing speed > PERSON_GAMMA * (clearance - D_MIN), the CBF's own
@@ -58,6 +60,7 @@ SECTOR_X = (0.05, 2.0)  # lidar presence sector in base_link: ahead of the robot
 SECTOR_Y = 0.8          # ... and within this half-width
 COVER_S = 0.5           # a foreground object ahead needs a person estimate within this long
 MIN_FG_POINTS = 3
+TRUE_AGE_MAX = 0.5      # s from depth capture to receipt: ~0.27 s camera delay plus processing
 
 
 def rect_distance(x, y, fp=FOOTPRINT):
@@ -302,6 +305,36 @@ def cross_check(fg, ped):
                                  n=len(diffs)) if diffs else None))
 
 
+def load_stamps(db):
+    """(receipt s, header stamp s) per /pedestrian_states message, or None when the
+    publisher left the stamp at 0 (runs before 2026-10-16 evening)."""
+    from rclpy.serialization import deserialize_message
+    from rosidl_runtime_py.utilities import get_message
+    c = sqlite3.connect('file:%s?mode=ro' % db, uri=True)
+    row = c.execute("select id,type from topics where name='/pedestrian_states'").fetchone()
+    if row is None:
+        return None
+    T = get_message(row[1])
+    rec, st = [], []
+    for ts, d in c.execute('select timestamp,data from messages where topic_id=? order by timestamp', (row[0],)):
+        m = deserialize_message(d, T)
+        rec.append(ts * 1e-9)
+        st.append(m.header.stamp.sec + m.header.stamp.nanosec * 1e-9)
+    rec, st = np.array(rec), np.array(st)
+    return (rec, st) if (st > 0).mean() > 0.5 else None
+
+
+def true_age(rec, st):
+    """Age of the data in each message at receipt (s), and the share of messages that
+    only repeat the previous stamp (a republished cached estimate)."""
+    ok = st > 0
+    age = (rec - st)[ok]
+    dup = float((np.diff(st[ok]) == 0).mean()) if ok.sum() > 1 else 0.0
+    return dict(rho=float(TRUE_AGE_MAX - age.max()), max_age=float(age.max()),
+                p50=float(np.median(age)), p95=float(np.percentile(age, 95)),
+                dup_share=dup, n=int(ok.sum()))
+
+
 def load_odom(db):
     from rclpy.serialization import deserialize_message
     from rosidl_runtime_py.utilities import get_message
@@ -374,7 +407,7 @@ def load_bag(db):
     return out['/pedestrian_states'], out['/cmd_vel']
 
 
-def evaluate(ped, cmd, scans=None):
+def evaluate(ped, cmd, scans=None, stamps=None):
     t0, t1 = ped[0][0], ped[-1][0]
     grid = np.arange(t0, t1, 1.0 / GRID_HZ)
     clr, age, rng = clearance_series(ped, grid)
@@ -395,6 +428,8 @@ def evaluate(ped, cmd, scans=None):
     res['phi_react'] = [dict(t=e['t'] - t0, clearance=e['clearance'], closing=e['closing'],
                              allowed=e['allowed'], status=e['status'], delay=e.get('delay'),
                              rho=e['rho']) for e in eps]
+    if stamps is not None:
+        res['phi_age'] = true_age(*stamps)
     if scans is not None:
         t, rs, am, inc, poses = scans
         res['phi_cover'] = cross_check(scan_foreground(rs, am, inc, t, poses), ped)
@@ -409,6 +444,10 @@ def report(name, r):
               % (c['rho'], c['min_clearance'], c['t'], D_MIN, c['violating_s']))
     f = r['phi_fresh']
     print('  phi_fresh  rho %+.3f  (max age %.2f s, %d gaps > %.1f s)' % (f['rho'], f['max_age'], f['gaps_over'], MAX_AGE))
+    ag = r.get('phi_age')
+    if ag:
+        print('  phi_age    rho %+.3f  (data age at receipt: median %.2f s, p95 %.2f s, max %.2f s; '
+              '%.0f%% of messages repeat the previous stamp)' % (ag['rho'], ag['p50'], ag['p95'], ag['max_age'], 100 * ag['dup_share']))
     lost = [e for e in r['phi_hold'] if e['kind'] == 'lost']
     brk = [e for e in r['phi_hold'] if e['kind'] == 'id_break']
     print('  phi_hold   %d lost, %d id_break (ids last seen inside %.1f m)' % (len(lost), len(brk), NEAR_M))
@@ -448,10 +487,11 @@ def main():
         db = next(iter(sorted(p.glob('bag/*.db3')))) if p.is_dir() else p
         ped, cmd = load_bag(db)
         scans = load_scans(db) if a.lidar else None
+        stamps = load_stamps(db)
         if len(ped) < 2:
             print('== %s: no pedestrian data' % p)
             continue
-        allr[str(p)] = evaluate(ped, cmd, scans)
+        allr[str(p)] = evaluate(ped, cmd, scans, stamps)
         if not a.json:
             report(p.name, allr[str(p)])
     if a.json:
