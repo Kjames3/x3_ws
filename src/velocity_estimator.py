@@ -388,6 +388,7 @@ class VelocityEstimator:
         self.dropout_log = DropoutLog()
         self._frame_gates = Counter()   # gate status -> tracks this frame
         self._last_model = {}           # tid -> (capture_t, vx, vy) from the last model run
+        self._coasting = {}             # tid -> capture_t its current coast began
         self._last_depth_key = None
         self.timing_stats = dict(accepted=0, duplicates=0, invalid=0,
                                  missing_pose=0, window_wait=0, gap_resets=0, coasted=0)
@@ -867,6 +868,7 @@ class VelocityEstimator:
         self._prev_estimates.clear()
         self._timed_histories.clear()
         self._last_model.clear()
+        self._coasting.clear()
         self._last_capture_t = None
         with self._lock:
             self._estimates = []
@@ -1080,6 +1082,10 @@ class VelocityEstimator:
                 })
                 if capture_t is not None:
                     self._last_model[tid] = (capture_t, round(vx * conf, 3), round(vy * conf, 3))
+                    began = self._coasting.pop(tid, None)
+                    if began is not None:
+                        logger.info("VelocityEstimator: person id %s back on the model after "
+                                    "coasting %.2f s", tid, capture_t - began)
 
         # Idea 152: clamp velocity change between frames to max human acceleration (3 m/s²)
         max_delta = 3.0 * step_dt  # acceleration bound uses actual capture interval
@@ -1130,6 +1136,10 @@ class VelocityEstimator:
         cx, cy, cz = track['centroid']
         vx, vy = last[1], last[2]
         self.timing_stats['coasted'] += 1
+        if tid not in self._coasting:
+            self._coasting[tid] = capture_t
+            logger.info("VelocityEstimator: coasting person id %s at %.2f m on v=(%.2f, %.2f) "
+                        "while its timing window rebuilds", tid, cz, vx, vy)
         return {'id': tid, 'x': round(cx, 3), 'y': round(cy, 3), 'z': round(cz, 3),
                 'vx': vx, 'vy': vy, 'speed': float(math.hypot(vx, vy)),
                 'coasted': True, 'coast_age_s': round(capture_t - last[0], 2)}
