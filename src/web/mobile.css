@@ -1,0 +1,175 @@
+/* ==========================================================================
+   Touch UI (phone + iPad).  Loaded after dashboard.css; every rule is scoped
+   under body.touch-ui so the desktop GUI is untouched.
+
+   body.touch-ui          any coarse-pointer device, or ?mobile=1
+   body.touch-ui.phone    short side < 600 css px (iPhone); gets the compact
+                          layout.  An iPad keeps the desktop dashboard and
+                          only gains the stick overlay.
+   ========================================================================== */
+
+/* No pinch/double-tap zoom while driving, and no text selection on drags. */
+body.touch-ui { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+body.touch-ui .m-overlay, body.touch-ui .m-overlay * {
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+}
+
+/* ---- overlay ------------------------------------------------------------- */
+.m-overlay { display: none; }
+body.touch-ui .m-overlay {
+    display: block; position: fixed; inset: 0; z-index: 900;
+    pointer-events: none;   /* only the controls take touches */
+    --m-stick: 132px;
+}
+body.touch-ui.phone .m-overlay { --m-stick: 112px; }
+
+.m-overlay .m-top {
+    position: absolute; top: calc(env(safe-area-inset-top, 0px) + 6px); left: 50%;
+    transform: translateX(-50%); display: flex; gap: 6px; pointer-events: none;
+    max-width: calc(100% - 16px); flex-wrap: wrap; justify-content: center;
+}
+.m-pill {
+    font: 700 0.72rem/1 system-ui, sans-serif; letter-spacing: 0.04em;
+    padding: 0.35rem 0.6rem; border-radius: 999px; white-space: nowrap;
+    background: rgba(15, 23, 42, 0.82); color: #cbd5e1; border: 1px solid #334155;
+}
+.m-pill.ok   { color: #4ade80; border-color: #166534; }
+.m-pill.warn { color: #fbbf24; border-color: #92400e; }
+.m-pill.bad  { color: #fff; background: #b91c1c; border-color: #fca5a5; }
+.m-pill[hidden] { display: none; }
+
+.m-stick {
+    position: absolute; width: var(--m-stick); height: var(--m-stick);
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 22px);
+    border-radius: 50%; pointer-events: auto; touch-action: none;
+    background: rgba(30, 41, 59, 0.55); border: 2px solid rgba(148, 163, 184, 0.7);
+}
+.m-stick.left  { left:  calc(env(safe-area-inset-left, 0px) + 22px); }
+.m-stick.right { right: calc(env(safe-area-inset-right, 0px) + 22px); }
+.m-stick .m-knob {
+    position: absolute; left: 50%; top: 50%; width: 46%; height: 46%;
+    margin: -23% 0 0 -23%; border-radius: 50%;
+    background: rgba(56, 189, 248, 0.85); border: 2px solid #e0f2fe;
+    pointer-events: none;
+}
+.m-stick .m-label {
+    position: absolute; left: 0; right: 0; top: -1.3rem; text-align: center;
+    font: 600 0.65rem system-ui, sans-serif; color: #cbd5e1;
+    text-shadow: 0 1px 2px #000; pointer-events: none;
+}
+.m-stick.disabled { opacity: 0.35; }
+
+.m-bottom {
+    position: absolute; left: 50%; transform: translateX(-50%);
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 22px);
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    pointer-events: none;
+}
+.m-bottom > * { pointer-events: auto; touch-action: manipulation; }
+.m-stop {
+    min-width: 110px; padding: 0.9rem 1.4rem; border-radius: 12px; border: 2px solid #fecaca;
+    background: #dc2626; color: #fff; font: 800 1.15rem system-ui, sans-serif;
+    letter-spacing: 0.06em;
+}
+.m-stop:active { background: #991b1b; }
+.m-row { display: flex; gap: 8px; align-items: center; }
+.m-chip {
+    padding: 0.5rem 0.75rem; border-radius: 8px; font: 700 0.72rem system-ui, sans-serif;
+    background: rgba(15, 23, 42, 0.85); color: #e2e8f0; border: 1px solid #475569;
+}
+.m-chip.on { color: #4ade80; border-color: #166534; }
+.m-chip.off { color: #f87171; border-color: #7f1d1d; }
+.m-speed {
+    display: flex; align-items: center; gap: 6px; padding: 0.3rem 0.6rem; border-radius: 8px;
+    background: rgba(15, 23, 42, 0.85); border: 1px solid #475569;
+    font: 700 0.65rem system-ui, sans-serif; color: #cbd5e1;
+}
+.m-speed input { width: 110px; touch-action: pan-x; }
+
+/* Portrait: stick pair sits under the stop column; shrink a little. */
+@media (orientation: portrait) {
+    body.touch-ui .m-overlay { --m-stick: 104px; }
+    body.touch-ui.phone .m-overlay { --m-stick: 96px; }
+    .m-stick { bottom: calc(env(safe-area-inset-bottom, 0px) + 92px); }
+    .m-bottom { width: 100%; }
+}
+
+/* ---- phone layout -------------------------------------------------------- */
+body.touch-ui.phone .app-container.dashboard { padding: 0.3rem; }
+
+/* Compact header: connection state + connect button only. */
+body.touch-ui.phone .header-title h1,
+body.touch-ui.phone .header-session,
+body.touch-ui.phone #gamepad-indicator,
+body.touch-ui.phone #mode-badge,
+body.touch-ui.phone #robot-ip,
+body.touch-ui.phone #stop-btn { display: none !important; }
+body.touch-ui.phone .dashboard > .header { padding: 0 0 0.25rem; justify-content: flex-end; }
+body.touch-ui.phone .dashboard .connection-status { justify-content: flex-end; }
+
+/* Status strip: link + battery only. */
+body.touch-ui.phone .dashboard .status-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+body.touch-ui.phone .status-strip .tile:not(#tile-link):not(#tile-battery) { display: none; }
+
+/* Tabs: Drive + Map; the rest behind More. */
+body.touch-ui.phone .tabbar .tab { flex: 1; text-align: center; }
+body.touch-ui.phone .tabbar .tab.m-extra { display: none; }
+body.touch-ui.phone .tabbar.m-more-open .tab.m-extra { display: inline-block; }
+body.touch-ui.phone .tabbar .m-more-btn {
+    flex: 0 0 auto; padding: 0.6rem 0.9rem; font-size: 0.85rem; background: none;
+    border: 0; color: var(--text-secondary, #94a3b8); cursor: pointer;
+}
+
+/* Drive tab: just the camera. */
+body.touch-ui.phone .tab-panel[data-panel="drive"] .drive-scene,
+body.touch-ui.phone .tab-panel[data-panel="drive"] .drive-controls,
+body.touch-ui.phone .tab-panel[data-panel="drive"] .drive-camera .card-header { display: none; }
+body.touch-ui.phone.m-more-open .tab-panel[data-panel="drive"] .drive-scene,
+body.touch-ui.phone.m-more-open .tab-panel[data-panel="drive"] .drive-controls,
+body.touch-ui.phone.m-more-open .tab-panel[data-panel="drive"] .drive-camera .card-header { display: block; }
+
+body.touch-ui.phone .dashboard .drive-camera .camera-feed,
+body.touch-ui.phone .dashboard .drive-camera .camera-placeholder {
+    max-height: calc(100dvh - 150px); width: 100%; object-fit: contain;
+}
+body.touch-ui.phone .tab-panel.active[data-panel="drive"] { min-height: 0; }
+
+/* Map tab: the canvas plus the SLAM controls; leave room for the sticks. */
+body.touch-ui.phone .dashboard #nav-card > .card-body { display: block; }
+body.touch-ui.phone .dashboard #nav-card > .card-body > div:first-child { width: 100% !important; }
+body.touch-ui.phone .dashboard .nav-canvas { max-height: 46vh; }
+body.touch-ui.phone [data-panel="nav"] { padding-bottom: calc(var(--m-stick, 112px) + 70px); }
+body.touch-ui.phone .m-hide { display: none !important; }
+
+/* Overlay buttons are big enough to hit; the page's own buttons too. */
+body.touch-ui.phone .btn, body.touch-ui.phone .btn-nav, body.touch-ui.phone .btn-nav-sm { min-height: 40px; }
+
+/* Landscape phone: the status strip is the first thing to give up space. */
+@media (orientation: landscape) and (max-height: 500px) {
+    body.touch-ui.phone .status-strip { display: none; }
+    body.touch-ui.phone .dashboard .drive-camera .camera-feed,
+    body.touch-ui.phone .dashboard .drive-camera .camera-placeholder { max-height: calc(100dvh - 70px); }
+}
+
+/* ---- fixes from first render -------------------------------------------- */
+/* Phone: pills go top-left and replace the header's status text + strip. */
+body.touch-ui.phone .m-overlay .m-top {
+    left: calc(env(safe-area-inset-left, 0px) + 8px); transform: none; justify-content: flex-start;
+}
+body.touch-ui.phone .status-indicator { display: none !important; }
+@media (orientation: portrait) {
+    body.touch-ui.phone .status-strip { display: none; }
+}
+
+/* iPad: the desktop header and strip are already there, so the pills move
+   next to the thumbs (inside .m-bottom) and drop the duplicates. */
+body.touch-ui:not(.phone) #m-link, body.touch-ui:not(.phone) #m-batt { display: none; }
+.m-bottom .m-top { position: static; transform: none; max-width: none; }
+
+.m-bottom { max-width: calc(100% - 16px); }
+.m-row { flex-wrap: wrap; justify-content: center; }
+.m-chip { white-space: nowrap; }
+@media (orientation: portrait) {
+    .m-bottom { gap: 6px; }
+    .m-speed input { width: 90px; }
+}

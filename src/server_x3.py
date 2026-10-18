@@ -1258,6 +1258,15 @@ class ROS2Bridge:
             safe_vx, safe_vy = self._limit_for_deadband(
                 safe_vx, safe_vy, obstacles, velocities, omega, radii, gammas, soft)
 
+        # Summary for the GUI's obstacle warning (touch overlay): is the filter
+        # cutting the operator's command, and is it blind (stale /scan)?
+        asked = math.hypot(vx, vy)
+        self.cbf_info = {
+            'limited': bool(asked > 0.01 and math.hypot(safe_vx - vx, safe_vy - vy) > 0.25 * asked),
+            'blind': bool(not lidar_3d_scan_enabled and obst_age > OBSTACLE_STALE_S),
+            'hold': bool(lidar_3d_scan_enabled),
+        }
+
         msg = Twist()
         msg.linear.x  = float(safe_vx)    * self.LINEAR_SCALE
         msg.linear.y  = float(safe_vy)    * self.LINEAR_SCALE
@@ -3713,6 +3722,7 @@ async def broadcast_loop():
                 "right_power": current_right_power,
                 "detection_enabled": detection_enabled,
                 "is_auto_driving": is_auto_driving,
+                "cbf": getattr(ros_bridge, 'cbf_info', None) if ros_bridge is not None else None,
                 "detections": last_detections,
                 "velocity_estimates": velocity_estimates,
                 "velocity_timing": (dict(velocity_estimator.timing_stats)
