@@ -294,6 +294,7 @@ const elements = {
     launchNav2Btn: document.getElementById('launch-nav2-btn'),
     stopNav2Btn: document.getElementById('stop-nav2-btn'),
     setPoseBtn: document.getElementById('set-pose-btn'),
+    autoPoseBtn: document.getElementById('auto-pose-btn'),
     cancelNavBtn: document.getElementById('cancel-nav-btn'),
     mapSelect: document.getElementById('map-select'),
     loadMapBtn: document.getElementById('load-map-btn'),
@@ -569,6 +570,14 @@ function initNavPanel() {
             state.nav.mapMode = state.nav.mapMode === 'set_pose' ? 'navigate' : 'set_pose';
             elements.setPoseBtn.classList.toggle('active', state.nav.mapMode === 'set_pose');
             updateNavHint();
+        });
+    }
+
+    if (elements.autoPoseBtn) {
+        elements.autoPoseBtn.addEventListener('click', () => {
+            elements.autoPoseBtn.disabled = true;
+            if (elements.navHint) elements.navHint.textContent = 'Matching the lidar scan to the map...';
+            sendMessage({ type: 'auto_initial_pose' });
         });
     }
 
@@ -1866,6 +1875,14 @@ function handleMessage(data) {
                 elements.launchNav2Btn.disabled = false;
             }
         }
+        return;
+    }
+
+    if (data.type === "auto_pose_result") {
+        if (elements.autoPoseBtn) elements.autoPoseBtn.disabled = false;
+        if (elements.navHint) elements.navHint.textContent = data.success
+            ? `Auto pose: ${data.message}`
+            : `Auto pose failed: ${data.message}`;
         return;
     }
 

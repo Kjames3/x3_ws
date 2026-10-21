@@ -2045,8 +2045,7 @@ def initialize_hardware():
                 logger.info("Auto-launching Nav2 with AMCL on %s (requested via "
                             "--auto-nav2-map). Do NOT start SLAM while this "
                             "runs -- both publish map->odom.", AUTO_NAV2_MAP)
-                nav2_client.launch_nav2(use_sim_time=False,
-                                        map_path=AUTO_NAV2_MAP, slam=False)
+                _launch_nav2_seeded(False, AUTO_NAV2_MAP, False)
     else:
         # 1. Motor Controller (Serial) - uses auto-detected SERIAL_PORT
         logger.info(f"Connecting to Rosmaster on {SERIAL_PORT}...")
@@ -2566,6 +2565,95 @@ def _resolve_map_path(yaml_name: str) -> str | None:
     return path if os.path.isfile(path) else None
 
 
+_seed_matchers = {}   # map yaml path -> ScanMatcher; building the likelihood field takes ~1 s
+
+
+def _seed_pose_from_scan(map_path: str | None = None) -> tuple[bool, str]:
+    """Seed AMCL from a scan match against the map Nav2 is running on.
+
+    Replaces clicking a pose: the GUI sends theta 0 and the click position, and a
+    seed a few tenths of a metre or tens of degrees off leaves AMCL (and MPPI's
+    costmap) wrong until the robot has driven.  Refuses on an ambiguous match
+    (auto_initial_pose's residual-margin gate) and leaves the pose alone.
+    Blocking (~0.5 s): call from a worker thread.  The robot should be still;
+    a scan taken while it turns is skewed.
+    """
+    from auto_initial_pose import LikelihoodField, ScanMatcher
+    from auto_initial_pose import scan_to_points as _scan_to_points
+    if nav2_client is None or ros_bridge is None:
+        return False, "Nav2 requires --ros2 mode"
+    if map_path is None:
+        with nav2_client._lock:
+            name = nav2_client._current_map
+        map_path = os.path.join(_maps_dir(), name) if name else None
+    if not map_path or not os.path.isfile(map_path):
+        return False, "Nav2 is not running on a saved map"
+    with ros_bridge._lock:
+        scan = getattr(ros_bridge, '_latest_scan', None)
+    if scan is None:
+        return False, "no /scan yet"
+    matcher = _seed_matchers.get(map_path)
+    if matcher is None:
+        matcher = _seed_matchers[map_path] = ScanMatcher(LikelihoodField.from_yaml(map_path))
+    pts = _scan_to_points(np.asarray(scan.ranges), scan.angle_min, scan.angle_increment,
+                          scan.range_min, 6.0, 0.0435, 0.0, math.pi + LIDAR_YAW_OFFSET_RAD)
+    result = matcher.locate(pts)
+    if not result.accepted:
+        return False, f"scan match not confident ({result.reason}); set the pose by hand"
+    nav2_client.set_initial_pose(result.x, result.y, result.yaw)
+    return True, (f"pose set to ({result.x:.2f}, {result.y:.2f}, "
+                  f"{math.degrees(result.yaw):.0f} deg) from the scan, "
+                  f"score {result.score:.2f}, margin {result.margin:.1f}")
+
+
+def _auto_seed_after_launch(map_path: str) -> None:
+    """Seed AMCL once Nav2 is up.  Runs on a daemon thread.
+
+    nav2_params_x3.yaml has set_initial_pose: true at (0, 0, 0), applied when AMCL
+    activates, so a seed sent before activation is overwritten.  Wait for the
+    navigation action server (bt_navigator active, which is after AMCL), then seed
+    twice a few seconds apart; the second also covers a first lost to DDS matching.
+    """
+    client = nav2_client._action_client
+    for _ in range(120):
+        if client.server_is_ready():
+            break
+        time.sleep(1.0)
+    else:
+        logger.warning("[auto-pose] Nav2 never became ready; not seeding")
+        return
+    pub = nav2_client._initial_pose_pub
+    for _ in range(30):
+        if pub.get_subscription_count() > 0:
+            break
+        time.sleep(1.0)
+    time.sleep(4.0)
+    for attempt in (1, 2):
+        ok = False
+        for retry in range(3):
+            try:
+                ok, msg = _seed_pose_from_scan(map_path)
+            except Exception as exc:
+                ok, msg = False, str(exc)
+            logger.info("[auto-pose] seed %d.%d: %s", attempt, retry + 1, msg)
+            if ok:
+                break
+            time.sleep(3.0)
+        if not ok:
+            logger.warning("[auto-pose] no confident match; set the pose by hand")
+            return
+        time.sleep(6.0)
+
+
+def _launch_nav2_seeded(use_sim_time: bool, map_path: str | None, slam: bool) -> bool:
+    """nav2_client.launch_nav2, then seed AMCL from the scan (saved map, real robot)."""
+    ok = nav2_client.launch_nav2(use_sim_time=use_sim_time, map_path=map_path, slam=slam)
+    if ok and map_path and not slam and not use_sim_time:
+        threading.Thread(target=_auto_seed_after_launch, args=(map_path,),
+                         name='auto_pose_seed', daemon=True).start()
+    return ok
+
+
 async def handle_client(websocket):
     global detection_enabled, depth_enabled, stereo_enabled, lidar_enabled, is_auto_driving
     global current_left_power, current_right_power
@@ -2808,8 +2896,7 @@ async def handle_client(websocket):
                         # argument is interpreted relative to the launcher cwd.
                         map_f  = _resolve_map_path(data.get("map") or "")
                         slam   = data.get("slam", False)
-                        ok = nav2_client.launch_nav2(
-                            use_sim_time=use_st, map_path=map_f, slam=slam)
+                        ok = _launch_nav2_seeded(use_st, map_f, slam)
                         await websocket.send(json.dumps({
                             "type": "nav2_launch_result",
                             "success": ok,
@@ -2850,6 +2937,18 @@ async def handle_client(websocket):
                 elif msg_type == "cancel_nav":
                     if nav2_client:
                         nav2_client.cancel()
+
+                elif msg_type == "auto_initial_pose":
+                    if nav2_client:
+                        try:
+                            ok, msg_text = await asyncio.to_thread(_seed_pose_from_scan)
+                        except Exception as exc:
+                            ok, msg_text = False, str(exc)
+                        logger.info("[auto-pose] on request: %s", msg_text)
+                    else:
+                        ok, msg_text = False, "Nav2 requires --ros2 mode"
+                    await websocket.send(json.dumps({
+                        "type": "auto_pose_result", "success": ok, "message": msg_text}))
 
                 elif msg_type == "set_initial_pose":
                     if nav2_client:
@@ -3147,8 +3246,8 @@ async def handle_client(websocket):
                 elif msg_type == "start_p2p_test":
                     if _p2p_proc is None or _p2p_proc.poll() is not None:
                         if nav2_client and not (nav2_client._nav2_proc and nav2_client._nav2_proc.poll() is None):
-                            logger.info("Auto-launching Nav2 with AMCL on RealLab2.yaml for test...")
-                            nav2_client.launch_nav2(use_sim_time=SIM_MODE, map_path='/home/jetson/x3_ws/src/yahboomcar_nav/maps/RealLab2.yaml', slam=False)
+                            logger.info("Auto-launching Nav2 with AMCL on RealLab3.yaml for test...")
+                            _launch_nav2_seeded(SIM_MODE, os.path.join(_maps_dir(), 'RealLab3.yaml'), False)
                         logger.info("Starting Point-to-Point Test...")
                         script_path = str(Path(__file__).parent.resolve() / "point_to_point_test.py")
                         
@@ -3198,8 +3297,8 @@ async def handle_client(websocket):
                     repeat = data.get("repeat", False)
                     if _ab_test_proc is None or _ab_test_proc.poll() is not None:
                         if nav2_client and not (nav2_client._nav2_proc and nav2_client._nav2_proc.poll() is None):
-                            logger.info("Auto-launching Nav2 with AMCL on RealLab2.yaml for test...")
-                            nav2_client.launch_nav2(use_sim_time=SIM_MODE, map_path='/home/jetson/x3_ws/src/yahboomcar_nav/maps/RealLab2.yaml', slam=False)
+                            logger.info("Auto-launching Nav2 with AMCL on RealLab3.yaml for test...")
+                            _launch_nav2_seeded(SIM_MODE, os.path.join(_maps_dir(), 'RealLab3.yaml'), False)
                         logger.info(f"Starting A/B comparison test (mode={mode}, distance={distance}, repeat={repeat})...")
                         script_path = str(Path(__file__).parent.resolve() / "ab_comparison_test.py")
 
