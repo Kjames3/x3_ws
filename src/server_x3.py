@@ -670,6 +670,14 @@ def _tilt_nav_conflict():
     return None
 lidar_enabled = False
 is_auto_driving = False
+# While Nav2 drives a goal, keep the server's 30 Hz heartbeat off /cmd_vel.  Left on,
+# its zeros (and CBF repulsion pulses) interleave with Nav2's commands: measured
+# 2026-10-21, about half the messages reaching the driver were ours and the wheels
+# covered ~25-50% of the commanded speed.  Nav2's commands never went through the
+# CBF, so nothing protective is lost; the driver's own 500 ms watchdog still stops
+# the motors, and the heartbeat resumes on cancel or on any manual command.
+# X3_NAV_YIELD_HEARTBEAT=0 restores the old behaviour; set_nav_yield toggles it live.
+NAV_YIELD_HEARTBEAT = os.environ.get('X3_NAV_YIELD_HEARTBEAT', '1') != '0'
 last_detections = []
 last_detections_t = 0.0   # monotonic stamp of last_detections
 active_model_name = "yolo26n"
@@ -2779,6 +2787,11 @@ async def handle_client(websocket):
                     is_auto_driving = True
                     logger.info("Auto-drive started")
 
+                elif msg_type == "set_nav_yield":
+                    global NAV_YIELD_HEARTBEAT
+                    NAV_YIELD_HEARTBEAT = bool(data.get("enabled", False))
+                    logger.info("NAV_YIELD_HEARTBEAT = %s", NAV_YIELD_HEARTBEAT)
+
                 elif msg_type == "stop_auto_drive":
                     is_auto_driving = False
                     current_left_power = 0.0
@@ -3933,7 +3946,16 @@ async def motion_loop():
         test_running = (_p2p_proc is not None and _p2p_proc.poll() is None) or \
                        (_ab_test_proc is not None and _ab_test_proc.poll() is None) or \
                        _is_standalone_test_running()
-        if drive and not test_running and not _shutting_down:
+        # While Nav2 drives a goal it owns /cmd_vel.  Our heartbeat would
+        # interleave zeros (and CBF repulsion pulses) with its commands: measured
+        # 2026-10-21, ~half the messages reaching the driver were ours and the
+        # wheels covered ~25% of the commanded speed.  A manual command, or the
+        # ramp still decaying, keeps the heartbeat so teleop and stops are unchanged.
+        nav_owns_cmd_vel = (
+            NAV_YIELD_HEARTBEAT and nav2_client is not None and nav2_client.is_driving()
+            and _target_vx == _target_vy == _target_omega == 0.0
+            and _ramp_vx == _ramp_vy == _ramp_omega == 0.0)
+        if drive and not test_running and not nav_owns_cmd_vel and not _shutting_down:
             try:
                 if motors_enabled:
                     drive.move(_ramp_vx, _ramp_vy, _ramp_omega)

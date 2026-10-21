@@ -230,6 +230,15 @@ class Nav2Client:
             return self._state in (STATE_PLANNING, STATE_EXECUTING,
                                    STATE_CANCELLING)
 
+    def is_driving(self) -> bool:
+        """True while Nav2 itself is publishing /cmd_vel for a goal.
+
+        Narrower than is_busy(): CANCELLING is excluded, because the server's
+        own zero heartbeat must resume the moment a cancel is requested.
+        """
+        with self._lock:
+            return self._state in (STATE_PLANNING, STATE_EXECUTING)
+
     def load_map(self, map_path: str, timeout: float = 10.0) -> tuple[bool, str]:
         """
         Hot-swap the map AMCL localises against, without restarting Nav2.

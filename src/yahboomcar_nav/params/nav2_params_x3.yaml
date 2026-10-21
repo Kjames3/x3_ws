@@ -160,7 +160,12 @@ controller_server:
       transform_tolerance: 0.1
       temperature: 0.3
       gamma: 0.015
-      motion_model: "Omni"   # Omni = holonomic (x, y, theta)
+      # DiffDrive, not Omni: nav2's velocity_smoother runs on defaults with max vy = 0,
+      # so every sideways command Omni planned was discarded and the robot sat still
+      # (recorded 2026-10-21: MPPI vy -0.15, driver vy exactly 0.000).  Strafing also
+      # drifts in yaw on this chassis.  To strafe, add a velocity_smoother block with
+      # vy limits first.
+      motion_model: "DiffDrive"
       visualize: false
       TrajectoryVisualizer:
         trajectory_step: 5
