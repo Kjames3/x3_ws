@@ -34,6 +34,7 @@ import os
 import signal
 import threading
 import socket
+import re
 import subprocess
 from multiprocessing import shared_memory
 import math
@@ -1759,15 +1760,21 @@ def _launch_octomap(use_sim_time: bool = False, frame_id: str = 'odom'):
 
 
 def _save_map(name: str) -> tuple[bool, str]:
-    """Call the slam_toolbox/save_map service synchronously.
+    """Save the live slam_toolbox map as .pgm/.yaml plus .posegraph/.data.
 
-    Saves the map to the yahboomcar_nav maps directory so it immediately
-    appears in the GUI map selector.
+    Saves to the yahboomcar_nav maps directory so it immediately appears in
+    the GUI map selector. The posegraph is what lets a map be resumed and
+    extended, so a save without it counts as a failure. Blocking: call from a
+    worker thread, not the event loop.
     Returns (success: bool, message: str).
     """
     ws_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     maps_dir = os.path.join(ws_root, 'src', 'yahboomcar_nav', 'maps')
     os.makedirs(maps_dir, exist_ok=True)
+    # The name goes into a shell command, so keep it to a plain file stem.
+    name = os.path.basename(name)
+    if not re.fullmatch(r'[A-Za-z0-9_.-]+', name):
+        return False, "Map name may only use letters, digits, _ . -"
     map_path = os.path.join(maps_dir, name)
 
     install_setup = os.path.join(ws_root, 'install', 'setup.bash')
@@ -1782,27 +1789,41 @@ def _save_map(name: str) -> tuple[bool, str]:
     )
     child_env['PATH'] = clean_path
 
-    cmd = (
-        f'source /opt/ros/humble/setup.bash && '
-        f'source {install_setup} && '
-        f'ros2 service call /slam_toolbox/save_map slam_toolbox/srv/SaveMap '
-        f'\'{{"name": {{"data": "{map_path}"}}}}\''
+    calls = (
+        ('save_map', 'slam_toolbox/srv/SaveMap',
+         f'\'{{"name": {{"data": "{map_path}"}}}}\''),
+        ('serialize_map', 'slam_toolbox/srv/SerializePoseGraph',
+         f'\'{{"filename": "{map_path}"}}\''),
     )
-    try:
-        result = subprocess.run(
-            ['bash', '-c', cmd],
-            capture_output=True, text=True, timeout=10, env=child_env,
+    for service, srv_type, request in calls:
+        cmd = (
+            f'source /opt/ros/humble/setup.bash && '
+            f'source {install_setup} && '
+            f'ros2 service call /slam_toolbox/{service} {srv_type} {request}'
         )
-        if result.returncode == 0:
-            logger.info(f"Map saved: {map_path}")
-            return True, f"Map '{name}' saved"
-        else:
-            logger.warning(f"Map save failed: {result.stderr.strip()}")
-            return False, result.stderr.strip() or "Service call failed"
-    except subprocess.TimeoutExpired:
-        return False, "Timed out waiting for save_map service"
-    except Exception as exc:
-        return False, str(exc)
+        try:
+            result = subprocess.run(
+                ['bash', '-c', cmd],
+                capture_output=True, text=True, timeout=20, env=child_env,
+            )
+        except subprocess.TimeoutExpired:
+            return False, f"Timed out waiting for slam_toolbox/{service}"
+        except Exception as exc:
+            return False, str(exc)
+        # `ros2 service call` exits 0 even when the service reports failure,
+        # so read the response instead of trusting the return code.
+        if result.returncode != 0 or 'result=0' not in result.stdout:
+            detail = (result.stderr.strip() or result.stdout.strip())[-200:]
+            logger.warning(f"Map save: {service} failed: {detail}")
+            return False, f"slam_toolbox/{service} failed: {detail or 'no response'}"
+
+    missing = [ext for ext in ('.pgm', '.yaml', '.posegraph', '.data')
+               if not os.path.isfile(map_path + ext)
+               or os.path.getsize(map_path + ext) == 0]
+    if missing:
+        return False, f"Save reported success but {', '.join(missing)} missing"
+    logger.info(f"Map saved: {map_path}")
+    return True, f"Map '{name}' saved"
 
 
 def _save_octomap(name: str, full: bool = False) -> tuple[bool, str]:
@@ -2987,7 +3008,7 @@ async def handle_client(websocket):
 
                 elif msg_type == "save_map":
                     map_name = data.get("name", "slam_map").strip() or "slam_map"
-                    ok, msg_text = _save_map(map_name)
+                    ok, msg_text = await asyncio.to_thread(_save_map, map_name)
                     await websocket.send(json.dumps({
                         "type": "save_map_result",
                         "success": ok,
