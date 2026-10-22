@@ -95,6 +95,7 @@ from nav2_client import Nav2Client
 from frontier_explorer import FrontierExplorer
 from velocity_estimator import VelocityEstimator
 from velocity_timing import PoseHistory, ros_stamp_ns
+from person_memory import PersonMemory
 from pathlib import Path
 
 # =============================================================================
@@ -356,6 +357,15 @@ def _cbf_movers(estimates):
             y = -float(est.get("x", 0.0))
             movers.append(((x, y), (float(est.get("vx", 0.0)), float(est.get("vy", 0.0)))))
     return movers
+# People the tracker loses or re-labels stay in the CBF (person_memory.py): a mover that
+# vanishes is held ~1.5 s as a person-sized obstacle, and a new track id near a recent
+# one inherits its velocity while its own is still gated.  Lab logs 2026-10-22: 21% of the
+# time without a person estimate, 39% of dropouts started inside 1 m, 89% of long ones
+# came back under a new id.  X3_PERSON_MEMORY=0 restores _cbf_movers() alone.
+PERSON_MEMORY_ENABLED = os.environ.get('X3_PERSON_MEMORY', '1') != '0'
+_person_memory = PersonMemory(range_m=CBF_SPEED_RANGE_M, min_speed=CBF_MOVER_MIN_SPEED)
+_person_memory_lock = threading.Lock()
+_person_memory_logged = (0, 0)
 # Person tags from YOLO older than this are ignored (tracks read "unknown").
 YOLO_TAG_STALE_S = 1.0
 _p2p_proc = None           # point-to-point test subprocess handle
@@ -1221,7 +1231,20 @@ class ROS2Bridge:
         moving = []     # ((x, y), (vx, vy)) of tracked movers, base frame
         if velocity_estimation_enabled and velocity_estimator is not None:
             try:
-                moving = _cbf_movers(velocity_estimator.get_estimates())
+                estimates = velocity_estimator.get_estimates()
+                if PERSON_MEMORY_ENABLED:
+                    global _person_memory_logged
+                    with _person_memory_lock:
+                        moving = _person_memory.update(estimates, time.monotonic())
+                        seen = (_person_memory.stats["ghost_started"],
+                                _person_memory.stats["relinked"])
+                    if seen != _person_memory_logged:
+                        logger.info("[person-memory] ghosts started %d (+%d), ids re-linked %d (+%d)",
+                                    seen[0], seen[0] - _person_memory_logged[0],
+                                    seen[1], seen[1] - _person_memory_logged[1])
+                        _person_memory_logged = seen
+                else:
+                    moving = _cbf_movers(estimates)
             except Exception as e:
                 logger.warning(f"Failed to add predictive obstacles: {e}")
         

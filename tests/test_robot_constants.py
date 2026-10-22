@@ -73,7 +73,9 @@ def test_laser_joint_keeps_its_half_turn(urdf):
     # produced the wrong tilt_direction on 2026-09-04.
     _, rpy = _origin(_joint(urdf, 'laser_joint'))
     assert rpy[:2] == [0.0, 0.0]
-    assert rpy[2] == pytest.approx(math.pi, abs=1e-6)
+    # pi plus the measured mount yaw (lidar_yaw_calib.py: +4.85 deg, applied to the URDF
+    # and the CBF scans in f7a36d4).  Still a half turn: only the small calibration differs.
+    assert rpy[2] == pytest.approx(math.pi + math.radians(4.85), abs=1e-4)
 
 
 def test_lidar_tilt_axis_is_pitch(urdf):
