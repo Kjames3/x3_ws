@@ -140,7 +140,22 @@ controller_server:
       yaw_goal_tolerance: 0.25
 
     FollowPath:
-      plugin: "nav2_mppi_controller::MPPIController"
+      # RotationShimController wraps MPPI: when the path heading is more than
+      # angular_dist_threshold off the robot's heading it rotates in place first,
+      # then hands over to MPPI.  Without it a goal behind the robot sat for ~18 s
+      # at ~0 m/s in MPPI's cost landscape before turning (1.3 m behind: 35 s,
+      # recorded 2026-10-22).  MPPI's own parameters below stay in this namespace.
+      plugin: "nav2_rotation_shim_controller::RotationShimController"
+      primary_controller: "nav2_mppi_controller::MPPIController"
+      angular_dist_threshold: 0.785      # 45 deg
+      # The shim only rotates when the path point this far ahead is >45 deg off the
+      # robot's heading; a final path shorter than it (anything inside ~0.5 m of the goal)
+      # has no such point, the shim steps aside and plain MPPI hovered at ~0 m/s for
+      # 50+ s on a 0.30 m sideways goal (recorded 2026-10-22).
+      forward_sampling_distance: 0.15
+      rotate_to_heading_angular_vel: 1.0 # the base turns reliably from ~0.8 rad/s
+      max_angular_accel: 3.2
+      simulate_ahead_time: 1.0
       time_steps: 56
       model_dt: 0.10
       batch_size: 2000
