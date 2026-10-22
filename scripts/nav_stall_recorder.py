@@ -58,7 +58,12 @@ while time.time()-t0<dur:
     try:
         tf=buf.lookup_transform("map","base_link",rclpy.time.Time())
         px,py=tf.transform.translation.x,tf.transform.translation.y; rec["amcl"]=[round(px,3),round(py,3),round(math.degrees(yaw_of(tf.transform.rotation)),1)]
-        if int(now*10)%20==0: rec["lc"]=costmap_stats(last["lc"],px,py)
+        if int(now*10)%20==0 and last["lc"] is not None:
+            # The local costmap is a rolling window in ITS OWN frame (odom), not map:
+            # use the robot pose in that frame or every distance is off by map->odom.
+            cf=last["lc"].header.frame_id
+            ct=buf.lookup_transform(cf,"base_link",rclpy.time.Time())
+            rec["lc"]=costmap_stats(last["lc"],ct.transform.translation.x,ct.transform.translation.y)
     except Exception as e: rec["amcl"]=None
     if now>=next_match and last["scan"] is not None:
         next_match=now+4; s=last["scan"]
