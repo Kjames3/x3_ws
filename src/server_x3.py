@@ -96,6 +96,7 @@ from frontier_explorer import FrontierExplorer
 from velocity_estimator import VelocityEstimator
 from velocity_timing import PoseHistory, ros_stamp_ns
 from person_memory import PersonMemory
+from people_buffer import people_cloud, cap_velocity as people_cap_velocity
 from pathlib import Path
 
 # =============================================================================
@@ -366,6 +367,14 @@ PERSON_MEMORY_ENABLED = os.environ.get('X3_PERSON_MEMORY', '1') != '0'
 _person_memory = PersonMemory(range_m=CBF_SPEED_RANGE_M, min_speed=CBF_MOVER_MIN_SPEED)
 _person_memory_lock = threading.Lock()
 _person_memory_logged = (0, 0)
+
+# Social buffer round tracked people (people_buffer.py): the same people the memory keeps are
+# marked as disks (with predicted positions for trusted walkers) in both Nav2 costmaps via
+# /people/obstacles, and the robot's speed is capped as the nearest person gets close
+# (retreats are never capped).  2026-10-22 walk-up: it passed a walker at 0.21 m, 0.15-0.26 m/s.
+PEOPLE_COSTMAP_ENABLED = os.environ.get('X3_PEOPLE_COSTMAP', '1') != '0'
+PEOPLE_SPEED_CAP_ENABLED = os.environ.get('X3_PEOPLE_SPEED_CAP', '1') != '0'
+PEOPLE_CLOUD_PERIOD_S = 0.1
 
 # Safety gate on the driver's command input.  The driver listens on /cmd_vel_safe and the
 # only publisher there is this server, so EVERYTHING that publishes /cmd_vel -- Nav2's
@@ -880,6 +889,8 @@ class ROS2Bridge:
             QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE,
                        durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self._move_lock = threading.Lock()   # move() runs from the heartbeat AND the gate
+        self._people_pub = self._node.create_publisher(PointCloud2, '/people/obstacles', 5)
+        self._people_last_pub = 0.0
         self._cmd_vel_pub = self._node.create_publisher(Twist, CMD_VEL_OUT_TOPIC, 10)
         if CMD_VEL_GATE:
             # Best-effort depth 1: a reliable reader stalled 3-4 s after one dropped
@@ -1283,6 +1294,7 @@ class ROS2Bridge:
                     obstacles.extend(map(tuple, xy.tolist()))
             
         moving = []     # ((x, y), (vx, vy)) of tracked movers, base frame
+        people = []     # everyone the person memory knows, for the social buffer
         if velocity_estimation_enabled and velocity_estimator is not None:
             try:
                 estimates = velocity_estimator.get_estimates()
@@ -1292,6 +1304,7 @@ class ROS2Bridge:
                         moving = _person_memory.update(estimates, time.monotonic())
                         seen = (_person_memory.stats["ghost_started"],
                                 _person_memory.stats["relinked"])
+                    people = list(_person_memory.people)
                     if seen != _person_memory_logged:
                         logger.info("[person-memory] ghosts started %d (+%d), ids re-linked %d (+%d)",
                                     seen[0], seen[0] - _person_memory_logged[0],
@@ -1344,6 +1357,18 @@ class ROS2Bridge:
             safe_vx, safe_vy = self._limit_for_deadband(
                 safe_vx, safe_vy, obstacles, velocities, omega, radii, gammas, soft)
 
+        if people:
+            if PEOPLE_SPEED_CAP_ENABLED:
+                safe_vx, safe_vy = people_cap_velocity(safe_vx, safe_vy, [p["pos"] for p in people])
+            if PEOPLE_COSTMAP_ENABLED and now - self._people_last_pub >= PEOPLE_CLOUD_PERIOD_S:
+                self._people_last_pub = now
+                try:
+                    cloud = people_cloud(people)
+                    if len(cloud):
+                        self.publish_people_cloud(cloud)
+                except Exception as e:
+                    logger.warning("people cloud failed: %s", e)
+
         # Summary for the GUI's obstacle warning (touch overlay): is the filter
         # cutting the operator's command, and is it blind (stale /scan)?
         asked = math.hypot(vx, vy)
@@ -1367,6 +1392,23 @@ class ROS2Bridge:
         msg = self._tof_observation_type()
         msg.data = json.dumps(record, separators=(',', ':'), allow_nan=False)
         self._tof_observation_pub.publish(msg)
+
+    def publish_people_cloud(self, points):
+        """(N,3) float32 base-frame points -> /people/obstacles (marked by both costmaps)."""
+        msg = self._PointCloud2()
+        msg.header.frame_id = 'base_link'
+        msg.header.stamp = self._node.get_clock().now().to_msg()
+        msg.height = 1
+        msg.width = len(points)
+        msg.fields = [self._PointField(name=n, offset=i * 4,
+                                       datatype=self._PointField.FLOAT32, count=1)
+                      for i, n in enumerate(('x', 'y', 'z'))]
+        msg.is_bigendian = False
+        msg.point_step = 12
+        msg.row_step = 12 * len(points)
+        msg.is_dense = True
+        msg.data = np.ascontiguousarray(points, dtype='<f4').tobytes()
+        self._people_pub.publish(msg)
 
     def publish_tof_cloud(self, name, points, kind='points'):
         """(N,3) float32 sensor-frame points -> /tof/<name>/<kind>.

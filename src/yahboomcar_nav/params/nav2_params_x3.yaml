@@ -311,7 +311,7 @@ local_costmap:
         enabled: True
         # tof_*: dual VL53L5CX arrays (Teensy -> server_x3) covering the low band
         # in front of the wheels that the 0.34 m scan plane passes over.
-        observation_sources: scan tof_upper tof_lower
+        observation_sources: scan tof_upper tof_lower people
         scan:
           topic: /scan
           max_obstacle_height: 2.0
@@ -348,6 +348,20 @@ local_costmap:
           obstacle_min_range: 0.0
           obstacle_max_range: 1.5
           observation_persistence: 0.0
+        # People (server_x3.py people_buffer): each tracked person as a filled disk, plus
+        # where a trusted walker will be in 0.5 s and 1.0 s, so the planners keep a
+        # comfortable distance and leave the path a walker is heading down.  Mark-only; the
+        # /scan rays clear a person's cells once they have moved on.
+        people:
+          topic: /people/obstacles
+          data_type: "PointCloud2"
+          marking: True
+          clearing: False
+          min_obstacle_height: 0.0
+          max_obstacle_height: 2.0
+          obstacle_min_range: 0.0
+          obstacle_max_range: 4.0
+          observation_persistence: 0.0
       always_send_full_costmap: True
 
 global_costmap:
@@ -368,7 +382,7 @@ global_costmap:
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
-        observation_sources: scan
+        observation_sources: scan people
         scan:
           topic: /scan
           raytrace_range: 3.0
@@ -377,6 +391,17 @@ global_costmap:
           clearing: True
           marking: True
           data_type: "LaserScan"
+        # Same people source as the local costmap, so the GLOBAL plan also routes wide.
+        people:
+          topic: /people/obstacles
+          data_type: "PointCloud2"
+          marking: True
+          clearing: False
+          min_obstacle_height: 0.0
+          max_obstacle_height: 2.0
+          obstacle_min_range: 0.0
+          obstacle_max_range: 4.0
+          observation_persistence: 0.0
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: True

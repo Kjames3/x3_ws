@@ -45,6 +45,7 @@ MATCH_MAX_M = 1.5
 MIN_TENURE_S = 0.5       # a person must have been seen this long to be held as a ghost
 MIN_UNKNOWN_TENURE_S = 0.3
 UNKNOWN_RANGE_M = 1.5    # unknown-velocity people are only reported this close
+BUFFER_RANGE_M = 3.5     # people listed for the social buffer (position only beyond range_m)
 
 
 class _Entry:
@@ -68,11 +69,17 @@ def _fade(v, dt, tau):
 
 
 class PersonMemory:
-    def __init__(self, range_m=RANGE_M, min_speed=MIN_SPEED, hold_s=HOLD_S):
+    def __init__(self, range_m=RANGE_M, min_speed=MIN_SPEED, hold_s=HOLD_S,
+                 buffer_range_m=BUFFER_RANGE_M):
         self.range_m = range_m
         self.min_speed = min_speed
         self.hold_s = hold_s
+        self.buffer_range_m = buffer_range_m
         self.entries = []
+        # Everyone the memory knows about after the latest update(), standing people
+        # included (the mover list leaves those to the lidar), for the social buffer:
+        # [{'pos': (x, y), 'vel': (vx, vy), 'trusted': bool, 'ghost': bool}, ...]
+        self.people = []
         self.stats = {"ghost_started": 0, "relinked": 0, "new_entries": 0}
 
     # -- helpers -----------------------------------------------------------------
@@ -120,6 +127,7 @@ class PersonMemory:
         self.entries = [e for e in self.entries if now - e.last <= self.hold_s + 0.5]
         match = self._associate(obs, now)
         out = []
+        people = []
         observed = set()
         for i, o in enumerate(obs):
             j = match.get(i)
@@ -143,15 +151,20 @@ class PersonMemory:
                 if o["speed"] > self.min_speed:
                     e.mover_t = now
                     out.append((o["pos"], o["vel"]))
+                people.append({"pos": o["pos"], "vel": o["vel"], "trusted": True, "ghost": False})
                 # trusted and slow: a person standing still is left to the lidar
                 continue
             # Velocity not trusted (new id, still gated, or just jumped).
             if e.v_trusted is not None and now - e.mover_t <= CARRY_MAX_S:
                 # it was walking a moment ago: keep that velocity, fading
-                out.append((o["pos"], _fade(e.v_trusted, now - e.v_trusted_t, TAU_CARRY_S)))
+                v = _fade(e.v_trusted, now - e.v_trusted_t, TAU_CARRY_S)
+                out.append((o["pos"], v))
+                people.append({"pos": o["pos"], "vel": v, "trusted": True, "ghost": False})
                 continue
-            if tenure >= MIN_UNKNOWN_TENURE_S and o["pos"][0] <= UNKNOWN_RANGE_M:
-                out.append((o["pos"], (0.0, 0.0)))
+            if tenure >= MIN_UNKNOWN_TENURE_S:
+                people.append({"pos": o["pos"], "vel": (0.0, 0.0), "trusted": False, "ghost": False})
+                if o["pos"][0] <= UNKNOWN_RANGE_M:
+                    out.append((o["pos"], (0.0, 0.0)))
         # ghosts: established movers that were not observed this tick
         for e in self.entries:
             if id(e) in observed:
@@ -167,5 +180,14 @@ class PersonMemory:
             if not e.ghosted:
                 e.ghosted = True
                 self.stats["ghost_started"] += 1
-            out.append((pos, _fade(v0, gap, TAU_GHOST_S)))
+            v = _fade(v0, gap, TAU_GHOST_S)
+            out.append((pos, v))
+            people.append({"pos": pos, "vel": v, "trusted": True, "ghost": True})
+        # people beyond the velocity range: position only
+        for est in estimates:
+            if (est.get("category") == "person" and est.get("age", 0) == 0
+                    and self.range_m < est.get("z", 0.0) <= self.buffer_range_m):
+                people.append({"pos": (float(est["z"]), -float(est.get("x", 0.0))),
+                               "vel": (0.0, 0.0), "trusted": True, "ghost": False})
+        self.people = people
         return out
