@@ -224,7 +224,7 @@ controller_server:
         cost_power: 1
         cost_weight: 3.81
         critical_cost: 300.0
-        consider_footprint: false
+        consider_footprint: true    # rectangular footprint now defined; MPPI scores the real chassis
         collision_cost: 1000000.0
         near_goal_distance: 1.0
       PathAlignCritic:
@@ -296,11 +296,15 @@ local_costmap:
       width: 3
       height: 3
       resolution: 0.05
-      robot_radius: 0.15   # slightly larger than DWA (0.1) for mecanum footprint
+      # The chassis as the same rectangle the CBF uses (server_x3.py CBF_FOOTPRINT,
+      # lidar-measured, metres from the base origin: front 0.16, rear 0.13, left 0.11,
+      # right 0.11).  A circle of radius 0.15 let planner and MPPI pass 0.15 m from a box
+      # while the front corners sit 0.19 m out (box test 2026-10-22: nearest 0.13 m).
+      footprint: "[[0.16, 0.11], [0.16, -0.11], [-0.13, -0.11], [-0.13, 0.11]]"
       plugins: ["obstacle_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.20
+        inflation_radius: 0.35   # circumscribed radius 0.19 m + the CBF's 0.10 m margin + room
         cost_scaling_factor: 5.0
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -354,7 +358,11 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_footprint
       use_sim_time: False
-      robot_radius: 0.15
+      # The chassis as the same rectangle the CBF uses (server_x3.py CBF_FOOTPRINT,
+      # lidar-measured, metres from the base origin: front 0.16, rear 0.13, left 0.11,
+      # right 0.11).  A circle of radius 0.15 let planner and MPPI pass 0.15 m from a box
+      # while the front corners sit 0.19 m out (box test 2026-10-22: nearest 0.13 m).
+      footprint: "[[0.16, 0.11], [0.16, -0.11], [-0.13, -0.11], [-0.13, 0.11]]"
       resolution: 0.05
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       obstacle_layer:
@@ -375,7 +383,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0
-        inflation_radius: 0.20
+        inflation_radius: 0.35   # circumscribed radius 0.19 m + the CBF's 0.10 m margin + room
       always_send_full_costmap: True
 
 # ── Map Server ───────────────────────────────────────────────────────────────
