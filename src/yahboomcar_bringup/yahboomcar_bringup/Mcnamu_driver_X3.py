@@ -22,6 +22,7 @@ from std_msgs.msg import String,Float32,Int32,Bool
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Imu,MagneticField, JointState
 from rclpy.clock import Clock
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 #from dynamic_reconfigure.server import Server
 car_type_dic={
@@ -94,7 +95,15 @@ class yahboomcar_driver(Node):
 			Imu, 'imu/data_raw', self.ext_imu_callback, 20)
 
 		#create subcriber
-		self.sub_cmd_vel = self.create_subscription(Twist,"cmd_vel",self.cmd_vel_callback,1)
+		# BEST_EFFORT, not the default RELIABLE: with Nav2 driving, a reliable reader
+		# stalled for 3-4 s (the writer's heartbeat period) after any dropped datagram,
+		# holding back every command behind it.  Measured 2026-10-22 with identical probe
+		# subscribers: depth-1 reliable lost ~17% of /cmd_vel and the driver itself ~50%,
+		# depth-1 best-effort lost ~0%.  A 20 Hz command stream does not need
+		# retransmission; a lost stop is covered by the 0.5 s watchdog.
+		cmd_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT,
+			history=HistoryPolicy.KEEP_LAST)
+		self.sub_cmd_vel = self.create_subscription(Twist,"cmd_vel",self.cmd_vel_callback,cmd_qos)
 		self.sub_RGBLight = self.create_subscription(Int32,"RGBLight",self.RGBLightcallback,100)
 		self.sub_BUzzer = self.create_subscription(Bool,"Buzzer",self.Buzzercallback,100)
 

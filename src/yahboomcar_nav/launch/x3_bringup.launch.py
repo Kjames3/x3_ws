@@ -102,21 +102,10 @@ def generate_launch_description():
                 serial_port = candidate
                 break
 
-    # Fast-DDS 2.6 reads FASTRTPS_DEFAULT_PROFILES_FILE.  The driver alone runs without
-    # shared memory (config/fastdds_udp_only.xml): its /cmd_vel reader intermittently
-    # received nothing for seconds over the shared-memory port.  X3_DRIVER_UDP_ONLY=0 opts out.
-    _udp_profile = os.path.join(os.environ.get('X3_WS', os.path.expanduser('~/x3_ws')),
-                                'config', 'fastdds_udp_only.xml')
-    driver_env = ({'FASTRTPS_DEFAULT_PROFILES_FILE': _udp_profile}
-                  if os.environ.get('X3_DRIVER_UDP_ONLY', '1') != '0'
-                  and os.path.isfile(_udp_profile) else None)
-
-
     driver_node = Node(
         package='yahboomcar_bringup',
         executable='Mcnamu_driver_X3',
         output='screen',
-        additional_env=driver_env,
         parameters=[{
             'serial_port': serial_port,
             # (half_wheelbase + half_track) from URDF: (0.08 + 0.0845) = 0.1645 m
