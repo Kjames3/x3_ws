@@ -9,3 +9,6 @@ Synced robot to 27dfd3c (Nav2 heartbeat yield default on + DiffDrive MPPI). Robo
 
 ## 2026-10-21 (late)
 Synced robot to 9d2b15f (scan-match AMCL seeding). Robot copies of server_x3.py, GUI.html and main.js were byte-identical to the pull (stashed, droppable). Server already running the new code; no restart needed.
+
+## 2026-10-22
+Synced robot to the RotationShim commit (nav2 params; installed copy rebuilt). Earlier the same night: 4f7e1d1 (best-effort driver), dac2c98 (driver counters), 9d2b15f (auto-seed).
