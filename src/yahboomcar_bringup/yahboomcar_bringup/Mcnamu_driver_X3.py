@@ -2,8 +2,11 @@
 # encoding: utf-8
 
 #public lib
+import os
 import sys
+import json
 import math
+import time as _time
 import random
 import threading
 from math import pi
@@ -130,6 +133,17 @@ class yahboomcar_driver(Node):
 		self.encPublisher = self.create_publisher(JointState, "wheel_encoders", 50)
 		self.enc_timer = self.create_timer(0.01, self.pub_encoders)
 
+		# Delivery diagnostics, 1 Hz on /driver_diag and (when something is
+		# happening) a line in ~/driver_diag.log.  Added 2026-10-22 for the
+		# stalls where Nav2's /cmd_vel reached a recorder but the wheels got
+		# PWM 0: cmd_cb counts the commands THIS node received, wd_trips the
+		# times its 0.5 s watchdog zeroed a live target, max_tick_gap_ms how
+		# long its executor went without running the 100 Hz encoder timer.
+		self.diagPublisher = self.create_publisher(String, "driver_diag", 10)
+		self._diag_path = os.path.expanduser('~/driver_diag.log')
+		self._diag_reset()
+		self.diag_timer = self.create_timer(1.0, self.pub_diag)
+
 		#create and init variable
 		self.edition = Float32()
 		self.edition.data = 1.0
@@ -151,6 +165,14 @@ class yahboomcar_driver(Node):
 		# such as driving forward while rotating or strafing while rotating.
 		if not isinstance(msg, Twist): return
 		self.last_cmd_time = self.get_clock().now()
+		_mono = _time.monotonic()
+		if self._diag_last_cb is not None:
+			self._diag_cb_gap = max(self._diag_cb_gap, _mono - self._diag_last_cb)
+		self._diag_last_cb = _mono
+		self._diag_cb += 1
+		if msg.linear.x or msg.linear.y or msg.angular.z:
+			self._diag_cb_nz += 1
+			self._diag_last_cmd = (msg.linear.x, msg.linear.y, msg.angular.z)
 		vx    = msg.linear.x
 		vy    = msg.linear.y
 		omega = msg.angular.z
@@ -214,6 +236,11 @@ class yahboomcar_driver(Node):
 
 	def pub_encoders(self):
 		"""100 Hz poll; acts once per new encoder report from the board."""
+		_mono = _time.monotonic()
+		if self._diag_last_tick is not None:
+			self._diag_tick_gap = max(self._diag_tick_gap, _mono - self._diag_last_tick)
+		self._diag_last_tick = _mono
+		self._diag_ticks += 1
 		now = self.get_clock().now()
 		counts, seq = self.car.get_motor_encoder_report()
 		on = bool(self.get_parameter('speed_control').value)
@@ -235,6 +262,7 @@ class yahboomcar_driver(Node):
 			return
 		self._enc_seq = seq
 		self._enc_time = now
+		self._diag_reports += 1
 
 		msg = JointState()
 		msg.header.stamp = now.to_msg()
@@ -243,12 +271,52 @@ class yahboomcar_driver(Node):
 		if on:
 			# Same 0.5 s watchdog as the open-loop path: no command, no motion.
 			if (now - self.last_cmd_time).nanoseconds / 1e9 > self.watchdog_timeout:
+				if any(self.speed_ctrl.targets):
+					self._diag_wd_trips += 1
 				self.speed_ctrl.set_targets([0.0] * 4)
 			pwm = self.speed_ctrl.update(counts, seq)
 			self.car.set_motor(*pwm)
 			msg.velocity = [float(v) for v in self.speed_ctrl.speeds]
 			msg.effort = [float(p) for p in pwm] + [float(r) for r in self.speed_ctrl.ramped]
 		self.encPublisher.publish(msg)
+
+	def _diag_reset(self):
+		self._diag_cb = self._diag_cb_nz = 0
+		self._diag_cb_gap = 0.0
+		self._diag_ticks = self._diag_reports = self._diag_wd_trips = 0
+		self._diag_tick_gap = 0.0
+		if not hasattr(self, '_diag_last_cb'):
+			self._diag_last_cb = self._diag_last_tick = None
+			self._diag_last_cmd = (0.0, 0.0, 0.0)
+
+	def pub_diag(self):
+		age_ms = (self.get_clock().now() - self.last_cmd_time).nanoseconds / 1e6
+		ctrl = self.speed_ctrl
+		rec = {
+			"t": round(_time.time(), 2),
+			"cmd_cb": self._diag_cb, "cmd_cb_nz": self._diag_cb_nz,
+			"cmd_gap_max_ms": round(self._diag_cb_gap * 1e3),
+			"cmd_age_ms": round(age_ms), "last_cmd": [round(v, 3) for v in self._diag_last_cmd],
+			"pubs": self.count_publishers('cmd_vel'),
+			"enc_ticks": self._diag_ticks, "enc_reports": self._diag_reports,
+			"tick_gap_max_ms": round(self._diag_tick_gap * 1e3),
+			"wd_trips": self._diag_wd_trips,
+			"tgt_max": round(max(abs(t) for t in ctrl.targets), 3),
+			"ramped_max": round(max(abs(r) for r in ctrl.ramped), 3),
+			"pwm_max": max(abs(p) for p in ctrl.pwm),
+		}
+		msg = String()
+		msg.data = json.dumps(rec)
+		self.diagPublisher.publish(msg)
+		if self._diag_cb or self._diag_wd_trips or rec["tgt_max"] or rec["pwm_max"]:
+			try:
+				if os.path.exists(self._diag_path) and os.path.getsize(self._diag_path) > 5_000_000:
+					os.replace(self._diag_path, self._diag_path + '.1')
+				with open(self._diag_path, 'a') as f:
+					f.write(msg.data + '\n')
+			except OSError:
+				pass
+		self._diag_reset()
 
 	#pub data
 	def pub_data(self):
