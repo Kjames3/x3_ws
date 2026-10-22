@@ -65,7 +65,9 @@ Browser (HTTP :8080 for GUI files, WebSocket :8081 for control)
     └─ src/server_x3.py          # Main async WebSocket server
          ├─ Direct serial ──────→ Rosmaster controller (/dev/ttyCH341USB0)
          │                        └─ Motors, battery, OLED
-         └─ ROS2Bridge (default) → /cmd_vel pub; /scan /odom /odom_raw
+         └─ ROS2Bridge (default) → /cmd_vel_safe pub (the driver's only input; the
+                                    CBF gate filters everything arriving on /cmd_vel, incl. Nav2);
+                                    /scan /odom /odom_raw
                                     /map /voltage /camera/image_raw subs
 ```
 

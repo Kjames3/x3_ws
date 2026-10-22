@@ -366,6 +366,26 @@ PERSON_MEMORY_ENABLED = os.environ.get('X3_PERSON_MEMORY', '1') != '0'
 _person_memory = PersonMemory(range_m=CBF_SPEED_RANGE_M, min_speed=CBF_MOVER_MIN_SPEED)
 _person_memory_lock = threading.Lock()
 _person_memory_logged = (0, 0)
+
+# Safety gate on the driver's command input.  The driver listens on /cmd_vel_safe and the
+# only publisher there is this server, so EVERYTHING that publishes /cmd_vel -- Nav2's
+# velocity smoother and its recovery behaviours (hard-wired to /cmd_vel in nav2_bringup),
+# scripts -- reaches the wheels through the CBF (static obstacles, ToF, tracked people and
+# the person memory).  Before 2026-10-22 Nav2 drove the base directly: in the demo a
+# professor walked at the robot in Nav2 mode and only the lidar costmap reacted.
+# X3_CMD_VEL_GATE=0 restores the direct wiring (the launch files read the same variable).
+CMD_VEL_GATE = os.environ.get('X3_CMD_VEL_GATE', '1') != '0'
+CMD_VEL_OUT_TOPIC = '/cmd_vel_safe' if CMD_VEL_GATE else '/cmd_vel'
+
+
+def _gate_route(motors_enabled, standalone_test):
+    """What the gate does with a message arriving on /cmd_vel: 'zero' (motors disabled),
+    'raw' (a standalone bench script that measures the base itself) or 'cbf'."""
+    if not motors_enabled:
+        return 'zero'
+    if standalone_test:
+        return 'raw'
+    return 'cbf'
 # Person tags from YOLO older than this are ignored (tracks read "unknown").
 YOLO_TAG_STALE_S = 1.0
 _p2p_proc = None           # point-to-point test subprocess handle
@@ -738,7 +758,8 @@ class ROS2Bridge:
     """
     Adapter that drives the robot over ROS2 topics and relays sensor data.
 
-      /cmd_vel (geometry_msgs/Twist) ← move(vx, vy, omega)
+      /cmd_vel_safe (geometry_msgs/Twist) ← move(vx, vy, omega)   [/cmd_vel with X3_CMD_VEL_GATE=0]
+      /cmd_vel → _gate_cmd_vel_cb → move()   (Nav2, scripts: everything reaches the driver via the CBF)
 
     Velocity scaling matches Mcnamu_driver_X3.py defaults:
       linear  max = 0.5 m/s  (Rosmaster ±1.0 → ±0.5 m/s)
@@ -858,7 +879,15 @@ class ROS2Bridge:
             TFMessage, '/tf_static', self._tf_static_cb,
             QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE,
                        durability=DurabilityPolicy.TRANSIENT_LOCAL))
-        self._cmd_vel_pub = self._node.create_publisher(Twist, '/cmd_vel', 10)
+        self._move_lock = threading.Lock()   # move() runs from the heartbeat AND the gate
+        self._cmd_vel_pub = self._node.create_publisher(Twist, CMD_VEL_OUT_TOPIC, 10)
+        if CMD_VEL_GATE:
+            # Best-effort depth 1: a reliable reader stalled 3-4 s after one dropped
+            # datagram (the driver's own lesson, 2026-10-22); newest command wins.
+            self._node.create_subscription(
+                Twist, '/cmd_vel', self._gate_cmd_vel_cb,
+                QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT))
+            self._gate_warned = 0.0
 
         # Publishers for pedestrian tracking (EE244 Project)
         from geometry_msgs.msg import PoseArray
@@ -1216,7 +1245,32 @@ class ROS2Bridge:
         s_cmd = max(float(executed[best]) - CMD_DEADBAND_MPS, CMD_MIN_MPS)
         return dx * s_cmd, dy * s_cmd
 
+    def _gate_cmd_vel_cb(self, msg):
+        """A command arrived on /cmd_vel: filter it and publish it to the driver."""
+        try:
+            route = _gate_route(motors_enabled, _is_standalone_test_running())
+            if route == 'zero':
+                self._cmd_vel_pub.publish(type(msg)())
+            elif route == 'raw':
+                self._cmd_vel_pub.publish(msg)
+            else:
+                self.move(float(msg.linear.x), float(msg.linear.y), float(msg.angular.z))
+        except Exception as e:
+            # Fail safe: if filtering breaks, stop the base rather than let it drive on.
+            try:
+                self._cmd_vel_pub.publish(type(msg)())
+            except Exception:
+                pass
+            now = time.monotonic()
+            if now - self._gate_warned > 5.0:
+                self._gate_warned = now
+                logger.warning("cmd_vel gate failed (%s); sent a stop", e)
+
     def move(self, vx: float, vy: float, omega: float):
+        with self._move_lock:
+            self._move_impl(vx, vy, omega)
+
+    def _move_impl(self, vx: float, vy: float, omega: float):
         from geometry_msgs.msg import Twist
         global velocity_estimation_enabled, velocity_estimator
         

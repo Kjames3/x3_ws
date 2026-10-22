@@ -30,8 +30,9 @@ CONSTANTS = ('TOF_CBF_MIN_Z_M', 'TOF_FLOOR_DEFICIT_MM', 'TOF_FLOOR_TILT_MM',
              'TOF_CBF_MAX_RANGE_M', 'TOF_CBF_GRID_M', 'TOF_CBF_PERSIST_FRAMES',
              'TOF_CBF_HOLD_S', 'CMD_DEADBAND_MPS', 'CBF_SPEED_RANGE_M',
              'CBF_MOVER_MIN_SPEED', 'CMD_MIN_MPS',
-             'CBF_MOVER_MIN_PERSON_FRAMES', 'CBF_MOVER_JUMP_HOLD_FRAMES')
-FUNCTIONS = ('_tof_floor_deficit', '_cbf_movers')
+             'CBF_MOVER_MIN_PERSON_FRAMES', 'CBF_MOVER_JUMP_HOLD_FRAMES',
+             'CMD_VEL_GATE', 'CMD_VEL_OUT_TOPIC')
+FUNCTIONS = ('_tof_floor_deficit', '_cbf_movers', '_gate_route')
 METHODS = ('_limit_for_deadband', 'set_tof_obstacles')
 
 
@@ -398,3 +399,31 @@ def test_no_tf_yet_returns_none(bridge):
     bridge._tof_extrinsic = lambda name: None
     pts, zones = _frame()
     assert bridge.set_tof('upper', pts, zones) is None
+
+
+# ------------------------------------------------------- /cmd_vel safety gate
+def test_gate_routes_each_case(srv):
+    route = srv['_gate_route']
+    assert route(False, False) == 'zero' and route(False, True) == 'zero'
+    assert route(True, True) == 'raw'          # a bench script measuring the base itself
+    assert route(True, False) == 'cbf'         # Nav2, recovery behaviours, anything else
+
+
+def test_gate_is_on_by_default_and_the_driver_listens_behind_it(srv):
+    assert srv['CMD_VEL_GATE'] is True
+    assert srv['CMD_VEL_OUT_TOPIC'] == '/cmd_vel_safe'
+
+
+def test_server_has_no_publisher_left_that_bypasses_the_gate():
+    """Everything the server sends the driver goes through CMD_VEL_OUT_TOPIC; a direct
+    '/cmd_vel' publisher would hand Nav2-style commands (or the heartbeat) to the base."""
+    src = SERVER.read_text()
+    assert "create_publisher(Twist, '/cmd_vel'" not in src
+    assert "create_publisher(Twist, CMD_VEL_OUT_TOPIC" in src
+
+
+@pytest.mark.parametrize('name', ['x3_bringup.launch.py', 'x3_slam.launch.py'])
+def test_driver_launch_remap_follows_the_same_switch(name):
+    text = (REPO / 'src' / 'yahboomcar_nav' / 'launch' / name).read_text()
+    assert "X3_CMD_VEL_GATE" in text and "'cmd_vel_safe'" in text
+    assert "remappings=[('cmd_vel', driver_cmd_topic)]" in text

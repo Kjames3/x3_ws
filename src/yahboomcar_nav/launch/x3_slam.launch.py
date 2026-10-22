@@ -86,10 +86,15 @@ def generate_launch_description():
 
     # ── Hardware driver ───────────────────────────────────────────────
     # Subscribes /cmd_vel → Rosmaster serial; publishes /vel_raw, /imu/data_raw
+    # The driver takes commands from /cmd_vel_safe, published only by server_x3.py after
+    # the CBF (see CMD_VEL_GATE there).  X3_CMD_VEL_GATE=0 puts it back on /cmd_vel.
+    driver_cmd_topic = 'cmd_vel' if os.environ.get('X3_CMD_VEL_GATE', '1') == '0' else 'cmd_vel_safe'
+
     driver_node = Node(
         package='yahboomcar_bringup',
         executable='Mcnamu_driver_X3',
         output='screen',
+        remappings=[('cmd_vel', driver_cmd_topic)],
         parameters=[{
             'wheel_separation_factor': 0.165,
             # Hold each wheel at its commanded speed from its encoder

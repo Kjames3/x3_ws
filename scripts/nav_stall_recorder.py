@@ -24,8 +24,9 @@ sys.path.insert(0, "/home/jetson/x3_ws/src")
 from auto_initial_pose import LikelihoodField, ScanMatcher, scan_to_points
 dur=float(sys.argv[1]); out=open(sys.argv[2],"w")
 rclpy.init(); n=Node("rec2"); t0=time.time()
-last={"diag":None,"enc":None,"nav":None,"cmd":None,"odom":None,"raw":None,"scan":None,"lc":None}
+last={"safe":None,"diag":None,"enc":None,"nav":None,"cmd":None,"odom":None,"raw":None,"scan":None,"lc":None}
 n.create_subscription(Twist,"/cmd_vel_nav",lambda m:last.__setitem__("nav",(m.linear.x,m.linear.y,m.angular.z,time.time())),10)
+n.create_subscription(Twist,"/cmd_vel_safe",lambda m:last.__setitem__("safe",(m.linear.x,m.linear.y,m.angular.z,time.time())),10)
 n.create_subscription(Twist,"/cmd_vel",lambda m:last.__setitem__("cmd",(m.linear.x,m.linear.y,m.angular.z,time.time())),10)
 n.create_subscription(Odometry,"/odom",lambda m:last.__setitem__("odom",(m.twist.twist.linear.x,m.twist.twist.linear.y,m.twist.twist.angular.z)),10)
 n.create_subscription(Odometry,"/odom_raw",lambda m:last.__setitem__("raw",(m.twist.twist.linear.x,m.twist.twist.linear.y,m.twist.twist.angular.z)),10)
@@ -48,7 +49,7 @@ next_match=0
 while time.time()-t0<dur:
     rclpy.spin_once(n,timeout_sec=0.1)
     now=time.time(); rec={"t":round(now-t0,2)}
-    for k in ("nav","cmd"):
+    for k in ("nav","cmd","safe"):
         v=last[k]; rec[k]=None if v is None else [round(v[0],3),round(v[1],3),round(v[2],3),round(now-v[3],2)]
     rec["enc"]=last["enc"]
     d=last["diag"]

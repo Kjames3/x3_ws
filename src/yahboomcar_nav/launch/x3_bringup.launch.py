@@ -102,10 +102,15 @@ def generate_launch_description():
                 serial_port = candidate
                 break
 
+    # The driver takes commands from /cmd_vel_safe, published only by server_x3.py after
+    # the CBF (see CMD_VEL_GATE there).  X3_CMD_VEL_GATE=0 puts it back on /cmd_vel.
+    driver_cmd_topic = 'cmd_vel' if os.environ.get('X3_CMD_VEL_GATE', '1') == '0' else 'cmd_vel_safe'
+
     driver_node = Node(
         package='yahboomcar_bringup',
         executable='Mcnamu_driver_X3',
         output='screen',
+        remappings=[('cmd_vel', driver_cmd_topic)],
         parameters=[{
             'serial_port': serial_port,
             # (half_wheelbase + half_track) from URDF: (0.08 + 0.0845) = 0.1645 m
