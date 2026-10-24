@@ -892,6 +892,10 @@ class ROS2Bridge:
         self._people_pub = self._node.create_publisher(PointCloud2, '/people/obstacles', 5)
         self._people_last_pub = 0.0
         self._cmd_vel_pub = self._node.create_publisher(Twist, CMD_VEL_OUT_TOPIC, 10)
+        # What was ASKED of the CBF (GUI joystick, Nav2 through the gate, heartbeat), so a
+        # bag holds the request next to /cmd_vel_safe: src/orca_cbf_compare.py replays it
+        # as every controller's u_nom.  GUI commands never appear on /cmd_vel.
+        self._cmd_nominal_pub = self._node.create_publisher(Twist, '/cmd_vel_nominal', 10)
         if CMD_VEL_GATE:
             # Best-effort depth 1: a reliable reader stalled 3-4 s after one dropped
             # datagram (the driver's own lesson, 2026-10-22); newest command wins.
@@ -1282,6 +1286,7 @@ class ROS2Bridge:
             self._move_impl(vx, vy, omega)
 
     def _move_impl(self, vx: float, vy: float, omega: float):
+        omega_req = omega        # the CBF may shrink omega; publish what was asked
         from geometry_msgs.msg import Twist
         global velocity_estimation_enabled, velocity_estimator
         
@@ -1377,6 +1382,10 @@ class ROS2Bridge:
             'blind': bool(not lidar_3d_scan_enabled and obst_age > OBSTACLE_STALE_S),
             'hold': bool(lidar_3d_scan_enabled),
         }
+
+        req = Twist()
+        req.linear.x, req.linear.y, req.angular.z = float(vx), float(vy), float(omega_req)
+        self._cmd_nominal_pub.publish(req)
 
         msg = Twist()
         msg.linear.x  = float(safe_vx)    * self.LINEAR_SCALE

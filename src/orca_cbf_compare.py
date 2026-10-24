@@ -1,13 +1,24 @@
 #!/usr/bin/env python3
 """Offline comparison of the CBF filter against ORCA on the recorded walking runs.
 
-The walking bags (artifacts/cbf-2026-10-12, cbf-2026-10-16) are a parked robot
-(no operator command, u_nom = 0) with a person walking at it; the CBF's job is to
-give way. This replays each bag through several controllers and scores them the
-same way.
+Replays each bag through several controllers and scores them the same way.
+
+What the robot was asked to do (the nominal command, u_nom) depends on the bag:
+  gated bags   (2026-10-22 on: the driver listens on /cmd_vel_safe) record
+               /cmd_vel_safe = what the CBF let through and /cmd_vel_nominal = what
+               was asked of it (GUI joystick, Nav2, scripts, heartbeat). Every
+               controller gets the request as u_nom. Bags from before
+               /cmd_vel_nominal fall back to /cmd_vel, which misses GUI commands.
+               Record them with scripts/record_walk.sh.
+  older bags   (artifacts/cbf-2026-10-12, cbf-2026-10-16) only have /cmd_vel, which
+               was then the CBF OUTPUT; those runs are a parked robot, so u_nom = 0.
+--nominal overrides this: zero, cmd (the recorded request) or track (steer back
+toward the real robot's recorded path 1 s ahead, at least as fast as the request:
+for goal runs, so a controller that detours can rejoin; never for walk-ups at a
+parked robot, where it would steer toward the walker).
 
 Controllers
-  recorded     what the robot actually did (/odom path, /cmd_vel = the live CBF output)
+  recorded     what the robot actually did (/odom path, the executed command)
   cbf          src/cbf_filter.py with the live tuning (static gamma 2, person
                radius 0.25 / gamma 1, footprint + 0.10 margin, deadband 0, min 0.03)
                followed by the server's executed-speed re-check
@@ -18,7 +29,7 @@ Controllers
   orca-recip   the same with the textbook reciprocal half share for people
 
 Two passes
-  open loop    at every recorded /cmd_vel instant, the command each controller
+  open loop    at every executed-command instant, the command each controller
                would give in the real robot's scene. For cbf this checks the replay
                against what the robot did; for ORCA it shows when and how hard it
                reacts compared with the CBF.
@@ -26,8 +37,8 @@ Two passes
                driven by each controller through the recorded world: lidar returns
                and person tracks are placed in the odom frame with the real robot's
                pose, so they stay where they physically were while the simulated
-               robot moves. `--check-dynamics` drives the model with the recorded
-               /cmd_vel to show how well it reproduces /odom.
+               robot moves. `--check-dynamics` drives the model with the executed
+               commands to show how well it reproduces /odom.
 
 Limits (read before quoting numbers)
   - Walkers reacted to the real robot (they stopped when it backed away). The
@@ -39,13 +50,21 @@ Limits (read before quoting numbers)
     server's mover gate is approximated by speed > 0.15 m/s within 1.8 m. Every
     controller gets the same people.
   - The ToF arrays are not replayed (they see below the lidar plane; walkers' feet).
+  - Not replayed either: person_memory (ghosts / id re-links), the people speed cap,
+    the Nav2 people costmap. The live CBF had them in gated bags, so cbf open-loop
+    agreement with /cmd_vel_safe is expected to be lower there.
+  - The simulated robot keeps the real robot's heading; a request's yaw rate only
+    costs wheel speed (and footprint rows in the CBF). The recorded request does not
+    react to the simulated robot (Nav2 replanned for the real one): use --nominal
+    track for goal runs and read "end gap" as "did it get there".
   - Clearance is measured from the CBF's own outline (about the base origin).
   - "min lidar" is any return (the walker's legs included); "min stat" only returns in
     odom cells occupied in >= 35% of the scans (furniture, walls).
 
 Usage
   python3 src/orca_cbf_compare.py artifacts/cbf-2026-10-16/walk-g-r6 [...]
-  python3 src/orca_cbf_compare.py artifacts/cbf-2026-10-1*/walk-* --plot out_dir --json
+  python3 src/orca_cbf_compare.py artifacts/cbf-2026-10-1*/walk-* --plot out_dir --json f.json
+  python3 src/orca_cbf_compare.py artifacts/walk-2026-11-*/goal-* --nominal track
 Needs ROS (rclpy, x3_msgs) sourced to decode the bags.
 """
 import argparse
@@ -132,7 +151,18 @@ def load_run(path):
                      math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))))
     odom = np.array(odom)
     odom[:, 3] = np.unwrap(odom[:, 3])
-    cmd = np.array([(t, m.linear.x, m.linear.y, m.angular.z) for t, m in rows('/cmd_vel')]).reshape(-1, 4)
+    def twists(topic):
+        return np.array([(t, m.linear.x, m.linear.y, m.angular.z) for t, m in rows(topic)]).reshape(-1, 4)
+    cmd, safe, req = twists('/cmd_vel'), twists('/cmd_vel_safe'), twists('/cmd_vel_nominal')
+    gated = len(safe) > 0
+    # gated: /cmd_vel_safe is what ran. The request is /cmd_vel_nominal (everything
+    # that entered the CBF, GUI joystick included) or, in bags from before that topic,
+    # /cmd_vel (Nav2 and scripts only). Before the gate /cmd_vel was the CBF output
+    # and nobody recorded the request.
+    if gated:
+        executed, nominal = safe, (req if len(req) else cmd)
+    else:
+        executed, nominal = cmd, np.zeros((0, 4))
     ped = [(t, [(s.id, s.position.x, s.position.y, s.velocity.x, s.velocity.y) for s in m.pedestrians])
            for t, m in rows('/pedestrian_states')]
     scans = []
@@ -142,7 +172,7 @@ def load_run(path):
         ok = np.isfinite(r) & (r > SCAN_MIN) & (r < 3.0)
         # _scan_cb: laser_link is yawed by pi, lidar at x = 0.0435
         scans.append((t, np.column_stack([-r[ok] * np.cos(a[ok]) + LIDAR_X, -r[ok] * np.sin(a[ok])])))
-    return dict(name=p.name, odom=odom, cmd=cmd, ped=ped, scans=scans)
+    return dict(name=p.name, odom=odom, cmd=executed, nominal=nominal, gated=gated, ped=ped, scans=scans)
 
 
 CELL_M, STATIC_FRAC = 0.10, 0.35
@@ -212,16 +242,58 @@ def scene(run, t, pos, yaw):
     return lidar, people, (pts, is_static)
 
 
+# ─────────────────────────────── nominal command ───────────────────────────────
+
+WATCHDOG_S = 0.5          # the driver stops a command older than this
+TRACK_LOOKAHEAD_S = 1.0
+
+
+def resolve_nominal(run, mode):
+    if mode == 'auto':
+        return 'cmd' if run['gated'] else 'zero'
+    if mode in ('cmd', 'track') and not run['gated']:
+        raise SystemExit('%s: no /cmd_vel_safe in this bag, so /cmd_vel is the CBF output, '
+                         'not a request; use --nominal zero' % run['name'])
+    return mode
+
+
+def recorded_request(run, t):
+    """(vx, vy, wz) requested at t, body frame; zero once the watchdog would have fired."""
+    nom = run['nominal']
+    k = int(np.searchsorted(nom[:, 0], t, side='right')) - 1 if len(nom) else -1
+    if k < 0 or t - nom[k, 0] > WATCHDOG_S:
+        return np.zeros(3)
+    return nom[k, 1:4].copy()
+
+
+def nominal_at(run, mode, t, pos, yaw):
+    """u_nom (vx, vy, wz) for a robot at world pose (pos, yaw) at time t."""
+    if mode == 'zero':
+        return np.zeros(3)
+    u = recorded_request(run, t)
+    if mode == 'track':
+        x, y, _ = pose_at(run['odom'], t + TRACK_LOOKAHEAD_S)
+        want = rot(yaw).T @ ((np.array([x, y]) - pos) / TRACK_LOOKAHEAD_S)
+        speed = math.hypot(*want)
+        cap = max(math.hypot(u[0], u[1]), 0.1)      # catch up, but not much faster than asked
+        if speed > cap:
+            want *= cap / speed
+        u[:2] = want if speed > 0.02 else 0.0
+    return u
+
+
 # ─────────────────────────────── controllers ───────────────────────────────
 
 class CBFController:
     name = 'cbf'
 
-    def __init__(self):
-        self.f = HolonomicCBFFilter(gamma=CBF_GAMMA, footprint=CBF_FOOTPRINT, margin=CBF_MARGIN,
+    def __init__(self, gamma=CBF_GAMMA, person_gamma=PERSON_GAMMA, name='cbf'):
+        self.f = HolonomicCBFFilter(gamma=gamma, footprint=CBF_FOOTPRINT, margin=CBF_MARGIN,
                                     max_wheel_speed=MAX_WHEEL)
+        self.person_gamma, self.name = person_gamma, name
 
     def __call__(self, u_nom, v_now, lidar, people):
+        """u_nom (vx, vy, wz); returns the translation (vx, vy)."""
         obstacles = [tuple(p) for p in lidar]
         moving = [(tuple(p), tuple(v)) for _, p, v, m in people if m]
         vel = radii = gammas = soft = None
@@ -229,23 +301,25 @@ class CBFController:
             n = len(obstacles)
             vel = [(0.0, 0.0)] * n + [v for _, v in moving]
             radii = [0.0] * n + [PERSON_RADIUS] * len(moving)
-            gammas = [self.f.gamma] * n + [PERSON_GAMMA] * len(moving)
+            gammas = [self.f.gamma] * n + [self.person_gamma] * len(moving)
             soft = [False] * n + [True] * len(moving)
             obstacles = obstacles + [p for p, _ in moving]
+        wz = float(u_nom[2]) if len(u_nom) > 2 else 0.0
         if not obstacles:
-            return np.array(u_nom, float)
-        vx, vy, _ = self.f.filter_twist(u_nom[0], u_nom[1], 0.0, (0.0, 0.0), obstacles, vel, radii, gammas, soft)
-        return np.array(limit_for_deadband(self.f, vx, vy, obstacles, vel, radii, gammas, soft))
+            vx, vy = self.f.filter_velocity(u_nom[0], u_nom[1], (0.0, 0.0), [], omega=wz)
+            return np.array([vx, vy])
+        vx, vy, wz = self.f.filter_twist(u_nom[0], u_nom[1], wz, (0.0, 0.0), obstacles, vel, radii, gammas, soft)
+        return np.array(limit_for_deadband(self.f, vx, vy, obstacles, vel, radii, gammas, soft, omega=wz))
 
 
 def limit_for_deadband(cbf, vx, vy, obstacles, velocities=None, radii=None, gammas=None, soft=None,
-                       deadband=CMD_DEADBAND, cmd_min=CMD_MIN):
-    """server_x3.ROS2Bridge._limit_for_deadband, omega 0."""
+                       deadband=CMD_DEADBAND, cmd_min=CMD_MIN, omega=0.0):
+    """server_x3.ROS2Bridge._limit_for_deadband."""
     s = math.hypot(vx, vy)
     if s < 1e-6 or not len(obstacles):
         return vx, vy
     dx, dy = vx / s, vy / s
-    n, c, keep = cbf.constraint_rows((0.0, 0.0), obstacles, velocities, 0.0, radii, gammas, with_keep=True)
+    n, c, keep = cbf.constraint_rows((0.0, 0.0), obstacles, velocities, omega, radii, gammas, with_keep=True)
     if not len(c):
         return vx, vy
     n_dot_d = n[:, 0] * dx + n[:, 1] * dy
@@ -350,17 +424,20 @@ class ORCAController:
             vv = v if mover else np.zeros(2)
             lines.append(self._line(p - _FC, v_now - vv, v_now, ORCA_ROBOT_RADIUS + PERSON_RADIUS,
                                     self.tau, self.share))
+        # a yaw rate uses up wheel speed, as in the CBF's wheel limit
+        vmax = max(MAX_WHEEL - 0.215 * abs(float(u_nom[2]) if len(u_nom) > 2 else 0.0), 0.0)
         if not lines:
-            return np.array(u_nom, float)
-        V = self.vec.Vector2
-        pref = V(float(u_nom[0]), float(u_nom[1]))
-        fail, res = self.agent.linearProgram2(lines, MAX_WHEEL, pref, False, V())
-        if fail < len(lines):
-            res = self.agent.linearProgram3(lines, n_obst, fail, MAX_WHEEL, res)
-        u = np.array([res.x_, res.y_])
+            u = np.array(u_nom[:2], float)
+        else:
+            V = self.vec.Vector2
+            pref = V(float(u_nom[0]), float(u_nom[1]))
+            fail, res = self.agent.linearProgram2(lines, vmax, pref, False, V())
+            if fail < len(lines):
+                res = self.agent.linearProgram3(lines, n_obst, fail, vmax, res)
+            u = np.array([res.x_, res.y_])
         s = abs(u[0]) + abs(u[1])
-        if s > MAX_WHEEL:                       # disc -> mecanum wheel diamond
-            u *= MAX_WHEEL / s
+        if s > vmax:                            # disc -> mecanum wheel diamond
+            u *= vmax / s
         if math.hypot(*u) < CMD_MIN:
             u[:] = 0.0
         return u
@@ -374,12 +451,15 @@ def span(run):
     return t0, t1
 
 
-def open_loop(run, controllers):
-    """Each controller's command in the REAL robot's scene at every recorded /cmd_vel."""
+def open_loop(run, controllers, mode):
+    """Each controller's command in the REAL robot's scene at every executed command.
+    (track mode has no meaning here -- the robot is where it really was -- so it
+    uses the recorded request.)"""
+    ol_mode = 'cmd' if mode == 'track' else mode
     t0, t1 = span(run)
     cmd = run['cmd'][(run['cmd'][:, 0] >= t0) & (run['cmd'][:, 0] <= t1)]
     out = {c.name: [] for c in controllers}
-    rng = []
+    rng, noms = [], []
     for t, vx, vy, _ in cmd:
         x, y, th = pose_at(run['odom'], t)
         # the robot's velocity in body axes, from odom
@@ -388,14 +468,17 @@ def open_loop(run, controllers):
         v_now = rot(th).T @ ((x - xa) / dt, (y - ya) / dt)
         lidar, people, _ = scene(run, t, np.array([x, y]), th)
         rng.append(min((rect_dist(p)[0] - PERSON_RADIUS for _, p, _, _ in people), default=np.nan))
+        u_nom = nominal_at(run, ol_mode, t, np.array([x, y]), th)
+        noms.append(u_nom[:2])
         for c in controllers:
-            out[c.name].append(c((0.0, 0.0), v_now, lidar, people))
-    res = dict(t=cmd[:, 0] - t0, recorded=cmd[:, 1:3], person_clearance=np.array(rng))
+            out[c.name].append(c(u_nom, v_now, lidar, people))
+    res = dict(t=cmd[:, 0] - t0, recorded=cmd[:, 1:3], person_clearance=np.array(rng),
+               nominal=np.array(noms).reshape(-1, 2))
     res.update({k: np.array(v).reshape(-1, 2) for k, v in out.items()})
     return res
 
 
-def simulate(run, controller, delay=0.1, accel=1.0, commands=None):
+def simulate(run, controller, delay=0.1, accel=1.0, commands=None, mode='zero'):
     """Closed loop through the recorded world. commands: replay these (t, vx, vy)
     instead of a controller (the dynamics check)."""
     t0, t1 = span(run)
@@ -407,11 +490,12 @@ def simulate(run, controller, delay=0.1, accel=1.0, commands=None):
     for t in np.arange(t0, t1, dt):
         th = pose_at(run['odom'], t)[2]           # heading as the real robot (no yaw commanded)
         lidar, people, near = scene(run, t, pos, th)
+        u_nom = nominal_at(run, mode, t, pos, th)
         if commands is not None:
             k = int(np.searchsorted(commands[:, 0], t, side='right')) - 1
-            u = commands[k, 1:3] if k >= 0 and t - commands[k, 0] < 0.5 else np.zeros(2)   # driver watchdog
+            u = commands[k, 1:3] if k >= 0 and t - commands[k, 0] < WATCHDOG_S else np.zeros(2)
         else:
-            u = controller((0.0, 0.0), v, lidar, people)
+            u = controller(u_nom, v, lidar, people)
         queue.append(np.asarray(u, float))
         u_exec = queue.pop(0)
         dv = u_exec - v
@@ -421,7 +505,7 @@ def simulate(run, controller, delay=0.1, accel=1.0, commands=None):
         v = v + dv
         pos = pos + rot(th) @ v * dt
         pc, lc, sc = _clearances(people, near)
-        rows.append((t - t0, pos[0], pos[1], v[0], v[1], u[0], u[1], pc, lc, sc))
+        rows.append((t - t0, pos[0], pos[1], v[0], v[1], u[0], u[1], pc, lc, sc, u_nom[0], u_nom[1]))
     return np.array(rows)
 
 
@@ -435,7 +519,7 @@ def _clearances(people, near):
     return pc, lc, sc
 
 
-def recorded_track(run):
+def recorded_track(run, mode='zero'):
     """The real robot scored like a simulated one."""
     t0, t1 = span(run)
     rows = []
@@ -448,12 +532,15 @@ def recorded_track(run):
         u = cmd[k, 1:3] if k >= 0 else np.zeros(2)
         _, people, near = scene(run, t, np.array([x, y]), th)
         pc, lc, sc = _clearances(people, near)
-        rows.append((t - t0, x, y, v[0], v[1], u[0], u[1], pc, lc, sc))
+        u_nom = nominal_at(run, 'cmd' if mode == 'track' else mode, t, np.array([x, y]), th)
+        rows.append((t - t0, x, y, v[0], v[1], u[0], u[1], pc, lc, sc, u_nom[0], u_nom[1]))
     return np.array(rows)
 
 
-def score(tr):
+def score(tr, end_ref=None):
+    """end_ref: where the real robot finished (world); end_gap = how far from it this one did."""
     t, pos, v, u, pc, lc, sc = tr[:, 0], tr[:, 1:3], tr[:, 3:5], tr[:, 5:7], tr[:, 7], tr[:, 8], tr[:, 9]
+    u_nom = tr[:, 10:12]
     dt = np.diff(t, prepend=t[0])
     seen = np.isfinite(pc)
     speed = np.hypot(v[:, 0], v[:, 1])
@@ -470,6 +557,9 @@ def score(tr):
         max_sideways=float(np.abs(v[:, 1]).max()),
         moving_s=float(dt[speed > 0.03].sum()),
         cmd_chatter=float(np.sum(np.hypot(*np.diff(u, axis=0).T))),
+        # how much the controller overrode the request (time mean of |u - u_nom|)
+        deviation=float(np.mean(np.hypot(*(u - u_nom).T))),
+        end_gap=None if end_ref is None else float(np.hypot(*(pos[-1] - end_ref))),
     )
 
 
@@ -484,10 +574,12 @@ def onsets(t, cmd, clearance, thresh=0.05, gap=1.0):
     return out
 
 
-def compare(run, controllers, delay, accel, check_dynamics):
+def compare(run, controllers, delay, accel, check_dynamics, nominal='auto'):
     to_world(run)
-    ol = open_loop(run, controllers)
-    res = dict(name=run['name'], duration=float(span(run)[1] - span(run)[0]), open_loop={}, closed_loop={})
+    mode = resolve_nominal(run, nominal)
+    ol = open_loop(run, controllers, mode)
+    res = dict(name=run['name'], duration=float(span(run)[1] - span(run)[0]), gated=run['gated'],
+               nominal=mode, open_loop={}, closed_loop={})
     rec = ol['recorded']
     for c in controllers:
         u = ol[c.name]
@@ -499,15 +591,16 @@ def compare(run, controllers, delay, accel, check_dynamics):
             onset_clearance=onsets(ol['t'], u, ol['person_clearance']))
     res['open_loop']['recorded'] = dict(mean_speed=float(np.mean(np.hypot(*rec.T))),
                                         onset_clearance=onsets(ol['t'], rec, ol['person_clearance']))
-    tracks = {'recorded': recorded_track(run)}
+    tracks = {'recorded': recorded_track(run, mode)}
     if check_dynamics:
-        sim = simulate(run, None, delay, accel, commands=run['cmd'][:, :3])
+        sim = simulate(run, None, delay, accel, commands=run['cmd'][:, :3], mode=mode)
         e = np.hypot(*(sim[:, 1:3] - tracks['recorded'][:len(sim), 1:3]).T)
         res['dynamics_check'] = dict(rms_pos_m=float(np.sqrt(np.mean(e ** 2))), max_pos_m=float(e.max()))
     for c in controllers:
-        tracks[c.name] = simulate(run, c, delay, accel)
+        tracks[c.name] = simulate(run, c, delay, accel, mode=mode)
+    end_ref = tracks['recorded'][-1, 1:3]
     for k, tr in tracks.items():
-        res['closed_loop'][k] = score(tr)
+        res['closed_loop'][k] = score(tr, end_ref)
     return res, ol, tracks
 
 
@@ -517,7 +610,7 @@ COLS = [('min_person_clearance', 'min pers', '%+.2f'), ('person_below_margin_s',
         ('min_lidar_clearance', 'min lidar', '%.2f'), ('lidar_below_5cm_s', '<5cm s', '%.1f'),
         ('min_static_clearance', 'min stat', '%.2f'), ('static_below_5cm_s', 'st<5cm s', '%.1f'),
         ('path_m', 'path m', '%.2f'), ('peak_speed', 'peak', '%.2f'), ('max_sideways', 'side', '%.2f'),
-        ('cmd_chatter', 'chatter', '%.1f')]
+        ('cmd_chatter', 'chatter', '%.1f'), ('deviation', '|u-unom|', '%.3f'), ('end_gap', 'end gap', '%.2f')]
 
 
 def _fmt(v, f):
@@ -525,11 +618,13 @@ def _fmt(v, f):
 
 
 def report(r):
-    print('== %s  (%.0f s)' % (r['name'], r['duration']))
+    print('== %s  (%.0f s; executed %s, u_nom = %s)' % (
+        r['name'], r['duration'], '/cmd_vel_safe' if r['gated'] else '/cmd_vel (pre-gate CBF output)',
+        {'zero': '0', 'cmd': 'recorded /cmd_vel', 'track': 'track the recorded path'}[r['nominal']]))
     if 'dynamics_check' in r:
         d = r['dynamics_check']
-        print('  dynamics model on recorded /cmd_vel vs /odom: rms %.3f m, max %.3f m' % (d['rms_pos_m'], d['max_pos_m']))
-    print('  open loop (real scene, each recorded /cmd_vel instant):')
+        print('  dynamics model on executed commands vs /odom: rms %.3f m, max %.3f m' % (d['rms_pos_m'], d['max_pos_m']))
+    print('  open loop (real scene, each executed-command instant):')
     for k, o in r['open_loop'].items():
         extra = '' if k == 'recorded' else '  vs recorded: rms %.3f m/s, within 5 cm/s %.0f%%' % (
             o['rms_vs_recorded'], 100 * o['agree_within_5cm_s'])
@@ -542,7 +637,7 @@ def report(r):
 
 def summary(results):
     names = list(results[0]['closed_loop'])
-    print('== all %d runs (closed loop; clearance = worst run, others summed)' % len(results))
+    print('== all %d runs (closed loop; clearance = worst run, |u-unom| = mean, others summed)' % len(results))
     print('    %-11s  %s' % ('', '  '.join('%9s' % h for _, h, _ in COLS)))
     for k in names:
         vals = []
@@ -552,8 +647,10 @@ def summary(results):
                 vals.append('-')
             elif c.startswith('min_'):
                 vals.append(f % min(xs))
-            elif c in ('peak_speed', 'max_sideways'):
+            elif c in ('peak_speed', 'max_sideways', 'end_gap'):
                 vals.append(f % max(xs))
+            elif c == 'deviation':
+                vals.append(f % (sum(xs) / len(xs)))
             else:
                 vals.append(f % sum(xs))
         print('    %-11s  %s' % (k, '  '.join('%9s' % v for v in vals)))
@@ -569,7 +666,9 @@ def plot(r, ol, tracks, out):
         ax[0].plot(tr[:, 0], np.hypot(*(tr[:, 1:3] - p0).T), label=k)
         ax[1].plot(tr[:, 0], tr[:, 7], label=k)
     ax[1].axhline(CBF_MARGIN, color='k', lw=0.6, ls='--')
-    for k in ['recorded'] + [k for k in ol if k not in ('t', 'recorded', 'person_clearance')]:
+    if np.any(ol['nominal']):
+        ax[2].plot(ol['t'], ol['nominal'][:, 0], label='request', color='k', lw=0.7, ls=':')
+    for k in ['recorded'] + [k for k in ol if k not in ('t', 'recorded', 'person_clearance', 'nominal')]:
         ax[2].plot(ol['t'], ol[k][:, 0], label=k, lw=0.9)
     ax[0].set_ylabel('distance from start (m)')
     ax[1].set_ylabel('person clearance (m)')
@@ -591,12 +690,21 @@ def main():
     ap.add_argument('--accel', type=float, default=1.0, help='acceleration limit in the sim (m/s^2)')
     ap.add_argument('--orca-tau', type=float, default=ORCA_TAU)
     ap.add_argument('--no-recip', action='store_true', help='skip the reciprocal ORCA variant')
+    ap.add_argument('--nominal', choices=('auto', 'zero', 'cmd', 'track'), default='auto',
+                    help='u_nom: auto = recorded /cmd_vel on gated bags, else 0 (see the module doc)')
+    ap.add_argument('--cbf-gamma', type=float, default=CBF_GAMMA, help='static gamma of the cbf controller')
+    ap.add_argument('--person-gamma', type=float, nargs='+', default=[PERSON_GAMMA],
+                    help='person gamma; several values add one cbf controller each (cbf-g0.5, ...)')
     ap.add_argument('--check-dynamics', action='store_true', help='replay recorded /cmd_vel through the sim model')
     ap.add_argument('--plot', metavar='DIR', help='write one PNG per run here')
     ap.add_argument('--json', metavar='FILE', help='write all results here')
     a = ap.parse_args()
     logging.getLogger('cbf_filter').setLevel(logging.ERROR)   # the replay's infeasible warnings are expected
-    controllers = [CBFController(), ORCAController(1.0, a.orca_tau, name='orca')]
+    if len(a.person_gamma) == 1:
+        controllers = [CBFController(a.cbf_gamma, a.person_gamma[0])]
+    else:
+        controllers = [CBFController(a.cbf_gamma, g, name='cbf-g%g' % g) for g in a.person_gamma]
+    controllers.append(ORCAController(1.0, a.orca_tau, name='orca'))
     if not a.no_recip:
         controllers.append(ORCAController(0.5, a.orca_tau, name='orca-recip'))
     if a.plot:
@@ -604,10 +712,10 @@ def main():
     results = []
     for p in a.runs:
         run = load_run(p)
-        if len(run['ped']) < 2 or len(run['scans']) < 2:
-            print('== %s: no pedestrian or scan data, skipped' % run['name'])
+        if len(run['scans']) < 2 or len(run['odom']) < 2:
+            print('== %s: no scan or odom data, skipped' % run['name'])
             continue
-        r, ol, tracks = compare(run, controllers, a.delay, a.accel, a.check_dynamics)
+        r, ol, tracks = compare(run, controllers, a.delay, a.accel, a.check_dynamics, a.nominal)
         report(r)
         if a.plot:
             plot(r, ol, tracks, a.plot)
