@@ -63,7 +63,11 @@ KD_ROT  = 0.1   # Derivative gain for rotation (active damping)
 MAX_LINEAR_SPEED  = 0.15   # m/s
 MIN_LINEAR_SPEED  = 0.06   # m/s
 MAX_ANGULAR_SPEED = 0.50   # rad/s
-MIN_ANGULAR_SPEED = 0.12   # rad/s
+# A pure turn asks each wheel for omega * 0.215 m/s (yaw_wheel_separation). The
+# wheel loop is validated from 0.05 m/s; at the old 0.12 rad/s (0.026 m/s) the
+# last ~10 deg of a turn crawled at 1-1.5 deg/s in stick-slip (2026-10-26).
+MIN_ANGULAR_SPEED = 0.25   # rad/s -> 0.054 m/s at the wheel
+STOP_LEAD_S       = 0.10   # end a turn this early (x measured yaw rate) to absorb latency
 
 SEGMENT_TIMEOUT  = 35.0    # seconds (4m / 0.20 m/s = 20 s + buffer for driver init)
 ROTATION_TIMEOUT = 30.0    # seconds — 180° at 0.50 rad/s = ~6 s; 30 s gives ample margin
@@ -71,6 +75,12 @@ SETTLE_DURATION  = 1.0     # seconds between segments
 LOG_HZ           = 10      # rows per second written to CSV
 
 WALL_STOP_DIST   = 0.30    # metres — stop this far from a confirmed static wall and turn back
+
+# Wall early-stop guards.
+PERSON_MEMORY_S       = 2.5   # after a person is seen this close ahead, the front is not a wall...
+PERSON_MEMORY_RANGE   = 1.5   # m forward
+PERSON_MEMORY_LATERAL = 0.6   # m either side
+WALL_HOLD_S           = 4.0   # ...and a "wall" must stay this long before a leg ends on it
 
 # --require-map-pose (how the GUI starts this test): drive on map->base_link only.
 MAP_POSE_WAIT_S  = 15.0    # wait this long for the first map pose before giving up
@@ -167,6 +177,13 @@ class ABComparisonTest(Node):
         self._estimates_seq = 0           # bumped per readout
         self._estimates_t = 0.0
         self._tracked_seq = -1
+        self._yaw_rate = 0.0              # rad/s from successive poses (turn stop lead)
+        self._yaw_rate_t = None
+        self._yaw_prev = 0.0
+        # A person the camera saw close ahead; the lidar wall test ignores the
+        # front until this time (the camera loses people under ~0.7 m).
+        self._person_ahead_until = 0.0
+        self._wall_since = None           # when a confirmed wall first came within WALL_STOP_DIST
 
         self._mode = mode
         self._log_dir = log_dir
@@ -432,6 +449,14 @@ class ABComparisonTest(Node):
     def _update_bypass_offset(self):
         """Analyze obstacle proximity (fusing camera and LiDAR) and update target lateral offset."""
         estimates = self._tracked_estimates()
+        # Remember anyone close ahead: when they reach the robot the camera loses
+        # them and the lidar sees a smooth body, which the wall test took for a
+        # wall and ended the return leg (2026-10-26 predictive run).
+        for est in estimates:
+            rx, ry = float(est.get("z", est.get("y", 0.0))), -float(est.get("x", 0.0))
+            if 0.0 < rx < PERSON_MEMORY_RANGE and abs(ry) < PERSON_MEMORY_LATERAL:
+                self._person_ahead_until = time.monotonic() + PERSON_MEMORY_S
+                break
 
         # 1. LiDAR checks: front sector, left sector, right sector (Ideas 80, 110 & Bumper)
         lidar_blocked = False
@@ -563,7 +588,7 @@ class ABComparisonTest(Node):
                 if 0.0 < rx < 2.0 and abs(ry) < 0.5 and speed > 0.15:
                     has_dynamic_pedestrian = True
                     break
-            if not has_dynamic_pedestrian:
+            if not has_dynamic_pedestrian and time.monotonic() >= self._person_ahead_until:
                 is_continuous_wall = True
 
         # Wall confirmation debounce (Idea 203)
@@ -773,6 +798,29 @@ class ABComparisonTest(Node):
                     self._pause_exit_time = time.monotonic()
                 self.is_paused = False
                 self.target_lateral_offset = 0.0
+
+    def _wall_stop_check(self, now: float):
+        """None (drive on), 'hold' (stopped, waiting) or 'stop' (end this leg here).
+
+        A wall must stay in front for WALL_HOLD_S first, so a person who walks
+        into the path makes the robot wait rather than abandon the leg.
+        """
+        if not (self._front_is_continuous_wall and self._min_forward_lidar < WALL_STOP_DIST):
+            if self._wall_since is not None:
+                self.get_logger().info("[Wall-Stop] front cleared; continuing.")
+            self._wall_since = None
+            return None
+        if self._wall_since is None:
+            self._wall_since = now
+            self.get_logger().info(
+                f"[Wall-Stop] something flat at {self._min_forward_lidar:.2f} m; holding "
+                f"up to {WALL_HOLD_S:.0f} s in case it moves.")
+        if now - self._wall_since < WALL_HOLD_S:
+            self._stop_robot()
+            self.is_paused = True        # waiting does not count toward the segment timeout
+            return 'hold'
+        self._wall_since = None
+        return 'stop'
 
     def _map_pose_ok(self) -> bool:
         """--require-map-pose gate: hold still on a stale map pose, abort if it stays gone."""
@@ -995,6 +1043,11 @@ class ABComparisonTest(Node):
         if self.require_map_pose and not self._map_pose_ok():
             return
 
+        _t = time.monotonic()
+        if self._yaw_rate_t is not None and _t > self._yaw_rate_t:
+            self._yaw_rate = normalize_angle(self.current_yaw - self._yaw_prev) / (_t - self._yaw_rate_t)
+        self._yaw_rate_t, self._yaw_prev = _t, self.current_yaw
+
         if not self.odom_received:
             self.get_logger().info("Waiting for /odom or TF messages...", throttle_duration_sec=2.0)
             return
@@ -1110,7 +1163,10 @@ class ABComparisonTest(Node):
             # Static-wall early stop: if a confirmed flat wall is within WALL_STOP_DIST
             # and no dynamic pedestrian is responsible, treat current position as WP-B,
             # record the actual distance travelled, and begin the return sequence.
-            if self._front_is_continuous_wall and self._min_forward_lidar < WALL_STOP_DIST:
+            wall = self._wall_stop_check(now)
+            if wall == 'hold':
+                return
+            if wall == 'stop':
                 self._stop_robot()
                 actual_dist = dx * self._cos_start_yaw + dy * self._sin_start_yaw
                 self._early_stop_dist = max(0.0, actual_dist)
@@ -1240,7 +1296,7 @@ class ABComparisonTest(Node):
             if abs(yaw_error) > math.pi - 0.1:
                 yaw_error = math.pi - 0.05  # break chattering at ±180° boundary
 
-            if abs(yaw_error) <= YAW_TOLERANCE:
+            if abs(yaw_error) <= YAW_TOLERANCE + abs(self._yaw_rate) * STOP_LEAD_S:
                 self._stop_robot()
                 self.get_logger().info(
                     f"Rotation done (err={math.degrees(yaw_error):.1f}°). Settling..."
@@ -1316,7 +1372,10 @@ class ABComparisonTest(Node):
 
             # Static-wall early stop on return leg: same logic as DRIVE_TO_B.
             # If an unexpected wall appears in the return path, stop and settle cleanly.
-            if self._front_is_continuous_wall and self._min_forward_lidar < WALL_STOP_DIST:
+            wall = self._wall_stop_check(now)
+            if wall == 'hold':
+                return
+            if wall == 'stop':
                 self._stop_robot()
                 self.get_logger().warn(
                     f"[Wall-Stop] Static wall at {self._min_forward_lidar:.2f} m on return leg — settling."
@@ -1434,7 +1493,7 @@ class ABComparisonTest(Node):
             if abs(yaw_error) > math.pi - 0.1:
                 yaw_error = math.pi - 0.05
 
-            if abs(yaw_error) <= YAW_TOLERANCE:
+            if abs(yaw_error) <= YAW_TOLERANCE + abs(self._yaw_rate) * STOP_LEAD_S:
                 self._stop_robot()
                 if self.repeat:
                     self.get_logger().info(
@@ -1485,7 +1544,8 @@ class ABComparisonTest(Node):
                     )
                     self._csv_logger.save()
                     self.state = self.DONE
-                    rclpy.shutdown()
+                    # rclpy.shutdown() here deadlocked: the executor waits for the
+                    # running callback (this one). main() shuts rclpy down.
                     sys.exit(0)
 
             dt = now - self.last_time
@@ -1558,10 +1618,11 @@ def main():
         repeat=args.repeat,
         require_map_pose=args.require_map_pose,
     )
+    exit_code = 0
     try:
         rclpy.spin(node)
-    except SystemExit:
-        pass
+    except SystemExit as e:
+        exit_code = e.code if isinstance(e.code, int) else 0
     except KeyboardInterrupt:
         node._stop_robot()
         node._csv_logger.save()
@@ -1571,6 +1632,8 @@ def main():
             node.destroy_node()
         except Exception:
             pass
+        rclpy.try_shutdown()
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
