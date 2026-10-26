@@ -85,6 +85,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# GUI log console: the server's own records plus the test scripts' output, kept
+# in memory and pushed only to clients that have the console open.
+from log_stream import LogRing, RingHandler, pump_process
+LOG_RING = LogRing(maxlen=2000)
+logging.getLogger().addHandler(RingHandler(LOG_RING))
+_log_subscribers = {}          # websocket -> last seq sent
+LOG_PUSH_INTERVAL_S = 0.3
+LOG_BACKLOG_LINES = 500
+
 # Import X3 specific drivers
 from drivers_x3 import (
     Rosmaster, MecanumDrive, YDLidarDriver, AstraCamera, OLEDDisplay, SERIAL_PORT,
@@ -2817,6 +2826,24 @@ async def handle_client(websocket):
                 data = json.loads(message)
                 msg_type = data.get("type")
 
+                if msg_type == "log_subscribe":
+                    # Backlog first, then log_push_loop sends whatever is newer.
+                    try:
+                        n = int(data.get("backlog", LOG_BACKLOG_LINES))
+                    except (TypeError, ValueError):
+                        n = LOG_BACKLOG_LINES
+                    n = max(0, min(n, LOG_BACKLOG_LINES))
+                    lines = LOG_RING.tail(n)
+                    _log_subscribers[websocket] = lines[-1]["seq"] if lines else LOG_RING.last_seq
+                    await websocket.send(orjson_dumps({
+                        "type": "log_lines", "lines": lines, "dropped": 0, "backlog": True,
+                    }))
+                    continue
+
+                if msg_type == "log_unsubscribe":
+                    _log_subscribers.pop(websocket, None)
+                    continue
+
                 if msg_type == "diagnostic_clock_ping":
                     # Read-only timing exchange. It never touches motion state.
                     received_ns = time.monotonic_ns()
@@ -3390,10 +3417,14 @@ async def handle_client(websocket):
                                 if 'conda' not in p.lower()
                             )
 
+                        child_env['PYTHONUNBUFFERED'] = '1'   # lines reach the console as printed
                         _p2p_proc = subprocess.Popen(
                             [sys.executable, script_path],
-                            env=child_env
+                            env=child_env,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, bufsize=1, errors='replace',
                         )
+                        pump_process(_p2p_proc, 'p2p_test', LOG_RING)
                     await websocket.send(json.dumps({
                         "type": "p2p_test_status",
                         "status": "running"
@@ -3445,10 +3476,14 @@ async def handle_client(websocket):
                         if repeat:
                             cmd_args.append("--repeat")
 
+                        child_env['PYTHONUNBUFFERED'] = '1'   # lines reach the console as printed
                         _ab_test_proc = subprocess.Popen(
                             cmd_args,
-                            env=child_env
+                            env=child_env,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, bufsize=1, errors='replace',
                         )
+                        pump_process(_ab_test_proc, f'ab_{mode}', LOG_RING)
                         _ab_test_mode = mode
                     await websocket.send(json.dumps({
                         "type": "ab_test_status",
@@ -3495,6 +3530,7 @@ async def handle_client(websocket):
         pass
     finally:
         connected_clients.discard(websocket)
+        _log_subscribers.pop(websocket, None)
         if camera and not connected_clients:
             camera._has_clients = False  # P7: no clients left — skip lock+copy in capture loop
         # Eager stop — don't wait for the watchdog timeout on disconnect
@@ -3755,6 +3791,25 @@ def _save_battery_state():
         os.replace(tmp, _batt_state_path)   # atomic: a torn file reads as absent
     except Exception as e:
         logger.debug(f"Battery: could not persist charge: {e}")
+
+
+async def log_push_loop():
+    """Send new console lines to clients that have the log console open."""
+    while not _shutting_down:
+        await asyncio.sleep(LOG_PUSH_INTERVAL_S)
+        for ws, cursor in list(_log_subscribers.items()):
+            lines, dropped = LOG_RING.since(cursor)
+            if not lines and not dropped:
+                continue
+            if lines:
+                _log_subscribers[ws] = lines[-1]["seq"]
+            try:
+                await ws.send(orjson_dumps({"type": "log_lines", "lines": lines,
+                                            "dropped": dropped}))
+            except Exception:
+                # No logger call here: a failing send must not feed the ring
+                # it is draining.
+                _log_subscribers.pop(ws, None)
 
 
 async def broadcast_loop():
@@ -4908,7 +4963,7 @@ async def main():
     async with websockets.serve(handle_client, "0.0.0.0", WS_PORT, compression=None):
         logger.info(f"Server started on ws://0.0.0.0:{WS_PORT}")
         await asyncio.gather(broadcast_loop(), motion_loop(), oled_loop(), map_push_loop(),
-                             lidar_scan_loop(), tof_loop())
+                             lidar_scan_loop(), tof_loop(), log_push_loop())
 
 if __name__ == "__main__":
     try:

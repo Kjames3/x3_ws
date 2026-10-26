@@ -438,3 +438,111 @@ body:has(.dashboard) { overflow: hidden; }
     .dashboard #scene-view { min-height: 200px; }
 }
 .dashboard .sensor-arrays .fs-xs { font-size: 0.72rem; }
+
+/* --- Log console ----------------------------------------------------------
+   Terminal-style drawer under the tab area, visible from every tab. Collapsed
+   it is a single bar; the tab area above shrinks when it opens. */
+.log-console {
+    --log-h: 30vh;
+    flex: 0 0 auto;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    margin: 0 -0.75rem;
+    border-top: 1px solid var(--border-color, #24344a);
+    background: #0a0f1a;
+}
+
+.log-resize-handle {
+    position: absolute;
+    top: -3px; left: 0; right: 0;
+    height: 6px;
+    cursor: ns-resize;
+    z-index: 2;
+}
+.log-console:not(.open) .log-resize-handle { cursor: default; }
+
+.log-console-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.25rem 0.75rem;
+    font-size: 0.75rem;
+    background: var(--bg-secondary, #16202e);
+}
+
+.log-console-title {
+    font-weight: 600;
+    color: var(--text-primary, #e2e8f0);
+    cursor: pointer;
+    user-select: none;
+}
+
+.log-bar-spacer { flex: 1 1 auto; }
+
+.log-error-badge {
+    background: var(--bad);
+    color: #fff;
+    border-radius: 8px;
+    padding: 0 0.4rem;
+    font-size: 0.68rem;
+    font-weight: 700;
+}
+
+.log-btn, .log-select, .log-search {
+    background: var(--bg-tertiary, #1e293b);
+    color: var(--text-primary, #e2e8f0);
+    border: 1px solid var(--border-color, #24344a);
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-family: inherit;
+    padding: 0.15rem 0.45rem;
+}
+.log-btn { cursor: pointer; }
+.log-btn:hover { background: var(--bg-hover, #475569); }
+.log-search { width: 11rem; }
+
+/* Filters only matter while the console is open. */
+.log-console:not(.open) .log-select,
+.log-console:not(.open) .log-search,
+.log-console:not(.open) #log-copy-btn,
+.log-console:not(.open) #log-clear-btn { display: none; }
+
+.log-console-body-wrap { position: relative; display: none; }
+.log-console.open .log-console-body-wrap { display: block; }
+
+.log-console-body {
+    height: var(--log-h);
+    overflow-y: auto;
+    padding: 0.3rem 0.75rem 0.5rem;
+    font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+    font-size: 0.72rem;
+    line-height: 1.35;
+    color: #cbd5e1;
+}
+
+.log-line {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.log-ts { color: #64748b; margin-right: 0.6em; }
+.log-src { color: #38bdf8; margin-right: 0.6em; }
+.log-src-test { color: #c084fc; }
+.log-line.lvl-debug   { color: #64748b; }
+.log-line.lvl-warning { color: var(--warn); }
+.log-line.lvl-error,
+.log-line.lvl-critical { color: #f87171; background: rgba(239, 68, 68, 0.08); }
+.log-sep { color: #64748b; font-style: italic; text-align: center; }
+
+.log-follow-btn {
+    position: absolute;
+    right: 1.2rem; bottom: 0.6rem;
+    background: var(--accent-cyan, #22d3ee);
+    color: #0f172a;
+    border: none;
+    border-radius: 12px;
+    padding: 0.2rem 0.7rem;
+    font-size: 0.72rem;
+    font-weight: 700;
+    cursor: pointer;
+}
