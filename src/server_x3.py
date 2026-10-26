@@ -2782,6 +2782,114 @@ def _auto_seed_after_launch(map_path: str) -> None:
         time.sleep(6.0)
 
 
+_site_identifier = None     # map_prior.SiteIdentifier, built on first use (~1 s per map)
+_manual_pose_time = 0.0     # monotonic time of the last pose set by hand in the GUI
+MANUAL_POSE_TRUST_S = 300.0  # a hand-set pose counts as localized for this long
+
+
+def _current_scan_points():
+    """Latest /scan as base_link endpoints (laser flip + measured mount yaw)."""
+    from auto_initial_pose import scan_to_points as _scan_to_points
+    with ros_bridge._lock:
+        scan = getattr(ros_bridge, '_latest_scan', None)
+    if scan is None:
+        return None
+    return _scan_to_points(np.asarray(scan.ranges), scan.angle_min, scan.angle_increment,
+                           scan.range_min, 6.0, 0.0435, 0.0, math.pi + LIDAR_YAW_OFFSET_RAD)
+
+
+def _prepare_test_localization(progress) -> tuple[bool, str]:
+    """Get AMCL localized on the right map before a GUI drive test moves.
+
+    Blocking (up to ~2 min while Nav2 starts): run on a worker thread, robot
+    still.  ``progress(text)`` reports each step.
+
+    1. Recognise the site (lab / apartment, config/site_maps.json) from the scan.
+    2. Make sure Nav2 + AMCL run on that site's map, restarting Nav2 if it is on
+       another map.  Refuses while SLAM runs: AMCL and slam_toolbox fight over
+       map->odom.
+    3. Seed AMCL from a scan match.  If the match is not confident, accept a
+       pose set by hand in the last MANUAL_POSE_TRUST_S; otherwise refuse.
+
+    The A/B test used to start immediately on RealLab3 whatever the room, and
+    drove on an unconverged AMCL pose (2026-10-26: 0.5 m of drift during an
+    in-place turn, ended ~0.65 m off).
+    """
+    global _site_identifier
+    from map_prior import SiteIdentifier, load_sites
+    if nav2_client is None or ros_bridge is None or SIM_MODE:
+        return False, "localized tests need the real robot in ROS 2 mode"
+
+    progress("recognising the site from the lidar scan...")
+    if _site_identifier is None:
+        _site_identifier = SiteIdentifier(load_sites())
+    site = None
+    for _ in range(5):
+        pts = _current_scan_points()
+        if pts is not None:
+            site = _site_identifier.identify(pts)
+            logger.info("[test-loc] site: %s", site)
+            if site.accepted:
+                break
+        time.sleep(1.0)
+    if site is None or not site.accepted:
+        why = site.reason if site is not None else "no /scan"
+        return False, f"could not tell which site this is ({why})"
+    map_path = site.map_path
+    map_name = os.path.basename(map_path)
+
+    status = nav2_client.get_status()
+    nav2_up = nav2_client._nav2_proc is not None and nav2_client._nav2_proc.poll() is None
+    if nav2_up and status.get("map") is None:
+        return False, "SLAM is running; stop it first (AMCL cannot run alongside it)"
+    if nav2_up and status.get("map") != map_name:
+        progress(f"Nav2 is on {status.get('map')}, restarting it on {map_name}...")
+        nav2_client.stop_nav2()
+        time.sleep(2.0)
+        nav2_up = False
+    if not nav2_up:
+        progress(f"site '{site.site}': starting Nav2 + AMCL on {map_name}...")
+        if not nav2_client.launch_nav2(use_sim_time=False, map_path=map_path, slam=False):
+            # False also means "already running": a cancelled, re-pressed test can
+            # race its own earlier worker here.  Only a dead process is a failure.
+            proc = nav2_client._nav2_proc
+            if proc is None or proc.poll() is not None:
+                return False, "Nav2 failed to start"
+        client = nav2_client._action_client
+        for _ in range(120):
+            if client.server_is_ready():
+                break
+            time.sleep(1.0)
+        else:
+            return False, "Nav2 did not become ready within 2 min"
+        pub = nav2_client._initial_pose_pub
+        for _ in range(30):
+            if pub.get_subscription_count() > 0:
+                break
+            time.sleep(1.0)
+        # AMCL applies its configured (0, 0, 0) pose on activation; a seed sent
+        # earlier is overwritten (see _auto_seed_after_launch).
+        time.sleep(4.0)
+
+    progress(f"matching the scan against {map_name}...")
+    msg = ""
+    for _ in range(3):
+        try:
+            ok, msg = _seed_pose_from_scan(map_path)
+        except Exception as exc:
+            ok, msg = False, str(exc)
+        logger.info("[test-loc] seed: %s", msg)
+        if ok:
+            time.sleep(2.0)     # let AMCL take the seed before anything moves
+            return True, f"localized on {map_name}: {msg}"
+        time.sleep(2.0)
+    if time.monotonic() - _manual_pose_time < MANUAL_POSE_TRUST_S:
+        return True, f"localized on {map_name}: using the pose you set by hand"
+    return False, (f"site '{site.site}' recognised but the position in {map_name} is "
+                   f"ambiguous ({msg}). Set the robot's pose on the Navigation tab, "
+                   f"then press the button again.")
+
+
 def _launch_nav2_seeded(use_sim_time: bool, map_path: str | None, slam: bool) -> bool:
     """nav2_client.launch_nav2, then seed AMCL from the scan (saved map, real robot)."""
     ok = nav2_client.launch_nav2(use_sim_time=use_sim_time, map_path=map_path, slam=slam)
@@ -2789,6 +2897,94 @@ def _launch_nav2_seeded(use_sim_time: bool, map_path: str | None, slam: bool) ->
         threading.Thread(target=_auto_seed_after_launch, args=(map_path,),
                          name='auto_pose_seed', daemon=True).start()
     return ok
+
+
+_test_prep = None   # {'kind': 'ab'|'p2p', 'mode': str|None, 'task': asyncio.Task} while localizing
+
+
+async def _broadcast_json(msg: dict) -> None:
+    payload = json.dumps(msg)
+    for ws in list(connected_clients):
+        try:
+            await ws.send(payload)
+        except Exception:
+            pass
+
+
+def _spawn_test_script(kind: str, mode=None, distance=4.0, repeat=False):
+    """Start the test script with its output piped into the GUI log console."""
+    global _p2p_proc, _ab_test_proc, _ab_test_mode
+    child_env = os.environ.copy()
+    child_env['PATH'] = ':'.join(
+        p for p in child_env.get('PATH', '').split(':') if 'conda' not in p.lower())
+    if 'PYTHONPATH' in child_env:
+        child_env['PYTHONPATH'] = ':'.join(
+            p for p in child_env['PYTHONPATH'].split(':') if 'conda' not in p.lower())
+    child_env['PYTHONUNBUFFERED'] = '1'   # lines reach the console as printed
+    tools = Path(__file__).parent.resolve() / "tools"
+    if kind == 'p2p':
+        cmd = [sys.executable, str(tools / "hw_tests" / "point_to_point_test.py")]
+    else:
+        cmd = [sys.executable, str(tools / "perception" / "ab_comparison_test.py"),
+               "--mode", mode, "--distance", str(distance), "--require-map-pose"]
+        if repeat:
+            cmd.append("--repeat")
+    proc = subprocess.Popen(cmd, env=child_env,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, bufsize=1, errors='replace')
+    if kind == 'p2p':
+        _p2p_proc = proc
+        pump_process(proc, 'p2p_test', LOG_RING)
+    else:
+        _ab_test_proc = proc
+        _ab_test_mode = mode
+        pump_process(proc, f'ab_{mode}', LOG_RING)
+
+
+def _start_localized_test(kind: str, mode=None, distance=4.0, repeat=False) -> None:
+    """Localize on the site's map, then start the test (see _prepare_test_localization)."""
+    global _test_prep
+    status_type = "p2p_test_status" if kind == 'p2p' else "ab_test_status"
+    label = "point-to-point test" if kind == 'p2p' else f"A/B test ({mode}, {distance:.1f} m)"
+
+    async def _run():
+        global _test_prep
+        loop = asyncio.get_running_loop()
+
+        def progress(text):   # called from the worker thread
+            logger.info("[test-loc] %s: %s", label, text)
+            asyncio.run_coroutine_threadsafe(_broadcast_json({
+                "type": status_type, "status": "localizing", "mode": mode,
+                "message": text}), loop)
+
+        try:
+            ok, msg = await asyncio.to_thread(_prepare_test_localization, progress)
+        except Exception as exc:
+            ok, msg = False, f"localization failed: {exc}"
+        if _test_prep is None or _test_prep.get('task') is not asyncio.current_task():
+            return            # cancelled while the worker thread was still running
+        _test_prep = None
+        if not ok:
+            logger.error("[test-loc] %s not started: %s", label, msg)
+            await _broadcast_json({"type": status_type, "status": "failed",
+                                   "mode": None, "message": msg})
+            return
+        logger.info("[test-loc] %s", msg)
+        logger.info("Starting %s...", label)
+        _spawn_test_script(kind, mode=mode, distance=distance, repeat=repeat)
+        await _broadcast_json({"type": status_type, "status": "running", "mode": mode,
+                               "message": msg})
+
+    _test_prep = {'kind': kind, 'mode': mode, 'task': None}
+    _test_prep['task'] = asyncio.get_running_loop().create_task(_run())
+
+
+def _cancel_test_prep(kind: str) -> None:
+    """Abandon a localization in progress; the robot has not moved yet."""
+    global _test_prep
+    if _test_prep is not None and _test_prep['kind'] == kind:
+        logger.info("[test-loc] cancelled before the test started")
+        _test_prep = None    # _run sees this when its worker returns and stops there
 
 
 async def handle_client(websocket):
@@ -2800,7 +2996,7 @@ async def handle_client(websocket):
     global velocity_estimator, active_velocity_model_name, velocity_estimation_enabled
     global motors_enabled
     global lidar_sweep_mode, lidar_sweep_speed_deg_s
-    global _p2p_proc, _ab_test_proc, _ab_test_mode
+    global _p2p_proc, _ab_test_proc, _ab_test_mode, _manual_pose_time
 
     logger.info("Client connected")
     connected_clients.add(websocket)
@@ -3106,6 +3302,7 @@ async def handle_client(websocket):
                         "type": "auto_pose_result", "success": ok, "message": msg_text}))
 
                 elif msg_type == "set_initial_pose":
+                    _manual_pose_time = time.monotonic()
                     if nav2_client:
                         nav2_client.set_initial_pose(
                             float(data.get("x", 0.0)),
@@ -3399,38 +3596,14 @@ async def handle_client(websocket):
                             }))
 
                 elif msg_type == "start_p2p_test":
-                    if _p2p_proc is None or _p2p_proc.poll() is not None:
-                        if nav2_client and not (nav2_client._nav2_proc and nav2_client._nav2_proc.poll() is None):
-                            logger.info("Auto-launching Nav2 with AMCL on RealLab3.yaml for test...")
-                            _launch_nav2_seeded(SIM_MODE, os.path.join(_maps_dir(), 'RealLab3.yaml'), False)
-                        logger.info("Starting Point-to-Point Test...")
-                        script_path = str(Path(__file__).parent.resolve() / "tools" / "hw_tests" / "point_to_point_test.py")
-                        
-                        child_env = os.environ.copy()
-                        child_env['PATH'] = ':'.join(
-                            p for p in child_env.get('PATH', '').split(':')
-                            if 'conda' not in p.lower()
-                        )
-                        if 'PYTHONPATH' in child_env:
-                            child_env['PYTHONPATH'] = ':'.join(
-                                p for p in child_env['PYTHONPATH'].split(':')
-                                if 'conda' not in p.lower()
-                            )
-
-                        child_env['PYTHONUNBUFFERED'] = '1'   # lines reach the console as printed
-                        _p2p_proc = subprocess.Popen(
-                            [sys.executable, script_path],
-                            env=child_env,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, bufsize=1, errors='replace',
-                        )
-                        pump_process(_p2p_proc, 'p2p_test', LOG_RING)
-                    await websocket.send(json.dumps({
-                        "type": "p2p_test_status",
-                        "status": "running"
-                    }))
+                    if (_p2p_proc is None or _p2p_proc.poll() is not None) and _test_prep is None:
+                        _start_localized_test('p2p')
+                    else:
+                        await websocket.send(json.dumps({"type": "p2p_test_status",
+                                                         "status": "running"}))
 
                 elif msg_type == "cancel_p2p_test":
+                    _cancel_test_prep('p2p')
                     if _p2p_proc is not None and _p2p_proc.poll() is None:
                         logger.info("Canceling Point-to-Point Test...")
                         try:
@@ -3452,46 +3625,22 @@ async def handle_client(websocket):
 
                 elif msg_type == "start_ab_test":
                     mode = data.get("mode", "reactive")  # "reactive" | "predictive"
-                    distance = data.get("distance", 4.0)
-                    repeat = data.get("repeat", False)
-                    if _ab_test_proc is None or _ab_test_proc.poll() is not None:
-                        if nav2_client and not (nav2_client._nav2_proc and nav2_client._nav2_proc.poll() is None):
-                            logger.info("Auto-launching Nav2 with AMCL on RealLab3.yaml for test...")
-                            _launch_nav2_seeded(SIM_MODE, os.path.join(_maps_dir(), 'RealLab3.yaml'), False)
-                        logger.info(f"Starting A/B comparison test (mode={mode}, distance={distance}, repeat={repeat})...")
-                        script_path = str(Path(__file__).parent.resolve() / "tools" / "perception" / "ab_comparison_test.py")
-
-                        child_env = os.environ.copy()
-                        child_env['PATH'] = ':'.join(
-                            p for p in child_env.get('PATH', '').split(':')
-                            if 'conda' not in p.lower()
-                        )
-                        if 'PYTHONPATH' in child_env:
-                            child_env['PYTHONPATH'] = ':'.join(
-                                p for p in child_env['PYTHONPATH'].split(':')
-                                if 'conda' not in p.lower()
-                            )
-
-                        cmd_args = [sys.executable, script_path, "--mode", mode, "--distance", str(distance)]
-                        if repeat:
-                            cmd_args.append("--repeat")
-
-                        child_env['PYTHONUNBUFFERED'] = '1'   # lines reach the console as printed
-                        _ab_test_proc = subprocess.Popen(
-                            cmd_args,
-                            env=child_env,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, bufsize=1, errors='replace',
-                        )
-                        pump_process(_ab_test_proc, f'ab_{mode}', LOG_RING)
-                        _ab_test_mode = mode
-                    await websocket.send(json.dumps({
-                        "type": "ab_test_status",
-                        "status": "running",
-                        "mode": mode,
-                    }))
+                    if mode not in ("reactive", "predictive"):
+                        mode = "reactive"
+                    try:
+                        distance = float(data.get("distance", 4.0))
+                    except (TypeError, ValueError):
+                        distance = 4.0
+                    repeat = bool(data.get("repeat", False))
+                    if (_ab_test_proc is None or _ab_test_proc.poll() is not None) and _test_prep is None:
+                        _start_localized_test('ab', mode=mode, distance=distance, repeat=repeat)
+                    else:
+                        await websocket.send(json.dumps({"type": "ab_test_status",
+                                                         "status": "running",
+                                                         "mode": _ab_test_mode}))
 
                 elif msg_type == "cancel_ab_test":
+                    _cancel_test_prep('ab')
                     if _ab_test_proc is not None and _ab_test_proc.poll() is None:
                         logger.info("Canceling A/B comparison test...")
                         try:
@@ -4082,7 +4231,8 @@ async def broadcast_loop():
             _loop_i += 1
             if _loop_i % 10 == 0:
                 nav_status = nav2_client.get_status() if nav2_client else {"state": "UNAVAILABLE"}
-                _ab_running = _ab_test_proc is not None and _ab_test_proc.poll() is None
+                _ab_running = ((_ab_test_proc is not None and _ab_test_proc.poll() is None)
+                               or (_test_prep is not None and _test_prep['kind'] == 'ab'))
                 slow = {
                     "type": "readout_slow",
                     "nav_phase": nav_status["state"],
@@ -4092,9 +4242,10 @@ async def broadcast_loop():
                     "frontier": frontier_explorer.status() if frontier_explorer else None,
                     "active_model_name": active_model_name,
                     "active_velocity_model_name": active_velocity_model_name,
-                    "p2p_test_running": _p2p_proc is not None and _p2p_proc.poll() is None,
+                    "p2p_test_running": ((_p2p_proc is not None and _p2p_proc.poll() is None)
+                                         or (_test_prep is not None and _test_prep['kind'] == 'p2p')),
                     "ab_test_running": _ab_running,
-                    "ab_test_mode": _ab_test_mode if _ab_running else None,
+                    "ab_test_mode": ((_test_prep or {}).get('mode') or _ab_test_mode) if _ab_running else None,
                     "servo_stats": servo_stats if 'servo_stats' in globals() else {"voltage": "--", "state": "Free"},
                     "fps_camera": fps_camera,
                     "fps_detection": fps_detection,

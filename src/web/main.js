@@ -326,6 +326,7 @@ const elements = {
     abDistanceSlider: document.getElementById('ab-distance-slider'),
     abDistanceVal: document.getElementById('ab-distance-val'),
     abRepeatCheck: document.getElementById('ab-repeat-check'),
+    abTestStatusText: document.getElementById('ab-test-status-text'),
 };
 
 // =================================================================
@@ -2126,11 +2127,10 @@ function handleMessage(data) {
         }
 
     } else if (data.type === "p2p_test_status") {
-        state.p2pTestRunning = (data.status === "running");
+        // "localizing" counts as running: the button cancels it.
+        state.p2pTestRunning = (data.status === "running" || data.status === "localizing");
         updateP2pButtonUI();
-        if (data.message) {
-            console.log(`[P2P Test] ${data.message}`);
-        }
+        setTestStatusText('P2P', data);
 
     } else if (data.type === "velocity_estimation_status") {
         state.velocityEstimationEnabled = data.enabled;
@@ -2138,10 +2138,10 @@ function handleMessage(data) {
         updateAbTestButtonsUI();
 
     } else if (data.type === "ab_test_status") {
-        state.abTestRunning = (data.status === "running");
+        state.abTestRunning = (data.status === "running" || data.status === "localizing");
         state.abTestMode = data.mode || null;
         updateAbTestButtonsUI();
-        console.log(`[AB Test] status=${data.status} mode=${data.mode}`);
+        setTestStatusText('A/B', data);
 
     } else if (data.type === "demo_model_changed") {
         updateDemoBannerFromEvent(data);
@@ -2514,6 +2514,21 @@ function updateModeDisplay(enabled) {
         el.textContent = 'REACTIVE MODE';
         el.style.color = '#ff4444';
     }
+}
+
+// One line under the A/B controls: what the localize-then-drive sequence is
+// doing, or why it refused to start. The full story is in the log console.
+function setTestStatusText(label, data) {
+    const el = elements.abTestStatusText;
+    if (!el) return;
+    const text = data.message ? `${label}: ${data.message}` : '';
+    if (data.status === 'idle') {
+        el.textContent = '';
+    } else if (text) {
+        el.textContent = text;
+    }
+    el.classList.toggle('failed', data.status === 'failed');
+    el.classList.toggle('busy', data.status === 'localizing');
 }
 
 function updateAbTestButtonsUI() {

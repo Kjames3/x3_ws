@@ -546,3 +546,13 @@ body:has(.dashboard) { overflow: hidden; }
     font-weight: 700;
     cursor: pointer;
 }
+
+/* Localize-then-drive status line under the A/B test controls. */
+.test-status-text {
+    flex: 1 1 100%;
+    font-size: 0.75rem;
+    color: var(--text-secondary, #94a3b8);
+}
+.test-status-text:empty { display: none; }
+.test-status-text.busy { color: var(--accent-cyan, #22d3ee); }
+.test-status-text.failed { color: #f87171; }

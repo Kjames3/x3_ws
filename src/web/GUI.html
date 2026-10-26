@@ -10,7 +10,7 @@
     <script src="vendor/three/OrbitControls.js"></script>
 
     <link rel="stylesheet" href="style.css?v=6">
-    <link rel="stylesheet" href="dashboard.css?v=3">
+    <link rel="stylesheet" href="dashboard.css?v=4">
     <link rel="stylesheet" href="mobile.css?v=1">
 </head>
 
@@ -610,6 +610,8 @@
                         <input type="checkbox" id="ab-repeat-check" style="accent-color: #00cc66; cursor: pointer; width: 16px; height: 16px; margin: 0; border-radius: 4px; background: rgba(0,0,0,0.3); border: 1px solid var(--border-color);">
                         <span> Continuous Loop (Repeat)</span>
                     </label>
+                    <span id="ab-test-status-text" class="test-status-text"
+                        title="The robot localizes on the site's map before a test moves"></span>
                 </div>
                 <!-- Mode display: prominent indicator for demo audience -->
                 <div id="mode-display"
@@ -832,7 +834,7 @@
         </section>
     </div>
 
-    <script src="main.js?v=6"></script>
+    <script src="main.js?v=7"></script>
     <script src="dashboard.js?v=2"></script>
     <script src="log-console.js?v=2"></script>
     <script src="vendor/three/GLTFLoader.js"></script>

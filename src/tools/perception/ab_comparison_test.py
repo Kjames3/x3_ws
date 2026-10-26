@@ -38,6 +38,8 @@ import threading
 import numpy as np
 import tf2_ros
 
+from person_track_history import PersonTrackHistory
+
 # ---------------------------------------------------------------------------
 # Waypoints (relative to the robot's starting pose at the tape mark).
 # WAYPOINT_B is the forward target; the robot returns to WAYPOINT_A.
@@ -69,6 +71,11 @@ SETTLE_DURATION  = 1.0     # seconds between segments
 LOG_HZ           = 10      # rows per second written to CSV
 
 WALL_STOP_DIST   = 0.30    # metres — stop this far from a confirmed static wall and turn back
+
+# --require-map-pose (how the GUI starts this test): drive on map->base_link only.
+MAP_POSE_WAIT_S  = 15.0    # wait this long for the first map pose before giving up
+MAP_POSE_STALE_S = 0.5     # hold still if the map pose is older than this...
+MAP_POSE_ABORT_S = 10.0    # ...and abort the run if it stays missing this long
 
 
 def normalize_angle(angle: float) -> float:
@@ -145,9 +152,21 @@ class ABComparisonTest(Node):
         6: "SETTLE_3", 7: "ROTATE_HOME", 8: "DONE",
     }
 
-    def __init__(self, mode: str, log_dir: str, distance: float = 4.0, repeat: bool = False):
+    def __init__(self, mode: str, log_dir: str, distance: float = 4.0, repeat: bool = False,
+                 require_map_pose: bool = False):
         super().__init__("x3_ab_comparison_test")
-        self.get_logger().info(f"AB Comparison Test — mode: {mode.upper()} | distance: {distance}m | repeat: {repeat}")
+        self.get_logger().info(f"AB Comparison Test — mode: {mode.upper()} | distance: {distance}m | "
+                               f"repeat: {repeat} | pose: {'map (AMCL)' if require_map_pose else 'odom, map when available'}")
+        # With require_map_pose the run never mixes frames: the old fallback drove
+        # on /odom and switched to an unconverged AMCL pose mid-run.
+        self.require_map_pose = require_map_pose
+        self._map_pose_time = None        # monotonic time of the last good map pose
+        self._created_time = time.monotonic()
+        # Person velocities from a 1 s position history instead of one readout.
+        self._tracks = PersonTrackHistory()
+        self._estimates_seq = 0           # bumped per readout
+        self._estimates_t = 0.0
+        self._tracked_seq = -1
 
         self._mode = mode
         self._log_dir = log_dir
@@ -236,6 +255,8 @@ class ABComparisonTest(Node):
         self._timer = self.create_timer(0.05, self._control_loop)  # 20 Hz
 
     def _odom_cb(self, msg: Odometry):
+        if self.require_map_pose:
+            return      # pose comes from map->base_link only (_control_loop)
         self.current_x = msg.pose.pose.position.x
         self.current_y = msg.pose.pose.position.y
 
@@ -393,10 +414,24 @@ class ABComparisonTest(Node):
 
         return float(total_dx), float(total_dy), float(total_dtheta)
 
+    def _tracked_estimates(self):
+        """Latest people, with velocities from their position history (robot axes).
+
+        Feeds each new readout into the track history at the current pose.  The
+        estimator's own single-frame velocity stays available as vx_raw/vy_raw.
+        """
+        with self._estimates_lock:
+            raw = list(self._latest_estimates)
+            seq, t_recv = self._estimates_seq, self._estimates_t
+        pose = (self.current_x, self.current_y, self.current_yaw)
+        if seq != self._tracked_seq:
+            self._tracks.update(raw, pose, t_recv)
+            self._tracked_seq = seq
+        return self._tracks.tracked(raw, pose)
+
     def _update_bypass_offset(self):
         """Analyze obstacle proximity (fusing camera and LiDAR) and update target lateral offset."""
-        with self._estimates_lock:
-            estimates = list(self._latest_estimates)
+        estimates = self._tracked_estimates()
 
         # 1. LiDAR checks: front sector, left sector, right sector (Ideas 80, 110 & Bumper)
         lidar_blocked = False
@@ -581,8 +616,10 @@ class ABComparisonTest(Node):
                     rvx = est.get('vx', 0.0)
                     rvy = est.get('vy', 0.0)
                     speed = est.get('speed', 0.0)
+                    vel_note = "tracked" if est.get('vel_ok') else "history too short, treated as still"
                     print(f"    - ID {est.get('id')}: Pos=(fwd={rx:.2f}m, left={ry:.2f}m) | "
-                          f"Vel=(fwd_vel={rvx:.2f}m/s, left_vel={rvy:.2f}m/s) | Speed={speed:.2f}m/s")
+                          f"Vel=(fwd_vel={rvx:.2f}m/s, left_vel={rvy:.2f}m/s) | Speed={speed:.2f}m/s "
+                          f"[{vel_note}; raw {est.get('vx_raw', 0.0):.2f},{est.get('vy_raw', 0.0):.2f}]")
             else:
                 print(f"  * Camera Detections: None")
             print(f"------------------------------------\n")
@@ -737,6 +774,38 @@ class ABComparisonTest(Node):
                 self.is_paused = False
                 self.target_lateral_offset = 0.0
 
+    def _map_pose_ok(self) -> bool:
+        """--require-map-pose gate: hold still on a stale map pose, abort if it stays gone."""
+        now = time.monotonic()
+        if self._map_pose_time is None:
+            if now - self._created_time > MAP_POSE_WAIT_S:
+                self.get_logger().error(
+                    f"No map->base_link pose after {MAP_POSE_WAIT_S:.0f} s (is AMCL running "
+                    f"and localized?). Not driving.")
+                self._abort_run()
+            else:
+                self.get_logger().info("Waiting for the map pose (AMCL)...",
+                                       throttle_duration_sec=2.0)
+            return False
+        age = now - self._map_pose_time
+        if age > MAP_POSE_ABORT_S:
+            self.get_logger().error(f"Map pose missing for {age:.1f} s; aborting the run.")
+            self._abort_run()
+            return False
+        if age > MAP_POSE_STALE_S:
+            self._stop_robot()
+            self.get_logger().warn(f"Map pose is {age:.1f} s old; holding still.",
+                                   throttle_duration_sec=1.0)
+            return False
+        self.using_amcl = True
+        return True
+
+    def _abort_run(self):
+        self._stop_robot()
+        self._csv_logger.save()
+        self.state = self.DONE
+        sys.exit(1)
+
     def _stop_robot(self):
         twist = Twist()
         for _ in range(3):
@@ -761,6 +830,8 @@ class ABComparisonTest(Node):
                                 if data.get("type") == "readout":
                                     with self._estimates_lock:
                                         self._latest_estimates = data.get("velocity_estimates", [])
+                                        self._estimates_seq += 1
+                                        self._estimates_t = time.monotonic()
                             except Exception:
                                 pass
                 except Exception as e:
@@ -775,8 +846,7 @@ class ABComparisonTest(Node):
     def _maybe_log(self, segment: str):
         now = time.monotonic()
         if now - self._last_log_time >= 1.0 / LOG_HZ:
-            with self._estimates_lock:
-                estimates = list(self._latest_estimates)
+            estimates = self._tracked_estimates()
             n_obstacles = len(estimates)
             max_speed = max([est.get("speed", 0.0) for est in estimates]) if estimates else 0.0
 
@@ -806,8 +876,7 @@ class ABComparisonTest(Node):
 
     def _get_speed_scaling(self) -> float:
         """Compute linear velocity scaling factor based on pedestrian proximity and TTC, projected along travel direction (Idea 70)."""
-        with self._estimates_lock:
-            estimates = list(self._latest_estimates)
+        estimates = self._tracked_estimates()
 
         if not estimates:
             return 1.0
@@ -893,7 +962,7 @@ class ABComparisonTest(Node):
             cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
             new_yaw = math.atan2(siny_cosp, cosy_cosp)
             
-            if not getattr(self, 'using_amcl', False):
+            if not getattr(self, 'using_amcl', False) and not self.require_map_pose:
                 # Transitioning to AMCL! Translate our start coordinates by the jump
                 dx_jump = new_x - old_x
                 dy_jump = new_y - old_y
@@ -916,8 +985,15 @@ class ABComparisonTest(Node):
             self.current_yaw = new_yaw
             self.odom_received = True
             
+            # Time() returns the newest transform however old it is; age it by its stamp.
+            stamp_age = (self.get_clock().now()
+                         - rclpy.time.Time.from_msg(trans.header.stamp)).nanoseconds * 1e-9
+            self._map_pose_time = time.monotonic() - max(0.0, stamp_age)
         except Exception:
             pass # Continue using Odometry (which updates current_x etc. in _odom_cb)
+
+        if self.require_map_pose and not self._map_pose_ok():
+            return
 
         if not self.odom_received:
             self.get_logger().info("Waiting for /odom or TF messages...", throttle_duration_sec=2.0)
@@ -1455,6 +1531,14 @@ def main():
         help="Repeat the action continuously until canceled",
     )
     parser.add_argument(
+        "--require-map-pose",
+        action="store_true",
+        dest="require_map_pose",
+        help="Drive on the map pose (AMCL) only: wait for it before moving, hold "
+             "still when it goes stale, never fall back to /odom. The GUI sets this "
+             "after localizing.",
+    )
+    parser.add_argument(
         "--domain-id",
         type=int,
         default=None,
@@ -1472,6 +1556,7 @@ def main():
         log_dir=args.log_dir,
         distance=args.distance,
         repeat=args.repeat,
+        require_map_pose=args.require_map_pose,
     )
     try:
         rclpy.spin(node)
