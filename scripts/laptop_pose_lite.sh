@@ -6,4 +6,4 @@ if [ ! -x "$POSE_PYTHON" ]; then
     echo 'Run bash scripts/setup_pose_lite.sh first.' >&2
     exit 1
 fi
-exec "$POSE_PYTHON" "$POSE_ROOT/src/pose_lite_prototype.py" "$@"
+exec "$POSE_PYTHON" "$POSE_ROOT/src/tools/perception/pose_lite_prototype.py" "$@"

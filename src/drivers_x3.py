@@ -23,7 +23,7 @@ def _find_rosmaster_port():
     Both boards are CH340s with identical VID:PID and no serial number, so
     /dev/ttyCH341USB0 and USB1 swap with hub enumeration order. Picking by
     index would, half the time, push Rosmaster motor frames into the lidar
-    tilt servo. Prefer the udev symlink (src/63-rosmaster.rules keys on the
+    tilt servo. Prefer the udev symlink (deploy/udev/63-rosmaster.rules keys on the
     chip revision); if it is missing, at least exclude whatever /dev/lx16a
     currently points at.
     """
@@ -1011,7 +1011,7 @@ class VL53L5CXArray:
             self._bus = None
 
 
-TEENSY_TOF_PORT = '/dev/teensy_tof'   # src/65-teensy-tof.rules
+TEENSY_TOF_PORT = '/dev/teensy_tof'   # deploy/udev/65-teensy-tof.rules
 
 
 class TeensyToFArrays:

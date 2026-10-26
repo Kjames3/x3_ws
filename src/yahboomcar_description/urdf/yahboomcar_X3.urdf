@@ -378,7 +378,7 @@
              The carousel reuses the adapter's 3-hole 21 mm bolt circle in the
              same clocking, so the lidar keeps its previous 180 deg yaw.
              Yaw is 180 + 4.85 deg: the mount's measured error, 2026-10-11,
-             src/lidar_yaw_calib.py (direction of travel by wheel odometry
+             src/tools/calibration/lidar_yaw_calib.py (direction of travel by wheel odometry
              against scan matching over four 0.9 m legs: 4.36, 5.26, 4.48,
              5.32). server_x3._scan_cb carries the same figure separately
              (LIDAR_YAW_OFFSET_RAD); keep the two in step. -->

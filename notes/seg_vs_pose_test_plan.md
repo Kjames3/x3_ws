@@ -43,7 +43,7 @@ Each run prints its frame count; redo any flagged `under 8 fps`.
 
 ```bash
 cd ~/x3_ws && source /opt/ros/humble/setup.bash
-nohup python3 src/c3_seg_vs_pose.py artifacts/c3-captures-segpose/* \
+nohup python3 src/tools/perception/c3_seg_vs_pose.py artifacts/c3-captures-segpose/* \
     --output artifacts/c3-eval-segpose > /tmp/segpose-score.log 2>&1 &
 ```
 

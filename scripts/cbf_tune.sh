@@ -12,7 +12,7 @@
 #             (default 0.16,0.13,0.11,0.11, measured), or HALF_LENGTH,HALF_WIDTH,
 #             or 'circle' for the old safe-distance circle round the centre
 #   margin    m; clearance kept round the footprint (default 0.10)
-#   lidar_yaw deg; yaw error of the lidar mount (src/lidar_yaw_calib.py), added
+#   lidar_yaw deg; yaw error of the lidar mount (src/tools/calibration/lidar_yaw_calib.py), added
 #             to lidar bearings for the CBF
 #   person_radius m; body radius added round a tracked walking person (default 0.25)
 #   person_gamma  1/s; gamma for a walking person: smaller gives way earlier (default 1.0)

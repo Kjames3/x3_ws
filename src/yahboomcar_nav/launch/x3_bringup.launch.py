@@ -90,7 +90,7 @@ def generate_launch_description():
     # The Rosmaster and the LX16A lidar-tilt servo board are both CH340s with
     # the same VID:PID, so ttyCH341USB0/1 swap with enumeration order --
     # picking by index can hand the motor driver the servo bus. Prefer the
-    # by-chip-revision symlink from src/63-rosmaster.rules, else skip the
+    # by-chip-revision symlink from deploy/udev/63-rosmaster.rules, else skip the
     # device /dev/lx16a resolves to.
     serial_port = '/dev/ttyCH341USB0'
     if os.path.exists('/dev/rosmaster'):

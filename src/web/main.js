@@ -2188,7 +2188,7 @@ function handleMessage(data) {
 }
 
 // ── VL53L5CX 8x8 ToF array ────────────────────────────────────────────────
-// Same colour ramp as src/tof_viewer.py on purpose: near = warm, far = cool,
+// Same colour ramp as src/tools/viewers/tof_viewer.py on purpose: near = warm, far = cool,
 // and monotonic in luminance so a screenshot still reads correctly in grey.
 const TOF_STOPS = [[255,236,179],[252,176,64],[233,105,44],[186,53,90],
                    [104,52,139],[38,54,120],[14,26,48]];

@@ -76,7 +76,7 @@ jobs:
       # Catches a syntax error in any script, including the ROS and hardware
       # ones that no test imports.
       - name: Byte-compile sources
-        run: python -m compileall -q src/*.py scripts/*.py tests
+        run: python -m compileall -q src/*.py src/tools scripts/*.py tests
 
       # No ROS here: tests that need rclpy, onnxruntime or mediapipe skip
       # themselves. -rs prints the skip reasons so a silent skip is visible.

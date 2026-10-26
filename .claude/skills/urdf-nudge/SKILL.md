@@ -48,10 +48,10 @@ iterates on placement by eye in RViz: "move it down 0.5 mm, forward 0.5 mm".
 Geometry in the URDF is not the only copy. Re-measure what depends on it:
 
 - Camera moved: `config/camera_ground_plane.json` (run
-  `src/floor_plane_validate.py`). The measured lens height (0.213 m) is used
+  `src/tools/perception/floor_plane_validate.py`). The measured lens height (0.213 m) is used
   for ground rejection, not the URDF-derived one.
 - ToF bracket touched: re-record `config/tof_floor_baseline.json` with
-  `src/tof_floor_baseline.py` (robot still, clear floor).
+  `src/tools/calibration/tof_floor_baseline.py` (robot still, clear floor).
 - The robot needs `colcon build --packages-select yahboomcar_description` and
   a restart before `/tf_static` reflects the change.
 

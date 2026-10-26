@@ -49,7 +49,7 @@ python3 src/server_x3.py --sim
 
 ### Auto-start via systemd
 ```bash
-# Service file: src/x3_server.service (runs with --domain-id 42 by default)
+# Service file: deploy/systemd/x3_server.service (runs with --domain-id 42 by default)
 # Override mode via /etc/systemd/system/x3_server.service.d/override.conf
 systemctl start x3_server
 # View logs:
@@ -70,6 +70,18 @@ Browser (HTTP :8080 for GUI files, WebSocket :8081 for control)
                                     /scan /odom /odom_raw
                                     /map /voltage /camera/image_raw subs
 ```
+
+### Repository layout
+- `src/*.py` (top level only): the **runtime**, meaning `server_x3.py`, everything it
+  imports, and `dynamixel_tilt.py`. systemd units point at these paths.
+- `src/tools/<group>/`: everything run by hand. The groups are `calibration`,
+  `hw_tests`, `perception` (C1/C3, velocity scoring), `lidar`, `nav` and
+  `viewers`. Tools import runtime modules by bare name through a `sys.path`
+  header. `tests/conftest.py` puts `src/` and every tools group on the path.
+  `server_x3.py` launches `tools/hw_tests/point_to_point_test.py` and
+  `tools/perception/ab_comparison_test.py` from the GUI.
+- `deploy/`: `systemd/` units, `udev/` rules, `install_service.sh` (copies them into `/etc`).
+- `notes/` (incl. `notes/plans/`, `notes/ee244/`), `ideas/` (monthly logs), `scripts/`, `config/`, `tests/`.
 
 ### Key Source Files
 - **[src/server_x3.py](src/server_x3.py)** — Main WebSocket server. Handles browser connections, telemetry broadcast loop, ROS2Bridge initialization, YOLO inference dispatch, motion watchdog queue (100 Hz drain), SLAM/Nav2 lifecycle.
@@ -101,11 +113,11 @@ Default domain is 0. Scripts use domain ID 42 for Jetson/laptop isolation. Serve
 
 ## Hardware
 - **Robot**: Yahboom X3 (4-wheel mecanum drive)
-- **Controller**: Rosmaster board on `/dev/rosmaster` (`src/63-rosmaster.rules`)
+- **Controller**: Rosmaster board on `/dev/rosmaster` (`deploy/udev/63-rosmaster.rules`)
 - **Lidar**: YDLidar X3 on `/dev/ttyUSB0` (TOF, 512000 baud; the driver comments
   say 8 Hz / ~1000 beams, the hardware actually does **7.2 Hz / 2795 beams**),
   on a Dynamixel-tilted mount driven via `/dev/openrb150`
-  (`src/64-openrb150.rules`)
+  (`deploy/udev/64-openrb150.rules`)
 - **Camera**: Orbbec Astra Pro (RGB + depth)
 - **Compute**: Jetson Orin Nano (JetPack 6.2)
 
@@ -115,7 +127,7 @@ The tilt axis is a **Dynamixel XL430-W250-T (id 1, fw 50)** on an
 **OpenRB-150** (`2f5d:2202` → `/dev/openrb150`). It has its own supply; XL430
 stall current exceeds 800 mA, so it is never on the Orin 40-pin 5 V rail.
 
-> **The LX-16A is RETIRED.** It, `/dev/lx16a`, `src/62-lx16a.rules`,
+> **The LX-16A is RETIRED.** It, `/dev/lx16a`, `deploy/udev/62-lx16a.rules`,
 > `src/lidar_tilt.py`, `x3_lidar_home.service` and
 > `config/lidar_tilt_calibration.json` are all historical. Do not reason about
 > the tilt axis from them — the counts scale, the port, the units and the
@@ -126,7 +138,7 @@ stall current exceeds 800 mA, so it is never on the Orin 40-pin 5 V rail.
 python3 src/dynamixel_tilt.py --status      # read-only (does NOT drop torque)
 python3 src/dynamixel_tilt.py --calibrate   # store current position as level
 python3 src/dynamixel_tilt.py --home        # drive back to level
-python3 src/dynamixel_setup.py --commission # bench tool: identify/set-id/zero/sweep
+python3 src/tools/calibration/dynamixel_setup.py --commission # bench tool: identify/set-id/zero/sweep
 ```
 
 Calibration lives in `config/lidar_tilt_calibration_dynamixel.json`.
@@ -170,12 +182,12 @@ trick — but keep the rule in mind before adding any further CH340 device.
 
 Upper array pitched **15°** down, lower **40°**, one I2C bus each on a
 **Teensy 4.1** (`scripts/teensy_tof_test/teensy_tof_test.ino`, 8x8 @ 15 Hz)
-that streams NDJSON over USB to **`/dev/teensy_tof`** (`src/65-teensy-tof.rules`;
+that streams NDJSON over USB to **`/dev/teensy_tof`** (`deploy/udev/65-teensy-tof.rules`;
 `ttyACMn` swaps with the OpenRB-150). Sensors run off a separate 3.3 V buck with
 a common ground. `server_x3.py` owns the port (`TeensyToFArrays`), feeds the GUI,
 publishes `/tof/{upper,lower}/points` (raw) and `/tof/{upper,lower}/obstacles`
 (what the CBF and the local costmap use), and adds the obstacles to the CBF.
-`tof_node.py` / `tof_array.py` are the old single-sensor i2c-1 bench path.
+`tof_node.py` / `src/tools/hw_tests/tof_array.py` are the old single-sensor i2c-1 bench path.
 
 - **Heights are judged along each zone's LOWEST ray**
   (`tof_geometry.zone_low_edge_points`). A zone grazing the floor reports the
@@ -193,7 +205,7 @@ publishes `/tof/{upper,lower}/points` (raw) and `/tof/{upper,lower}/obstacles`
   (bare floor stays within 6 mm; the 3 cm block shortened zones 16–41 mm).
   Frames where the median zone shifts > 10 mm are skipped as chassis tilt.
   Drive-tested: a 3 cm block, sandals, shoes and a folded towel all stopped
-  the robot short. **Re-record the baseline** with `src/tof_floor_baseline.py`
+  the robot short. **Re-record the baseline** with `src/tools/calibration/tof_floor_baseline.py`
   (robot still, clear floor) after touching the bracket or on a very
   different floor; `--tof-baseline PATH` selects a per-floor copy
   (`tof_floor_baseline_{apartment_wood,lab_carpet}.json`) and a missing file
@@ -233,7 +245,7 @@ publishes `/tof/{upper,lower}/points` (raw) and `/tof/{upper,lower}/obstacles`
 ## Maps
 Saved maps are stored as `.pgm`/`.yaml` pairs in `src/yahboomcar_nav/maps/`. New maps are created via the "Start SLAM" button in the GUI and saved through the server's map-save handler.
 
-## Performance Notes (from PERFORMANCE_PLAN.md)
+## Performance Notes (from notes/plans/PERFORMANCE_PLAN.md)
 - Camera frame encoding (`cv2.imencode`) runs in a thread executor to avoid blocking the async event loop.
 - JPEG frames are sent as **binary WebSocket messages** (not base64 JSON) to save 2–5 ms/frame.
 - Lidar point conversion uses vectorized numpy operations.

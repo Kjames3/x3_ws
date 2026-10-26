@@ -16,7 +16,7 @@ geometry code, for one reason: `pitch_deg` here is a sensor-to-FLOOR angle, and
 like camera_pitch_deg it has to be RE-MEASURED after any bracket change.  A
 number baked into a file is a number nobody re-measures.  Check it with
 
-    python3 src/tof_array.py --coverage <height_m> <pitch_deg>
+    python3 src/tools/hw_tests/tof_array.py --coverage <height_m> <pitch_deg>
 
 against a real flat floor: the rows should land where the table says they do.
 Disagreement is a mount-angle error, not sensor noise.
@@ -189,7 +189,7 @@ class TofNode(Node):
     def report(self):
         if self.n_frames == 0:
             self.get_logger().warn(
-                'no ToF frames in 2 s — check `python3 src/tof_array.py --scan`')
+                'no ToF frames in 2 s — check `python3 src/tools/hw_tests/tof_array.py --scan`')
             return
         msg = String()
         msg.data = (f'{{"frames": {self.n_frames}, "empty": {self.n_empty}, '

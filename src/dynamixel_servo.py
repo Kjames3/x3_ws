@@ -119,7 +119,7 @@ def model_name(number):
 def find_ports():
     """Candidate serial ports for an OpenRB-150, best guess first.
 
-    The udev symlink (see src/64-openrb150.rules) is preferred, but that rule
+    The udev symlink (see deploy/udev/64-openrb150.rules) is preferred, but that rule
     is still a template until the board's real VID/PID is read off the bench,
     so fall back to raw ACM/USB nodes.
     """
@@ -364,7 +364,7 @@ class XL430:
         Min/Max Position Limit still clamp Goal Position to 0..4095 in the
         offset frame, so a large offset silently costs you travel at one end.
         dynamixel_tilt.py keeps zero in the calibration file instead, which
-        costs nothing; see src/dynamixel_setup.py --write-homing-offset.
+        costs nothing; see src/tools/calibration/dynamixel_setup.py --write-homing-offset.
         """
         self._write(servo_id, ADDR_HOMING_OFFSET, 4, int(counts) & 0xFFFFFFFF)
 

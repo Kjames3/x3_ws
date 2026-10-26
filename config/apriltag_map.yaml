@@ -23,7 +23,7 @@ tag_family: tag36h11
 tag_size: 0.101
 tag_size_source: "calipers, 10/10 mounted tags, 2026-08-23"
 # markers.pdf carries IDs 0-19; only 10 are mounted. WHICH 10 is unknown
-# until the wall photos are decoded -- see src/apriltag_verify.py.
+# until the wall photos are decoded -- see src/tools/perception/apriltag_verify.py.
 tag_ids_mounted: []   # populate from the photo pass before surveying
 
 # Reprint pending (~2026-08-26): use ~/apriltags_print/tag36h11_150mm_ids0-9.pdf,

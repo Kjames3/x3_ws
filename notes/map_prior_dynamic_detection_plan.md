@@ -10,7 +10,7 @@ Status: **Phase 0 half done (2026-10-16)**, site auto-select built, not yet run 
   accept only if the residual margin between sites is >= 1.30).
 - `src/auto_initial_pose.py` brought over from the unmerged
   `worktree-auto-initial-pose` branch (matcher core only is used).
-- `src/map_diff_replay.py`: Phase 0 replay. Results on the C3 lab captures
+- `src/tools/nav/map_diff_replay.py`: Phase 0 replay. Results on the C3 lab captures
   (`artifacts/map-prior-2026-10-16/phase0_summary.json`):
   - Every bag recognised as **lab**, margin 2.1-2.2 (apartment scores ~0.6 vs 0.8).
   - Walls line up: per-scan global pose spread 1.7 cm / 0.35 deg. Raw NEW was
@@ -45,7 +45,7 @@ Inputs: existing walking/crossing bags that have `/scan`, `/tf` and a matching
 saved map (newApartment1, RealLab1, apartment3_test), plus the corresponding
 velocity estimator logs.
 
-1. Write `src/map_diff_replay.py`: read the bag (reuse the `bag_viewer.py`
+1. Write `src/tools/nav/map_diff_replay.py`: read the bag (reuse the `bag_viewer.py`
    sqlite reader), transform `/scan` into the map frame with the localized pose,
    and label each point as follows:
    - `static`: within `d_tol` of an occupied cell (start at 0.10 m, run a distance transform once per map)

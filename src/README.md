@@ -1,32 +1,30 @@
-# EE 244 Final Project - Predictive Local Planning via Onboard Velocity Estimation
+# src/
 
-This is the final project for the EE 244 Computational Learning Course at UCR (Spring 2026), created by Kamren James.
+Top-level `.py` files here are the **runtime**: `server_x3.py` and the modules it
+imports, plus the boot-time `dynamixel_tilt.py`. systemd runs them from this
+directory (`deploy/systemd/x3_server.service`), so don't move them without
+updating the unit files and reinstalling them on the robot.
 
-## Project Overview
+Everything you run by hand lives under `tools/`, grouped by purpose:
 
-Mobile robots navigating among people must avoid dynamic obstacles whose future positions depend on their current velocity. Standard local planners, such as the Dynamic Window Approach (DWA), treat obstacles as static within each planning cycle or assume constant velocity heuristically, producing late and reactive maneuvers. 
+| Directory | What's in it |
+|---|---|
+| `tools/calibration/` | IMU, lidar yaw, footprint, ToF floor baseline, Dynamixel commissioning, web robot model bake |
+| `tools/hw_tests/` | Drive and sensor tests on the robot (IMU, odometry, strafe, point-to-point, sweep bench, old ToF bench) |
+| `tools/perception/` | Offline person/velocity work: C1 dataset, C3 tracker replay/score, velocity model scoring, A/B logs |
+| `tools/lidar/` | Lidar localization capture, replay and validation |
+| `tools/nav/` | Nav/CBF analysis: ORCA vs CBF, STL monitor, map-diff replay |
+| `tools/viewers/` | Bag, octomap, OAK, ToF viewers and the mock telemetry server |
 
-This project addresses the problem: **How can a mobile robot accurately estimate the velocity of nearby dynamic obstacles directly from onboard RGB-D and LiDAR sensor observations and use those estimates to plan collision-free paths predictively rather than reactively?**
+Tools import runtime modules (and siblings in their own group) by bare name.
+Each one puts `src/` on `sys.path` in its header; `tests/conftest.py` adds
+`src/` and every `tools/<group>/`.
 
-## Approach
+The other directories:
 
-The current direction involves a lightweight MLP regression network trained on sequences of depth-image centroid displacements and LiDAR point-cloud features to output per-obstacle 2D velocity vectors. These estimates drive a modified DWA local planner running in ROS2.
-
-The hardware platform is a Yahboom X3 holonomic-drive robot equipped with:
-- Jetson Orin Nano Super 8GB
-- Orbbec Astra Pro SC RGB-D camera
-- YDLidar 4ROS TOF LiDAR
-
-## Datasets
-
-The project leverages several datasets:
-- **COCO**: Pre-training backbone for person detection.
-- **JRDB**: Fine-tuning for detection.
-- **THÖR-MAGNI**: Primary dataset for training and validating the velocity regression model, providing 100 Hz motion-capture velocity ground truth alongside synchronized RGB-D and LiDAR streams.
-- **Custom Domain-Adaptation Dataset**: Collected with the Orbbec Astra Pro SC in the deployment environment to bridge the sensor domain gap.
-
-## Results to Demonstrate
-
-1. Quantitative velocity estimation accuracy on held-out THÖR-MAGNI sequences against a Kalman-filter baseline.
-2. Navigation metrics (success rate, minimum clearance distance, time-to-goal) evaluated on the physical Yahboom X3.
-3. A live classroom demo comparing reactive vs. predictive A/B with DWA velocity estimation disabled and enabled.
+- ROS 2 packages: `yahboomcar_*`, `ydlidar_ros2_driver` (submodule), `x3_msgs`, `nav2_mppi_dbas_controller`
+- `web/`: the browser GUI
+- Model files: `models/`, `checkpoints/`, `yolo_models/`, `blobs/`, and the `velocity_mlp*.torchscript` / `scaler_*` files next to the server (loaded by relative path)
+- `logs/`, `fixtures/`: A/B test CSVs and test fixtures
+- `archive/`: dead code and old `server_x3.py` backups
+- `lidar_tilt.py`, `lx16a_servo.py`: the retired LX-16A tilt. `lidar_tilt_node` still looks for `lx16a_servo.py` here.

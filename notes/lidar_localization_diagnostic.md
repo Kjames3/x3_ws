@@ -7,7 +7,7 @@ lidar sweep, or robot-service restart was needed for this work.
 
 ## Map and input contract
 
-`src/build_lidar_localization_map.py` rebuilds the five-station graph using
+`src/tools/lidar/build_lidar_localization_map.py` rebuilds the five-station graph using
 only alternating complete clouds. The other clouds are held out of BOTH edge
 fitting and map construction. A connectivity check admits only the component
 anchored at station 0. Stations 0, 1, 2 and 4 form that component; station 3 is
@@ -92,8 +92,8 @@ Derived map/fixture NPZ files are ignored by git and kept on both machines.
 The raw input capture is tracked. Regenerate the derived files with:
 
 ```bash
-OPENBLAS_NUM_THREADS=1 python3 src/build_lidar_localization_map.py
-OPENBLAS_NUM_THREADS=1 python3 src/bench_lidar_localization.py \
+OPENBLAS_NUM_THREADS=1 python3 src/tools/lidar/build_lidar_localization_map.py
+OPENBLAS_NUM_THREADS=1 python3 src/tools/lidar/bench_lidar_localization.py \
   --map artifacts/localization-2026-09-06/map.npz \
   --capture artifacts/registration-2026-09-05/drive_capture.npz \
   --out artifacts/localization-2026-09-06/benchmark.json

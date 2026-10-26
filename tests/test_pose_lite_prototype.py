@@ -11,7 +11,7 @@ cv2 = pytest.importorskip('cv2')
 pytest.importorskip('mediapipe')  # lives in the isolated Pose Lite venv only
 import numpy as np
 
-spec = importlib.util.spec_from_file_location('pose_lite', Path(__file__).resolve().parents[1] / 'src/pose_lite_prototype.py')
+spec = importlib.util.spec_from_file_location('pose_lite', Path(__file__).resolve().parents[1] / 'src/tools/perception/pose_lite_prototype.py')
 pose = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pose)
 

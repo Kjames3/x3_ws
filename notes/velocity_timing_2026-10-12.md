@@ -43,7 +43,7 @@ code layout that has since been refactored. Its underlying CBF behavior was not
 changed here.
 
 Four recorded datasets were replayed for their first 30 seconds each using
-`src/replay_velocity_timing.py`. Both arms use identical extracted centroids and
+`src/tools/perception/replay_velocity_timing.py`. Both arms use identical extracted centroids and
 weights. Legacy uses 10 Hz polling with tick-time pose; timed deduplicates frames,
 uses capture-time pose, and resamples the history. The replay uses recorded
 acquisition timestamps, not an emulation of the full original delivery schedule.
@@ -80,7 +80,7 @@ Reproduce one run:
 
 ```bash
 source /opt/ros/humble/setup.bash
-OPENBLAS_NUM_THREADS=1 python3 src/replay_velocity_timing.py \
+OPENBLAS_NUM_THREADS=1 python3 src/tools/perception/replay_velocity_timing.py \
   artifacts/c3-captures/stand-2.4m-r2 \
   --output artifacts/velocity-timing-2026-10-12/stand-2.4m-r2 --seconds 30
 ```

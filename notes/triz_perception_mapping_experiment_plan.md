@@ -236,7 +236,7 @@ compute dominated. Do not tune indefinitely on the held-out set.
 
 ## References
 
-- src/velocity_estimator.py; src/score_velocity_models.py
+- src/velocity_estimator.py; src/tools/perception/score_velocity_models.py
 - src/oakd_ros_publisher.py; record_bag.sh
 - notes/continuous_sweep_validation.md; notes/registration_feasibility.md
 - Shared memory: project_velocity_model_comparison.md,

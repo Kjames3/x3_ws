@@ -5,7 +5,7 @@ set -euo pipefail
 
 runner="${OLLAMA_BIN:-/home/kamren/.local/bin/ollama}"
 model="${LOCAL_CODE_MODEL:-qwen2.5-coder:7b}"
-target="${1:-src/sweep_load_bench.py}"
+target="${1:-src/tools/hw_tests/sweep_load_bench.py}"
 
 if [[ ! -x "$runner" ]]; then
   echo "Ollama is not installed at $runner" >&2

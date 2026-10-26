@@ -211,8 +211,8 @@ Two services run on the Jetson: the control server and the Foxglove bridge.
 ### Install both services
 
 ```bash
-sudo cp ~/x3_ws/src/x3_server.service /etc/systemd/system/
-sudo cp ~/x3_ws/src/foxglove_bridge.service /etc/systemd/system/
+sudo cp ~/x3_ws/deploy/systemd/x3_server.service /etc/systemd/system/
+sudo cp ~/x3_ws/deploy/systemd/foxglove_bridge.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable x3_server foxglove_bridge
 sudo systemctl start x3_server foxglove_bridge
@@ -326,36 +326,31 @@ and final heading error below 5°.
 
 ```
 x3_ws/
-├── src/
+├── src/                          # see src/README.md
 │   ├── server_x3.py              # Main WebSocket server (port 8081)
-│   ├── drivers_x3.py             # Camera, lidar, motor drivers
-│   ├── nav2_client.py            # Nav2 action client
-│   ├── navigation_fsm.py         # YOLO-driven target tracking FSM
-│   ├── frontier_explorer.py      # Autonomous frontier exploration
-│   ├── trt_detector.py           # TensorRT YOLO wrapper
-│   ├── oakd_driver.py            # OAK-D Lite DepthAI driver (stereo/depth/IMU)
-│   ├── oakd_ros_publisher.py     # Republishes OAK-D streams as /oak/* ROS2 topics
-│   ├── icm42688_calibrate.py     # Stationary ICM gyro/accel calibration
-│   ├── imu_straight_passive.py   # Passive straight-drive validation
-│   ├── imu_rotation_test.py      # Driven rotation/gyro scale validation
-│   ├── Rosmaster_Lib.py          # Yahboom serial protocol library
-│   ├── x3_server.service         # systemd: control server
-│   ├── foxglove_bridge.service   # systemd: Foxglove WebSocket bridge
-│   ├── web/
-│   │   ├── GUI.html              # Single-page browser GUI
-│   │   ├── main.js               # WebSocket client + Foxglove client
-│   │   └── lidar-worker.js       # Web Worker: lidar canvas rendering
-│   ├── yahboomcar_base_node/     # ROS2 C++: dead-reckoning odometry
-│   ├── yahboomcar_bringup/       # ROS2: hardware bringup launch
-│   ├── yahboomcar_description/   # URDF / robot model
-│   ├── yahboomcar_msgs/          # Custom ROS2 message types
-│   ├── yahboomcar_nav/           # SLAM + Nav2 launch & params
-│   ├── yahboomcar_rviz/          # RViz configs
-│   └── ydlidar_ros2_driver/      # YDLidar ROS2 driver (git submodule)
-├── scripts/
-│   ├── install.sh                # Full first-time setup script
-│   └── build_ros2.sh             # Workspace build + YDLidar SDK
-├── record_bag.sh                 # Domain-adaptation rosbag recording
+│   ├── drivers_x3.py, ...        # Runtime modules the server imports (top level only)
+│   ├── tools/                    # Everything run by hand
+│   │   ├── calibration/          # IMU, lidar yaw, footprint, ToF baseline, Dynamixel setup
+│   │   ├── hw_tests/             # On-robot drive/sensor tests
+│   │   ├── perception/           # Offline person/velocity evaluation (C1/C3, scoring)
+│   │   ├── lidar/                # Lidar localization capture/replay/validation
+│   │   ├── nav/                  # ORCA vs CBF, STL monitor, map-diff replay
+│   │   └── viewers/              # Bag, octomap, OAK, ToF viewers
+│   ├── web/                      # Browser GUI (GUI.html, main.js, workers)
+│   ├── yahboomcar_*/             # ROS2 packages (base node, bringup, description, msgs, nav, rviz)
+│   ├── ydlidar_ros2_driver/      # YDLidar ROS2 driver (git submodule)
+│   └── archive/                  # Dead code and old server backups
+├── deploy/
+│   ├── systemd/                  # x3_server, foxglove_bridge, dynamixel tilt home, ...
+│   ├── udev/                     # /dev/rosmaster, /dev/openrb150, /dev/teensy_tof rules
+│   └── install_service.sh        # Installs the units and rules on the Jetson
+├── scripts/                      # Bringup, laptop viz/sim, bag record/fetch, nav helpers
+├── config/                       # Calibration and runtime config (JSON/YAML/XML)
+├── tests/                        # pytest suite (CI runs `pytest tests`)
+├── notes/                        # Experiment notes; notes/plans/ and notes/ee244/
+├── ideas/                        # Monthly idea logs (June-August)
+├── memory/                       # Obsidian vault layer (derived from agent memory)
+├── artifacts/, evidence/         # Experiment outputs (mostly untracked)
 └── README.md
 ```
 
@@ -377,10 +372,10 @@ ros2 topic echo /odom
 ros2 topic hz /imu/data_raw
 
 # Re-run a stationary ICM calibration
-python3 src/icm42688_calibrate.py --help
+python3 src/tools/calibration/icm42688_calibrate.py --help
 
 # Observe a manually driven straight-line validation (publishes no commands)
-python3 src/imu_straight_passive.py --window 120
+python3 src/tools/hw_tests/imu_straight_passive.py --window 120
 
 # Send a test velocity command
 ros2 topic pub /cmd_vel geometry_msgs/msg/Twist \
@@ -492,12 +487,12 @@ sudo systemctl daemon-reload && sudo systemctl restart x3_server
 
 ```bash
 cd ~/x3_ws
-RECORD_OAK_STEREO=true ./record_bag.sh              # stereo + depth + IMU
-./record_bag.sh                                     # depth + IMU only
-./record_bag.sh /path/to/output_dir                 # custom output dir
+RECORD_OAK_STEREO=true scripts/record_bag.sh              # stereo + depth + IMU
+scripts/record_bag.sh                                     # depth + IMU only
+scripts/record_bag.sh /path/to/output_dir                 # custom output dir
 ```
 
-> ⚠️ **Options are environment variables, not arguments.** The variable must come *before* the script name, with no space around `=`. Running `./record_bag.sh RECORD_OAK_STEREO=true` silently creates an output **directory named** `RECORD_OAK_STEREO=true` and records with stereo **off**.
+> ⚠️ **Options are environment variables, not arguments.** The variable must come *before* the script name, with no space around `=`. Running `scripts/record_bag.sh RECORD_OAK_STEREO=true` silently creates an output **directory named** `RECORD_OAK_STEREO=true` and records with stereo **off**.
 
 | Variable | Default | Effect |
 |---|---|---|

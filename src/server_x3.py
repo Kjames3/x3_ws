@@ -111,12 +111,12 @@ parser.add_argument('--no-tof', action='store_true', dest='no_tof',
                     help='Disable the dual VL53L5CX ToF arrays (Teensy over USB).')
 parser.add_argument('--tof-baseline', default=None, dest='tof_baseline',
                     help='Bare-floor baseline for the lower ToF array, recorded by '
-                         'src/tof_floor_baseline.py. Default config/tof_floor_baseline.json; '
+                         'src/tools/calibration/tof_floor_baseline.py. Default config/tof_floor_baseline.json; '
                          'point it at a per-floor copy (e.g. ..._lab_carpet.json) instead of '
                          'copying files around. Missing file = height test only.')
 parser.add_argument('--tof-port', default=TEENSY_TOF_PORT, dest='tof_port',
                     help='Serial port of the ToF Teensy. Default /dev/teensy_tof from '
-                         'src/65-teensy-tof.rules; /dev/ttyACMn swaps with the OpenRB-150.')
+                         'deploy/udev/65-teensy-tof.rules; /dev/ttyACMn swaps with the OpenRB-150.')
 parser.add_argument('--no-oak', action='store_true', dest='no_oak',
                     help='Disable the OAK-D Lite driver (stereo + depth + IMU). '
                          'When enabled (default), the OAK-D is the depth source.')
@@ -167,7 +167,7 @@ parser.add_argument('--oak-model', default='yolo26n',
 parser.add_argument('--oak-det-log', default=None, metavar='DIR',
                     help='Append every OAK NN packet (detections, keypoints, depth) '
                          'as NDJSON to DIR/<model>-<time>.ndjson. Summarize with '
-                         'src/oak_pose_summary.py.')
+                         'src/tools/perception/oak_pose_summary.py.')
 parser.add_argument('--no-c3-live', action='store_true', dest='no_c3_live',
                     help='Disable the diagnostic C3 person tracker (OAK YOLO boxes + '
                          'Kalman). It never reaches the CBF; it only feeds the GUI.')
@@ -293,7 +293,7 @@ c3_live = None             # diagnostic C3 person tracker (src/c3_live.py), GUI 
 foot_diagnostic = None     # isolated shadow evaluator; NEVER passed to drive/CBF
 active_velocity_model_name = "velocity_mlp_v3"  # currently loaded torchscript velocity model
 # v3 deployed 2026-09-04. Measured against v1 on one recorded capture replayed
-# offline (src/score_velocity_models.py): closer to truth at range (+15% vs
+# offline (src/tools/perception/score_velocity_models.py): closer to truth at range (+15% vs
 # +33% at a 4.0 m gate) and far fewer phantoms on a static scene (raw p95
 # 0.179 vs 0.728, 7 vs 69 frames >0.30 m/s). Its scaler is paired by name --
 # do NOT point this at a model whose scaler_params_<suffix>.json is missing.
@@ -456,7 +456,7 @@ OBSTACLE_STALE_S = 0.5
 TOF_CBF_MIN_Z_M = {'upper': 0.04, 'lower': 0.015}
 # Lower array only: a zone is ALSO an obstacle when it reads this much shorter
 # than its own bare-floor depth (config/tof_floor_baseline.json, recorded with
-# src/tof_floor_baseline.py).  Catches what the height test cannot: a 3 cm
+# src/tools/calibration/tof_floor_baseline.py).  Catches what the height test cannot: a 3 cm
 # block shortened its zones by 16-41 mm, while on bare floor no zone came
 # within 6 mm of the baseline over 268 frames (2026-09-22).
 TOF_FLOOR_DEFICIT_MM = 12.0
@@ -502,7 +502,7 @@ CBF_SAFE_DISTANCE_M = float(os.environ.get('X3_CBF_SAFE_DISTANCE_M', 0.30))
 # The chassis outline the CBF keeps obstacles clear of: each side's distance
 # from the base centre in metres -- front, rear, left, right (body x forward).
 # Measured 2026-10-11 by pushing each side against a wall and reading it with
-# the lidar (src/footprint_measure.py): 0.153, 0.124, 0.102, 0.097, rounded up.
+# the lidar (src/tools/calibration/footprint_measure.py): 0.153, 0.124, 0.102, 0.097, rounded up.
 # Front and rear are relative to where _scan_cb puts the lidar (x = 0.0435),
 # so a lidar point and this outline share any error in that figure.
 # The nose is the ToF bracket. Two values mean half length, half width.
@@ -511,7 +511,7 @@ CBF_SAFE_DISTANCE_M = float(os.environ.get('X3_CBF_SAFE_DISTANCE_M', 0.30))
 _fp = os.environ.get('X3_CBF_FOOTPRINT', '0.16,0.13,0.11,0.11').strip().lower()
 CBF_FOOTPRINT = None if _fp == 'circle' else tuple(float(v) for v in _fp.split(','))
 # Yaw error of the lidar mount, added to every lidar bearing before it becomes
-# a CBF obstacle. Measured 2026-10-11 with src/lidar_yaw_calib.py: +4.85 deg
+# a CBF obstacle. Measured 2026-10-11 with src/tools/calibration/lidar_yaw_calib.py: +4.85 deg
 # (four 0.9 m legs: 4.36, 5.26, 4.48, 5.32; forward legs read ~0.9 deg less
 # than backward ones). The same day a wall held square to the nose read +5.4
 # and to the tail +4.8; mapping work had it at 3.8-4.3. Uncorrected, a point
@@ -893,7 +893,7 @@ class ROS2Bridge:
         self._people_last_pub = 0.0
         self._cmd_vel_pub = self._node.create_publisher(Twist, CMD_VEL_OUT_TOPIC, 10)
         # What was ASKED of the CBF (GUI joystick, Nav2 through the gate, heartbeat), so a
-        # bag holds the request next to /cmd_vel_safe: src/orca_cbf_compare.py replays it
+        # bag holds the request next to /cmd_vel_safe: src/tools/nav/orca_cbf_compare.py replays it
         # as every controller's u_nom.  GUI commands never appear on /cmd_vel.
         self._cmd_nominal_pub = self._node.create_publisher(Twist, '/cmd_vel_nominal', 10)
         if CMD_VEL_GATE:
@@ -1966,7 +1966,7 @@ def _save_octomap(name: str, full: bool = False) -> tuple[bool, str]:
     """Write the live octree to disk as .bt (binary) or .ot (full).
 
     Until this existed NOTHING in the pipeline ever wrote an octree: octomap
-    ran, RViz drew it, and the map died with the process.  src/octomap_viewer.py
+    ran, RViz drew it, and the map died with the process.  src/tools/viewers/octomap_viewer.py
     browses .bt/.ot files that had no way of being produced.
 
     Two non-obvious things about the ROS 2 saver, neither of which matches the
@@ -3377,7 +3377,7 @@ async def handle_client(websocket):
                             logger.info("Auto-launching Nav2 with AMCL on RealLab3.yaml for test...")
                             _launch_nav2_seeded(SIM_MODE, os.path.join(_maps_dir(), 'RealLab3.yaml'), False)
                         logger.info("Starting Point-to-Point Test...")
-                        script_path = str(Path(__file__).parent.resolve() / "point_to_point_test.py")
+                        script_path = str(Path(__file__).parent.resolve() / "tools" / "hw_tests" / "point_to_point_test.py")
                         
                         child_env = os.environ.copy()
                         child_env['PATH'] = ':'.join(
@@ -3428,7 +3428,7 @@ async def handle_client(websocket):
                             logger.info("Auto-launching Nav2 with AMCL on RealLab3.yaml for test...")
                             _launch_nav2_seeded(SIM_MODE, os.path.join(_maps_dir(), 'RealLab3.yaml'), False)
                         logger.info(f"Starting A/B comparison test (mode={mode}, distance={distance}, repeat={repeat})...")
-                        script_path = str(Path(__file__).parent.resolve() / "ab_comparison_test.py")
+                        script_path = str(Path(__file__).parent.resolve() / "tools" / "perception" / "ab_comparison_test.py")
 
                         child_env = os.environ.copy()
                         child_env['PATH'] = ':'.join(
@@ -4222,7 +4222,7 @@ def _load_tof_floor_baseline():
         return depth
     except FileNotFoundError:
         logger.warning(f"No ToF floor baseline at {TOF_FLOOR_BASELINE_PATH} (run "
-                       f"src/tof_floor_baseline.py); the lower array falls back to "
+                       f"src/tools/calibration/tof_floor_baseline.py); the lower array falls back to "
                        f"its height test only")
     except Exception as e:
         logger.error(f"ToF floor baseline unreadable: {e}")

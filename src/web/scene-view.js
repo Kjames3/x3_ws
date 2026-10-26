@@ -75,7 +75,7 @@
             scene.add(ring);
         }
 
-        // Robot: URDF model baked by src/build_web_robot_model.py, with a
+        // Robot: URDF model baked by src/tools/calibration/build_web_robot_model.py, with a
         // box + blue nose standing in until (or if) it loads.
         const robot = new THREE.Group();
         const body = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.12, 0.30),

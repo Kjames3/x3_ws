@@ -69,8 +69,8 @@ After deploying the reviewed changes into the existing server process, run on
 the Jetson with ROS domain 42 and its workspace sourced:
 
 ```bash
-python3 src/c1_tof_audit.py --output /tmp/c1-tof-trial --seconds 30
-python3 src/c1_tof_audit.py --replay /tmp/c1-tof-trial/observations.jsonl
+python3 src/tools/perception/c1_tof_audit.py --output /tmp/c1-tof-trial --seconds 30
+python3 src/tools/perception/c1_tof_audit.py --replay /tmp/c1-tof-trial/observations.jsonl
 ```
 
 Use a new output directory each time. The recorder subscribes to the server;
@@ -166,8 +166,8 @@ source /opt/ros/humble/setup.bash
 source install/local_setup.bash
 unset ROS_DISCOVERY_SERVER FASTDDS_DEFAULT_PROFILES_FILE
 export ROS_DOMAIN_ID=42
-python3 src/c1_dataset.py record --output artifacts/c1-rgbd-trial --seconds 30
-python3 src/c1_dataset.py audit artifacts/c1-rgbd-trial
+python3 src/tools/perception/c1_dataset.py record --output artifacts/c1-rgbd-trial --seconds 30
+python3 src/tools/perception/c1_dataset.py audit artifacts/c1-rgbd-trial
 ```
 
 The recorder writes a SQLite ROS bag of paired images, calibration, metadata,

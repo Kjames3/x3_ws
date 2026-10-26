@@ -6,7 +6,7 @@ set -euo pipefail
 runner="${OLLAMA_BIN:-/home/kamren/.local/bin/ollama}"
 model="${LOCAL_CODE_MODEL:-qwen2.5-coder:7b}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-target="$repo_root/src/sweep_load_bench.py"
+target="$repo_root/src/tools/hw_tests/sweep_load_bench.py"
 report_dir="$repo_root/local_llm_runs/sweep_load_bench_$(date +%Y%m%d-%H%M%S)"
 
 mkdir -p "$report_dir"

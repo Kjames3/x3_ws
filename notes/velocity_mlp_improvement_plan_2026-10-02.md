@@ -24,7 +24,7 @@ people, or only non-person moving obstacles next to C3.
 
 ## Phase 1 — retrain for the Pro W (started 2026-10-02, REAL-1)
 
-Script: `src/sweep_velocity_prow.py`. Runs in `~/x3_velsweep4/` on REAL-1,
+Script: `src/tools/perception/sweep_velocity_prow.py`. Runs in `~/x3_velsweep4/` on REAL-1,
 results in `~/x3_velsweep4/out/results.jsonl`, log in `out/sweep.log`.
 
 Axes:
@@ -70,7 +70,7 @@ numbers rank models; they do not prove behaviour on the robot.
 
 ## Phase 2 — replay on real captures (laptop, no robot needed)
 
-1. Pull the top two or three models and run `src/score_velocity_models.py` over
+1. Pull the top two or three models and run `src/tools/perception/score_velocity_models.py` over
    the existing feature logs against v3. It replays the full chain (scaler,
    clip, confidence, per-component acceleration clamp), so the model is the
    only variable.

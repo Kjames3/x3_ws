@@ -18,7 +18,7 @@ set +u; source /opt/ros/humble/setup.bash; set -u   # ROS setup reads unset vars
 export ROS_DOMAIN_ID=42
 # The recorder exits nonzero when its audit finds ANY failure, e.g. one
 # incomplete RGB/depth pair; the scorer just skips those. Judge the audit.
-python3 src/c1_dataset.py record --output "$out" --seconds "$secs" > "/tmp/segpose-$name.log" 2>&1 || true
+python3 src/tools/perception/c1_dataset.py record --output "$out" --seconds "$secs" > "/tmp/segpose-$name.log" 2>&1 || true
 if [ ! -f "$out/audit.json" ]; then
     echo "record FAILED (no audit), see /tmp/segpose-$name.log" >&2; exit 1
 fi

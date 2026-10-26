@@ -3,8 +3,8 @@
 #   bash scripts/record_walk.sh walkup-r1 60          # parked robot, person walks at it
 #   bash scripts/record_walk.sh goal-r1 90            # Nav2 goal while someone walks past
 # Then, on any machine with ROS + install/setup.bash sourced:
-#   python3 src/orca_cbf_compare.py artifacts/walk-<date>/walkup-r1
-#   python3 src/orca_cbf_compare.py artifacts/walk-<date>/goal-r1 --nominal track
+#   python3 src/tools/nav/orca_cbf_compare.py artifacts/walk-<date>/walkup-r1
+#   python3 src/tools/nav/orca_cbf_compare.py artifacts/walk-<date>/goal-r1 --nominal track
 #
 # Since c38485d the driver listens on /cmd_vel_safe, so a bag holds BOTH the request
 # (/cmd_vel_nominal: whatever entered the CBF, GUI joystick included; /cmd_vel is

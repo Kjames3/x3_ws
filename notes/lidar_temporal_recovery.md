@@ -118,7 +118,7 @@ upgrade was performed.
 ## Reproduction and remaining work
 
 ```bash
-OPENBLAS_NUM_THREADS=1 python3 src/evaluate_lidar_tracking.py \
+OPENBLAS_NUM_THREADS=1 python3 src/tools/lidar/evaluate_lidar_tracking.py \
   --capture artifacts/localization-validation/localization_validation_01.npz \
   --map artifacts/localization-2026-09-06/map.npz \
   --bootstrap artifacts/localization-validation/frozen_map_result.json \

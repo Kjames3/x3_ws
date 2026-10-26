@@ -27,7 +27,7 @@ artifacts/localization-validation/. SHA256 of the raw NPZ:
 
 ## Frozen-map sequential evaluation
 
-`src/evaluate_lidar_validation.py` first estimates an OFFLINE initial alignment
+`src/tools/lidar/evaluate_lidar_validation.py` first estimates an OFFLINE initial alignment
 using only the first 35 clouds of station 1. It searches 240 map-neighborhood
 pose seeds using relaxed search gates. This is a diagnostic bootstrap, not the
 production initializer and not ground truth. The leading hypothesis had 93.0%
@@ -61,7 +61,7 @@ geometry and timestamp checks are separate from this solver evaluation.
 
 ## Reacquisition diagnosis
 
-`src/diagnose_lidar_validation.py` searches whole accumulated stations 5, 7 and
+`src/tools/lidar/diagnose_lidar_validation.py` searches whole accumulated stations 5, 7 and
 8 against the SAME frozen map. This intentionally consumes all clouds from
 those stations and relaxes prior gates. Its fits are hypotheses for diagnosis,
 not extra passing tracking results or independently validated poses.
