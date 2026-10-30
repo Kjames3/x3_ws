@@ -123,6 +123,10 @@ parser.add_argument('--tof-baseline', default=None, dest='tof_baseline',
                          'src/tools/calibration/tof_floor_baseline.py. Default config/tof_floor_baseline.json; '
                          'point it at a per-floor copy (e.g. ..._lab_carpet.json) instead of '
                          'copying files around. Missing file = height test only.')
+parser.add_argument('--floor', default=None, choices=['apartment_wood', 'lab_carpet'],
+                    help='Floor surface. Selects the strafe odometry scale in x3_bringup '
+                         '(mecanum slip differs ~27%% between them) and, unless '
+                         '--tof-baseline is given, config/tof_floor_baseline_<floor>.json.')
 parser.add_argument('--tof-port', default=TEENSY_TOF_PORT, dest='tof_port',
                     help='Serial port of the ToF Teensy. Default /dev/teensy_tof from '
                          'deploy/udev/65-teensy-tof.rules; /dev/ttyACMn swaps with the OpenRB-150.')
@@ -474,7 +478,8 @@ TOF_FLOOR_DEFICIT_MM = 12.0
 # test sits that frame out and only the height test runs.  Bare floor: +-0.2 mm.
 TOF_FLOOR_TILT_MM = 10.0
 TOF_FLOOR_BASELINE_PATH = args.tof_baseline or os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), '..', 'config', 'tof_floor_baseline.json')
+    os.path.dirname(os.path.abspath(__file__)), '..', 'config',
+    f'tof_floor_baseline_{args.floor}.json' if args.floor else 'tof_floor_baseline.json')
 TOF_CBF_MAX_RANGE_M = 1.0
 TOF_CBF_STALE_S = 0.3
 TOF_CBF_GRID_M = 0.05
@@ -1773,6 +1778,7 @@ def _launch_ros2_stack():
         f'{{ [ -f ~/ws_livox/install/setup.bash ] && source ~/ws_livox/install/setup.bash; true; }} && '
         f'source {install_setup} && '
         f'ros2 launch yahboomcar_nav x3_bringup.launch.py'
+        + (f' floor:={args.floor}' if args.floor else '')
     )
     log_path = '/tmp/ros2_bringup.log'
     log_file = open(log_path, 'w')

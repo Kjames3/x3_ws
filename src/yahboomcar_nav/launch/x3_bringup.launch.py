@@ -26,7 +26,7 @@ Verify all sensors after launch:
 import os
 from ament_index_python.packages import get_package_share_directory, PackageNotFoundError
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction
 from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
@@ -142,17 +142,32 @@ def generate_launch_description():
 
     # ── Velocity-based odometry ───────────────────────────────────────
     # /vel_raw → /odom_raw (dead-reckoning)
-    base_node = Node(
-        package='yahboomcar_base_node',
-        executable='base_node_X3',
-        output='screen',
-        parameters=[{
-            'pub_odom_tf': False,
-            'linear_scale_x': -0.638, # 2026-09-16: -0.686 over-read 7.0%/7.9% on two 3.000 m carpet drives (tape, +-1 cm)
-            'linear_scale_y': -0.5,  # provisional 2026-09-10: both 1 m strafes reported ~2 m opposite
-            'angular_scale': 1.0,
-        }]
-    )
+    # Strafe odometry scale depends on the FLOOR: mecanum rollers slip
+    # differently on carpet and wood.  Measured 2026-10-30 against FAST-LIO
+    # (src/tools/lidar/strafe_scale_from_fastlio.py), true/odom at -0.5:
+    #   apartment_wood  1.213  (7 passes, 10.1 m, 1.195-1.228, both directions)
+    #   lab_carpet      0.955  (4 legs, 1.85 m, from lab_loop_2026-10-29_2)
+    # server_x3 --floor selects one; unset keeps the old provisional -0.5.
+    STRAFE_SCALE = {'apartment_wood': -0.607, 'lab_carpet': -0.478, 'unset': -0.5}
+    floor_arg = DeclareLaunchArgument(
+        name='floor', default_value='unset', choices=list(STRAFE_SCALE),
+        description='Floor surface; selects the strafe odometry scale')
+
+    def make_base_node(context):
+        floor = LaunchConfiguration('floor').perform(context)
+        print(f'[x3_bringup] floor={floor}: linear_scale_y={STRAFE_SCALE[floor]}')
+        return [Node(
+            package='yahboomcar_base_node',
+            executable='base_node_X3',
+            output='screen',
+            parameters=[{
+                'pub_odom_tf': False,
+                'linear_scale_x': -0.638, # 2026-09-16: -0.686 over-read 7.0%/7.9% on two 3.000 m carpet drives (tape, +-1 cm)
+                'linear_scale_y': STRAFE_SCALE[floor],
+                'angular_scale': 1.0,
+            }]
+        )]
+    base_node = OpaqueFunction(function=make_base_node)
 
     # ── IMU: ICM-42688-P on i2c-7 @ 0x68 ─────────────────────────────
     # Replaces the MPU9250, which reached ROS at 10 Hz through the Rosmaster's
@@ -241,6 +256,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         gui_arg,
+        floor_arg,
         robot_state_publisher,
         joint_state_publisher_gui,
         driver_node,
