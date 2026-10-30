@@ -95,6 +95,7 @@ class C3Live:
         with self._lock:
             st = {k: v for k, v in self._stats.items() if not k.startswith('_')}
             st['diag'] = dict(self._diag)
+            st['packet_age_s'] = max(0., time.monotonic() - self._stats.get('_updated_at', 0.))
             return list(self._tracks), st
 
     def _measurements(self, detections, depth, intr, pose, masks=None):
@@ -159,7 +160,7 @@ class C3Live:
         a = (t - t0) / (t1 - t0)
         return {'x': x0 + a * (x1 - x0), 'y': y0 + a * (y1 - y0), 'theta': h0 + a * (h1 - h0)}
 
-    def _to_local(self, tracks, pose):
+    def _to_local(self, tracks, pose, state_stamp_s=None):
         c, s = math.cos(pose['theta']), math.sin(pose['theta'])
         out = []
         for t in tracks:
@@ -173,6 +174,9 @@ class C3Live:
             p_pred = f @ cov @ f.T
             out.append({
                 'id': t['id'],
+                'odom_x': round(float(t['x']), 4), 'odom_y': round(float(t['y']), 4),
+                'odom_vx': round(float(vx), 4), 'odom_vy': round(float(vy), 4),
+                'state_stamp_s': state_stamp_s,
                 'fwd': round(c * dx + s * dy, 3), 'left': round(-s * dx + c * dy, 3),
                 'vx': round(c * vx + s * vy, 3), 'vy': round(-s * vx + c * vy, 3),
                 'speed': round(t['speed'], 3),
@@ -250,13 +254,15 @@ class C3Live:
                     now_pose['theta'] = pose['theta'] + math.atan2(
                         math.sin(now_pose['theta'] - pose['theta']),
                         math.cos(now_pose['theta'] - pose['theta']))
-                tracks = self._to_local(self.tracker.update(stamp, meas), now_pose)
+                tracks = self._to_local(self.tracker.update(stamp, meas), now_pose,
+                                        time.time() + stamp - time.monotonic())
                 if people and tracks:
                     dg['ring_packets'] += 1
                 ms = (time.perf_counter() - t0) * 1e3
                 with self._lock:
                     self._tracks = tracks
                     st = self._stats
+                    st['_updated_at'] = time.monotonic()
                     st['updates'] += 1
                     st['update_ms_avg'] = round(0.95 * st['update_ms_avg'] + 0.05 * ms, 3)
                     st['update_ms_max'] = round(max(st['update_ms_max'] * 0.999, ms), 3)

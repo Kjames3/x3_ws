@@ -49,6 +49,7 @@ class OdomPublisher:public rclcpp ::Node
    rclcpp::Time last_vel_time_  ;
    std::string odom_frame = "odom";
    std::string base_footprint_frame = "base_footprint";
+   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_;
 	public:
 	  OdomPublisher()
 	  : Node("base_node")
@@ -71,6 +72,34 @@ class OdomPublisher:public rclcpp ::Node
             this->get_parameter<std::string>("odom_frame",odom_frame);
             this->get_parameter<std::string>("base_footprint_frame",base_footprint_frame);
         tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
+
+            // The scales are settable at runtime: server_x3 --floor auto only
+            // learns the floor (strafe slip differs ~27% between carpet and
+            // wood) after /scan is up, i.e. after this node has started.
+            // Single-threaded spin, so this never races handle_vel.
+            param_cb_ = this->add_on_set_parameters_callback(
+                [this](const std::vector<rclcpp::Parameter> & params) {
+                    rcl_interfaces::msg::SetParametersResult r;
+                    r.successful = true;
+                    for (const auto & p : params) {
+                        const auto & n = p.get_name();
+                        if ((n == "linear_scale_x" || n == "linear_scale_y" || n == "angular_scale") &&
+                            p.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE) {
+                            r.successful = false;   // as_double() would throw and kill odometry
+                            r.reason = n + " must be a double";
+                            return r;
+                        }
+                    }
+                    for (const auto & p : params) {
+                        if (p.get_name() == "linear_scale_x") linear_scale_x_ = p.as_double();
+                        else if (p.get_name() == "linear_scale_y") linear_scale_y_ = p.as_double();
+                        else if (p.get_name() == "angular_scale") angular_scale_ = p.as_double();
+                        else continue;
+                        RCLCPP_INFO(this->get_logger(), "%s set to %f at runtime",
+                                    p.get_name().c_str(), p.as_double());
+                    }
+                    return r;
+                });
 
 	  	subscription_ = this->create_subscription<geometry_msgs::msg::Twist>("vel_raw",50,std::bind(&OdomPublisher::handle_vel,this,_1));
 	  	odom_publisher_ = this->create_publisher<nav_msgs::msg::Odometry>("odom_raw", 50);

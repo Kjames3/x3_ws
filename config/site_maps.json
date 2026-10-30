@@ -3,5 +3,10 @@
   "sites": {
     "lab": "RealLab3.yaml",
     "apartment": "newApartment1.yaml"
+  },
+  "_floors_comment": "Floor surface per site, for server_x3 --floor auto (strafe odometry scale + ToF floor baseline).",
+  "floors": {
+    "lab": "lab_carpet",
+    "apartment": "apartment_wood"
   }
 }

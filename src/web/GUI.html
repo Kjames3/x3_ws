@@ -337,6 +337,25 @@
                 <input type="checkbox" id="person-uncertainty-toggle" checked> Person uncertainty rings (cyan)
             </label>
             <div id="foot-diagnostic-status" role="status" style="padding: 0 12px 6px; font-size: 0.75rem; color: var(--text-muted);">Waiting for foot diagnostic</div>
+            <label style="display:block; padding:0 12px 6px; font-size:0.75rem; color:var(--text-muted);">
+                <input type="checkbox" id="surroundings-cloud-toggle" checked> Live 3D points
+                <span style="margin-left:12px;"><input type="checkbox" id="surroundings-ceiling-toggle" checked> Hide ceiling (above 2 m)</span>
+                <span style="display:block; margin-top:4px;">Height: blue = floor · green = 1 m · amber = 2 m · pink = 3 m. Unobserved space is unknown.</span>
+            </label>
+            <div style="padding:0 12px 8px; font-size:0.75rem; color:var(--text-muted);">
+                <label>Environment <select id="surroundings-mode"><option value="clean">Clean voxels</option><option value="raw">Raw points</option></select></label>
+                <label style="margin-left:10px;"><input type="checkbox" id="surroundings-clearance-toggle" checked> Clearance overlay</label>
+                <label style="display:block; margin-top:5px;">Robot height estimate <input id="surroundings-height" type="number" min="0.2" max="1" step="0.01" value="0.40" style="width:65px;"> m (adjust to measured highest point)</label>
+                <label style="display:block; margin-top:5px;"><input type="checkbox" id="surroundings-memory-toggle" checked> Stabilize static surroundings
+                    <input type="checkbox" id="surroundings-coverage-toggle" checked> Observation coverage
+                    <button id="surroundings-memory-reset" type="button">Clear memory</button></label>
+                <label style="display:block; margin-top:5px;"><input type="checkbox" id="person-cloud-toggle" checked> Person/cloud association (diagnostic)</label>
+                <div id="person-cloud-status" role="status" style="margin-top:5px;">Waiting for camera-confirmed people and synchronized cloud</div>
+                <span>Colored points/boxes = associated returns · matching ring = lidar-supported position and uncertainty. Avatars follow the camera tracker.</span>
+                <div id="surroundings-memory-status" role="status" style="margin-top:5px;">Waiting for synchronized cloud and pose</div>
+                <div id="surroundings-clearance-status" role="status" style="margin-top:5px;">Waiting for live 3D observations</div>
+                <span>Red = occupied travel envelope · amber = within 5 cm margin. Display only; gaps are sampled, not confirmed passable.</span>
+            </div>
             <div id="scene-view" style="position: relative; height: 360px; border-radius: 8px; overflow: hidden;"></div>
         </div>
         <div class="card drive-controls">
@@ -834,14 +853,17 @@
         </section>
     </div>
 
-    <script src="main.js?v=7"></script>
+    <script src="main.js?v=11"></script>
     <script src="dashboard.js?v=2"></script>
     <script src="log-console.js?v=2"></script>
     <script src="vendor/three/GLTFLoader.js"></script>
     <script src="models/humanoid-walk.js?v=1"></script>
     <script src="pose-refinement.js?v=1"></script>
     <script src="humanoid.js?v=4"></script>
-    <script src="scene-view.js?v=14"></script>
+    <script src="surroundings-geometry.js?v=1"></script>
+    <script src="surroundings-memory.js?v=1"></script>
+    <script src="person-cloud-tracker.js?v=1"></script>
+    <script src="scene-view.js?v=19"></script>
     <script src="mobile.js?v=1"></script>
 </body>
 

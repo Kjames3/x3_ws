@@ -1,6 +1,8 @@
 // =================================================================
 // Surroundings view (Drive tab): a Tesla-style chase-cam scene built only from
-// data the server already streams -- no extra work on the Jetson.
+// scan/person streams plus a bounded display-only Livox cloud.
+//   cloud  : /surroundings/points via Foxglove; XYZ in base_footprint,
+//            height-colored, hidden after 1 s without an update.
 //   people : c3_tracks when the C3 tracker runs (robot frame: fwd, left;
 //            capture-time corrected, 0.5 s prediction), else
 //            readout.velocity_estimates (camera frame: x=right, z=forward).
@@ -26,6 +28,271 @@
     const people = new Map();     // track id -> {group, arrow, ghost}
     const c3 = new Map();         // C3 track id -> {now, pred, line}
     let c3RingGeom = null, c3Mat = null, c3PredMat = null;
+
+    // Person/cloud association is an independent diagnostic overlay. Existing
+    // avatars, C3 uncertainty rings and all control inputs retain their sources.
+    const personCloudTracker = new PersonCloudTracker.Tracker();
+    let associatedPoints, associationGeometry, associatedCloud = null, associatedCamera = null, associationPose = null;
+    let associationResults = [], associationWasEnabled = false;
+    const associationMarkers = new Map();
+    const associationPositions = new Float32Array(6000 * 3), associationColors = new Float32Array(6000 * 3);
+    function personColor(id) {
+        let hash = 0; for (const ch of String(id)) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+        return new THREE.Color().setHSL((hash * .61803398875) % 1, .8, .45);
+    }
+    function initPersonCloud() {
+        associationGeometry = new THREE.BufferGeometry();
+        associationGeometry.setAttribute('position', new THREE.BufferAttribute(associationPositions, 3));
+        associationGeometry.setAttribute('color', new THREE.BufferAttribute(associationColors, 3));
+        associationGeometry.setDrawRange(0, 0);
+        associatedPoints = new THREE.Points(associationGeometry, new THREE.PointsMaterial({size:.055,vertexColors:true,transparent:true,opacity:.95}));
+        associatedPoints.frustumCulled = false;
+        scene.add(associatedPoints);
+    }
+    function updatePersonCloud(d, now) {
+        const enabled = document.getElementById('person-cloud-toggle').checked;
+        const xyz = d.surroundingsCloud;
+        const pose = (d.surroundingsPoses || []).find(p => Math.abs(p.stamp - xyz?.stamp) < .00001);
+        const fresh = enabled && document.getElementById('surroundings-cloud-toggle').checked && xyz && now - d.surroundingsCloudAt < 600;
+        const status = document.getElementById('person-cloud-status');
+        const packetAge = (d.c3Stats?.packet_age_s ?? Infinity) + Math.max(0, (now - (d.c3TracksAt ?? -Infinity)) / 1000);
+        associatedPoints.visible = !!fresh && !!pose;
+        if (!fresh || !pose) {
+            personCloudTracker.clear(); associatedCloud = null; associatedCamera = null; associationPose = null;
+            associationResults = []; associationGeometry.setDrawRange(0, 0);
+            for (const marker of associationMarkers.values()) marker.group.visible = false;
+            status.textContent = !enabled ? 'Person/cloud association off' : !fresh ? 'Person/cloud: waiting for fresh 3D points' : 'Person/cloud: waiting for synchronized pose';
+            associationWasEnabled = enabled; return;
+        }
+        if (!associationWasEnabled) { personCloudTracker.clear(); associatedCloud = null; }
+        associationWasEnabled = enabled;
+        if (associatedCloud !== xyz || associationPose !== pose || associatedCamera !== d.c3Stats?.updates) {
+            // One update per cloud, not per telemetry packet. A delayed pose or
+            // camera packet can be used on the next cloud without counting twice.
+            if (associatedCloud !== xyz || associationPose !== pose) {
+                associationResults = personCloudTracker.update(xyz, pose, d.c3Tracks || [], packetAge);
+                associatedCloud = xyz; associationPose = pose;
+            }
+            associatedCamera = d.c3Stats?.updates;
+            let n = 0;
+            for (const [idx, id] of personCloudTracker.labels) {
+                const offset = idx * 3;
+                associationPositions.set([-xyz[offset+1], xyz[offset+2], -xyz[offset]], n * 3);
+                const color = personColor(id); associationColors.set([color.r,color.g,color.b], n * 3); n++;
+            }
+            associationGeometry.setDrawRange(0, n);
+            associationGeometry.attributes.position.needsUpdate = true;
+            associationGeometry.attributes.color.needsUpdate = true;
+            const seen = new Set();
+            for (const result of associationResults) {
+                seen.add(result.id);
+                let marker = associationMarkers.get(result.id);
+                if (!marker) {
+                    const group = new THREE.Group();
+                    const ring = new THREE.Mesh(new THREE.RingGeometry(.97,1,64), new THREE.MeshBasicMaterial({color:personColor(result.id),transparent:true,opacity:.8,depthWrite:false,side:THREE.DoubleSide}));
+                    ring.rotation.x = -Math.PI/2;
+                    const box = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1,1,1)), new THREE.LineBasicMaterial({color:personColor(result.id),transparent:true,opacity:.75}));
+                    group.add(ring,box);scene.add(group);marker={group,ring,box};associationMarkers.set(result.id,marker);
+                }
+                marker.group.visible = true;
+                marker.ring.position.set(-result.y,.015,-result.x);
+                const radius = Math.max(.15,Math.min(1,result.sigma * 2));marker.ring.scale.set(radius,radius,1);
+                marker.ring.material.opacity = result.mode === 'camera only' ? .2 : result.mode === 'uncertain' ? .35 : .85;
+                marker.box.visible = !!result.bounds;
+                if (result.bounds) {
+                    const {lo,hi} = result.bounds;
+                    marker.box.position.set(-(lo[1]+hi[1])/2,(lo[2]+hi[2])/2,-(lo[0]+hi[0])/2);
+                    marker.box.scale.set(Math.max(.05,hi[1]-lo[1]),Math.max(.05,hi[2]-lo[2]),Math.max(.05,hi[0]-lo[0]));
+                }
+            }
+            for (const [id,marker] of associationMarkers) if (!seen.has(id)) {
+                scene.remove(marker.group);
+                for (const obj of [marker.ring,marker.box]) { obj.geometry.dispose(); obj.material.dispose(); }
+                associationMarkers.delete(id);
+            }
+        }
+        status.textContent = associationResults.length
+            ? associationResults.map(r => `Person ${r.id}: ${r.mode} · ${r.points} pts · uncertainty radius ~${Math.round(r.sigma*200)} cm`).join(' | ')
+            : packetAge >= .5 ? 'Person/cloud: camera tracker unavailable or stale; no new person seeds' : 'Person/cloud: no camera-confirmed people; ambiguous/sparse clouds stay unassigned';
+    }
+
+    let cloud, cloudGeometry, voxels, envelope, travelEnvelope, gapLine, floorTiles, floorBase;
+    const surroundingsMemory = new SurroundingsMemory.Memory();
+    let memoryCloud = null, memoryPose = null;
+    let memoryReset = false;
+    const fadeUniforms = { camera: {value: new THREE.Vector3()}, target: {value: new THREE.Vector3(0, .2, 0)} };
+
+    // Fade only geometry crossing the camera-to-robot sight corridor.
+    function fadeOccluders(material, memoryAlpha = false) {
+        material.transparent = true;
+        material.depthWrite = false;
+        material.customProgramCacheKey = () => `sight-fade-${memoryAlpha ? 'memory' : 'live'}`;
+        material.onBeforeCompile = shader => {
+            shader.uniforms.sightCamera = fadeUniforms.camera;
+            shader.uniforms.sightTarget = fadeUniforms.target;
+            shader.vertexShader = 'varying vec3 sightWorld;\n' + (memoryAlpha ? 'attribute float memoryOpacity; varying float memoryFade;\n' : '') + shader.vertexShader;
+            shader.vertexShader = shader.vertexShader.replace('#include <project_vertex>', `
+                vec4 sightPosition = vec4(transformed, 1.0);
+                #ifdef USE_INSTANCING
+                    sightPosition = instanceMatrix * sightPosition;
+                #endif
+                sightWorld = (modelMatrix * sightPosition).xyz;
+                ${memoryAlpha ? 'memoryFade = memoryOpacity;' : ''}
+                #include <project_vertex>`);
+            shader.fragmentShader = 'varying vec3 sightWorld; uniform vec3 sightCamera; uniform vec3 sightTarget;\n' + (memoryAlpha ? 'varying float memoryFade;\n' : '') + shader.fragmentShader;
+            shader.fragmentShader = shader.fragmentShader.replace('#include <dithering_fragment>', `
+                vec3 sightAxis = sightCamera - sightTarget;
+                float sightT = dot(sightWorld - sightTarget, sightAxis) / max(dot(sightAxis, sightAxis), 0.01);
+                float sightDistance = length(sightWorld - (sightTarget + sightT * sightAxis));
+                float blocking = (1.0 - smoothstep(0.28, 0.52, sightDistance)) * step(0.08, sightT) * step(sightT, 0.98);
+                gl_FragColor.a *= mix(1.0, 0.10, blocking) ${memoryAlpha ? '* memoryFade' : ''};
+                #include <dithering_fragment>`);
+        };
+    }
+    let lastCloud = null, lastCeiling = null, lastOptions = null, clearance = null;
+    const cloudPositions = new Float32Array(6000 * 3);
+    const cloudColors = new Float32Array(6000 * 3);
+
+    function initCloud() {
+        cloudGeometry = new THREE.BufferGeometry();
+        cloudGeometry.setAttribute('position', new THREE.BufferAttribute(cloudPositions, 3));
+        cloudGeometry.setAttribute('color', new THREE.BufferAttribute(cloudColors, 3));
+        cloudGeometry.setDrawRange(0, 0);
+        cloud = new THREE.Points(cloudGeometry, new THREE.PointsMaterial({
+            size: 0.035, vertexColors: true, transparent: true, opacity: 0.85
+        }));
+        cloud.frustumCulled = false;
+        fadeOccluders(cloud.material);
+        scene.add(cloud);
+        const cell = SurroundingsGeometry.CELL;
+        voxels = new THREE.InstancedMesh(new THREE.BoxGeometry(cell * .94, cell * .94, cell * .94),
+            new THREE.MeshLambertMaterial({ color: 0xffffff }), 12000);
+        voxels.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        voxels.frustumCulled = false; voxels.count = 0;
+        voxels.geometry.setAttribute('memoryOpacity', new THREE.InstancedBufferAttribute(new Float32Array(12000).fill(1), 1));
+        fadeOccluders(voxels.material, true);
+        scene.add(voxels);
+        floorTiles = new THREE.InstancedMesh(new THREE.PlaneGeometry(.245, .245),
+            new THREE.MeshBasicMaterial({color: 0xffffff, transparent: true, opacity: .5, depthWrite: false}), 4000);
+        floorTiles.frustumCulled = false; floorTiles.count = 0;
+        scene.add(floorTiles);
+        const edges = new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1));
+        envelope = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0x2563eb, transparent: true, opacity: .8 }));
+        travelEnvelope = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0x64748b, transparent: true, opacity: .4 }));
+        gapLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xa855f7 }));
+        scene.add(envelope, travelEnvelope, gapLine);
+    }
+
+    function updateCloud(d, now) {
+        const enabled = document.getElementById('surroundings-cloud-toggle').checked;
+        const hideCeiling = document.getElementById('surroundings-ceiling-toggle').checked;
+        const fresh = enabled && d.surroundingsCloud && now - d.surroundingsCloudAt < 1000;
+        const mode = document.getElementById('surroundings-mode').value;
+        const overlay = document.getElementById('surroundings-clearance-toggle').checked;
+        const inputHeight = Number(document.getElementById('surroundings-height').value);
+        const height = Number.isFinite(inputHeight) ? Math.min(1, Math.max(.2, inputHeight)) : .4;
+        const memoryEnabled = document.getElementById('surroundings-memory-toggle').checked;
+        const coverage = document.getElementById('surroundings-coverage-toggle').checked;
+        const pose = (d.surroundingsPoses || []).find(p => Math.abs(p.stamp - d.surroundingsCloud?.stamp) < .00001);
+        if (memoryReset) { surroundingsMemory.clear(); memoryCloud = null; memoryReset = false; }
+        if (fresh && memoryEnabled && pose && memoryCloud !== d.surroundingsCloud) {
+            const movers = avatarEntries(d).filter(e => e.category === 'person' || e.category === 'dynamic' || Math.hypot(e.vx || 0, e.vy || 0) > .1)
+                .map(e => ({x: e.fwdBase ?? e.z + OAK_MOUNT_X, y: -e.x}));
+            for (const r of associationResults) if (r.mode !== "camera only") movers.push({x:r.x,y:r.y});
+            surroundingsMemory.ingest(d.surroundingsCloud, pose, movers);
+            memoryCloud = d.surroundingsCloud; memoryPose = pose;
+        }
+        const useMemory = memoryEnabled && pose && memoryCloud === d.surroundingsCloud;
+        const options = `${mode}/${overlay}/${height}/${useMemory}/${coverage}/${surroundingsMemory.revision}`;
+        floorTiles.visible = !!fresh && coverage && !!useMemory;
+        floorBase.material.color.setHex(coverage ? 0xd6d9de : 0xf8f9fa);
+        cloud.visible = !!fresh && mode === 'raw';
+        voxels.visible = !!fresh && mode === 'clean';
+        envelope.visible = travelEnvelope.visible = !!fresh && overlay;
+        gapLine.visible = false;
+        const status = document.getElementById('surroundings-clearance-status');
+        if (!fresh) {
+            status.textContent = 'Clearance unknown — no fresh 3D observations';
+            document.getElementById('surroundings-memory-status').textContent = 'Memory hidden — waiting for fresh cloud';
+            return false;
+        }
+        if (lastCloud !== d.surroundingsCloud || lastCeiling !== hideCeiling || lastOptions !== options) {
+            clearance = SurroundingsGeometry.analyze(d.surroundingsCloud, height);
+            const xyz = d.surroundingsCloud, color = new THREE.Color();
+            const riskCells = new Map(clearance.cells.map(c => [`${Math.floor(c.x / .1)},${Math.floor(c.y / .1)},${Math.floor(c.z / .1)}`, c.risk]));
+            let n = 0;
+            for (let i = 0; i < xyz.length && n < 6000; i += 3) {
+                const x = xyz[i], y = xyz[i + 1], z = xyz[i + 2];
+                if (![x, y, z].every(Number.isFinite) || z < -0.15 || (hideCeiling && z > 2)) continue;
+                // base_footprint (forward,left,up) -> scene (right,up,back).
+                cloudPositions.set([-y, z, -x], n * 3);
+                color.setHSL((0.60 - Math.min(3, Math.max(0, z)) * 0.25 + 1) % 1, 0.8, 0.45);
+                const risk = riskCells.get(`${Math.floor(x / .1)},${Math.floor(y / .1)},${Math.floor(z / .1)}`);
+                if (overlay && risk) color.setHex(risk === 2 ? 0xef4444 : 0xf59e0b);
+                cloudColors.set([color.r, color.g, color.b], n * 3);
+                n++;
+            }
+            cloudGeometry.setDrawRange(0, n);
+            cloudGeometry.attributes.position.needsUpdate = true;
+            cloudGeometry.attributes.color.needsUpdate = true;
+            const snapshot = useMemory ? surroundingsMemory.snapshot(memoryPose) : null;
+            const displayCells = snapshot ? snapshot.cells : clearance.cells;
+            const matrix = new THREE.Matrix4();
+            let count = 0;
+            for (const c of displayCells) {
+                if (hideCeiling && c.z - .05 > 2) continue;
+                matrix.makeTranslation(-c.y, c.z, -c.x);
+                voxels.setMatrixAt(count, matrix);
+                const risk = useMemory ? (c.age < .4 ? riskCells.get(`${Math.floor(c.x / .1)},${Math.floor(c.y / .1)},${Math.floor(c.z / .1)}`) : 0) : c.risk;
+                if (overlay && risk) color.setHex(risk === 2 ? 0xef4444 : 0xf59e0b);
+                else color.setHSL((.60 - Math.min(3, Math.max(0, c.z)) * .25 + 1) % 1, .45, .62);
+                if (useMemory && (c.age > .5 || !c.confidence)) color.lerp(new THREE.Color(0xcbd0d7), c.confidence ? Math.min(.85, .35 + c.age / 10) : .8);
+                voxels.geometry.attributes.memoryOpacity.array[count] = useMemory
+                    ? (c.confidence ? .95 * Math.min(1, Math.max(0, (8 - c.age) / 3)) : .18) : 1;
+                voxels.setColorAt(count++, color);
+            }
+            voxels.count = count; voxels.instanceMatrix.needsUpdate = true;
+            voxels.geometry.attributes.memoryOpacity.needsUpdate = true;
+            if (voxels.instanceColor) voxels.instanceColor.needsUpdate = true;
+            if (snapshot) {
+                let n = 0;
+                const floorRotation = new THREE.Matrix4().makeRotationY(-memoryPose.yaw)
+                    .multiply(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
+                for (const tile of snapshot.floor.slice(0, 4000)) {
+                    matrix.copy(floorRotation);
+                    matrix.setPosition(-tile.y, .008, -tile.x);
+                    floorTiles.setMatrixAt(n, matrix);
+                    color.setHex(tile.age < .6 ? 0x93c5fd : 0xb6bcc7);
+                    floorTiles.setColorAt(n++, color);
+                }
+                floorTiles.count = n; floorTiles.instanceMatrix.needsUpdate = true;
+                if (floorTiles.instanceColor) floorTiles.instanceColor.needsUpdate = true;
+            } else floorTiles.count = 0;
+            document.getElementById('surroundings-memory-status').textContent = useMemory
+                ? 'Memory: up to 8 s · solid after 3 observations · muted = older or tentative · blue floor = observed · gray floor = unknown'
+                : memoryEnabled ? 'Memory waiting for acquisition-time odometry · live geometry only' : 'Memory off · live geometry only';
+            const f = SurroundingsGeometry.FOOTPRINT;
+            envelope.scale.set(f.halfWidth * 2, height, f.front + f.rear);
+            envelope.position.set(0, height / 2, -(f.front - f.rear) / 2);
+            envelope.material.color.setHex(clearance.overlap ? 0xef4444 : 0x2563eb);
+            travelEnvelope.scale.set(f.halfWidth * 2, height, f.front + f.rear + 1.5);
+            travelEnvelope.position.set(0, height / 2, -(f.front + 1.5 - f.rear) / 2);
+            const fmt = v => Number.isFinite(v) ? `${Math.round(v * 100)} cm` : 'unobserved';
+            const parts = [`Observed front: ${fmt(clearance.front)}`, `left: ${fmt(clearance.left)}`, `right: ${fmt(clearance.right)}`, `overhead spare: ${fmt(clearance.overhead)}`];
+            if (clearance.overlap) parts.unshift('Observed envelope overlap');
+            if (clearance.gap) parts.push(`Sampled gap: ${fmt(clearance.gap.width)} (${Math.round(clearance.gap.spare * 100)} cm beyond robot width)`);
+            status.textContent = overlay ? parts.join(' · ') : 'Clearance overlay off';
+            if (clearance.gap) {
+                const g = clearance.gap;
+                gapLine.geometry.setFromPoints([new THREE.Vector3(-g.left, .06, -g.x), new THREE.Vector3(g.right, .06, -g.x)]);
+            }
+            lastCloud = xyz; lastCeiling = hideCeiling; lastOptions = options;
+        }
+        if (overlay && clearance.gap) {
+            gapLine.visible = true;
+        }
+        return true;
+    }
 
     function init() {
         container = document.getElementById('scene-view');
@@ -65,6 +332,7 @@
         floor.rotation.x = -Math.PI / 2;
         floor.receiveShadow = true;
         scene.add(floor);
+        floorBase = floor;
 
         // 1 m range rings
         for (let r = 1; r <= RANGE_M; r++) {
@@ -90,6 +358,10 @@
         loadRobotModel(robot);
 
         initWalls();
+        initCloud();
+        initPersonCloud();
+        fadeOccluders(panels.material); fadeOccluders(posts.material);
+        document.getElementById('surroundings-memory-reset').addEventListener('click', () => { memoryReset = true; personCloudTracker.clear(); associatedCloud = null; });
 
         new ResizeObserver(resize).observe(container);
         resize();
@@ -634,6 +906,10 @@
     // Sweep tab's Lidar toggle; release it again when hidden unless that toggle wants it.
     function syncScanSubscription(visible) {
         if (typeof foxgloveResubscribe !== 'function') return;
+        for (const topic of ['/surroundings/points', '/surroundings/pose']) {
+            if (visible && document.getElementById('surroundings-cloud-toggle').checked) foxgloveResubscribe(topic);
+            else foxgloveUnsubscribe(topic);
+        }
         if (visible) foxgloveResubscribe('/scan');
         else if (!state.lidarEnabled) foxgloveUnsubscribe('/scan');
     }
@@ -655,6 +931,9 @@
             lastPts = d.lidarPoints; lastPtsAt = now;
             if (lastPts) { ingestScan(lastPts); rebuildWalls(); }
         }
+        updatePersonCloud(d, now);
+        const cloudFresh = updateCloud(d, now);
+        panels.visible = posts.visible = !cloudFresh;
         const scanFresh = lastPts && now - lastPtsAt < SCAN_STALE_MS;
         if (!scanFresh && (panels.count || posts.count)) {
             clearBins(); panels.count = 0; posts.count = 0;
@@ -667,7 +946,9 @@
         updateTilt(d.readout);
         if (hint) {
             const msgs = [];
-            if (!scanFresh) msgs.push('No lidar scan');
+            if (cloudFresh) msgs.push(`Live 3D · ${document.getElementById("surroundings-mode").value === "clean" ? voxels.count + " voxels" : cloudGeometry.drawRange.count + " points"}`);
+            else if (document.getElementById('surroundings-cloud-toggle').checked) msgs.push('3D unavailable/stale · 2D fallback');
+            if (!scanFresh && !cloudFresh) msgs.push('No lidar scan');
             if (!avatars.length) msgs.push('No people tracked');
             const persons = [...people.values()].filter(p => p.kind === 'person' && p.group.visible);
             const partial = persons.filter(p => !(p.group.userData.poseConfidence >= 0.75)).length;
@@ -678,6 +959,7 @@
             if (d.c3Stats) msgs.push(`C3 ${d.c3Tracks.length} trk · ${d.c3Stats.hz} Hz · ${d.c3Stats.update_ms_avg} ms`);
             hint.textContent = msgs.join(' · ');
         }
+        fadeUniforms.camera.value.copy(camera.position);
         renderer.render(scene, camera);
         } catch (e) {
             if (hint) hint.textContent = 'Render error: ' + e.message;

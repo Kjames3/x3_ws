@@ -33,6 +33,8 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 from nav_msgs.msg import Odometry
+from geometry_msgs.msg import PoseStamped
+from collections import deque
 from sensor_msgs.msg import LaserScan, PointCloud2, PointField
 from tf2_ros import Buffer, TransformListener
 
@@ -91,6 +93,8 @@ class LivoxScanNode(Node):
         self.tf_listener = TransformListener(self.tf_buf, self)
         self.cloud_R = self.cloud_t = None
         self.cloud_last_ns = 0
+        self.pose_history = deque(maxlen=200)
+        self.cloud_pose_pub = self.create_publisher(PoseStamped, "/surroundings/pose", qos_profile_sensor_data)
         self.cloud_pub = self.create_publisher(PointCloud2, "/surroundings/points", qos_profile_sensor_data)
         self.R = None                  # livox_frame -> scan_frame rotation
         self.t = None
@@ -108,6 +112,35 @@ class LivoxScanNode(Node):
 
     def on_odom(self, msg):
         self.gyro_z = msg.twist.twist.angular.z
+        if msg.header.frame_id != 'odom' or msg.child_frame_id != 'base_footprint':
+            return
+        q = msg.pose.pose.orientation
+        yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        if self.pose_history and stamp <= self.pose_history[-1][0]:
+            self.pose_history.clear()
+        p, v = msg.pose.pose.position, msg.twist.twist.linear
+        self.pose_history.append((stamp, p.x, p.y, yaw, v.x, v.y, self.gyro_z))
+
+    def pose_at(self, stamps):
+        """Interpolate acquisition-time odom; extrapolate at most 80 ms.
+
+        Reject older/out-of-sync data rather than accumulating it at a wrong pose.
+        """
+        if len(self.pose_history) < 2:
+            return None
+        h = np.asarray(self.pose_history)
+        if np.min(stamps) < h[0, 0] or np.max(stamps) > h[-1, 0] + .08:
+            return None
+        yaw = np.unwrap(h[:, 3])
+        x, y = np.interp(stamps, h[:, 0], h[:, 1]), np.interp(stamps, h[:, 0], h[:, 2])
+        a = np.interp(stamps, h[:, 0], yaw)
+        dt = np.maximum(0, stamps - h[-1, 0])
+        c, sn = math.cos(yaw[-1]), math.sin(yaw[-1])
+        x += dt * (c * h[-1, 4] - sn * h[-1, 5])
+        y += dt * (sn * h[-1, 4] + c * h[-1, 5])
+        a += dt * h[-1, 6]
+        return x, y, a
 
     def lookup(self):
         try:
@@ -133,7 +166,8 @@ class LivoxScanNode(Node):
     def publish_surroundings(self, pts, data):
         """Bounded display-only cloud: 5 Hz, 5 cm voxels, <=6000 XYZ points.
 
-        Fixed mounting TF gives floor-relative heights; no map or odom history.
+        Acquisition-time odometry de-skews the display cloud when available.
+        Matching /surroundings/pose enables bounded browser-side memory.
         Never feeds the scan, navigation, or safety controller.
         """
         now_ns = self.get_clock().now().nanoseconds
@@ -143,8 +177,27 @@ class LivoxScanNode(Node):
         xyz = np.column_stack((pts['x'], pts['y'], pts['z']))
         valid = np.isfinite(xyz).all(axis=1)
         radius = np.linalg.norm(xyz, axis=1)
-        xyz = xyz[valid & (radius > 0.12) & (radius < 6.0)]
+        keep = valid & (radius > 0.12) & (radius < 6.0)
+        xyz = xyz[keep]
         xyz = xyz @ self.cloud_R.T + self.cloud_t
+        sec, nsec = struct.unpack_from('<iI', data, 4)
+        start = sec + nsec * 1e-9
+        end = start + (int(pts['t'].max()) * 1e-9 if len(pts) else 0)
+        frame_pose = self.pose_at(np.array([end]))
+        if frame_pose is not None:
+            point_poses = self.pose_at(start + pts['t'][keep].astype(np.float64) * 1e-9) if len(xyz) else None
+            if point_poses is None:
+                frame_pose = None
+            else:
+                # Full planar de-skew including the sensor's offset from base.
+                px, py, pa = point_poses
+                c, sn = np.cos(pa), np.sin(pa)
+                wx = c * xyz[:, 0] - sn * xyz[:, 1] + px
+                wy = sn * xyz[:, 0] + c * xyz[:, 1] + py
+                fx, fy, fa = (float(v[0]) for v in frame_pose)
+                c, sn = math.cos(fa), math.sin(fa)
+                xyz[:, 0] = c * (wx - fx) + sn * (wy - fy)
+                xyz[:, 1] = -sn * (wx - fx) + c * (wy - fy)
         if len(xyz):
             _, indices = np.unique(np.floor(xyz / 0.05).astype(np.int32), axis=0, return_index=True)
             xyz = xyz[indices]
@@ -155,6 +208,15 @@ class LivoxScanNode(Node):
         sec, nsec = struct.unpack_from('<iI', data, 4)
         msg.header.stamp.sec, msg.header.stamp.nanosec = sec, nsec
         msg.header.frame_id = 'base_footprint'
+        if frame_pose is not None:
+            stamp_ns = round(end * 1_000_000_000)
+            msg.header.stamp.sec, msg.header.stamp.nanosec = divmod(stamp_ns, 1_000_000_000)
+            pose = PoseStamped()
+            pose.header.stamp = msg.header.stamp
+            pose.header.frame_id = 'odom'
+            pose.pose.position.x, pose.pose.position.y = fx, fy
+            pose.pose.orientation.z, pose.pose.orientation.w = math.sin(fa / 2), math.cos(fa / 2)
+            self.cloud_pose_pub.publish(pose)
         msg.height, msg.width = 1, len(xyz)
         msg.fields = [PointField(name=name, offset=i * 4, datatype=PointField.FLOAT32, count=1)
                       for i, name in enumerate(('x', 'y', 'z'))]
@@ -169,7 +231,11 @@ class LivoxScanNode(Node):
         pts = decode_points(data)
         if pts is None or len(pts) == 0:
             return
-        self.publish_surroundings(pts, data)
+        try:
+            self.publish_surroundings(pts, data)
+        except Exception as e:
+            # A visualization failure must never stop the safety scan publisher.
+            self.get_logger().warn(f'surroundings display skipped: {e}', throttle_duration_sec=5.0)
         x = pts['x'].astype(np.float64)
         y = pts['y'].astype(np.float64)
         z = pts['z'].astype(np.float64)

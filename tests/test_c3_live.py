@@ -47,6 +47,15 @@ def test_tracks_a_walking_person_in_robot_frame():
     assert abs(t['fwd'] - 2.1) < 0.1
     assert abs(t['vy'] - 0.5) < 0.2 and abs(t['vx']) < 0.2
     assert t['pred_sigma_m'] > t['pos_sigma_m']
+    assert 0 <= stats['packet_age_s'] < 1
+    assert -1 < time.time() - t['state_stamp_s'] < 2
+    # World telemetry must reconstruct the same local person/velocity during
+    # cloud association, without relying on the newest robot pose.
+    c, s = math.cos(.7), math.sin(.7)
+    dx, dy = t['odom_x'] - 1., t['odom_y'] - 2.
+    assert abs(c * dx + s * dy - t['fwd']) < .002
+    assert abs(-s * dx + c * dy - t['left']) < .002
+    assert abs(c * t['odom_vx'] + s * t['odom_vy'] - t['vx']) < .002
 
 
 class TurningOak:

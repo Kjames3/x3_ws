@@ -123,10 +123,13 @@ parser.add_argument('--tof-baseline', default=None, dest='tof_baseline',
                          'src/tools/calibration/tof_floor_baseline.py. Default config/tof_floor_baseline.json; '
                          'point it at a per-floor copy (e.g. ..._lab_carpet.json) instead of '
                          'copying files around. Missing file = height test only.')
-parser.add_argument('--floor', default=None, choices=['apartment_wood', 'lab_carpet'],
+parser.add_argument('--floor', default=None, choices=['apartment_wood', 'lab_carpet', 'auto'],
                     help='Floor surface. Selects the strafe odometry scale in x3_bringup '
                          '(mecanum slip differs ~27%% between them) and, unless '
-                         '--tof-baseline is given, config/tof_floor_baseline_<floor>.json.')
+                         '--tof-baseline is given, config/tof_floor_baseline_<floor>.json. '
+                         'auto: start on the last floor (~/.x3_floor.json), then recognise '
+                         'the site from the scan (config/site_maps.json "floors") and switch '
+                         'both live if it differs.')
 parser.add_argument('--tof-port', default=TEENSY_TOF_PORT, dest='tof_port',
                     help='Serial port of the ToF Teensy. Default /dev/teensy_tof from '
                          'deploy/udev/65-teensy-tof.rules; /dev/ttyACMn swaps with the OpenRB-150.')
@@ -477,9 +480,37 @@ TOF_FLOOR_DEFICIT_MM = 12.0
 # shifted -- the chassis is tilting over a bump or onto a ramp -- so the deficit
 # test sits that frame out and only the height test runs.  Bare floor: +-0.2 mm.
 TOF_FLOOR_TILT_MM = 10.0
+FLOOR_STATE_PATH = os.path.expanduser('~/.x3_floor.json')
+# Strafe odometry scale per floor, measured against FAST-LIO 2026-10-30.  Keep in
+# step with STRAFE_SCALE in yahboomcar_nav/launch/x3_bringup.launch.py, which
+# applies it at startup; this copy is for the live switch in _auto_floor().
+FLOOR_STRAFE_SCALE = {'apartment_wood': -0.607, 'lab_carpet': -0.478}
+FLOORS = tuple(FLOOR_STRAFE_SCALE)
+
+
+def _saved_floor():
+    try:
+        with open(FLOOR_STATE_PATH) as f:
+            fl = json.load(f).get('floor')
+        return fl if fl in FLOORS else None
+    except (OSError, ValueError):
+        return None
+
+
+# The floor in effect right now.  --floor auto starts on the last one seen and
+# _auto_floor() corrects it once the site is recognised.
+FLOOR = _saved_floor() if args.floor == 'auto' else args.floor
+
+
+def _tof_baseline_path(floor):
+    return args.tof_baseline or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), '..', 'config',
+        f'tof_floor_baseline_{floor}.json' if floor else 'tof_floor_baseline.json')
+
+
 TOF_FLOOR_BASELINE_PATH = args.tof_baseline or os.path.join(
     os.path.dirname(os.path.abspath(__file__)), '..', 'config',
-    f'tof_floor_baseline_{args.floor}.json' if args.floor else 'tof_floor_baseline.json')
+    f'tof_floor_baseline_{FLOOR}.json' if FLOOR else 'tof_floor_baseline.json')
 TOF_CBF_MAX_RANGE_M = 1.0
 TOF_CBF_STALE_S = 0.3
 TOF_CBF_GRID_M = 0.05
@@ -950,6 +981,36 @@ class ROS2Bridge:
             target=rclpy.spin, args=(self._node,), daemon=True)
         self._spin_thread.start()
         logger.info("ROS2Bridge: spinning — subscribed /camera/image_raw /odom /voltage /map /scan, publishing /cmd_vel")
+
+    def set_base_node_floor(self, floor):
+        """Set base_node's strafe scale for `floor` live (it accepts runtime
+        parameter changes since 2026-10-30).  Returns True on success."""
+        from rcl_interfaces.srv import SetParameters
+        from rcl_interfaces.msg import Parameter as _P, ParameterValue, ParameterType
+        cli = self._node.create_client(SetParameters, '/base_node/set_parameters')
+        try:
+            if not cli.wait_for_service(timeout_sec=5.0):
+                logger.error("[auto-floor] /base_node/set_parameters not available")
+                return False
+            req = SetParameters.Request(parameters=[_P(
+                name='linear_scale_y',
+                value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE,
+                                     double_value=FLOOR_STRAFE_SCALE[floor]))])
+            fut = cli.call_async(req)       # the spin thread completes it
+            t0 = time.monotonic()
+            while not fut.done() and time.monotonic() - t0 < 5.0:
+                time.sleep(0.05)
+            res = fut.result() if fut.done() else None
+            ok = bool(res and res.results and res.results[0].successful)
+            if ok:
+                logger.info("[auto-floor] base_node linear_scale_y = %.3f (%s)",
+                            FLOOR_STRAFE_SCALE[floor], floor)
+            else:
+                logger.error("[auto-floor] base_node refused linear_scale_y: %s",
+                             res.results[0].reason if res and res.results else "timeout")
+            return ok
+        finally:
+            self._node.destroy_client(cli)
 
     def _scan_cb(self, msg):
         import math as _math
@@ -1778,7 +1839,7 @@ def _launch_ros2_stack():
         f'{{ [ -f ~/ws_livox/install/setup.bash ] && source ~/ws_livox/install/setup.bash; true; }} && '
         f'source {install_setup} && '
         f'ros2 launch yahboomcar_nav x3_bringup.launch.py'
-        + (f' floor:={args.floor}' if args.floor else '')
+        + (f' floor:={FLOOR}' if FLOOR else '')
     )
     log_path = '/tmp/ros2_bringup.log'
     log_file = open(log_path, 'w')
@@ -2179,6 +2240,9 @@ def initialize_hardware():
         # starting SLAM produced two publishers fighting over one transform:
         # RViz could not transform odom-framed octomap data to a `map` fixed
         # frame, its filter queue filled, and the 3D map lagged by seconds.
+        if args.floor == 'auto':
+            threading.Thread(target=_auto_floor, args=(bridge,),
+                             name="auto-floor", daemon=True).start()
         if AUTO_NAV2_MAP == 'auto':
             threading.Thread(target=_auto_site_nav2, args=(bridge, nav2_client),
                              name="auto-site", daemon=True).start()
@@ -2636,6 +2700,57 @@ def _load_map_data(yaml_name: str) -> dict | None:
     except Exception as exc:
         logger.warning(f"[map] Failed to load {yaml_name}: {exc}")
         return None
+
+
+def _auto_floor(bridge) -> None:
+    """
+    --floor auto: recognise the site from the first scans and switch the strafe
+    odometry scale (base_node, live) and the ToF floor baseline to its floor.
+    Keeps the starting floor when the site is unclear (an unmapped room), so a
+    failed match costs nothing.  The floor is saved for the next start.
+    """
+    global FLOOR, TOF_FLOOR_BASELINE_PATH, _tof_floor_depth
+    import numpy as _np
+    from map_prior import DEFAULT_SITES, SiteIdentifier, load_sites, scan_to_points
+    try:
+        with open(DEFAULT_SITES) as f:
+            site_floor = json.load(f).get('floors', {})
+        ident = SiteIdentifier(load_sites())
+    except Exception as exc:
+        logger.error("[auto-floor] could not load site maps: %s", exc)
+        return
+    result = None
+    for attempt in range(10):
+        time.sleep(2.0)
+        with bridge._lock:
+            scan = getattr(bridge, '_latest_scan', None)
+        if scan is None:
+            continue
+        pts = scan_to_points(_np.asarray(scan.ranges), scan.angle_min,
+                             scan.angle_increment, scan.range_min, 6.0,
+                             0.0435, 0.0, math.pi + LIDAR_YAW_OFFSET_RAD)
+        result = ident.identify(pts)
+        if result.accepted:
+            break
+    floor = site_floor.get(result.site) if result is not None and result.accepted else None
+    if floor not in FLOORS:
+        logger.warning("[auto-floor] site unclear (%s); staying on floor=%s",
+                       result.reason if result else "no scan", FLOOR or "unset")
+        return
+    logger.info("[auto-floor] site=%s (margin %.2f) -> floor=%s (was %s)",
+                result.site, result.margin, floor, FLOOR or "unset")
+    try:
+        with open(FLOOR_STATE_PATH, 'w') as f:
+            json.dump({'floor': floor, 'site': result.site, 'saved_at': time.time()}, f)
+    except OSError as exc:
+        logger.warning("[auto-floor] could not save %s: %s", FLOOR_STATE_PATH, exc)
+    if floor == FLOOR:
+        return
+    if not bridge.set_base_node_floor(floor):
+        return          # odometry scale unchanged: keep everything consistent
+    FLOOR = floor
+    TOF_FLOOR_BASELINE_PATH = _tof_baseline_path(floor)
+    _tof_floor_depth = _load_tof_floor_baseline()
 
 
 def _auto_site_nav2(bridge, nav2_client) -> None:

@@ -148,6 +148,7 @@ def generate_launch_description():
     #   apartment_wood  1.213  (7 passes, 10.1 m, 1.195-1.228, both directions)
     #   lab_carpet      0.955  (4 legs, 1.85 m, from lab_loop_2026-10-29_2)
     # server_x3 --floor selects one; unset keeps the old provisional -0.5.
+    # Keep in step with FLOOR_STRAFE_SCALE in server_x3.py (live switching).
     STRAFE_SCALE = {'apartment_wood': -0.607, 'lab_carpet': -0.478, 'unset': -0.5}
     floor_arg = DeclareLaunchArgument(
         name='floor', default_value='unset', choices=list(STRAFE_SCALE),
