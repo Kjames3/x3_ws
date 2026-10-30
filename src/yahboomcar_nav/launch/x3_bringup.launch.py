@@ -24,7 +24,7 @@ Verify all sensors after launch:
 """
 
 import os
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import get_package_share_directory, PackageNotFoundError
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess
 from launch.conditions import IfCondition, UnlessCondition
@@ -193,16 +193,39 @@ def generate_launch_description():
         remappings=[('/odometry/filtered', '/odom')],
     )
 
-    # ── YDLidar ───────────────────────────────────────────────────────
-    # Publishes /scan (sensor_msgs/LaserScan) in frame laser_link
-    ydlidar_node = Node(
-        package='ydlidar_ros2_driver',
-        executable='ydlidar_ros2_driver_node',
-        name='ydlidar_ros2_driver_node',
-        output='screen',
-        parameters=[ydlidar_cfg],
-        remappings=[('/scan', '/scan_raw')]
-    )
+    # ── Livox Mid-360S ───────────────────────────────────────────────
+    # Replaced the YDLidar 2026-10-29.  The driver lives in ~/ws_livox
+    # (server_x3 sources it before launching this file) and publishes
+    # /livox/lidar as CustomMsg (per-point time, what FAST-LIO reads) and
+    # /livox/imu (accel in g).  livox_scan_node slices it into /scan and
+    # /scan_fixed in laser_link, the old lidar frame everything else expects.
+    livox_nodes = []
+    try:
+        livox_share = get_package_share_directory('livox_ros_driver2')
+        livox_nodes = [
+            Node(
+                package='livox_ros_driver2',
+                executable='livox_ros_driver2_node',
+                name='livox_lidar_publisher',
+                output='screen',
+                parameters=[{
+                    'xfer_format': 1, 'multi_topic': 0, 'data_src': 0,
+                    'publish_freq': 10.0, 'output_data_type': 0,
+                    'frame_id': 'livox_frame',
+                    'user_config_path': os.path.join(livox_share, 'config', 'MID360s_config.json'),
+                    'cmdline_input_bd_code': 'livox0000000001',
+                }],
+            ),
+            Node(
+                package='yahboomcar_bringup',
+                executable='livox_scan_node',
+                name='livox_scan_node',
+                output='screen',
+            ),
+        ]
+    except PackageNotFoundError:
+        print('[x3_bringup] livox_ros_driver2 not found (source ~/ws_livox/install/setup.bash); '
+              'NO /scan -- the CBF has only the ToF arrays')
 
     # ── Orbbec depth camera ───────────────────────────────────────────
     # Publishes /camera/depth/image_raw (16UC1, mm) + /camera/depth/camera_info
@@ -225,17 +248,6 @@ def generate_launch_description():
         icm_imu_node,
         imu_filter_node,
         ekf_node,
-        ydlidar_node,
-        Node(
-            package='yahboomcar_bringup',
-            executable='lidar_3d_processor_node',
-            name='lidar_3d_processor_node',
-            output='screen',
-            # Was launched with NO parameter block at all, which pinned every
-            # knob (tilt timeout, range mask, publish_cloud_when_level,
-            # require_settled) at its code default and made the node
-            # untunable from launch.
-            parameters=[lidar3d_cfg],
-        ),
+        *livox_nodes,
         # camera_node,
     ])

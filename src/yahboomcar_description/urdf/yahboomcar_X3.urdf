@@ -365,12 +365,15 @@
          in x3_bringup.launch.py / x3_slam.launch.py) will hold it at 0, which
          reproduces the old fixed-lidar TF exactly. Feed the real servo angle
          into /joint_states before trusting any assembled 3-D cloud. -->
-    <joint name="lidar_tilt_joint" type="revolute">
+    <!-- FIXED since 2026-10-29: the tilt servo was removed for the Livox and
+         nothing publishes this joint any more, which left laser_link
+         unconnected.  laser_link is kept at the old scan pose because
+         livox_scan_node publishes /scan in it and server_x3, the maps and
+         AMCL all assume that frame. -->
+    <joint name="lidar_tilt_joint" type="fixed">
         <origin xyz="-0.0125 0 0.153" rpy="0 0 0"/>
         <parent link="lidar_mount_link"/>
         <child link="lidar_tilt_link"/>
-        <axis xyz="0 1 0"/>
-        <limit lower="-2.0944" upper="2.0944" effort="1.6" velocity="6.5"/>
     </joint>
 
     <joint name="laser_joint" type="fixed">
@@ -385,6 +388,19 @@
         <origin xyz="0 0 0.022" rpy="0 0 3.226241"/>
         <parent link="lidar_tilt_link"/>
         <child link="laser_link"/>
+    </joint>
+
+    <!-- Livox Mid-360S optical origin, 2026-10-29.  PROVISIONAL until the STEP
+         models are in: x/y assumed to be the old lidar's (same mount position),
+         z from livox_floor_fit.py (0.31 m above the floor = 0.2285 above
+         base_link), tape-confirmed 30-31 cm.  Axes x forward, z up: verified
+         against /odom on lab_loop_2026-10-29_2 (gyro z ratio 1.00).  Yaw
+         error not yet measured. -->
+    <link name="livox_frame"/>
+    <joint name="livox_joint" type="fixed">
+        <origin xyz="0.0432 0 0.2285" rpy="0 0 0"/>
+        <parent link="base_link"/>
+        <child link="livox_frame"/>
     </joint>
 
     <link name="camera_link">

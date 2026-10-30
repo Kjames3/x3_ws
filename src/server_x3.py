@@ -1769,6 +1769,8 @@ def _launch_ros2_stack():
 
     cmd = (
         f'source /opt/ros/humble/setup.bash && '
+        # livox_ros_driver2 is built in its own workspace (Livox SDK2 build)
+        f'{{ [ -f ~/ws_livox/install/setup.bash ] && source ~/ws_livox/install/setup.bash; true; }} && '
         f'source {install_setup} && '
         f'ros2 launch yahboomcar_nav x3_bringup.launch.py'
     )
