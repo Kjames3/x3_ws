@@ -390,7 +390,7 @@ body:has(.dashboard) { overflow: hidden; }
     .dashboard .drive-scene .scene-wrap { flex: 1; height: auto !important; min-height: 300px; }
     /* Fill the card down to the bottom of the window instead of a fixed 36vh. */
     .dashboard .drive-camera .camera-feed,
-    .dashboard .drive-camera .camera-placeholder { max-height: max(36vh, calc(100dvh - 380px)); }
+    .dashboard .drive-camera .camera-placeholder { max-height: max(36vh, calc(100dvh - 470px)); }
     .dashboard .tab-panel.active[data-panel="sweep"] {
         display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 0.6rem; align-items: start;
     }

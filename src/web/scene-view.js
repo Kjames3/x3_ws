@@ -173,12 +173,17 @@
         voxels = new THREE.InstancedMesh(new THREE.BoxGeometry(cell * .94, cell * .94, cell * .94),
             new THREE.MeshLambertMaterial({ color: 0xffffff }), 12000);
         voxels.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        // three r128 sizes instanceColor from the CURRENT count on the first
+        // setColorAt: called after count = 0 it allocates a zero-length buffer,
+        // every colour write is dropped and the voxels render black/white.
+        voxels.setColorAt(0, new THREE.Color(0xffffff));
         voxels.frustumCulled = false; voxels.count = 0;
         voxels.geometry.setAttribute('memoryOpacity', new THREE.InstancedBufferAttribute(new Float32Array(12000).fill(1), 1));
         fadeOccluders(voxels.material, true);
         scene.add(voxels);
         floorTiles = new THREE.InstancedMesh(new THREE.PlaneGeometry(.245, .245),
             new THREE.MeshBasicMaterial({color: 0xffffff, transparent: true, opacity: .5, depthWrite: false}), 4000);
+        floorTiles.setColorAt(0, new THREE.Color(0xffffff));   // allocate at full size (see voxels)
         floorTiles.frustumCulled = false; floorTiles.count = 0;
         scene.add(floorTiles);
         const edges = new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1));
