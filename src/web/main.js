@@ -1538,25 +1538,40 @@ function handleBinaryFrame(buf) {
     }
 
     // Fallback: untagged binary = raw camera JPEG.
-    // Decode off the main thread via createImageBitmap and blit to a reused canvas —
-    // avoids the per-frame createObjectURL/revokeObjectURL churn of the old <img> path.
+    showCameraJpeg(buf);
+}
+
+// Decode off the main thread via createImageBitmap and blit to a reused canvas —
+// avoids the per-frame createObjectURL/revokeObjectURL churn of the old <img> path.
+// One decode in flight, newest frame wins: a frame that arrives mid-decode replaces
+// any older waiting one, so a slow decode drops stale frames instead of queueing them
+// (and frames can no longer paint out of order). Nothing is decoded while the Drive
+// tab is hidden.
+let _camDecoding = false, _camPending = null;
+function showCameraJpeg(buf) {
     const cvs = elements.cameraCanvas;
-    if (cvs) {
-        createImageBitmap(new Blob([buf], { type: 'image/jpeg' })).then(bitmap => {
-            if (cvs.width !== bitmap.width || cvs.height !== bitmap.height) {
-                cvs.width = bitmap.width;
-                cvs.height = bitmap.height;
-            }
-            const ctx = cvs._ctx || (cvs._ctx = cvs.getContext('2d'));
-            ctx.drawImage(bitmap, 0, 0);
-            bitmap.close();
-            state.latestData.fps._renderFrames++; // client-side render-rate counter
-            if (cvs.style.display === 'none') cvs.style.display = 'block';
-            if (elements.cameraPlaceholder && elements.cameraPlaceholder.style.display !== 'none') {
-                elements.cameraPlaceholder.style.display = 'none';
-            }
-        }).catch(() => { /* drop the frame on decode error */ });
-    }
+    if (!cvs || !cvs.parentElement || !cvs.parentElement.offsetParent) return;
+    if (_camDecoding) { _camPending = buf; return; }
+    _camDecoding = true;
+    createImageBitmap(new Blob([buf], { type: 'image/jpeg' })).then(bitmap => {
+        if (cvs.width !== bitmap.width || cvs.height !== bitmap.height) {
+            cvs.width = bitmap.width;
+            cvs.height = bitmap.height;
+        }
+        const ctx = cvs._ctx || (cvs._ctx = cvs.getContext('2d'));
+        ctx.drawImage(bitmap, 0, 0);
+        bitmap.close();
+        state.latestData.fps._renderFrames++; // client-side render-rate counter
+        if (cvs.style.display === 'none') cvs.style.display = 'block';
+        if (elements.cameraPlaceholder && elements.cameraPlaceholder.style.display !== 'none') {
+            elements.cameraPlaceholder.style.display = 'none';
+        }
+    }).catch(() => { /* drop the frame on decode error */ }).finally(() => {
+        _camDecoding = false;
+        const next = _camPending;
+        _camPending = null;
+        if (next) showCameraJpeg(next);
+    });
 }
 
 function handleMapuFrame(buf) {

@@ -216,6 +216,8 @@
         envelope.visible = travelEnvelope.visible = !!fresh && overlay;
         gapLine.visible = false;
         const status = document.getElementById('surroundings-clearance-status');
+        const chip = document.getElementById('surroundings-metrics-chip');
+        if (!fresh || !overlay) chip.hidden = true;
         if (!fresh) {
             status.textContent = 'Clearance unknown — no fresh 3D observations';
             document.getElementById('surroundings-memory-status').textContent = 'Memory hidden — waiting for fresh cloud';
@@ -230,11 +232,12 @@
                 const x = xyz[i], y = xyz[i + 1], z = xyz[i + 2];
                 if (![x, y, z].every(Number.isFinite) || z < -0.15 || (hideCeiling && z > 2)) continue;
                 // base_footprint (forward,left,up) -> scene (right,up,back).
-                cloudPositions.set([-y, z, -x], n * 3);
+                const k = n * 3;
+                cloudPositions[k] = -y; cloudPositions[k + 1] = z; cloudPositions[k + 2] = -x;
                 color.setHSL((0.60 - Math.min(3, Math.max(0, z)) * 0.25 + 1) % 1, 0.8, 0.45);
                 const risk = riskCells.get(`${Math.floor(x / .1)},${Math.floor(y / .1)},${Math.floor(z / .1)}`);
                 if (overlay && risk) color.setHex(risk === 2 ? 0xef4444 : 0xf59e0b);
-                cloudColors.set([color.r, color.g, color.b], n * 3);
+                cloudColors[k] = color.r; cloudColors[k + 1] = color.g; cloudColors[k + 2] = color.b;
                 n++;
             }
             cloudGeometry.setDrawRange(0, n);
@@ -287,6 +290,11 @@
             if (clearance.overlap) parts.unshift('Observed envelope overlap');
             if (clearance.gap) parts.push(`Sampled gap: ${fmt(clearance.gap.width)} (${Math.round(clearance.gap.spare * 100)} cm beyond robot width)`);
             status.textContent = overlay ? parts.join(' · ') : 'Clearance overlay off';
+            const cm = v => Number.isFinite(v) ? `${Math.round(v * 100)}` : '?';
+            chip.textContent = `${clearance.overlap ? 'OVERLAP · ' : ''}F ${cm(clearance.front)} · L ${cm(clearance.left)} · R ${cm(clearance.right)} · up ${cm(clearance.overhead)} cm`
+                + (clearance.gap ? ` · gap ${cm(clearance.gap.width)}` : '');
+            chip.classList.toggle('overlap', !!clearance.overlap);
+            chip.hidden = !overlay;
             if (clearance.gap) {
                 const g = clearance.gap;
                 gapLine.geometry.setFromPoints([new THREE.Vector3(-g.left, .06, -g.x), new THREE.Vector3(g.right, .06, -g.x)]);
@@ -310,7 +318,8 @@
             return fail('WebGL unavailable: ' + e.message);
         }
         _m = new THREE.Matrix4(); _dir = new THREE.Vector3(); _org = new THREE.Vector3();
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        // 1.5x is visually the same as 2x on HiDPI here and draws ~44% fewer pixels.
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
         renderer.shadowMap.enabled = true;
         renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         container.appendChild(renderer.domElement);
@@ -366,11 +375,36 @@
         initCloud();
         initPersonCloud();
         fadeOccluders(panels.material); fadeOccluders(posts.material);
+        restoreOptions();
         document.getElementById('surroundings-memory-reset').addEventListener('click', () => { memoryReset = true; personCloudTracker.clear(); associatedCloud = null; });
 
         new ResizeObserver(resize).observe(container);
         resize();
         requestAnimationFrame(loop);
+    }
+
+    // Remember the Layers & metrics panel (open state + inputs) across reloads.
+    // Nothing else listens to these inputs; this file reads them every frame.
+    const OPTIONS_KEY = 'x3.surroundingsOptions';
+    function restoreOptions() {
+        const panel = document.getElementById('scene-options');
+        if (!panel) return;
+        let saved = {};
+        try { saved = JSON.parse(localStorage.getItem(OPTIONS_KEY)) || {}; } catch (e) { /* fresh defaults */ }
+        const inputs = panel.querySelectorAll('input[id], select[id]');
+        for (const el of inputs) {
+            if (!(el.id in saved)) continue;
+            if (el.type === 'checkbox') el.checked = !!saved[el.id];
+            else el.value = saved[el.id];
+        }
+        if ('open' in saved) panel.open = !!saved.open;
+        const save = () => {
+            const out = { open: panel.open };
+            for (const el of inputs) out[el.id] = el.type === 'checkbox' ? el.checked : el.value;
+            try { localStorage.setItem(OPTIONS_KEY, JSON.stringify(out)); } catch (e) { /* storage full/blocked */ }
+        };
+        panel.addEventListener('change', save);
+        panel.addEventListener('toggle', save);
     }
 
     // URDF frame (x fwd, y left, z up) -> scene (x right, y up, z back)
@@ -967,11 +1001,16 @@
         else if (!state.lidarEnabled) foxgloveUnsubscribe('/scan');
     }
 
+    // The camera is fixed and the data arrives at <= 10 Hz (cloud) / 15 Hz (people),
+    // so drawing at the monitor's 60-144 Hz only burns GPU and main-thread time that
+    // the camera feed decode and the WebSocket handlers need.
+    const RENDER_FPS = 30;
     let wasVisible = null;
     let previousFrameAt = performance.now();
     function loop() {
         requestAnimationFrame(loop);
         const now = performance.now();
+        if (now - previousFrameAt < 1000 / RENDER_FPS - 2) return;
         const dt = (now - previousFrameAt) / 1000;
         previousFrameAt = now;
         const visible = !!container.offsetParent;

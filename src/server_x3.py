@@ -4208,7 +4208,7 @@ async def broadcast_loop():
                             cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
                             dets.append({"label": label, "bbox": [x1, y1, x2, y2], "conf": conf})
                     # Downscale visualization to 320x240 before compressing (Idea 106)
-                    annotated_downscaled = cv2.resize(annotated, (320, 240), interpolation=cv2.INTER_NEAREST)
+                    annotated_downscaled = cv2.resize(annotated, (320, 240), interpolation=cv2.INTER_AREA)
                     _, buf = cv2.imencode('.jpg', annotated_downscaled, [cv2.IMWRITE_JPEG_QUALITY, 70])
                     return dets, bytes(buf)
                 last_detections, img_bytes = await loop.run_in_executor(None, _run_yolo)
@@ -4217,7 +4217,7 @@ async def broadcast_loop():
             elif frame is not None:
                 def _encode_frame():
                     # Downscale visualization to 320x240 before compressing (Idea 106)
-                    frame_downscaled = cv2.resize(frame, (320, 240), interpolation=cv2.INTER_NEAREST)
+                    frame_downscaled = cv2.resize(frame, (320, 240), interpolation=cv2.INTER_AREA)
                     _, buf = cv2.imencode('.jpg', frame_downscaled, [cv2.IMWRITE_JPEG_QUALITY, 70])
                     return bytes(buf)
                 img_bytes = await loop.run_in_executor(None, _encode_frame)
@@ -4262,7 +4262,7 @@ async def broadcast_loop():
                     for i, gray in enumerate((left, right)):
                         if gray is None:
                             continue
-                        small = cv2.resize(gray, (320, 200), interpolation=cv2.INTER_NEAREST)
+                        small = cv2.resize(gray, (320, 200), interpolation=cv2.INTER_AREA)
                         _, buf = cv2.imencode('.jpg', small, [cv2.IMWRITE_JPEG_QUALITY, 60])
                         out[i] = base64.b64encode(buf).decode('utf-8')
                     return out
