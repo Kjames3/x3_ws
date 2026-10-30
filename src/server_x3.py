@@ -1193,6 +1193,16 @@ class ROS2Bridge:
             if source_t > 0 and 0 <= ros_now - source_t <= 0.5:
                 capture_t = time.monotonic() - (ros_now - source_t)
                 self._velocity_pose_history.add(capture_t, p.x, p.y, yaw)
+        # /odom (EKF) and /odom_raw (wheels) are separate frames: on 2026-10-30 they were
+        # ~57 deg and ~1 m apart.  Both used to write _pose_m, so get_pose_m() returned
+        # the raw pose for ~1 call in 5; a lidar-held person converted with it landed
+        # inside the robot and the CBF strafed toward the real one (goal-on-r3).  The
+        # pose follows /odom; /odom_raw only stands in while /odom is silent.
+        now_m = time.monotonic()
+        if fused:
+            self._fused_odom_stamp = now_m
+        elif now_m - getattr(self, '_fused_odom_stamp', float('-inf')) < 0.5:
+            return
         with self._lock:
             self._pose_m = {"x": p.x, "y": p.y, "theta": yaw}
             self._twist = {

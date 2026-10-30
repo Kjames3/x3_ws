@@ -445,3 +445,30 @@ def test_driver_launch_remap_follows_the_same_switch(name):
     text = (REPO / 'src' / 'yahboomcar_nav' / 'launch' / name).read_text()
     assert "X3_CMD_VEL_GATE" in text and "'cmd_vel_safe'" in text
     assert "remappings=[('cmd_vel', driver_cmd_topic)]" in text
+
+
+def test_pose_follows_fused_odom_not_raw():
+    """goal-on-r3 2026-10-30: /odom_raw is ~57 deg off /odom; both wrote _pose_m, so 1 in
+    5 get_pose_m() calls returned the raw pose and a lidar person landed inside the robot."""
+    tree = ast.parse(SERVER.read_text())
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'ROS2Bridge')
+    cb = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == '_odom_cb')
+    clock = {'t': 100.0}
+    ns = {'time': SimpleNamespace(monotonic=lambda: clock['t'])}
+    exec(compile(ast.Module(body=[cb], type_ignores=[]), str(SERVER), 'exec'), ns)
+    hist = []
+    b = SimpleNamespace(_lock=threading.Lock(), _velocity_pose_history=SimpleNamespace(add=lambda *a: hist.append(a)),
+                        _node=SimpleNamespace(get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=0))))
+
+    def msg(x, yaw):
+        q = SimpleNamespace(x=0.0, y=0.0, z=math.sin(yaw / 2), w=math.cos(yaw / 2))
+        return SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(sec=0, nanosec=0)),
+                               pose=SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(x=x, y=0.0, z=0.0), orientation=q)),
+                               twist=SimpleNamespace(twist=SimpleNamespace(linear=SimpleNamespace(x=0, y=0, z=0), angular=SimpleNamespace(x=0, y=0, z=0))))
+    cbk = ns['_odom_cb']
+    cbk(b, msg(1.0, 0.0), fused=True)
+    cbk(b, msg(0.5, -1.0), fused=False)          # raw while /odom is live: ignored
+    assert b._pose_m['x'] == 1.0 and b._pose_m['theta'] == 0.0
+    clock['t'] += 1.0                            # /odom silent for 1 s: raw stands in
+    cbk(b, msg(0.5, -1.0), fused=False)
+    assert b._pose_m['x'] == 0.5

@@ -13,7 +13,7 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / 'src'))
-from people_buffer import (CAP_FAR_M, CAP_FLOOR, CAP_NEAR_M, FREE_SPEED, MAX_POINTS,  # noqa: E402
+from people_buffer import (CAP_FAR_M, CAP_FLOOR, CAP_NEAR_M, FREE_SPEED, MAX_POINTS, ROBOT_KEEPOUT,  # noqa: E402
                            RADIUS_M, UNKNOWN_EXTRA_M, Z_M, cap_velocity, people_cloud,
                            speed_cap)
 from person_memory import PersonMemory  # noqa: E402
@@ -53,9 +53,12 @@ def test_untrusted_velocity_means_more_room_not_a_prediction():
 
 def test_trusted_walker_gets_the_places_they_are_heading():
     c = people_cloud([person(1.2, 0.0, vx=-1.0)])
-    for cx in (1.2, 0.7, 0.2):      # now, +0.5 s, +1.0 s
+    for cx in (1.2, 0.7):           # now, +0.5 s
         assert (np.hypot(c[:, 0] - cx, c[:, 1]) < 0.05).any(), f"nothing marked near x={cx}"
-    assert c[:, 0].min() < 0.0       # the 1 s disk reaches past the robot's own position
+    # +1.0 s is centred on the robot: only its parts outside the robot's outline are
+    # marked (ROBOT_KEEPOUT): its rim on both sides of the robot.
+    near = np.hypot(c[:, 0] - 0.2, c[:, 1]) < 0.3
+    assert (near & (c[:, 1] > 0.16)).any() and (near & (c[:, 1] < -0.16)).any()
 
 
 def test_a_slow_trusted_person_is_not_predicted():
@@ -159,3 +162,13 @@ def test_both_costmaps_mark_the_topic_the_server_publishes():
 def test_speed_cap_is_applied_in_the_cbf_path():
     server = (REPO / 'src/server_x3.py').read_text()
     assert "people_cap_velocity(safe_vx, safe_vy" in server
+
+
+def test_cloud_never_marks_the_robot_itself():
+    """goal-on-r3 2026-10-30: a mis-posed person disk inside the footprint left lethal
+    cells on the robot; MPPI and the backup recovery both failed and the goal aborted."""
+    c = people_cloud([person(0.05, 0.1)])
+    x0, x1, y0, y1 = ROBOT_KEEPOUT
+    inside = (c[:, 0] > x0) & (c[:, 0] < x1) & (c[:, 1] > y0) & (c[:, 1] < y1)
+    assert len(c) and not inside.any()
+    assert len(people_cloud([person(1.0, 0.0)])) == len(people_cloud([person(1.0, 0.0)]))

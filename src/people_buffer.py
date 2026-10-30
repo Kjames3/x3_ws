@@ -29,6 +29,11 @@ MIN_SPEED = 0.15             # below this a trusted person is treated as standin
 RING_STEP_M = 0.05           # costmap resolution
 Z_M = 0.30                   # inside every obstacle layer's height window
 MAX_POINTS = 900
+# Never mark the robot's own outline (nav2_params_x3.yaml footprint, + 5 cm).  A person
+# cannot be there, so a disk reaching it is an estimate error -- and marking-only lethal
+# cells on the robot make every MPPI trajectory collide and the backup recovery refuse:
+# goal-on-r3 2026-10-30 aborted after a mis-posed lidar person landed inside the robot.
+ROBOT_KEEPOUT = (-0.18, 0.21, -0.16, 0.16)   # x_min, x_max, y_min, y_max in base_link
 
 CAP_NEAR_M = 0.5             # centre distance at or below which the cap is CAP_FLOOR
 CAP_FAR_M = 1.3              # at or above which there is no cap
@@ -69,6 +74,10 @@ def people_cloud(people, radius=RADIUS_M, unknown_extra=UNKNOWN_EXTRA_M,
     if not pts:
         return np.zeros((0, 3), dtype=np.float32)
     arr = np.asarray(pts[:MAX_POINTS], dtype=np.float32)
+    x0, x1, y0, y1 = ROBOT_KEEPOUT
+    arr = arr[~((arr[:, 0] > x0) & (arr[:, 0] < x1) & (arr[:, 1] > y0) & (arr[:, 1] < y1))]
+    if not len(arr):
+        return np.zeros((0, 3), dtype=np.float32)
     return np.column_stack([arr, np.full(len(arr), Z_M, dtype=np.float32)])
 
 
