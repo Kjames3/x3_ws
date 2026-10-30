@@ -18,7 +18,11 @@ the 5 Hz, 6000-point display cloud:
     ~1 m) beyond, and a few stray returns in the gap bridged the 18 cm grid.  Above
     1.1 m the furniture is gone.  A piece from the split must also be ISOLATED: few
     points in a ring round it at the same heights, which a wall cropped into a
-    person-sized piece never is (the wall carries on through the ring).
+    person-sized piece never is (the wall carries on through the ring);
+  * within NEAR_SPLIT_R_M of the robot the split is repeated at NEAR_SPLIT_Z_M: the
+    Livox's +52 deg upper FOV edge cuts a person at 0.65-0.8 m off at ~1.1-1.3 m,
+    leaving nothing above 1.1 m (circle run, 2026-10-30).  Such a piece must reach
+    near the top of the FOV at its range, which a chair back or a table does not.
 
 A candidate is only a shape.  Clusters alone never make a person: the tracker
 (src/lidar_person_tracker.py) starts a track only where a camera detection lands.
@@ -39,10 +43,15 @@ MIN_HEIGHT_M = 0.35
 MAX_SPAN_M = 0.90
 MIN_SPAN_M = 0.12
 SPLIT_Z_M = 1.1          # split oversized components on their points above this height
-SPLIT_MIN_POINTS = 12
+SPLIT_MIN_POINTS = 8
 CORE_R_M = 0.3           # a split piece is the points within this of its upper-body centre
 RING_M = (0.4, 0.55)     # isolation ring round that centre
 RING_MAX_FRAC = 0.2      # ring points (above SPLIT_Z_M) / core points (above SPLIT_Z_M)
+NEAR_SPLIT_R_M = 1.5     # second split pass for pieces centred this close to the robot
+NEAR_SPLIT_Z_M = 0.9     # ... on points above this (the lab bench tops out at ~0.86 m)
+FOV_TOP_TAN = 1.28       # tan(52 deg), the Livox's upper FOV edge
+SENSOR_Z_M = 0.31        # Livox optical centre above the floor
+NEAR_TOP_MARGIN_M = 0.15 # a near piece must reach to within this of the FOV top (or 1.3 m)
 
 # Order of the float32 fields of /livox/person_candidates (PointCloud2, frame odom).
 FIELDS = ('x', 'y', 'x_lo', 'x_hi', 'y_lo', 'y_hi', 'z_lo', 'z_hi', 'n')
@@ -73,11 +82,12 @@ def _label(occ):
     return lab
 
 
-def _split(xs, ys, zs, cell, max_span, min_span):
+def _split(xs, ys, zs, cell, max_span, min_span, split_z=SPLIT_Z_M, origin=None):
     """Person-sized, isolated pieces of an oversized component, found on its points
-    above SPLIT_Z_M.  Each piece is reported as every point (any height) within
-    CORE_R_M of its upper-body centre."""
-    up = zs > SPLIT_Z_M
+    above split_z.  Each piece is reported as every point (any height) within
+    CORE_R_M of its upper-body centre.  With origin, only pieces centred within
+    NEAR_SPLIT_R_M of it that reach near the FOV top (the near pass)."""
+    up = zs > split_z
     if up.sum() < SPLIT_MIN_POINTS:
         return []
     ux, uy = xs[up], ys[up]
@@ -96,6 +106,8 @@ def _split(xs, ys, zs, cell, max_span, min_span):
         if max(px.max() - px.min(), py.max() - py.min()) > max_span:
             continue
         cx, cy = np.median(px), np.median(py)
+        if origin is not None and np.hypot(cx - origin[0], cy - origin[1]) > NEAR_SPLIT_R_M:
+            continue
         du = np.hypot(ux - cx, uy - cy)
         core_up = (du < CORE_R_M).sum()
         ring_up = ((du >= RING_M[0]) & (du < RING_M[1])).sum()
@@ -106,6 +118,11 @@ def _split(xs, ys, zs, cell, max_span, min_span):
         span = max(cxs.max() - cxs.min(), cys.max() - cys.min())
         if span < min_span:
             continue
+        if origin is not None:
+            # The top of the FOV meets the body on its NEAR surface.
+            r = np.hypot(cxs - origin[0], cys - origin[1]).min()
+            if czs.max() < min(1.3, SENSOR_Z_M + r * FOV_TOP_TAN - NEAR_TOP_MARGIN_M):
+                continue
         out.append((np.median(cxs), np.median(cys), cxs.min(), cxs.max(), cys.min(), cys.max(),
                     czs.min(), czs.max(), core.sum()))
     return out
@@ -145,7 +162,13 @@ def extract(x, y, z, origin=(0.0, 0.0), cell=CELL_M, z_min=Z_MIN_M, z_max=Z_MAX_
         z_lo, z_hi = zs.min(), zs.max()
         span = max(x_hi - x_lo, y_hi - y_lo)
         if span > max_span:
-            out.extend(_split(xs, ys, zs, cell, max_span, min_span))
+            pieces = _split(xs, ys, zs, cell, max_span, min_span)
+            dx, dy = xs - origin[0], ys - origin[1]
+            if (dx * dx + dy * dy).min() < NEAR_SPLIT_R_M ** 2:
+                for q in _split(xs, ys, zs, cell, max_span, min_span, NEAR_SPLIT_Z_M, origin):
+                    if all(np.hypot(q[0] - o[0], q[1] - o[1]) > CORE_R_M for o in pieces):
+                        pieces.append(q)
+            out.extend(pieces)
             continue
         if span < min_span or z_hi - z_lo < min_height:
             continue

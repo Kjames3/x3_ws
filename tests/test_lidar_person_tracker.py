@@ -302,3 +302,36 @@ def test_split_still_rejects_walls_and_tall_furniture():
     # A person pressed against the cabinet (inside the ring) stays unfound: known limit.
     pts = np.vstack([cabinet, _person(rng, 1.6, -0.2)])
     assert len(pc.extract(pts[:, 0], pts[:, 1], pts[:, 2])) == 0
+
+
+def _person_front(rng, x, y, n=400, r=0.2, top=1.7):
+    """The half of a person a sensor at the origin actually sees."""
+    pts = _person(rng, x, y, n, r, top)
+    return pts[(pts[:, 0] - x) * x + (pts[:, 1] - y) * y < 0]
+
+
+def _cut_by_fov(pts, origin=(0.0, 0.0)):
+    """Drop what lies above the Livox's +52 deg upper FOV edge (sensor 0.31 m up)."""
+    r = np.hypot(pts[:, 0] - origin[0], pts[:, 1] - origin[1])
+    return pts[pts[:, 2] < 0.31 + r * 1.28]
+
+
+def test_close_person_cut_by_the_fov_beside_a_bench_is_found():
+    """Circle run 2026-10-30: at ~0.65 m the FOV top cuts a person at ~1.1 m, so the
+    1.1 m split finds nothing; the near pass at 0.9 m does."""
+    rng = np.random.default_rng(7)
+    stray = np.c_[rng.uniform(0.85, 0.95, 6), rng.uniform(-0.3, 0.3, 6), rng.uniform(0.3, 0.8, 6)]
+    pts = _cut_by_fov(np.vstack([_person_front(rng, 0.65, 0.0, n=1600), _bench(rng, 0.0)[:, [1, 0, 2]] + [0.95, 0, 0], stray]))
+    c = pc.extract(pts[:, 0], pts[:, 1], pts[:, 2])
+    near = [r for r in c if math.hypot(r[0], r[1]) < 1.0]
+    assert len(near) == 1 and abs(near[0][0] - 0.55) < 0.1 and abs(near[0][1]) < 0.1
+
+
+def test_close_chair_back_beside_a_bench_is_not_a_candidate():
+    """A 0.95 m chair back near the robot stops well short of the FOV top."""
+    rng = np.random.default_rng(8)
+    chair = np.c_[rng.uniform(0.55, 0.95, 400), rng.uniform(-0.2, 0.2, 400), rng.uniform(0.16, 0.95, 400)]
+    stray = np.c_[rng.uniform(0.95, 1.05, 6), rng.uniform(-0.3, 0.3, 6), rng.uniform(0.3, 0.8, 6)]
+    pts = _cut_by_fov(np.vstack([chair, _bench(rng, 0.0)[:, [1, 0, 2]] + [1.1, 0, 0], stray]))
+    c = pc.extract(pts[:, 0], pts[:, 1], pts[:, 2])
+    assert not [r for r in c if math.hypot(r[0], r[1]) < 1.0]
