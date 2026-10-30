@@ -797,11 +797,25 @@ is_auto_driving = False
 # While Nav2 drives a goal, keep the server's 30 Hz heartbeat off /cmd_vel.  Left on,
 # its zeros (and CBF repulsion pulses) interleave with Nav2's commands: measured
 # 2026-10-21, about half the messages reaching the driver were ours and the wheels
-# covered ~25-50% of the commanded speed.  Nav2's commands never went through the
-# CBF, so nothing protective is lost; the driver's own 500 ms watchdog still stops
-# the motors, and the heartbeat resumes on cancel or on any manual command.
+# covered ~25-50% of the commanded speed.  Nav2's commands reach the driver through
+# the CBF gate (_gate_cmd_vel_cb), so nothing protective is lost; the driver's own
+# 500 ms watchdog still stops the motors, and the heartbeat resumes on cancel or on
+# any manual command.
 # X3_NAV_YIELD_HEARTBEAT=0 restores the old behaviour; set_nav_yield toggles it live.
 NAV_YIELD_HEARTBEAT = os.environ.get('X3_NAV_YIELD_HEARTBEAT', '1') != '0'
+# The server only knows about goals it sent itself.  A goal from RViz (laptop_viz.sh
+# nav) or any other /cmd_vel publisher left the heartbeat on and its zeros alternated
+# with Nav2's 0.26 m/s at ~40 Hz on /cmd_vel_safe: the robot just jerked (2026-10-30,
+# goal-on-r2).  So the heartbeat also yields while /cmd_vel is arriving at the gate.
+# Those commands already pass the CBF in the gate; if they stop, it resumes after this.
+GATE_YIELD_S = 0.3
+
+
+def _heartbeat_yields(nav_driving, gate_cmd_age_s, idle):
+    """True when the 30 Hz heartbeat must stay off /cmd_vel_safe: Nav2 drives a goal
+    the server sent, or something is publishing /cmd_vel through the gate -- and no
+    manual command or decaying ramp is in progress (idle)."""
+    return NAV_YIELD_HEARTBEAT and idle and (nav_driving or gate_cmd_age_s < GATE_YIELD_S)
 last_detections = []
 last_detections_t = 0.0   # monotonic stamp of last_detections
 last_detections_frame = None  # [w, h] of the frame the bboxes are in
@@ -1439,6 +1453,7 @@ class ROS2Bridge:
 
     def _gate_cmd_vel_cb(self, msg):
         """A command arrived on /cmd_vel: filter it and publish it to the driver."""
+        self._gate_last_cmd = time.monotonic()      # the heartbeat yields while this is fresh
         try:
             route = _gate_route(motors_enabled, _is_standalone_test_running())
             if route == 'zero':
@@ -4675,9 +4690,10 @@ async def motion_loop():
         # 2026-10-21, ~half the messages reaching the driver were ours and the
         # wheels covered ~25% of the commanded speed.  A manual command, or the
         # ramp still decaying, keeps the heartbeat so teleop and stops are unchanged.
-        nav_owns_cmd_vel = (
-            NAV_YIELD_HEARTBEAT and nav2_client is not None and nav2_client.is_driving()
-            and _target_vx == _target_vy == _target_omega == 0.0
+        nav_owns_cmd_vel = _heartbeat_yields(
+            nav2_client is not None and nav2_client.is_driving(),
+            time.monotonic() - getattr(drive, '_gate_last_cmd', float('-inf')),
+            _target_vx == _target_vy == _target_omega == 0.0
             and _ramp_vx == _ramp_vy == _ramp_omega == 0.0)
         if drive and not test_running and not nav_owns_cmd_vel and not _shutting_down:
             try:

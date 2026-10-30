@@ -4,7 +4,7 @@
     python3 scripts/send_nav_goal.py --cancel           # stop: cancel the active goal
 
 Prints the navigation state about every 2 s, exits when the goal ends, and cancels the goal
-on Ctrl-C or after --timeout seconds (default 90).  Host defaults to x3 (Tailscale name).
+on Ctrl-C or after --timeout seconds (default 90).  Host defaults to x3 (Tailscale name), or localhost where x3 does not resolve (on the robot).
 """
 import argparse, asyncio, json, sys, time
 import websockets
@@ -58,8 +58,16 @@ if __name__ == "__main__":
     ap.add_argument("y", type=float, nargs="?")
     ap.add_argument("--cancel", action="store_true")
     ap.add_argument("--timeout", type=float, default=90.0)
-    ap.add_argument("--host", default="x3")
+    # On the robot itself the Tailscale name "x3" does not resolve: use localhost there.
+    ap.add_argument("--host", default=None, help="server host (default: x3, or localhost on the robot)")
     a = ap.parse_args()
+    if a.host is None:
+        import socket
+        try:
+            socket.getaddrinfo("x3", 8081)
+            a.host = "x3"
+        except socket.gaierror:
+            a.host = "localhost"
     if not a.cancel and (a.x is None or a.y is None):
         ap.error("give x and y, or --cancel")
     try:

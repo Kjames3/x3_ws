@@ -31,8 +31,8 @@ CONSTANTS = ('TOF_CBF_MIN_Z_M', 'TOF_FLOOR_DEFICIT_MM', 'TOF_FLOOR_TILT_MM',
              'TOF_CBF_HOLD_S', 'CMD_DEADBAND_MPS', 'CBF_SPEED_RANGE_M',
              'CBF_MOVER_MIN_SPEED', 'CMD_MIN_MPS',
              'CBF_MOVER_MIN_PERSON_FRAMES', 'CBF_MOVER_JUMP_HOLD_FRAMES',
-             'CMD_VEL_GATE', 'CMD_VEL_OUT_TOPIC')
-FUNCTIONS = ('_tof_floor_deficit', '_cbf_movers', '_gate_route')
+             'CMD_VEL_GATE', 'CMD_VEL_OUT_TOPIC', 'NAV_YIELD_HEARTBEAT', 'GATE_YIELD_S')
+FUNCTIONS = ('_tof_floor_deficit', '_cbf_movers', '_gate_route', '_heartbeat_yields')
 METHODS = ('_limit_for_deadband', 'set_tof_obstacles')
 
 
@@ -407,6 +407,24 @@ def test_gate_routes_each_case(srv):
     assert route(False, False) == 'zero' and route(False, True) == 'zero'
     assert route(True, True) == 'raw'          # a bench script measuring the base itself
     assert route(True, False) == 'cbf'         # Nav2, recovery behaviours, anything else
+
+
+def test_heartbeat_yields_to_any_cmd_vel_stream_not_only_server_goals(srv):
+    """goal-on-r2 2026-10-30: an RViz goal bypasses the server's Nav2 client, the
+    heartbeat kept publishing zeros between Nav2's commands and the robot jerked."""
+    y = srv['_heartbeat_yields']
+    assert y(True, float('inf'), True)            # a goal the server sent
+    assert y(False, 0.05, True)                   # RViz / any /cmd_vel publisher
+    assert not y(False, srv['GATE_YIELD_S'] + 0.01, True)   # publisher went quiet: resume
+    assert not y(False, 0.05, False)              # a manual command / ramp keeps the heartbeat
+    assert not y(True, 0.05, False)
+
+
+def test_gate_callback_stamps_the_yield_clock():
+    src = SERVER.read_text()
+    cb = src[src.index('def _gate_cmd_vel_cb'):src.index('def move(self')]
+    assert 'self._gate_last_cmd = time.monotonic()' in cb
+    assert "getattr(drive, '_gate_last_cmd'" in src
 
 
 def test_gate_is_on_by_default_and_the_driver_listens_behind_it(srv):
