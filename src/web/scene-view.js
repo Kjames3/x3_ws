@@ -320,8 +320,9 @@
         _m = new THREE.Matrix4(); _dir = new THREE.Vector3(); _org = new THREE.Vector3();
         // 1.5x is visually the same as 2x on HiDPI here and draws ~44% fewer pixels.
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-        renderer.shadowMap.enabled = true;
-        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        // No shadow map: the soft shadows under the robot and wall panels cost a
+        // second render pass of the scene every frame. The castShadow flags left
+        // on meshes below are inert without it.
         container.appendChild(renderer.domElement);
 
         scene = new THREE.Scene();
@@ -335,10 +336,6 @@
         scene.add(new THREE.HemisphereLight(0xffffff, 0x9aa3ad, 0.9));
         const sun = new THREE.DirectionalLight(0xffffff, 0.5);
         sun.position.set(2, 6, 3);
-        sun.castShadow = true;
-        sun.shadow.mapSize.set(1024, 1024);
-        sun.shadow.radius = 4;
-        Object.assign(sun.shadow.camera, { left: -7, right: 7, top: 7, bottom: -7, near: 0.5, far: 20 });
         scene.add(sun);
 
         const floor = new THREE.Mesh(new THREE.PlaneGeometry(30, 30),

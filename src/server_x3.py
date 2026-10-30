@@ -783,6 +783,7 @@ is_auto_driving = False
 NAV_YIELD_HEARTBEAT = os.environ.get('X3_NAV_YIELD_HEARTBEAT', '1') != '0'
 last_detections = []
 last_detections_t = 0.0   # monotonic stamp of last_detections
+last_detections_frame = None  # [w, h] of the frame the bboxes are in
 active_model_name = "yolo26n"
 
 # Current motor powers (tank-drive representation for GUI readout)
@@ -3874,6 +3875,12 @@ async def handle_client(websocket):
                         "mode": None,
                     }))
 
+                elif msg_type == "camera_view":
+                    if data.get("visible", True):
+                        _camera_hidden.discard(websocket)
+                    else:
+                        _camera_hidden.add(websocket)
+
                 # Silently ignore GUI-only messages (capture, demo, etc.)
                 elif msg_type in ("set_classes", "set_labels",
                                   "capture_image", "download_images",
@@ -3892,6 +3899,7 @@ async def handle_client(websocket):
         pass
     finally:
         connected_clients.discard(websocket)
+        _camera_hidden.discard(websocket)
         _log_subscribers.pop(websocket, None)
         if camera and not connected_clients:
             camera._has_clients = False  # P7: no clients left — skip lock+copy in capture loop
@@ -4174,9 +4182,30 @@ async def log_push_loop():
                 _log_subscribers.pop(ws, None)
 
 
+# Clients whose GUI reported the camera feed off screen (other tab, browser tab
+# hidden). A client that never says anything gets frames, as before.
+_camera_hidden = set()
+# Skip a client's camera frame while this much is still queued on its socket:
+# about 15 frames of 320x240 JPEG. Telemetry is not affected.
+CAMERA_BACKLOG_BYTES = 256 * 1024
+
+
+def _camera_targets():
+    targets = []
+    for ws in connected_clients:
+        if ws in _camera_hidden:
+            continue
+        transport = getattr(ws, "transport", None)
+        if transport is not None and transport.get_write_buffer_size() > CAMERA_BACKLOG_BYTES:
+            continue
+        targets.append(ws)
+    return targets
+
+
 async def broadcast_loop():
     global _cam_frame_count, _yolo_frame_count, _fps_last_time
-    global fps_camera, fps_detection, last_detections, last_detections_t, depth_enabled, lidar_enabled
+    global fps_camera, fps_detection, last_detections, last_detections_t, last_detections_frame
+    global depth_enabled, lidar_enabled
     global _batt_cache_v, _batt_cache_time, _batt_cache_a, _batt_cache_w  # P9
     global _batt_cache_a_time
     global _ab_test_mode, stereo_enabled
@@ -4197,13 +4226,18 @@ async def broadcast_loop():
             if frame is not None:
                 _cam_frame_count += 1
 
+            # Who gets this camera frame: not clients that said the feed is off
+            # screen, and not clients whose socket is still draining earlier
+            # frames (newest-wins backpressure instead of a growing queue on a
+            # congested link). No targets -> no JPEG encode at all.
+            cam_targets = _camera_targets()
+
             # 2. YOLO + JPEG encode — all in executor (P1+P2: off event loop, draw on copy)
             #    P3: return raw bytes — sent as binary WS frame, eliminating base64 entirely
             img_bytes = b""
             if detection_enabled and frame is not None and model:
                 def _run_yolo():
                     _names = model.names or {}
-                    annotated = frame.copy()   # P2: never mutate the shared frame reference
                     results = model(frame, verbose=False, conf=CONFIDENCE_THRESHOLD, imgsz=INFERENCE_SIZE)
                     dets = []
                     for r in results:
@@ -4211,16 +4245,21 @@ async def broadcast_loop():
                             x1, y1, x2, y2 = map(int, box.xyxy[0])
                             label = _names.get(int(box.cls[0]), str(int(box.cls[0])))
                             conf  = float(box.conf[0])
-                            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
                             dets.append({"label": label, "bbox": [x1, y1, x2, y2], "conf": conf})
+                    # Boxes are NOT drawn into the image: the GUI draws them from
+                    # "detections" + "detections_frame" at display resolution, so they
+                    # stay sharp instead of being shrunk and JPEG'd with the frame.
+                    if not cam_targets:
+                        return dets, b""
                     # Downscale visualization to 320x240 before compressing (Idea 106)
-                    annotated_downscaled = cv2.resize(annotated, (320, 240), interpolation=cv2.INTER_AREA)
-                    _, buf = cv2.imencode('.jpg', annotated_downscaled, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    frame_downscaled = cv2.resize(frame, (320, 240), interpolation=cv2.INTER_AREA)
+                    _, buf = cv2.imencode('.jpg', frame_downscaled, [cv2.IMWRITE_JPEG_QUALITY, 70])
                     return dets, bytes(buf)
+                last_detections_frame = [int(frame.shape[1]), int(frame.shape[0])]
                 last_detections, img_bytes = await loop.run_in_executor(None, _run_yolo)
                 last_detections_t = time.monotonic()
                 _yolo_frame_count += 1
-            elif frame is not None:
+            elif frame is not None and cam_targets:
                 def _encode_frame():
                     # Downscale visualization to 320x240 before compressing (Idea 106)
                     frame_downscaled = cv2.resize(frame, (320, 240), interpolation=cv2.INTER_AREA)
@@ -4359,7 +4398,7 @@ async def broadcast_loop():
 
             # P3: send camera frame as a binary WebSocket message (raw JPEG, no base64)
             if img_bytes:
-                websockets.broadcast(connected_clients, img_bytes)
+                websockets.broadcast(cam_targets, img_bytes)
 
             # 7b. Tilt mount — sampled at 50 Hz by _tilt_sampler but, until now,
             #     never sent anywhere.  The GUI had no way to see where the
@@ -4405,6 +4444,7 @@ async def broadcast_loop():
                 "is_auto_driving": is_auto_driving,
                 "cbf": getattr(ros_bridge, 'cbf_info', None) if ros_bridge is not None else None,
                 "detections": last_detections,
+                "detections_frame": last_detections_frame,
                 "velocity_estimates": velocity_estimates,
                 "velocity_timing": (dict(velocity_estimator.timing_stats)
                                     if velocity_estimator is not None else {}),

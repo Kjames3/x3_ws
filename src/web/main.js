@@ -1123,6 +1123,7 @@ document.addEventListener('DOMContentLoaded', () => {
         let labelsOn = true;
         labelToggleBtn.addEventListener('click', () => {
             labelsOn = !labelsOn;
+            state.showDetectionLabels = labelsOn;   // the GUI draws the boxes now
             sendMessage({ type: "set_labels", show_labels: labelsOn });
             updateLabelToggleBtn(labelToggleBtn, labelsOn);
         });
@@ -1211,6 +1212,7 @@ function connect() {
 
     state.ws.onopen = () => {
         state.connected = true;
+        state.cameraViewSent = null;   // the server starts each client as "visible"; resync
         state.sessionStartTime = Date.now();
         updateConnectionStatus('connected');
         if (elements.controlArea) elements.controlArea.classList.remove('disabled-overlay');
@@ -1233,6 +1235,9 @@ function connect() {
         if (elements.controlArea) elements.controlArea.classList.add('disabled-overlay');
         state.ws = null;
         disconnectFoxglove();
+        // The video must not outlive the control channel: it would keep loading
+        // the very link whose congestion may have dropped the socket.
+        stopWebRTCCamera('WebSocket closed');
     };
 
     state.ws.onerror = () => {
@@ -1241,6 +1246,7 @@ function connect() {
         if (elements.controlArea) elements.controlArea.classList.add('disabled-overlay');
         state.ws = null;
         disconnectFoxglove();
+        stopWebRTCCamera('WebSocket error');
     };
 
     state.ws.onmessage = (event) => {
@@ -1551,16 +1557,26 @@ let _camDecoding = false, _camPending = null;
 function showCameraJpeg(buf) {
     const cvs = elements.cameraCanvas;
     if (!cvs || !cvs.parentElement || !cvs.parentElement.offsetParent) return;
+    // WebRTC video already on screen: don't stack a second picture under it.
+    if (elements.webrtcCam && elements.webrtcCam.style.display === 'block') return;
     if (_camDecoding) { _camPending = buf; return; }
     _camDecoding = true;
     createImageBitmap(new Blob([buf], { type: 'image/jpeg' })).then(bitmap => {
-        if (cvs.width !== bitmap.width || cvs.height !== bitmap.height) {
-            cvs.width = bitmap.width;
-            cvs.height = bitmap.height;
+        // Draw at the size it is displayed (capped), not the 320x240 it was sent
+        // at, so the detection boxes and labels drawn on top are sharp.
+        const shown = cvs.clientWidth || cvs.parentElement.clientWidth || bitmap.width;
+        const w = Math.max(bitmap.width, Math.min(1280, Math.round(shown * (window.devicePixelRatio || 1))));
+        const h = Math.round(w * bitmap.height / bitmap.width);
+        if (cvs.width !== w || cvs.height !== h) {
+            cvs.width = w;
+            cvs.height = h;
+            cvs._ctx = null;
         }
         const ctx = cvs._ctx || (cvs._ctx = cvs.getContext('2d'));
-        ctx.drawImage(bitmap, 0, 0);
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(bitmap, 0, 0, w, h);
         bitmap.close();
+        drawDetectionBoxes(ctx, w, h);
         state.latestData.fps._renderFrames++; // client-side render-rate counter
         if (cvs.style.display === 'none') cvs.style.display = 'block';
         if (elements.cameraPlaceholder && elements.cameraPlaceholder.style.display !== 'none') {
@@ -1572,6 +1588,35 @@ function showCameraJpeg(buf) {
         _camPending = null;
         if (next) showCameraJpeg(next);
     });
+}
+
+// YOLO boxes from telemetry, in the coordinates of the server's full-size frame
+// (detections_frame). Older servers burn the boxes into the JPEG and send no
+// frame size; nothing is drawn for them.
+const DETECTION_MAX_AGE_MS = 500;
+function drawDetectionBoxes(ctx, w, h) {
+    const d = state.latestData;
+    const size = d.detectionsFrame;
+    if (!d.detectionEnabled || !size || !d.detections || !d.detections.length) return;
+    if (d.readoutAt && performance.now() - d.readoutAt > DETECTION_MAX_AGE_MS) return;
+    const sx = w / size[0], sy = h / size[1];
+    const px = Math.max(1, Math.round(w / 320));
+    ctx.lineWidth = 2 * px;
+    ctx.font = `600 ${11 * px}px system-ui, sans-serif`;
+    ctx.textBaseline = 'top';
+    for (const det of d.detections) {
+        const [x1, y1, x2, y2] = det.bbox;
+        ctx.strokeStyle = '#22c55e';
+        ctx.strokeRect(x1 * sx, y1 * sy, (x2 - x1) * sx, (y2 - y1) * sy);
+        if (state.showDetectionLabels === false) continue;
+        const text = `${det.label} ${Math.round(det.conf * 100)}%`;
+        const tw = ctx.measureText(text).width + 6 * px;
+        const ty = Math.max(0, y1 * sy - 15 * px);
+        ctx.fillStyle = 'rgba(21, 128, 61, 0.85)';
+        ctx.fillRect(x1 * sx, ty, tw, 15 * px);
+        ctx.fillStyle = '#fff';
+        ctx.fillText(text, x1 * sx + 3 * px, ty + 2 * px);
+    }
 }
 
 function handleMapuFrame(buf) {
@@ -1881,10 +1926,13 @@ function handleMessage(data) {
 
         // WebRTC color camera: if the server released the Astra to mediamtx, show
         // the low-latency <video> feed instead of the base64 canvas.
-        if (data.webrtc_camera && !state.webrtcCamStarted) {
-            state.webrtcCamStarted = true;
-            startWebRTCCamera(typeof data.webrtc_camera === 'object' ? data.webrtc_camera : null);
-        }
+        // cameraLifecycleTick() starts it, and stops it while the feed is off screen.
+        state.webrtcCamStarted = !!data.webrtc_camera;
+        state.webrtcCamConfig = data.webrtc_camera
+            ? (typeof data.webrtc_camera === 'object' ? data.webrtc_camera : {}) : null;
+        state.webrtcCamFailures = 0;
+        state.webrtcCamRetryAt = 0;
+        cameraLifecycleTick();
 
         // Request map list when connected in a nav-capable mode
         if (mode === 'ros2' || mode === 'sim') {
@@ -2038,6 +2086,7 @@ function handleMessage(data) {
         // 2 Hz "readout_slow" messages.
         Object.assign(data, state.latestData.slowFields);
         state.latestData.readout = data;
+        state.latestData.readoutAt = performance.now();
         state.needsUIUpdate = true;
         state.latestData.robotPose = data.robot_pose;
         state.latestData.targetPose = data.target_pose;
@@ -2045,6 +2094,8 @@ function handleMessage(data) {
 
         if (data.detections !== undefined) {
             state.latestData.detections = data.detections;
+            state.latestData.detectionsFrame = data.detections_frame || null;
+            state.latestData.detectionEnabled = !!data.detection_enabled;
         }
 
         if (data.velocity_estimates !== undefined) {
@@ -2502,18 +2553,22 @@ function updateDetectionsList(detections) {
     }
 
     const html = detections.map(d => {
-        const distInches = (d.distance_cm / 2.54).toFixed(1);
-        const distFeet = (d.distance_cm / 30.48).toFixed(2);
+        // server_x3 sends {label, bbox, conf}; distance_cm/confidence come from
+        // older payloads. Missing fields used to throw here and abort updateUI.
+        const conf = d.confidence ?? d.conf ?? 0;
+        const dist = Number.isFinite(d.distance_cm)
+            ? `${d.distance_cm.toFixed(0)}cm / ${(d.distance_cm / 2.54).toFixed(1)}in / ${(d.distance_cm / 30.48).toFixed(2)}ft`
+            : '';
         return `
         <div class="detection-item">
             <div class="detection-item-label">
                 <span class="detection-badge">${d.label}</span>
             </div>
             <div class="detection-item-stats">
-                <span title="Distance">${d.distance_cm.toFixed(0)}cm / ${distInches}in / ${distFeet}ft</span>
-                <span title="Confidence">${(d.confidence * 100).toFixed(0)}%</span>
+                <span title="Distance">${dist}</span>
+                <span title="Confidence">${(conf * 100).toFixed(0)}%</span>
                 <div class="confidence-bar" title="Confidence">
-                    <div class="confidence-fill" style="width: ${d.confidence * 100}%"></div>
+                    <div class="confidence-fill" style="width: ${conf * 100}%"></div>
                 </div>
             </div>
         </div>
@@ -3127,15 +3182,106 @@ setInterval(() => {
     f._lastCalc = now;
 }, 1000);
 
+// ---- Camera feed lifecycle --------------------------------------------------
+// The feed is wanted while the Drive tab's camera is on screen in a visible
+// browser tab. When it is not: the server is told to skip this client's JPEG
+// frames, and the WebRTC session is closed so mediamtx stops the Astra encoder
+// (runOnDemandCloseAfter 10 s), freeing about half a core on the robot and the
+// stream's share of the WiFi link.
+//
+// Stall recovery follows the lessons of the August black-camera fix
+// (worktree-server-perf-fixes 58d5bff): one stop/start path that nothing
+// bypasses, exponential backoff, a retry cap, and no video without the
+// control socket.
+const CAMERA_HIDE_DELAY_MS = 5000;  // a quick tab flip doesn't tear the session down
+const WEBRTC_START_GRACE_S = 12;    // the on-demand encoder can take ~10 s to publish
+const WEBRTC_STALL_LIMIT_S = 6;     // seconds of zero presented frames = stalled
+const WEBRTC_MAX_RETRIES = 8;
+
+function cameraOnScreen() {
+    const panel = elements.rgbPanel;
+    return !document.hidden && !!(panel && panel.offsetParent);
+}
+
+function showCameraMessage(text) {
+    const ph = elements.cameraPlaceholder;
+    if (!ph) return;
+    const label = ph.querySelector('span:last-child');
+    if (label) label.textContent = text;
+    ph.style.display = '';
+}
+
+function stopWebRTCCamera(reason) {
+    const pc = state.webrtcCamPc;
+    state.webrtcCamPc = null;   // drop the reference first so 'closed' can't re-enter
+    state.webrtcCamStall = 0;
+    if (!pc) return;
+    try { pc.close(); } catch (_) {}
+    const v = elements.webrtcCam;
+    if (v) { v.srcObject = null; v.style.display = 'none'; }
+    console.log(`[webrtc-cam] stopped (${reason})`);
+}
+
+function webrtcCamFailed(reason) {
+    stopWebRTCCamera(reason);
+    state.webrtcCamFailures = (state.webrtcCamFailures || 0) + 1;
+    if (state.webrtcCamFailures >= WEBRTC_MAX_RETRIES) {
+        console.warn(`[webrtc-cam] giving up after ${state.webrtcCamFailures} attempts`);
+        showCameraMessage('Camera unavailable — switch tabs or reconnect to retry');
+        return;
+    }
+    const backoffS = Math.min(30, 2 ** state.webrtcCamFailures);
+    state.webrtcCamRetryAt = performance.now() + backoffS * 1000;
+    showCameraMessage(`Camera lost — retrying in ${backoffS} s`);
+    console.warn(`[webrtc-cam] ${reason}; retry ${state.webrtcCamFailures} in ${backoffS} s`);
+}
+
+function cameraLifecycleTick() {
+    const now = performance.now();
+    const onScreen = cameraOnScreen();
+    if (onScreen) state.cameraHiddenSince = null;
+    else if (state.cameraHiddenSince == null) state.cameraHiddenSince = now;
+    const wanted = onScreen || now - state.cameraHiddenSince < CAMERA_HIDE_DELAY_MS;
+    const videoPlaying = !!state.webrtcCamPc && state.latestData.fps.video > 0.5;
+
+    // JPEG frames: only while the feed is wanted and WebRTC isn't already showing it.
+    const wantJpeg = wanted && !videoPlaying;
+    if (state.connected && state.cameraViewSent !== wantJpeg) {
+        sendMessage({ type: 'camera_view', visible: wantJpeg });
+        state.cameraViewSent = wantJpeg;
+    }
+
+    if (!state.webrtcCamConfig) return;   // server not in --webrtc-camera mode
+    if (!wanted || !state.connected) {
+        if (state.webrtcCamPc) stopWebRTCCamera(state.connected ? 'feed off screen' : 'disconnected');
+        if (!wanted) { state.webrtcCamFailures = 0; state.webrtcCamRetryAt = 0; }
+        return;
+    }
+    if (!state.webrtcCamPc) {
+        if ((state.webrtcCamFailures || 0) >= WEBRTC_MAX_RETRIES) return;
+        if (now < (state.webrtcCamRetryAt || 0)) return;
+        startWebRTCCamera(state.webrtcCamConfig);
+        return;
+    }
+    if ((now - state.webrtcCamStartAt) / 1000 < WEBRTC_START_GRACE_S) return;
+    if (videoPlaying) {
+        state.webrtcCamStall = 0;
+        state.webrtcCamFailures = 0;
+        return;
+    }
+    state.webrtcCamStall = (state.webrtcCamStall || 0) + 1;
+    if (state.webrtcCamStall === 3) showCameraMessage('Camera stalled — recovering…');
+    if (state.webrtcCamStall >= WEBRTC_STALL_LIMIT_S) webrtcCamFailed(`no frames for ${state.webrtcCamStall} s`);
+}
+setInterval(cameraLifecycleTick, 1000);
+document.addEventListener('visibilitychange', cameraLifecycleTick);
+
 async function startWebRTCCamera(webrtcCamConfig) {
     const v = elements.webrtcCam;
     if (!v) return;
     trackWebRTCVideoFps();
-
-    if (state.webrtcCamPc) {
-        try { state.webrtcCamPc.close(); } catch (_) {}
-        state.webrtcCamPc = null;
-    }
+    stopWebRTCCamera('restart');
+    showCameraMessage('Connecting camera…');
 
     const proto = window.location.protocol === 'https:' ? 'https' : 'http';
     const host = window.location.hostname || 'jetson-desktop.local';
@@ -3148,32 +3294,21 @@ async function startWebRTCCamera(webrtcCamConfig) {
         try { r.playoutDelayHint = 0; } catch (_) {}
     });
 
-    const cleanupAndFallback = (pc) => {
-        if (pc) {
-            try { pc.close(); } catch (_) {}
-        }
-        if (state.webrtcCamPc === pc) {
-            state.webrtcCamPc = null;
-        }
-        state.webrtcCamStarted = false;
-        if (elements.webrtcCam) elements.webrtcCam.style.display = 'none';
-        if (elements.cameraCanvas) elements.cameraCanvas.style.display = 'block';
-    };
-
-    let pc = null;
+    const pc = new RTCPeerConnection();
+    state.webrtcCamPc = pc;
+    state.webrtcCamStartAt = performance.now();
+    state.webrtcCamStall = 0;
+    const current = () => state.webrtcCamPc === pc;   // false once stopped/replaced
     try {
-        pc = new RTCPeerConnection();
-        state.webrtcCamPc = pc;
-
         pc.onconnectionstatechange = () => {
-            if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
-                console.warn('[webrtc-cam] connection state:', pc.connectionState);
-                cleanupAndFallback(pc);
+            if (current() && ['failed', 'disconnected'].includes(pc.connectionState)) {
+                webrtcCamFailed(`connection ${pc.connectionState}`);
             }
         };
 
         pc.addTransceiver('video', { direction: 'recvonly' });
         pc.ontrack = e => {
+            if (!current()) return;
             v.srcObject = e.streams[0];
             v.style.display = 'block';
             if (elements.cameraCanvas) elements.cameraCanvas.style.display = 'none';
@@ -3187,19 +3322,19 @@ async function startWebRTCCamera(webrtcCamConfig) {
                 () => pc.iceGatheringState === 'complete' && res());
             setTimeout(res, 2000);
         });
+        if (!current()) return;
         const r = await fetch(WHEP, { method: 'POST',
             headers: { 'Content-Type': 'application/sdp' }, body: pc.localDescription.sdp });
+        if (!current()) return;
         if (!r.ok) {
-            console.warn('[webrtc-cam] WHEP HTTP', r.status);
-            cleanupAndFallback(pc);
+            webrtcCamFailed(`WHEP HTTP ${r.status}`);
             return;
         }
         await pc.setRemoteDescription({ type: 'answer', sdp: await r.text() });
         lowLatency(pc);
         console.log('[webrtc-cam] connected to', WHEP);
     } catch (err) {
-        console.warn('[webrtc-cam] failed (falling back to base64 canvas):', err);
-        cleanupAndFallback(pc);
+        if (current()) webrtcCamFailed(`start failed: ${err}`);
     }
 }
 
