@@ -4762,10 +4762,15 @@ async def lidar_scan_loop():
     """
     if 'XL430' not in globals():
         return
+    # The tilt mount was removed for the Livox (2026-10-29).  A missing port
+    # raised SerialException, which killed main() and crash-looped the server.
+    if not os.path.exists('/dev/openrb150'):
+        logger.info("lidar_scan_loop: /dev/openrb150 absent, tilt sweep disabled")
+        return
 
     try:
         servo = XL430('/dev/openrb150')
-    except DynamixelError as e:
+    except Exception as e:
         logger.warning("lidar_scan_loop: No Dynamixel servo found on "
                        "/dev/openrb150: %s", e)
         return
