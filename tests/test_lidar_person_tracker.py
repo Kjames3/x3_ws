@@ -274,3 +274,31 @@ def test_replay_tool_scores_a_recorded_walk_up(tmp_path):
     assert r['frames'] == 50 and r['camera_ids'] == 1 and r['lidar_ids'] == 1
     assert r['camera_frames'] < r['combined_frames'] == 50
     assert r['lidar_only_frames'] == r['combined_frames'] - r['camera_frames']
+
+
+def _bench(rng, y0, n=3000):
+    """A 6 m bench line ~1 m tall at y = y0 (the 2026-10-30 lab trial)."""
+    return np.c_[rng.uniform(-3, 3, n), rng.uniform(y0, y0 + 0.4, n), rng.uniform(0.16, 0.95, n)]
+
+
+def test_person_in_front_of_low_bench_is_split_out():
+    """Trial 2026-10-30: ~0.5 m in front of a bench, a few stray returns in the gap
+    bridged the 18 cm grid and the person was rejected in 2 of 3 frames."""
+    rng = np.random.default_rng(5)
+    stray = np.c_[rng.uniform(-0.05, 0.05, 6), rng.uniform(0.3, 0.55, 6), rng.uniform(0.2, 0.8, 6)]
+    pts = np.vstack([_bench(rng, 0.6), _person(rng, 0.0, 0.0), stray])
+    c = pc.extract(pts[:, 0], pts[:, 1], pts[:, 2])
+    assert len(c) == 1
+    row = dict(zip(pc.FIELDS, c[0]))
+    assert abs(row['x']) < 0.1 and abs(row['y']) < 0.1 and row['z_lo'] < 0.3 and row['z_hi'] > 1.5
+
+
+def test_split_still_rejects_walls_and_tall_furniture():
+    rng = np.random.default_rng(6)
+    wall = np.c_[np.linspace(-3, 3, 4000), np.full(4000, 2.0), rng.uniform(0.16, 2.1, 4000)]
+    cabinet = np.c_[rng.uniform(1.0, 2.2, 1500), rng.uniform(-1.0, -0.5, 1500), rng.uniform(0.16, 1.9, 1500)]
+    pts = np.vstack([wall, cabinet])
+    assert len(pc.extract(pts[:, 0], pts[:, 1], pts[:, 2])) == 0
+    # A person pressed against the cabinet (inside the ring) stays unfound: known limit.
+    pts = np.vstack([cabinet, _person(rng, 1.6, -0.2)])
+    assert len(pc.extract(pts[:, 0], pts[:, 1], pts[:, 2])) == 0
