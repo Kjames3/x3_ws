@@ -25,6 +25,7 @@
 
     let lastPts = null, lastPtsAt = 0;
     let renderer, scene, camera, container, hint, _m, _dir, _org;
+    let controls = null, interacting = false, viewTween = null;
     const people = new Map();     // track id -> {group, arrow, ghost}
     const c3 = new Map();         // C3 track id -> {now, pred, line}
     let c3RingGeom = null, c3Mat = null, c3PredMat = null;
@@ -335,8 +336,9 @@
         scene.fog = new THREE.Fog(0xe9ecef, 4, 9);
 
         camera = new THREE.PerspectiveCamera(50, 1, 0.05, 50);
-        camera.position.set(0, 2.4, 2.2);
-        camera.lookAt(0, 0, -1.6);
+        camera.position.fromArray(VIEWS.chase.pos);
+        camera.lookAt(...VIEWS.chase.target);
+        initControls();
 
         scene.add(new THREE.HemisphereLight(0xffffff, 0x9aa3ad, 0.9));
         const sun = new THREE.DirectionalLight(0xffffff, 0.5);
@@ -383,6 +385,81 @@
         new ResizeObserver(resize).observe(container);
         resize();
         requestAnimationFrame(loop);
+    }
+
+    // ---- View: orbit/zoom/pan + Chase and Top presets ---------------------
+    // Drag = orbit, wheel/pinch = zoom, right-drag = pan along the floor.
+    // Double-click returns to the last preset. Arrow keys are NOT bound
+    // (no listenToKeyEvents): the keyboard drives the robot.
+    // Positions are in the robot frame (x right, y up, z back), so "forward"
+    // stays up the screen in Top view whatever the robot's heading.
+    const VIEWS = {
+        chase: { pos: [0, 2.4, 2.2], target: [0, 0, -1.6] },
+        top:   { pos: [0, 11, -0.49], target: [0, 0, -0.5] },
+    };
+    const VIEW_KEY = 'x3.surroundingsView';
+    let currentView = 'chase';
+
+    function initControls() {
+        if (typeof THREE.OrbitControls !== 'function') return;   // static view fallback
+        controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.target.fromArray(VIEWS.chase.target);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.12;
+        controls.screenSpacePanning = false;          // pan across the floor, not the screen
+        controls.minDistance = 0.6;
+        controls.maxDistance = 16;
+        controls.maxPolarAngle = Math.PI / 2 - 0.05;  // never below the floor
+        controls.addEventListener('start', () => { interacting = true; viewTween = null; });
+        controls.addEventListener('end', () => { interacting = false; });
+        renderer.domElement.addEventListener('dblclick', () => setView(currentView));
+        controls.update();
+        for (const btn of document.querySelectorAll('[data-scene-view]')) {
+            btn.addEventListener('click', () => setView(btn.dataset.sceneView));
+        }
+        let saved = null;
+        try { saved = localStorage.getItem(VIEW_KEY); } catch (e) { /* default view */ }
+        if (saved && VIEWS[saved]) setView(saved, true);
+        else markView();
+    }
+
+    function markView() {
+        for (const btn of document.querySelectorAll('[data-scene-view]')) {
+            btn.classList.toggle('active', btn.dataset.sceneView === currentView);
+        }
+    }
+
+    function setView(name, instant = false) {
+        const v = VIEWS[name];
+        if (!v || !controls) return;
+        currentView = name;
+        try { localStorage.setItem(VIEW_KEY, name); } catch (e) { /* not remembered */ }
+        markView();
+        const to = { pos: new THREE.Vector3(...v.pos), target: new THREE.Vector3(...v.target) };
+        if (instant) {
+            camera.position.copy(to.pos); controls.target.copy(to.target); controls.update();
+            return;
+        }
+        viewTween = { from: { pos: camera.position.clone(), target: controls.target.clone() }, to, t0: performance.now() };
+    }
+
+    const VIEW_TWEEN_MS = 450;
+    function updateView(now) {
+        if (!controls) return;
+        if (viewTween) {
+            const k = Math.min(1, (now - viewTween.t0) / VIEW_TWEEN_MS);
+            const e = k * k * (3 - 2 * k);   // smoothstep
+            camera.position.lerpVectors(viewTween.from.pos, viewTween.to.pos, e);
+            controls.target.lerpVectors(viewTween.from.target, viewTween.to.target, e);
+            if (k >= 1) viewTween = null;
+        }
+        controls.update();
+        // Fog follows the zoom: it starts just short of what the camera looks at
+        // (4-9 m in the default Chase view), so zooming out or Top view doesn't
+        // grey everything out.
+        const dist = camera.position.distanceTo(controls.target);
+        scene.fog.near = dist - 0.5;
+        scene.fog.far = dist + 4.5;
     }
 
     // Remember the Layers & metrics panel (open state + inputs) across reloads.
@@ -1012,7 +1089,10 @@
     function loop() {
         requestAnimationFrame(loop);
         const now = performance.now();
-        if (now - previousFrameAt < 1000 / RENDER_FPS - 2) return;
+        // Full frame rate while the user is dragging or a view change is
+        // animating, so orbiting doesn't feel stepped.
+        const animating = interacting || viewTween;
+        if (!animating && now - previousFrameAt < 1000 / RENDER_FPS - 2) return;
         const dt = (now - previousFrameAt) / 1000;
         previousFrameAt = now;
         const visible = !!container.offsetParent;
@@ -1055,6 +1135,7 @@
             if (d.c3Stats) msgs.push(`C3 ${d.c3Tracks.length} trk · ${d.c3Stats.hz} Hz · ${d.c3Stats.update_ms_avg} ms`);
             hint.textContent = msgs.join(' · ');
         }
+        updateView(now);
         fadeUniforms.camera.value.copy(camera.position);
         renderer.render(scene, camera);
         } catch (e) {

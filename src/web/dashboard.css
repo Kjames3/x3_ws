@@ -589,3 +589,16 @@ body:has(.dashboard) { overflow: hidden; }
     background: rgba(15, 23, 42, 0.78); color: #e2e8f0; pointer-events: none;
 }
 .scene-chip.overlap { background: rgba(185, 28, 28, 0.88); color: #fff; }
+.scene-views {
+    position: absolute; top: 8px; left: 8px; z-index: 5; display: flex;
+    border: 1px solid rgba(148, 163, 184, 0.35); border-radius: 8px; overflow: hidden;
+    background: rgba(15, 23, 42, 0.88);
+}
+.scene-views button {
+    border: 0; background: transparent; color: #cbd5e1; cursor: pointer;
+    padding: 0.35rem 0.65rem; font-size: 0.75rem; font-weight: 600;
+}
+.scene-views button + button { border-left: 1px solid rgba(148, 163, 184, 0.35); }
+.scene-views button.active { background: rgba(59, 130, 246, 0.85); color: #fff; }
+#scene-view canvas { cursor: grab; touch-action: none; }
+#scene-view canvas:active { cursor: grabbing; }
