@@ -2043,6 +2043,11 @@ function handleMessage(data) {
             state.latestData.footDiagnostic = data.foot_diagnostic;
             state.latestData.footDiagnosticAt = performance.now();
         }
+        if (data.lidar_persons !== undefined) {
+            state.latestData.lidarPersons = data.lidar_persons;
+            state.latestData.lidarPersonStats = data.lidar_person_stats;
+            state.latestData.lidarPersonsAt = performance.now();
+        }
         if (data.c3_tracks !== undefined) {
             state.latestData.c3Tracks = data.c3_tracks;
             state.latestData.c3Stats = data.c3_stats;

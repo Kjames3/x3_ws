@@ -351,6 +351,9 @@
                     <button id="surroundings-memory-reset" type="button">Clear memory</button></label>
                 <label style="display:block; margin-top:5px;"><input type="checkbox" id="person-cloud-toggle" checked> Person/cloud association (diagnostic)</label>
                 <div id="person-cloud-status" role="status" style="margin-top:5px;">Waiting for camera-confirmed people and synchronized cloud</div>
+                <label style="display:block; margin-top:5px;"><input type="checkbox" id="lidar-person-toggle" checked> Lidar-held people (server tracker)</label>
+                <div id="lidar-person-status" role="status" style="margin-top:5px;">Waiting for the server's lidar person tracker</div>
+                <span>Green ring = camera + lidar · amber = lidar-held after the camera lost them (fades toward the 3 s cap) · grey = tentative/coasting. Line = 0.5 s of velocity.</span>
                 <span>Colored points/boxes = associated returns · matching ring = lidar-supported position and uncertainty. Avatars follow the camera tracker.</span>
                 <div id="surroundings-memory-status" role="status" style="margin-top:5px;">Waiting for synchronized cloud and pose</div>
                 <div id="surroundings-clearance-status" role="status" style="margin-top:5px;">Waiting for live 3D observations</div>

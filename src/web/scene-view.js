@@ -28,6 +28,11 @@
     const people = new Map();     // track id -> {group, arrow, ghost}
     const c3 = new Map();         // C3 track id -> {now, pred, line}
     let c3RingGeom = null, c3Mat = null, c3PredMat = null;
+    // Server lidar person tracker (lidar_person_tracker.py): id held by the Livox,
+    // seeded by C3. Diagnostic unless the server runs with X3_LIDAR_PERSONS_CBF=1.
+    const lidarPersons = new Map();   // 'L<n>' -> {ring, line, mat}
+    const LIDAR_PERSON_COLORS = { 'camera + lidar': 0x16a34a, 'lidar held': 0xf59e0b,
+                                  'coasting': 0x9ca3af, 'tentative': 0x9ca3af };
 
     // Person/cloud association is an independent diagnostic overlay. Existing
     // avatars, C3 uncertainty rings and all control inputs retain their sources.
@@ -902,6 +907,54 @@
         }
     }
 
+    function updateLidarPersons(tracks, stats) {
+        const toggle = document.getElementById('lidar-person-toggle');
+        const status = document.getElementById('lidar-person-status');
+        const show = !toggle || toggle.checked;
+        const seen = new Set();
+        for (const t of show ? (tracks || []) : []) {
+            if (!isFinite(t.fwd) || !isFinite(t.left)) continue;
+            seen.add(t.id);
+            let m = lidarPersons.get(t.id);
+            if (!m) {
+                const mat = new THREE.MeshBasicMaterial({ color: 0x16a34a, transparent: true, side: THREE.DoubleSide, depthWrite: false });
+                const ring = new THREE.Mesh(new THREE.RingGeometry(0.93, 1.0, 48), mat);
+                ring.rotation.x = -Math.PI / 2;
+                const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(
+                    [new THREE.Vector3(), new THREE.Vector3()]), new THREE.LineBasicMaterial({ color: 0x16a34a }));
+                scene.add(ring, line);
+                m = { ring, line, mat };
+                lidarPersons.set(t.id, m);
+            }
+            const color = LIDAR_PERSON_COLORS[t.mode] ?? 0x9ca3af;
+            m.mat.color.setHex(color); m.line.material.color.setHex(color);
+            m.mat.opacity = t.confirmed ? 0.3 + 0.6 * t.confidence : 0.25;
+            // Robot frame (fwd, left) -> scene (x = -left, z = -fwd), 2 cm up (C3 rings sit at 1 cm).
+            const x = -t.left, z = -t.fwd;
+            m.ring.position.set(x, 0.02, z);
+            m.ring.scale.setScalar(Math.max(0.2, Math.min(0.8, 2 * t.pos_sigma_m)) + 0.05);
+            const pos = m.line.geometry.attributes.position;   // 0.5 s of velocity
+            pos.setXYZ(0, x, 0.03, z); pos.setXYZ(1, x - t.vy * 0.5, 0.03, z - t.vx * 0.5);
+            pos.needsUpdate = true;
+        }
+        for (const [id, m] of lidarPersons) {
+            if (seen.has(id)) continue;
+            scene.remove(m.ring, m.line);
+            m.ring.geometry.dispose(); m.mat.dispose(); m.line.geometry.dispose(); m.line.material.dispose();
+            lidarPersons.delete(id);
+        }
+        if (status) {
+            if (!show) status.textContent = 'Lidar-held people off';
+            else if (!stats) status.textContent = 'Lidar-held people: server tracker not running';
+            else {
+                const list = (tracks || []).filter(t => t.confirmed).map(t =>
+                    `${t.id} (cam ${t.camera_id}${t.camera_ids > 1 ? ', ' + t.camera_ids + ' ids' : ''}): ${t.mode} · ${t.fwd.toFixed(1)} m · conf ${t.confidence.toFixed(2)}`);
+                status.textContent = (list.length ? list.join(' | ') : 'Lidar-held people: none confirmed') +
+                    ` · births ${stats.births}, re-linked ${stats.relinked}, held ${stats.lidar_held_s.toFixed(1)} s`;
+            }
+        }
+    }
+
     // Keep /scan subscribed while this view is on screen, independent of the
     // Sweep tab's Lidar toggle; release it again when hidden unless that toggle wants it.
     function syncScanSubscription(visible) {
@@ -942,6 +995,8 @@
         updatePeople(avatars, dt);
         const uncertaintyToggle = document.getElementById('person-uncertainty-toggle');
         updateC3(!uncertaintyToggle || uncertaintyToggle.checked ? d.c3Tracks : []);
+        const lidarFresh = d.lidarPersonsAt && now - d.lidarPersonsAt < 1000;
+        updateLidarPersons(lidarFresh ? d.lidarPersons : [], d.lidarPersonStats);
         updateFootDiagnostic();
         updateTilt(d.readout);
         if (hint) {

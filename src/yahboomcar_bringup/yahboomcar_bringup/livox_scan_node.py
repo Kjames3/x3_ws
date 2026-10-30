@@ -26,6 +26,7 @@ of 0.5-1 deg bins.
 """
 import math
 import struct
+import time
 
 import numpy as np
 import rclpy
@@ -39,6 +40,8 @@ from sensor_msgs.msg import LaserScan, PointCloud2, PointField
 from tf2_ros import Buffer, TransformListener
 
 from livox_ros_driver2.msg import CustomMsg
+
+from yahboomcar_bringup.person_candidates import FIELDS as CANDIDATE_FIELDS, extract as extract_candidates
 
 POINT_DT = np.dtype({'names': ['t', 'x', 'y', 'z'],
                      'formats': ['<u4', '<f4', '<f4', '<f4'],
@@ -96,6 +99,11 @@ class LivoxScanNode(Node):
         self.pose_history = deque(maxlen=200)
         self.cloud_pose_pub = self.create_publisher(PoseStamped, "/surroundings/pose", qos_profile_sensor_data)
         self.cloud_pub = self.create_publisher(PointCloud2, "/surroundings/points", qos_profile_sensor_data)
+        # Person-sized clusters for the camera-seeded lidar person tracker (server_x3).
+        self.cand_pub = self.create_publisher(PointCloud2, "/livox/person_candidates", qos_profile_sensor_data)
+        self.cand_ms = []
+        self.cand_n = []
+        self.cand_logged_ns = 0
         self.R = None                  # livox_frame -> scan_frame rotation
         self.t = None
         self.gyro_z = 0.0
@@ -277,6 +285,63 @@ class LivoxScanNode(Node):
         msg.ranges = merged.astype(np.float32).tolist()
         self.pub.publish(msg)
         self.pub_fixed.publish(msg)
+        try:
+            self.publish_person_candidates(pts, data)
+        except Exception as e:
+            # Runs after /scan is out, and must never stop the next one.
+            self.get_logger().warn(f'person candidates skipped: {e}', throttle_duration_sec=5.0)
+
+    def publish_person_candidates(self, pts, data):
+        """Person-sized clusters of the full frame -> /livox/person_candidates.
+
+        Every point is placed in odom with the robot pose at its own capture time
+        (the same de-skew as the display cloud), so the tracker downstream works in
+        one fixed frame.  Fields CANDIDATE_FIELDS, one row per candidate, stamped
+        at the frame end.  Skipped without odom: an unplaced cloud cannot be
+        tracked.  Shapes only; nothing here says a cluster is a person.
+        """
+        if self.cand_pub.get_subscription_count() == 0 or self.cloud_R is None:
+            return
+        t0 = time.perf_counter()
+        xyz = np.column_stack((pts['x'], pts['y'], pts['z'])).astype(np.float64)
+        ok = np.isfinite(xyz).all(axis=1) & (np.abs(xyz).sum(axis=1) > 0)
+        xyz = xyz[ok] @ self.cloud_R.T + self.cloud_t
+        keep = (xyz[:, 2] > 0.1) & (xyz[:, 2] < 2.3)
+        xyz, toff = xyz[keep], pts['t'][ok][keep]
+        sec, nsec = struct.unpack_from('<iI', data, 4)
+        start = sec + nsec * 1e-9
+        end = start + (int(pts['t'].max()) * 1e-9 if len(pts) else 0.0)
+        frame = self.pose_at(np.array([end]))
+        poses = self.pose_at(start + toff.astype(np.float64) * 1e-9) if len(xyz) else None
+        if frame is None or poses is None:
+            return
+        px, py, pa = poses
+        c, sn = np.cos(pa), np.sin(pa)
+        wx = c * xyz[:, 0] - sn * xyz[:, 1] + px
+        wy = sn * xyz[:, 0] + c * xyz[:, 1] + py
+        cands = extract_candidates(wx, wy, xyz[:, 2], origin=(float(frame[0][0]), float(frame[1][0])))
+        msg = PointCloud2()
+        stamp_ns = round(end * 1_000_000_000)
+        msg.header.stamp.sec, msg.header.stamp.nanosec = divmod(stamp_ns, 1_000_000_000)
+        msg.header.frame_id = 'odom'
+        msg.height, msg.width = 1, len(cands)
+        msg.fields = [PointField(name=name, offset=i * 4, datatype=PointField.FLOAT32, count=1)
+                      for i, name in enumerate(CANDIDATE_FIELDS)]
+        msg.is_bigendian, msg.is_dense = False, True
+        msg.point_step = 4 * len(CANDIDATE_FIELDS)
+        msg.row_step = msg.point_step * len(cands)
+        msg.data = np.ascontiguousarray(cands, dtype='<f4').tobytes()
+        self.cand_pub.publish(msg)
+        self.cand_ms.append((time.perf_counter() - t0) * 1e3)
+        self.cand_n.append(len(cands))
+        now_ns = self.get_clock().now().nanoseconds
+        if now_ns - self.cand_logged_ns > 60_000_000_000:
+            self.cand_logged_ns = now_ns
+            self.get_logger().info(
+                f'person candidates: {np.mean(self.cand_n):.1f}/frame, '
+                f'{np.mean(self.cand_ms):.1f} ms avg, {np.max(self.cand_ms):.1f} ms max '
+                f'over {len(self.cand_ms)} frames')
+            self.cand_ms, self.cand_n = [], []
 
 
 def main(args=None):

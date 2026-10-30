@@ -105,6 +105,8 @@ from frontier_explorer import FrontierExplorer
 from velocity_estimator import VelocityEstimator
 from velocity_timing import PoseHistory, ros_stamp_ns
 from person_memory import PersonMemory
+from lidar_person_tracker import (LidarPersonTracker, to_local as lidar_persons_local,
+                                  cbf_estimates as lidar_cbf_estimates)
 from people_buffer import people_cloud, cap_velocity as people_cap_velocity
 from pathlib import Path
 
@@ -383,6 +385,23 @@ PERSON_MEMORY_ENABLED = os.environ.get('X3_PERSON_MEMORY', '1') != '0'
 _person_memory = PersonMemory(range_m=CBF_SPEED_RANGE_M, min_speed=CBF_MOVER_MIN_SPEED)
 _person_memory_lock = threading.Lock()
 _person_memory_logged = (0, 0)
+
+# Lidar-held people (lidar_person_tracker.py): a C3 camera detection that lands on a
+# person-sized Livox cluster (/livox/person_candidates, from livox_scan_node) starts a
+# track the lidar then keeps -- id, position, velocity -- for up to 3 s after the camera
+# last saw the person, through the camera's <1 m blind range and its id changes.
+# X3_LIDAR_PERSONS=0 turns the tracker off (shadow: GUI + log only).
+# X3_LIDAR_PERSONS_CBF=1 also hands confirmed tracks to PersonMemory/the CBF where the
+# camera estimator has no person of its own.  Off until walk-up tested.
+LIDAR_PERSONS_ENABLED = os.environ.get('X3_LIDAR_PERSONS', '1') != '0'
+LIDAR_PERSONS_CBF = LIDAR_PERSONS_ENABLED and os.environ.get('X3_LIDAR_PERSONS_CBF', '0') == '1'
+_lidar_persons = LidarPersonTracker()
+_lidar_persons_lock = threading.Lock()
+_lidar_persons_logged = {'t': 0.0, 'stats': None, 'rec_t': 0.0, 'rec_path': None, 'rec': None}
+# While this file exists (scripts/record_person_lidar.sh writes it) every tracker frame --
+# candidates, C3 tracks, results -- is appended as NDJSON to the path it contains, so
+# src/tools/perception/lidar_person_replay.py can rerun the tracker exactly.
+LIDAR_PERSONS_RECORD_FLAG = '/tmp/x3_lidar_persons_record'
 
 # Social buffer round tracked people (people_buffer.py): the same people the memory keeps are
 # marked as disks (with predicted positions for trusted walkers) in both Nav2 costmaps via
@@ -935,6 +954,9 @@ class ROS2Bridge:
                        durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self._move_lock = threading.Lock()   # move() runs from the heartbeat AND the gate
         self._people_pub = self._node.create_publisher(PointCloud2, '/people/obstacles', 5)
+        if LIDAR_PERSONS_ENABLED:
+            self._node.create_subscription(PointCloud2, '/livox/person_candidates',
+                                           self._person_candidates_cb, qos_profile_sensor_data)
         self._people_last_pub = 0.0
         self._cmd_vel_pub = self._node.create_publisher(Twist, CMD_VEL_OUT_TOPIC, 10)
         # What was ASKED of the CBF (GUI joystick, Nav2 through the gate, heartbeat), so a
@@ -1196,6 +1218,64 @@ class ROS2Bridge:
         with self._lock:
             return dict(self._occupancy_grid) if self._occupancy_grid else None
 
+    def _person_candidates_cb(self, msg):
+        """/livox/person_candidates -> the lidar person tracker, seeded by C3."""
+        try:
+            n_fields = len(msg.fields)
+            rows = np.frombuffer(bytes(msg.data), dtype='<f4').reshape(-1, n_fields)
+            names = [f.name for f in msg.fields]
+            cands = [dict(zip(names, map(float, r))) for r in rows]
+            now = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+            camera, c3_stats = c3_live.get_tracks() if c3_live is not None else ([], None)
+            packet_age = c3_stats.get('packet_age_s', 0.0) if c3_stats else float('inf')
+            with _lidar_persons_lock:
+                results = _lidar_persons.update(now, cands, camera, packet_age)
+                stats = dict(_lidar_persons.stats)
+            last = _lidar_persons_logged
+            self._lidar_persons_record(last, now, names, rows, camera, packet_age, results)
+            keys = ('births', 'relinked', 'hold_expired', 'lost_lidar', 'resets')
+            changed = last['stats'] is None or any(stats[k] != last['stats'][k] for k in keys)
+            if changed and time.monotonic() - last['t'] >= 10.0:
+                logger.info("[lidar-persons] births %d, camera ids re-linked %d, held %.1f s, "
+                            "ended: hold cap %d, lidar lost %d; resets %d",
+                            stats['births'], stats['relinked'], stats['lidar_held_s'],
+                            stats['hold_expired'], stats['lost_lidar'], stats['resets'])
+                last['t'], last['stats'] = time.monotonic(), stats
+        except Exception as e:
+            logger.warning("lidar person tracker failed: %s", e)
+
+    @staticmethod
+    def _lidar_persons_record(st, now, names, rows, camera, packet_age, results):
+        mono = time.monotonic()
+        if mono - st['rec_t'] >= 1.0:
+            st['rec_t'] = mono
+            try:
+                with open(LIDAR_PERSONS_RECORD_FLAG) as f:
+                    path = f.read().strip() or None
+            except OSError:
+                path = None
+            if path != st['rec_path']:
+                if st['rec'] is not None:
+                    st['rec'].close()
+                st['rec'], st['rec_path'] = None, path
+                if path:
+                    st['rec'] = open(path, 'a', buffering=1)
+                    logger.info("[lidar-persons] recording tracker frames to %s", path)
+        if st['rec'] is not None:
+            st['rec'].write(json.dumps({
+                'stamp': now, 'packet_age': packet_age if math.isfinite(packet_age) else None,
+                'fields': names, 'candidates': np.round(rows, 3).tolist(), 'camera': camera,
+                'results': results}) + '\n')
+
+    def lidar_person_tracks(self):
+        """Lidar-held people with robot-frame fields, plus tracker stats."""
+        with _lidar_persons_lock:
+            results = list(_lidar_persons.results)
+            stats = dict(_lidar_persons.stats)
+        if not results or time.monotonic() - self._odom_stamp > 0.5:
+            return [], stats
+        return lidar_persons_local(results, self.get_pose_m()), stats
+
     def get_pose_m(self) -> dict:
         """Return the robot pose in metres: {x, y, theta}."""
         with self._lock:
@@ -1375,9 +1455,13 @@ class ROS2Bridge:
             
         moving = []     # ((x, y), (vx, vy)) of tracked movers, base frame
         people = []     # everyone the person memory knows, for the social buffer
-        if velocity_estimation_enabled and velocity_estimator is not None:
+        if (velocity_estimation_enabled and velocity_estimator is not None) or LIDAR_PERSONS_CBF:
             try:
-                estimates = velocity_estimator.get_estimates()
+                estimates = (velocity_estimator.get_estimates()
+                             if velocity_estimation_enabled and velocity_estimator is not None else [])
+                if LIDAR_PERSONS_CBF:
+                    lidar_tracks, _ = self.lidar_person_tracks()
+                    estimates = estimates + lidar_cbf_estimates(lidar_tracks, estimates, time.time())
                 if PERSON_MEMORY_ENABLED:
                     global _person_memory_logged
                     with _person_memory_lock:
@@ -4263,6 +4347,9 @@ async def broadcast_loop():
                     logger.error(f"Failed to get velocity estimates: {e}")
 
             c3_tracks, c3_stats = c3_live.get_tracks() if c3_live is not None else ([], None)
+            lidar_persons, lidar_person_stats = (
+                ros_bridge.lidar_person_tracks()
+                if LIDAR_PERSONS_ENABLED and ROS2_MODE and ros_bridge is not None else ([], None))
 
             # P3: send camera frame as a binary WebSocket message (raw JPEG, no base64)
             if img_bytes:
@@ -4317,6 +4404,8 @@ async def broadcast_loop():
                                     if velocity_estimator is not None else {}),
                 "c3_tracks": c3_tracks,
                 "c3_stats": c3_stats,
+                "lidar_persons": lidar_persons,
+                "lidar_person_stats": lidar_person_stats,
                 "foot_diagnostic": foot_diagnostic.snapshot() if foot_diagnostic is not None else None,
                 "battery": {"voltage": batt_v, "amps": est_current, "watts": est_watts},
                 "power": {
