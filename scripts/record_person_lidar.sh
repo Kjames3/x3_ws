@@ -27,6 +27,9 @@ for t in /livox/lidar /livox/person_candidates /odom /scan; do
 done
 
 mkdir -p "$out"
+# Which arm of the CBF A/B this run is (server_x3 LIDAR_PERSONS_CBF_FILE; absent = env default, off).
+cat /tmp/x3_lidar_persons_cbf > "$out/cbf_feed.txt" 2>/dev/null || echo default > "$out/cbf_feed.txt"
+echo "lidar-person CBF feed: $(cat "$out/cbf_feed.txt")"
 since=$(date '+%Y-%m-%d %H:%M:%S')
 echo "$out/lidar_persons.ndjson" > "$flag"
 trap 'rm -f "$flag"' EXIT

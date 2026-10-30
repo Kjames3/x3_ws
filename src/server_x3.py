@@ -392,9 +392,30 @@ _person_memory_logged = (0, 0)
 # last saw the person, through the camera's <1 m blind range and its id changes.
 # X3_LIDAR_PERSONS=0 turns the tracker off (shadow: GUI + log only).
 # X3_LIDAR_PERSONS_CBF=1 also hands confirmed tracks to PersonMemory/the CBF where the
-# camera estimator has no person of its own.  Off until walk-up tested.
+# camera estimator has no person of its own.  Off until walk-up tested.  The file
+# LIDAR_PERSONS_CBF_FILE ('1' or '0') overrides it live, checked once a second, so an
+# on/off A/B runs in one session without restarting Nav2 (/tmp: gone after a reboot).
 LIDAR_PERSONS_ENABLED = os.environ.get('X3_LIDAR_PERSONS', '1') != '0'
 LIDAR_PERSONS_CBF = LIDAR_PERSONS_ENABLED and os.environ.get('X3_LIDAR_PERSONS_CBF', '0') == '1'
+LIDAR_PERSONS_CBF_FILE = '/tmp/x3_lidar_persons_cbf'
+_lidar_cbf = {'t': -1.0, 'on': LIDAR_PERSONS_CBF, 'fed': 0, 'ticks': 0, 'logged': 0.0}
+
+
+def _lidar_cbf_on():
+    st = _lidar_cbf
+    now = time.monotonic()
+    if now - st['t'] >= 1.0:
+        st['t'] = now
+        try:
+            with open(LIDAR_PERSONS_CBF_FILE) as f:
+                v = f.read().strip()
+        except OSError:
+            v = None
+        on = LIDAR_PERSONS_ENABLED and (v == '1' if v in ('0', '1') else LIDAR_PERSONS_CBF)
+        if on != st['on']:
+            logger.info("[lidar-persons] CBF feed %s", 'ON' if on else 'off')
+            st['on'] = on
+    return st['on']
 _lidar_persons = LidarPersonTracker()
 _lidar_persons_lock = threading.Lock()
 _lidar_persons_logged = {'t': 0.0, 'stats': None, 'rec_t': 0.0, 'rec_path': None, 'rec': None}
@@ -1456,13 +1477,25 @@ class ROS2Bridge:
             
         moving = []     # ((x, y), (vx, vy)) of tracked movers, base frame
         people = []     # everyone the person memory knows, for the social buffer
-        if (velocity_estimation_enabled and velocity_estimator is not None) or LIDAR_PERSONS_CBF:
+        lidar_cbf = _lidar_cbf_on()
+        if (velocity_estimation_enabled and velocity_estimator is not None) or lidar_cbf:
             try:
                 estimates = (velocity_estimator.get_estimates()
                              if velocity_estimation_enabled and velocity_estimator is not None else [])
-                if LIDAR_PERSONS_CBF:
+                if lidar_cbf:
                     lidar_tracks, _ = self.lidar_person_tracks()
-                    estimates = estimates + lidar_cbf_estimates(lidar_tracks, estimates, time.time())
+                    extra = lidar_cbf_estimates(lidar_tracks, estimates, time.time())
+                    estimates = estimates + extra
+                    st = _lidar_cbf
+                    st['ticks'] += 1
+                    st['fed'] += len(extra)
+                    if time.monotonic() - st['logged'] >= 10.0:
+                        if st['fed']:
+                            logger.info("[lidar-persons] CBF feed: %d lidar person estimates over %d "
+                                        "ticks in %.0f s", st['fed'], st['ticks'],
+                                        time.monotonic() - st['logged'] if st['logged'] else 10.0)
+                        st['fed'] = st['ticks'] = 0
+                        st['logged'] = time.monotonic()
                 if PERSON_MEMORY_ENABLED:
                     global _person_memory_logged
                     with _person_memory_lock:
