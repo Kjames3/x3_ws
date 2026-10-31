@@ -1,0 +1,8 @@
+{
+  "valid_pixels": 196587,
+  "retained_pixels": 129634,
+  "points": 6000,
+  "edge_margin_px": 12,
+  "note": "Experimental interior mask; full-image alignment remains unqualified",
+  "offline_work_ms": 15.066448002471589
+}

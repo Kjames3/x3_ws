@@ -1,0 +1,106 @@
+{
+  "schema": "x3.c1.dataset.audit.v1",
+  "topic_counts": {
+    "/oak/rgbd/rgb/image_raw": 111,
+    "/oak/rgbd/depth/image_raw": 111,
+    "/oak/rgbd/rgb/camera_info": 111,
+    "/oak/rgbd/depth/camera_info": 111,
+    "/oak/rgbd/metadata": 111,
+    "/tof/observations": 292,
+    "/tf": 457,
+    "/odom": 457,
+    "/tf_static": 1,
+    "/scan": 90
+  },
+  "bag_sha256": {
+    "bag_0.db3": "87761e4de878473689b99a83421d01cb54e6c2cd9b10bd9baafa6a52f0200742"
+  },
+  "pair_metadata_records": 111,
+  "scored_pair_metadata_records": 60,
+  "boundary_pairs_unscored": 51,
+  "score_window_ros_ns": [
+    1793408855143705883,
+    1793408860143705883
+  ],
+  "complete_pairs": 60,
+  "failures": {},
+  "rgb_depth_skew_ms_p95": 12.42605,
+  "rgb_depth_skew_ms_max": 12.496,
+  "max_pair_interval_ms": 100.02,
+  "pair_intervals_over_500ms": 0,
+  "pair_timestamp_reversals": 0,
+  "pairing_counters_last": {
+    "rgb_unpaired": 1,
+    "depth_unpaired": 25152,
+    "paired": 16771,
+    "rgb_source_gaps": 1
+  },
+  "publisher_queue_drops_last": 0,
+  "ros_clock_offset_jump_ms_max": 0.006784,
+  "ros_clock_offset_jump_beyond_sampling_ms_max": 0.0,
+  "estimated_depth_age_ms_p95": 153.62366905,
+  "tof": {
+    "schema": "x3.c1.tof.audit.v1",
+    "records": 292,
+    "invalid_records": 0,
+    "streams": [
+      {
+        "session_id": "05efe792-bf7e-4d15-99ed-ea09c825c28d",
+        "connection_id": 0,
+        "sensor": "lower",
+        "epoch": 0,
+        "frames": 139,
+        "accepted": 139,
+        "received_fps": 15.07177093935108,
+        "missing_sequences": 0,
+        "recorded_sequence_gaps": 0,
+        "continuity": {
+          "continuous": 139
+        },
+        "max_receipt_gap_ms": 105.71048,
+        "receipt_gaps_over_500ms": 0,
+        "receipt_reversals": 0,
+        "mean_read_ms": 14.643820143884891,
+        "max_source_interval_ms": 82,
+        "synchronized_frames": 139,
+        "read_complete_interval_width_ms_max": 24.951591
+      },
+      {
+        "session_id": "05efe792-bf7e-4d15-99ed-ea09c825c28d",
+        "connection_id": 0,
+        "sensor": "upper",
+        "epoch": 0,
+        "frames": 140,
+        "accepted": 140,
+        "received_fps": 15.106096664662429,
+        "missing_sequences": 0,
+        "recorded_sequence_gaps": 0,
+        "continuity": {
+          "continuous": 140
+        },
+        "max_receipt_gap_ms": 89.844115,
+        "receipt_gaps_over_500ms": 0,
+        "receipt_reversals": 0,
+        "mean_read_ms": 14.6548,
+        "max_source_interval_ms": 83,
+        "synchronized_frames": 140,
+        "read_complete_interval_width_ms_max": 24.851591
+      }
+    ],
+    "acquisition_age_available": false,
+    "clock_error_bound_available": false,
+    "conditional_read_complete_intervals_available": true,
+    "c1_complete": false,
+    "limitations": [
+      "Receipt age is not acquisition age.",
+      "Read-completion intervals require sync-capable firmware and stated reset/drift assumptions; exposure time remains unknown.",
+      "RGB-depth pairing and pose alignment require separate validation."
+    ]
+  },
+  "c1_complete": false,
+  "unresolved": [
+    "MCU clock/acquisition bounds require qualification.",
+    "DepthAI SDK clock estimate is not a measured hard error bound.",
+    "RGB/depth spatial registration must be checked on the physical payload."
+  ]
+}
