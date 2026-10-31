@@ -1,0 +1,10 @@
+[Unit]
+Description=Check X3 Tailscale connectivity and recover persistent failures
+After=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/sbin/x3_network_watchdog.py
+RuntimeDirectory=x3-network-watchdog
+RuntimeDirectoryPreserve=yes
+TimeoutStartSec=120

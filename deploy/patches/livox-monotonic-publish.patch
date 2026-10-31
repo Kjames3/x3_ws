@@ -1,0 +1,36 @@
+diff --git a/src/comm/pub_handler.cpp b/src/comm/pub_handler.cpp
+index e33d588..8342596 100644
+--- a/src/comm/pub_handler.cpp
++++ b/src/comm/pub_handler.cpp
+@@ -193,7 +193,8 @@ void PubHandler::CheckTimer(uint32_t id) {
+       frame_.lidar_num = 0;
+     }
+   } else { // Disable time synchronization
+-    auto now_time = std::chrono::high_resolution_clock::now();
++    // Publication cadence must survive NTP wall-clock corrections at boot.
++    auto now_time = std::chrono::steady_clock::now();
+     //First Set
+     static bool first = true;
+     if (first) {
+@@ -204,7 +205,7 @@ void PubHandler::CheckTimer(uint32_t id) {
+     if (now_time - last_pub_time_ < std::chrono::nanoseconds(publish_interval_)) {
+       return;
+     }
+-    last_pub_time_ += std::chrono::nanoseconds(publish_interval_);
++    last_pub_time_ = now_time;  // Do not burst to catch up after a scheduling stall.
+     for (auto &process_handler : lidar_process_handlers_) {
+       frame_.base_time[frame_.lidar_num] = process_handler.second->GetLidarBaseTime();
+       uint32_t handle = process_handler.first;
+diff --git a/src/comm/pub_handler.h b/src/comm/pub_handler.h
+index 3314d8f..ab56645 100644
+--- a/src/comm/pub_handler.h
++++ b/src/comm/pub_handler.h
+@@ -76,7 +76,7 @@ class PubHandler {
+  public:
+   using PointCloudsCallback = std::function<void(PointFrame*, void *)>;
+   using ImuDataCallback = std::function<void(ImuData*, void*)>;
+-  using TimePoint = std::chrono::high_resolution_clock::time_point;
++  using TimePoint = std::chrono::steady_clock::time_point;
+ 
+   PubHandler() {}
+ 
