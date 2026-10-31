@@ -13,10 +13,10 @@ import cv2
 import numpy as np
 
 
-def project(rgb, depth, support, k, correction, budget=6000, edge_margin=12):
+def prepare_geometry(rgb, depth, support, correction, edge_margin=12):
     if rgb.shape != (*depth.shape, 3) or support.shape != depth.shape:
         raise ValueError('RGB/depth/support shapes disagree')
-    if budget < 1 or edge_margin < 0:
+    if edge_margin < 0:
         raise ValueError('invalid budget or margin')
     z = depth.astype(np.float32) * .001
     z /= 1 + correction * z
@@ -28,6 +28,13 @@ def project(rgb, depth, support, k, correction, budget=6000, edge_margin=12):
     bad = (~valid) | ((high - low) > .08)
     size = 2 * edge_margin + 1
     safe = valid & ~cv2.dilate(bad.astype(np.uint8), np.ones((size, size), np.uint8)).astype(bool)
+    return z, valid, safe
+
+
+def project(rgb, depth, support, k, correction, budget=6000, edge_margin=12):
+    if budget < 1:
+        raise ValueError("budget must be positive")
+    z, valid, safe = prepare_geometry(rgb, depth, support, correction, edge_margin)
     y, x = np.nonzero(safe)
     if len(x) > budget:
         indices = np.linspace(0, len(x) - 1, budget, dtype=int)

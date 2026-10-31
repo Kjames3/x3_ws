@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Offline refinement: keep valid geometry, color only conservative interiors."""
 import numpy as np
-from oak_color_cloud_probe import project
+from oak_color_cloud_probe import prepare_geometry
 
 
 def balanced_pixels(valid, budget):
@@ -40,10 +40,7 @@ def balanced_pixels(valid, budget):
 def refine(rgb, depth, support, k, correction, budget=6000, margin=12):
     # Reuse the earlier conservative mask as COLOR confidence only. It is not
     # a geometry correctness guarantee and does not fix stereo edge fattening.
-    _, _, confident, _ = project(rgb,depth,support,k,correction,budget,margin)
-    z=depth.astype(np.float32)*.001
-    z/=1+correction*z
-    valid=support.astype(bool)&np.isfinite(z)&(z>=.4)&(z<=3.)
+    z, valid, confident = prepare_geometry(rgb, depth, support, correction, margin)
     y,x=balanced_pixels(valid,budget)
     zz=z[y,x]
     xyz=np.column_stack(((x-k[0,2])*zz/k[0,0],(y-k[1,2])*zz/k[1,1],zz)).astype('<f4')
