@@ -159,7 +159,43 @@
     const cloudPositions = new Float32Array(6000 * 3);
     const cloudColors = new Float32Array(6000 * 3);
 
+    let oakPoints, oakGeometry;
+    const oakPositions = new Float32Array(6000*3), oakColors = new Float32Array(6000*3);
+    function updateOakCloud(d, now) {
+        const enabled = document.getElementById('surroundings-oak-toggle').checked;
+        const status = document.getElementById('surroundings-oak-status');
+        const xyz = d.oakCloud;
+        const poses = [d.oakPose, ...(d.surroundingsPoses || [])].filter(p => p && now-p.receivedAt < 500);
+        poses.sort((a,b) => b.stamp-a.stamp);
+        const pose = poses[0];
+        const age = xyz && pose ? pose.stamp-xyz.stamp : Infinity;
+        const fresh = enabled && xyz && pose && now-d.oakCloudAt < 750 && age >= -.1 && age < .75;
+        oakPoints.visible = !!fresh;
+        if (!fresh) {
+            status.textContent = enabled ? 'Waiting for fresh OAK color and pose' : 'Off · gray points mean uncertain color, not gray material.';
+            return;
+        }
+        const c = Math.cos(pose.yaw), s = Math.sin(pose.yaw);
+        for (let i=0; i<xyz.length; i+=3) {
+            const dx=xyz[i]-pose.x, dy=xyz[i+1]-pose.y;
+            oakPositions[i] = s*dx-c*dy;
+            oakPositions[i+1] = xyz[i+2];
+            oakPositions[i+2] = -(c*dx+s*dy);
+        }
+        oakColors.set(xyz.colors);
+        oakGeometry.setDrawRange(0,xyz.length/3);
+        oakGeometry.attributes.position.needsUpdate = true;
+        oakGeometry.attributes.color.needsUpdate = true;
+        status.textContent = `OAK color · ${xyz.length/3} points · gray = uncertain color · display only`;
+    }
+
     function initCloud() {
+        oakGeometry = new THREE.BufferGeometry();
+        oakGeometry.setAttribute('position', new THREE.BufferAttribute(oakPositions,3));
+        oakGeometry.setAttribute('color', new THREE.BufferAttribute(oakColors,3));
+        oakGeometry.setDrawRange(0,0);
+        oakPoints = new THREE.Points(oakGeometry,new THREE.PointsMaterial({size:.025,vertexColors:true}));
+        oakPoints.frustumCulled=false; oakPoints.visible=false; scene.add(oakPoints);
         cloudGeometry = new THREE.BufferGeometry();
         cloudGeometry.setAttribute('position', new THREE.BufferAttribute(cloudPositions, 3));
         cloudGeometry.setAttribute('color', new THREE.BufferAttribute(cloudColors, 3));
@@ -1076,9 +1112,19 @@
             if (visible && document.getElementById('surroundings-cloud-toggle').checked) foxgloveResubscribe(topic);
             else foxgloveUnsubscribe(topic);
         }
+        const oakEnabled = visible && document.getElementById('surroundings-oak-toggle').checked;
+        for (const topic of ['/surroundings/oak/points', '/surroundings/oak/pose']) {
+            if (oakEnabled) foxgloveResubscribe(topic); else foxgloveUnsubscribe(topic);
+        }
+        if (!oakEnabled) { state.latestData.oakCloud=null; state.latestData.oakPose=null; }
         if (visible) foxgloveResubscribe('/scan');
         else if (!state.lidarEnabled) foxgloveUnsubscribe('/scan');
     }
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) syncScanSubscription(false);
+    });
+    window.addEventListener('pagehide', () => syncScanSubscription(false));
 
     // The camera is fixed and the data arrives at <= 10 Hz (cloud) / 15 Hz (people),
     // so drawing at the monitor's 60-144 Hz only burns GPU and main-thread time that
@@ -1095,7 +1141,7 @@
         if (!animating && now - previousFrameAt < 1000 / RENDER_FPS - 2) return;
         const dt = (now - previousFrameAt) / 1000;
         previousFrameAt = now;
-        const visible = !!container.offsetParent;
+        const visible = !document.hidden && !!container.offsetParent;
         if (visible !== wasVisible || visible) syncScanSubscription(visible);
         wasVisible = visible;
         if (!visible) return;   // Drive tab hidden: skip rendering
@@ -1107,6 +1153,7 @@
         }
         updatePersonCloud(d, now);
         const cloudFresh = updateCloud(d, now);
+        updateOakCloud(d, now);
         panels.visible = posts.visible = !cloudFresh;
         const scanFresh = lastPts && now - lastPtsAt < SCAN_STALE_MS;
         if (!scanFresh && (panels.count || posts.count)) {

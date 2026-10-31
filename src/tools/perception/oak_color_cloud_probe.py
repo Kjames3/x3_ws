@@ -4,6 +4,9 @@
 RGB input is BGR on the depth grid; depth is raw millimetres. This intentionally
 has no live camera, ROS, navigation, or GUI integration.
 """
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import argparse
 import json
 import time
@@ -13,22 +16,7 @@ import cv2
 import numpy as np
 
 
-def prepare_geometry(rgb, depth, support, correction, edge_margin=12):
-    if rgb.shape != (*depth.shape, 3) or support.shape != depth.shape:
-        raise ValueError('RGB/depth/support shapes disagree')
-    if edge_margin < 0:
-        raise ValueError('invalid budget or margin')
-    z = depth.astype(np.float32) * .001
-    z /= 1 + correction * z
-    valid = support.astype(bool) & np.isfinite(z) & (z >= .4) & (z <= 3.)
-    # Reject depth jumps and invalid neighborhoods. Margin is an experimental
-    # exclusion band, not a fitted pixel shift or a calibration correction.
-    high = cv2.dilate(np.where(valid, z, 0), np.ones((3, 3), np.uint8))
-    low = cv2.erode(np.where(valid, z, 10), np.ones((3, 3), np.uint8))
-    bad = (~valid) | ((high - low) > .08)
-    size = 2 * edge_margin + 1
-    safe = valid & ~cv2.dilate(bad.astype(np.uint8), np.ones((size, size), np.uint8)).astype(bool)
-    return z, valid, safe
+from oak_color_geometry import prepare_geometry
 
 
 def project(rgb, depth, support, k, correction, budget=6000, edge_margin=12):

@@ -293,6 +293,7 @@ _batt_cache_a_time = 0.0   # own clock: the voltage lane resets _batt_cache_time
 _batt_state_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "config", "battery_state.json")
 _batt_state_last_save = 0.0
+oak_surroundings = None
 oak_ros_pub = None  # OakRosPublisher — republishes /oak/* topics (--oak-ros-publish only)
 model = None
 oled = None
@@ -2315,7 +2316,7 @@ def _encode_mapu(grid: dict) -> bytes | None:
 
 
 def initialize_hardware():
-    global ros_board, ros_bridge, drive, lidar, camera, oak, ina226, oak_ros_pub, model, oled, _gazebo_proc
+    global ros_board, ros_bridge, drive, lidar, camera, oak, ina226, oak_ros_pub, oak_surroundings, model, oled, _gazebo_proc
     global tof_array
     global nav2_client, _ros2_stack_proc, frontier_explorer
     global velocity_estimator, active_velocity_model_name
@@ -2488,6 +2489,12 @@ def initialize_hardware():
                                               rate_hz=max(OAK_ROS_RATE, 15) if args.c1_recording else OAK_ROS_RATE,
                                               publish_stereo=OAK_ROS_STEREO and not args.c1_recording)
                 oak_ros_pub.start()
+                try:
+                    from oak_surroundings import OakSurroundings
+                    oak_surroundings = OakSurroundings(ros_bridge._node, oak)
+                    oak_surroundings.start()
+                except Exception as exc:
+                    logger.warning("Optional OAK surroundings unavailable: %s", exc)
             except Exception as e:
                 logger.error(f"OAK-D ROS publisher: init failed: {e}")
                 oak_ros_pub = None
@@ -2662,6 +2669,11 @@ def cleanup():
             except Exception:
                 pass
         _ab_test_proc = None
+    if oak_surroundings is not None:
+        try:
+            oak_surroundings.stop()
+        except Exception as exc:
+            logger.warning("Failed to stop optional OAK display: %s", exc)
     if oak_ros_pub is not None:
         try:
             oak_ros_pub.stop()

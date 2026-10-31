@@ -1,50 +1,5 @@
-#!/usr/bin/env python3
-"""Offline refinement: keep valid geometry, color only conservative interiors."""
-import numpy as np
-from oak_color_cloud_probe import prepare_geometry
-
-
-def balanced_pixels(valid, budget):
-    """One representative per image tile; tile count never exceeds budget.
-
-    Unlike row-major linspace over valid pixels, blank regions do not distort
-    the spacing elsewhere. Sparse tiles use the valid pixel nearest tile center.
-    """
-    if budget < 1:
-        raise ValueError('budget must be positive')
-    h, w = valid.shape
-    step = max(1, int(np.ceil(np.sqrt(h*w/budget))))
-    while int(np.ceil(h/step))*int(np.ceil(w/step)) > budget:
-        step += 1
-    rows, cols = int(np.ceil(h/step)), int(np.ceil(w/step))
-    ty,tx = np.indices((rows,cols))
-    y = np.minimum(ty.ravel()*step+step//2,h-1)
-    x = np.minimum(tx.ravel()*step+step//2,w-1)
-    good = valid[y,x]
-    missing = np.flatnonzero(~good)
-    if len(missing):
-        dy,dx = np.indices((step,step))
-        yy=ty.ravel()[missing,None]*step+dy.ravel()
-        xx=tx.ravel()[missing,None]*step+dx.ravel()
-        inside=(yy<h)&(xx<w)
-        candidates=inside&valid[np.minimum(yy,h-1),np.minimum(xx,w-1)]
-        cost=((dy-(step-1)/2)**2+(dx-(step-1)/2)**2).ravel()
-        choice=np.argmin(np.where(candidates,cost,np.inf),axis=1)
-        y[missing]=yy[np.arange(len(missing)),choice]
-        x[missing]=xx[np.arange(len(missing)),choice]
-        good[missing]=candidates.any(axis=1)
-    return y[good],x[good]
-
-
-
-def refine(rgb, depth, support, k, correction, budget=6000, margin=12):
-    # Reuse the earlier conservative mask as COLOR confidence only. It is not
-    # a geometry correctness guarantee and does not fix stereo edge fattening.
-    z, valid, confident = prepare_geometry(rgb, depth, support, correction, margin)
-    y,x=balanced_pixels(valid,budget)
-    zz=z[y,x]
-    xyz=np.column_stack(((x-k[0,2])*zz/k[0,0],(y-k[1,2])*zz/k[1,1],zz)).astype('<f4')
-    color_valid=confident[y,x]
-    colors=np.full((len(x),3),160,dtype=np.uint8)
-    colors[color_valid]=rgb[y[color_valid],x[color_valid],::-1]
-    return xyz,colors,color_valid,np.column_stack((y,x))
+"""Compatibility entry for offline OAK cloud experiments."""
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from oak_color_geometry import balanced_pixels, refine

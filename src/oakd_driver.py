@@ -180,6 +180,7 @@ class OakDCamera:
         self.record_rgbd = record_rgbd
         self.subpixel = bool(subpixel)
         self._rgbd_pairs = deque(maxlen=16)
+        self._display_rgbd_pair = None
         self._rgbd_drops = 0
         self._rgbd_calibration = None
         self._latest_detection_meta = None
@@ -529,6 +530,7 @@ class OakDCamera:
                     self._pairer = RGBDPairer(capacity=64)
                     with self._lock:
                         self._rgbd_pairs.clear()
+                        self._display_rgbd_pair = None
                         self._latest_detection_meta = None
                     self._read_intrinsics(device, with_spatial)
                     if self.record_rgbd and not with_spatial:
@@ -773,6 +775,12 @@ class OakDCamera:
                 pair['calibration'] = self._rgbd_calibration
                 pair['publisher_queue_drops'] = self._rgbd_drops
                 self._rgbd_pairs.append(pair)
+                self._display_rgbd_pair = pair  # immutable capture arrays, independent of drain queue
+
+    def get_display_rgbd_pair(self):
+        """Non-draining snapshot; consumers must never mutate its arrays."""
+        with self._lock:
+            return self._display_rgbd_pair
 
     def pop_rgbd_pairs(self):
         with self._lock:

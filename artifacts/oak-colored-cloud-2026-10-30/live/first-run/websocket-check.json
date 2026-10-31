@@ -1,0 +1,62 @@
+[
+  {
+    "phase": "off",
+    "elapsed": 15.011737620996428,
+    "counts": {
+      "/oak/rgbd/metadata": 179,
+      "/scan": 148
+    },
+    "rates": {
+      "/oak/rgbd/metadata": 11.92400270503253,
+      "/scan": 9.8589519572336
+    },
+    "max_gap": {
+      "/oak/rgbd/metadata": 0.2917883939953754,
+      "/scan": 0.4529360249871388
+    },
+    "age_p95_ms": null,
+    "bytes_per_second": 0.0
+  },
+  {
+    "phase": "on",
+    "elapsed": 30.037873738008784,
+    "counts": {
+      "/scan": 300,
+      "/oak/rgbd/metadata": 362,
+      "/surroundings/oak/pose": 89,
+      "/surroundings/oak/points": 89
+    },
+    "rates": {
+      "/scan": 9.987391338568395,
+      "/oak/rgbd/metadata": 12.051452215205863,
+      "/surroundings/oak/pose": 2.9629260971086238,
+      "/surroundings/oak/points": 2.9629260971086238
+    },
+    "max_gap": {
+      "/oak/rgbd/metadata": 0.31886994700471405,
+      "/scan": 0.3935766349895857,
+      "/surroundings/oak/pose": 0.44033868300903123,
+      "/surroundings/oak/points": 0.474444653998944
+    },
+    "age_p95_ms": 310.9905978331786,
+    "bytes_per_second": 261275.01794740066
+  },
+  {
+    "phase": "off_again",
+    "elapsed": 15.012211888009915,
+    "counts": {
+      "/scan": 150,
+      "/oak/rgbd/metadata": 179
+    },
+    "rates": {
+      "/scan": 9.991865363944358,
+      "/oak/rgbd/metadata": 11.9236260009736
+    },
+    "max_gap": {
+      "/oak/rgbd/metadata": 0.38857740300591104,
+      "/scan": 0.33019233599770814
+    },
+    "age_p95_ms": null,
+    "bytes_per_second": 0.0
+  }
+]

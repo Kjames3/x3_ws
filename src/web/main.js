@@ -1820,7 +1820,7 @@ function parseOccupancyGridCDR(buf, payloadOffset) {
 }
 
 // Dedicated bounded XYZ display topic, published in base_footprint.
-function parseSurroundingsCDR(buf, payloadOffset) {
+function parseSurroundingsCDR(buf, payloadOffset, colored = false) {
     const r = new CDRReader(buf, payloadOffset);
     const sec = r.readInt32(), nanosec = r.readUint32();
     const frame = r.readString();
@@ -1833,13 +1833,22 @@ function parseSurroundingsCDR(buf, payloadOffset) {
     }
     const bigEndian = r.readInt8() !== 0;
     const step = r.readUint32(), rowStep = r.readUint32(), size = r.readUint32();
-    if (frame !== 'base_footprint' || height !== 1 || width > 6000 || step !== 12 ||
+    if (frame !== (colored ? 'odom' : 'base_footprint') || height !== 1 || width > 6000 || step !== (colored ? 16 : 12) ||
+        (colored && !fields.some(f => f.name === 'rgb' && f.offset === 12 && f.type === 6 && f.count === 1)) ||
         rowStep !== width * step || size !== rowStep || r.offset + size > buf.byteLength ||
         !['x', 'y', 'z'].every((name, i) => fields.some(f => f.name === name && f.offset === i * 4 && f.type === 7 && f.count === 1))) {
         throw new Error('Unsupported surroundings cloud layout/frame');
     }
     const xyz = new Float32Array(width * 3);
-    for (let i = 0; i < xyz.length; i++) xyz[i] = r.view.getFloat32(r.offset + i * 4, !bigEndian);
+    const colors = colored ? new Float32Array(width * 3) : null;
+    for (let i = 0; i < width; i++) {
+        for (let j = 0; j < 3; j++) xyz[i*3+j] = r.view.getFloat32(r.offset + i*step+j*4, !bigEndian);
+        if (colored) {
+            const rgb = r.view.getUint32(r.offset+i*step+12, !bigEndian);
+            colors[i*3] = ((rgb >> 16)&255)/255; colors[i*3+1] = ((rgb >> 8)&255)/255; colors[i*3+2] = (rgb&255)/255;
+        }
+    }
+    if (colored) xyz.colors = colors;
     xyz.stamp = sec + nanosec * 1e-9;
     return xyz;
 }
@@ -1869,11 +1878,20 @@ function handleFoxgloveBinaryFrame(buf) {
         if (topic === '/scan') handleFoxgloveScan(parseLaserScanCDR(buf, payloadOffset));
         else if (topic === '/surroundings/pose') {
             const pose = parseSurroundingsPoseCDR(buf, payloadOffset);
+            pose.receivedAt = performance.now();
             state.latestData.surroundingsPoses = [...(state.latestData.surroundingsPoses || []), pose].slice(-20);
         }
         else if (topic === '/surroundings/points') {
             state.latestData.surroundingsCloud = parseSurroundingsCDR(buf, payloadOffset);
             state.latestData.surroundingsCloudAt = performance.now();
+        }
+        else if (topic === '/surroundings/oak/points') {
+            state.latestData.oakCloud = parseSurroundingsCDR(buf, payloadOffset, true);
+            state.latestData.oakCloudAt = performance.now();
+        }
+        else if (topic === '/surroundings/oak/pose') {
+            state.latestData.oakPose = parseSurroundingsPoseCDR(buf, payloadOffset);
+            state.latestData.oakPose.receivedAt = performance.now();
         }
         else if (topic === '/map') handleFoxgloveMap(parseOccupancyGridCDR(buf, payloadOffset));
     } catch (e) {
@@ -1889,7 +1907,7 @@ function handleFoxgloveTextMessage(obj) {
     if (obj.op !== 'advertise') return;
 
     const fg = state.foxglove;
-    const TOPICS = ['/map', '/scan', '/surroundings/points', '/surroundings/pose'];
+    const TOPICS = ['/map', '/scan', '/surroundings/points', '/surroundings/pose', '/surroundings/oak/points', '/surroundings/oak/pose'];
 
     const subs = [];
     for (const ch of obj.channels) {
