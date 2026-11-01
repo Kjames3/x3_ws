@@ -33,7 +33,7 @@ weaker). Camera positions from the pre-da7d8ae raw-odom pose bug are dropped as
 outliers per camera id. Result: 6.0k person (3.4k carried, ~1.1k beyond 4 m),
 4.8k + 33.7k not-person.
 
-SiT (11 labelled clips; Corridor_4/Courtyard_3 have no labels, Courtyard_2 has a
+SiT (11 labelled clips in v1, 20 with Hallway in v2; Corridor_4/Courtyard_3 have no labels, Courtyard_2 has a
 non-flat floor): boxes are WORLD frame -> ego via inv(ego_trajectory) (checked by
 points-in-box). Lidar ~0.95 m above the floor vs ours 0.31. 10.4k person, 12.6k
 not-person, 5.5k seated people kept apart.
@@ -59,6 +59,13 @@ Average precision, held out by run:
   robot: unresolved, ask the user.
 - 7% of 'unknown' candidates (2,991 of 41.6k) score >= 0.5: where lidar-only births
   would happen. Not inspected yet.
+
+### With the Hallway clips (`results_v2.txt`, 20 SiT clips, 17.1k person / 25.3k not)
+Hallway 2-4, 6-11 added (5 and 12 ship no labels; Hallway_1-009 = Hallway_1).
+More SiT does not help the robot: SiT -> robot fell 0.806 -> 0.724 (hallways now half of
+SiT, further from our sensor and lab); robot + SiT unchanged at 0.973 per frame,
+0.982 -> 0.990 tracklet-averaged; within SiT 0.942 -> 0.953. Data from our own sensor
+matters more than more SiT. `sit.npz` in artifacts is now the 20-clip one.
 
 ## The extractor, not the classifier, limits crowds
 SiT recall of `person_candidates.extract` for labelled standing pedestrians with >= 10
