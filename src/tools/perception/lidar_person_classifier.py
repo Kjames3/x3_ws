@@ -8,6 +8,13 @@ Inputs come from lidar_person_dataset.py (the robot's bags, auto-labelled) and
 sit_person_dataset.py (SiT boxes).  Model: sklearn HistGradientBoostingClassifier on
 cluster_features.NAMES (no reflectivity: it does not transfer between sensors).
 
+Seated people (label 2).  On the robot (hand overrides) they count as people (user
+decision 2026-11-01: someone sitting can stand up into the robot's path).  SiT's
+'Pedestrain_sitting' boxes are LEFT OUT by default: counted as people they took SiT ->
+robot AP from 0.81 to 0.39 (a seated pedestrian is usually one cluster with the bench or
+table, which teaches 'furniture = person').  --sit-sitting-as-person brings them back;
+--exclude-sitting leaves the robot's seated people out as well.
+
 Experiments, all scored on held-out data, split by RUN (never frames of the same run on
 both sides):
   own        leave-one-run-out on the robot's bags
@@ -29,6 +36,14 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.metrics import average_precision_score
 
 BANDS = ((0, 2), (2, 4), (4, 6), (6, 8), (8, 12))
+
+
+def _sitting(d, exclude):
+    """Label 2 (seated person) -> 1, or leave it out (-1) with exclude."""
+    y = d['y'].copy()
+    y[y == 2] = -1 if exclude else 1
+    d['y'] = y
+    return d
 
 
 def model():
@@ -107,9 +122,13 @@ def main():
     ap.add_argument('--sit')
     ap.add_argument('--save', help='fit on all robot data (+SiT with --save-with-sit) and save')
     ap.add_argument('--save-with-sit', action='store_true')
+    ap.add_argument('--exclude-sitting', action='store_true',
+                    help="leave the robot's seated people out instead of counting them as people")
+    ap.add_argument('--sit-sitting-as-person', action='store_true',
+                    help="count SiT's seated pedestrians as people (default: left out)")
     ap.add_argument('--drop', default='', help='comma-separated feature names to leave out')
     a = ap.parse_args()
-    own = dict(np.load(a.own, allow_pickle=True))
+    own = _sitting(dict(np.load(a.own, allow_pickle=True)), a.exclude_sitting)
     names = [str(n) for n in own['feature_names']]
     feats = [i for i, n in enumerate(names) if n not in set(filter(None, a.drop.split(',')))]
     print(f'features: {len(feats)} of {len(names)}')
@@ -124,9 +143,11 @@ def main():
     sit = None
     if a.sit:
         sit = dict(np.load(a.sit, allow_pickle=True))
+        n_sit = int((sit['y'] == 2).sum())
+        sit = _sitting(sit, not a.sit_sitting_as_person)
         su = _usable(sit)
         print(f'\nSiT: {int((sit["y"] == 1).sum())} person, {int((sit["y"] == 0).sum())} not-person '
-              f'({int((sit["y"] == 2).sum())} sitting left out)')
+              f'({n_sit} sitting {"counted as person" if a.sit_sitting_as_person else "left out"})')
         clf = model().fit(sit['X'][su][:, feats], sit['y'][su])
         report('\n[sit->own] trained on SiT, scored on robot bags', own, clf.predict_proba(own['X'][:, feats])[:, 1], u)
         p2, m2 = own_loro(own, extra=sit, feats=feats)

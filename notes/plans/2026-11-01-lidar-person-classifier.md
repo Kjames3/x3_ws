@@ -76,7 +76,17 @@ SiT's seated people; 905 candidates). Robot + SiT: AP 0.973 -> 0.981, 0-2 m prec
 0.72 -> 0.93, tracklet-averaged 0.990 -> 0.994, camera-checked negatives 0.999.
 Lesson: the 'persistent' rule, and even the camera check, cannot tell a person sitting
 still from furniture; other seated people may still be hiding in the persistent set.
-Open decision: should a seated person count as a person for the robot (labels 2 -> 1)?
+Decided (user, 2026-11-01): a seated person counts as a person (can stand up into the path).
+
+### Seated = person, Lobby clips added (`results_v4.txt`, 27 SiT clips)
+Lobby 2-8 added (1 and 9 ship no labels): SiT is 20.5k person / 37.3k not-person.
+The robot's seated person now counts as a person. SiT's 7.1k seated pedestrians do NOT:
+counted as people they took SiT -> robot AP from 0.81 to 0.39 and robot + SiT 4-6 m
+precision from 0.91 to 0.65 (a SiT seated pedestrian is usually one cluster with the
+bench or table, which teaches 'furniture = person'). Isolated by running each change
+alone: Lobby alone took SiT -> robot 0.76 -> 0.81. Final: robot only 0.975
+(tracklet 0.995), robot + SiT 0.977 (tracklet 0.993), SiT -> robot 0.776.
+`--sit-sitting-as-person` / `--exclude-sitting` switch the two rules.
 
 ## The extractor, not the classifier, limits crowds
 SiT recall of `person_candidates.extract` for labelled standing pedestrians with >= 10
