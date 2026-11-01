@@ -91,3 +91,13 @@ def test_camera_outliers_are_dropped():
         recs.append({'camera': [{'id': 7, 'state_stamp_s': 0.1 * i, 'obs_age_s': 0.0,
                                  'odom_x': x, 'odom_y': 0.0, 'measured': True}]})
     assert lpd.clean_camera(recs) == {('7', 0.6)}
+
+
+def test_overrides_relabel_only_their_run_and_radius():
+    xy = np.array([[0.0, 0.0], [0.3, 0.0], [2.0, 0.0]])
+    label = np.array([0, 0, 0], dtype=np.int8)
+    source = np.array(['persistent'] * 3, dtype=object)
+    ov = [{'run': 'a', 'x': 0.0, 'y': 0.0, 'r_m': 0.45, 'label': 'sitting'},
+          {'run': 'b', 'x': 2.0, 'y': 0.0, 'label': 'person'}]
+    label, source = lpd.apply_overrides('a', xy, label, source, ov)
+    assert label.tolist() == [2, 2, 0] and source[0] == 'override_sitting' and source[2] == 'persistent'

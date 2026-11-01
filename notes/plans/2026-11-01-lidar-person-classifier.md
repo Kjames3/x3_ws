@@ -19,7 +19,8 @@ git-ignored; rebuild with the commands below). SiT clips unpacked (lidar, labels
 poses only) to `~/datasets/sit/`.
 
 ```bash
-python3 src/tools/perception/lidar_person_dataset.py artifacts/person-lidar-2026-10-30/* -o own.npz
+python3 src/tools/perception/lidar_person_dataset.py artifacts/person-lidar-2026-10-30/* \
+    --overrides artifacts/lidar-person-classifier-2026-11-01/label_overrides.json -o own.npz
 python3 src/tools/perception/sit_person_dataset.py $(ls -d ~/datasets/sit/* | grep -v Courtyard_2) -o sit.npz
 python3 src/tools/perception/lidar_person_classifier.py --own own.npz --sit sit.npz
 ```
@@ -53,10 +54,11 @@ Average precision, held out by run:
   truncation differs) or far out. Adding it to robot data helps a little and makes the
   tracklet score cleaner.
 - Robot -> robot is optimistic: one walker, one lab, the same furniture in every run.
-- Close-range false positives are almost all ONE static object ~0.69 m right of the
-  robot in furniture-r1 / goal-on-r4 (~1.0 m tall, 0.4 m wide, cut by the +52 deg FOV
-  top exactly as a near person is). Either furniture or someone standing beside the
-  robot: unresolved, ask the user.
+- Close-range false positives were almost all ONE static object ~0.69 m right of the
+  robot in furniture-r1 / goal-on-r4 (~1.0 m tall, 0.4 m wide). The user confirmed it
+  was a PERSON SITTING ON A CHAIR: the model was right, the label was wrong. In
+  goal-on-r4 it had even been a camera-checked negative, i.e. C3 had them in view and
+  did not detect them seated. Fixed by hand (see below).
 - 7% of 'unknown' candidates (2,991 of 41.6k) score >= 0.5: where lidar-only births
   would happen. Not inspected yet.
 
@@ -66,6 +68,15 @@ More SiT does not help the robot: SiT -> robot fell 0.806 -> 0.724 (hallways now
 SiT, further from our sensor and lab); robot + SiT unchanged at 0.973 per frame,
 0.982 -> 0.990 tracklet-averaged; within SiT 0.942 -> 0.953. Data from our own sensor
 matters more than more SiT. `sit.npz` in artifacts is now the 20-clip one.
+
+### Seated person relabelled (`results_v3.txt`)
+`--overrides artifacts/lidar-person-classifier-2026-11-01/label_overrides.json` marks
+the candidates near the seated person as 'sitting' (label 2, left out of training like
+SiT's seated people; 905 candidates). Robot + SiT: AP 0.973 -> 0.981, 0-2 m precision
+0.72 -> 0.93, tracklet-averaged 0.990 -> 0.994, camera-checked negatives 0.999.
+Lesson: the 'persistent' rule, and even the camera check, cannot tell a person sitting
+still from furniture; other seated people may still be hiding in the persistent set.
+Open decision: should a seated person count as a person for the robot (labels 2 -> 1)?
 
 ## The extractor, not the classifier, limits crowds
 SiT recall of `person_candidates.extract` for labelled standing pedestrians with >= 10

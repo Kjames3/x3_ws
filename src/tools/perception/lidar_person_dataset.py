@@ -67,7 +67,22 @@ CAM_CLEAR_M = 0.8             # a negative needs no camera person this close
 OUTLIER_M = 0.4
 PERSIST_M = 0.25
 PERSIST_FRAC = 0.5
-LABEL_NAMES = {1: 'person', 0: 'not_person', -1: 'unknown'}
+LABEL_NAMES = {1: 'person', 0: 'not_person', 2: 'sitting', -1: 'unknown'}
+OVERRIDE_LABELS = {'person': 1, 'not_person': 0, 'sitting': 2, 'unknown': -1}
+
+
+def apply_overrides(run, xy, label, source, overrides):
+    """Hand corrections: every candidate of `run` within r_m of (x, y) in odom gets the
+    entry's label.  The persistent rule cannot tell a person sitting still from a chair
+    (furniture-r1: a seated person 0.69 m from the robot was labelled not-person), so
+    the user's word wins.  'sitting' (2) is left out of training, as SiT's seated people are."""
+    for o in overrides:
+        if o['run'] != run:
+            continue
+        m = np.hypot(xy[:, 0] - o['x'], xy[:, 1] - o['y']) < o.get('r_m', 0.5)
+        label[m] = OVERRIDE_LABELS[o['label']]
+        source[m] = 'override_' + o['label']
+    return label, source
 
 POINT_DT = np.dtype({'names': ['t', 'x', 'y', 'z', 'r'],
                      'formats': ['<u4', '<f4', '<f4', '<f4', 'u1'],
@@ -235,7 +250,7 @@ def label_tracklets(track, cam_hit, in_view, cam_near, xy, persist=None):
     return label, source
 
 
-def process_run(run_dir):
+def process_run(run_dir, overrides=()):
     run_dir = pathlib.Path(run_dir)
     recs = [json.loads(line) for line in open(run_dir / 'lidar_persons.ndjson')]
     rec_t = [r['stamp'] for r in recs]
@@ -299,6 +314,7 @@ def process_run(run_dir):
     label, source = label_tracklets(track, np.array([r['cam_hit'] for r in rows]),
                                     np.array([r['in_view'] for r in rows]),
                                     np.array([r['cam_near'] for r in rows]), xy, persist)
+    label, source = apply_overrides(run_dir.name, xy, label, source, overrides)
     return dict(
         X=np.stack([r['feat'] for r in rows]),
         refl=np.array([r['refl'] for r in rows], dtype=np.float32),
@@ -314,17 +330,19 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('runs', nargs='+')
     ap.add_argument('-o', '--out', required=True)
+    ap.add_argument('--overrides', help='JSON list of {run, x, y, r_m, label} hand corrections (odom)')
     a = ap.parse_args()
+    overrides = json.load(open(a.overrides)) if a.overrides else []
     parts = []
     for run in a.runs:
-        r = process_run(run)
+        r = process_run(run, overrides)
         if r is None:
             print(f'{run}: no frames')
             continue
         y, src, rng = r['y'], r['source'], r['X'][:, 0]
         print(f"{pathlib.Path(run).name:14s} frames {r['n_frames']:4d} cands {len(y):6d} "
               f"| pos {np.sum(y == 1):5d} (cam {np.sum(src == 'cam'):4d}, carried {np.sum(src == 'carried'):4d},"
-              f" >4m {np.sum((y == 1) & (rng > 4)):4d}) | neg {np.sum(src == 'static_neg'):4d} + persistent {np.sum(src == 'persistent'):5d} | unk {np.sum(y == -1):5d}"
+              f" >4m {np.sum((y == 1) & (rng > 4)):4d}) | neg {np.sum(src == 'static_neg'):4d} + persistent {np.sum(src == 'persistent'):5d} | sitting {np.sum(y == 2):4d} | unk {np.sum(y == -1):5d}"
               f" | camera outliers dropped {r['n_bad_camera']}")
         parts.append(r)
     keys = ['X', 'refl', 'y', 'source', 'track', 't', 'xy', 'bearing', 'in_view', 'run']

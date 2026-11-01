@@ -1,0 +1,6 @@
+[
+  {"run": "furniture-r1", "x": -0.27, "y": -0.55, "r_m": 0.45, "label": "sitting",
+   "note": "user 2026-11-01: a person sitting on a chair ~0.69 m right of the robot"},
+  {"run": "goal-on-r4", "x": 0.63, "y": 1.04, "r_m": 0.45, "label": "sitting",
+   "note": "same seated person, seen while the robot drove past"}
+]
