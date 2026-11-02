@@ -1,0 +1,30 @@
+features: 24 of 24
+robot: 6020 person, 4833 camera-checked + 33704 persistent not-person, runs 14  (cells: AP precision/recall@0.5, persons in hundreds)
+
+[own] leave-one-run-out, robot bags only
+                                      |     0-2 m AP P/R |     2-4 m AP P/R |     4-6 m AP P/R |     6-8 m AP P/R |    8-12 m AP P/R
+  all labels                 AP 0.967 |0.99 0.72/1.00 23h |0.95 0.80/0.92 25h |0.97 0.95/0.99 10h |0.93 0.96/0.60  0h |               --
+  camera-checked negs only   AP 0.989 |1.00 0.89/1.00 23h |0.98 1.00/0.92 25h |               -- |               -- |               --
+  tracklet-averaged          AP 0.911 |0.80 0.72/0.99 23h |0.99 0.82/0.92 25h |0.99 0.96/1.00 10h |1.00 1.00/1.00  0h |               --
+
+SiT: 17146 person, 25289 not-person (5978 sitting left out)
+
+[sit->own] trained on SiT, scored on robot bags
+                                      |     0-2 m AP P/R |     2-4 m AP P/R |     4-6 m AP P/R |     6-8 m AP P/R |    8-12 m AP P/R
+  all labels                 AP 0.724 |0.49 0.38/0.77 23h |0.90 0.59/0.93 25h |0.84 0.58/0.91 10h |0.39 0.07/0.70  0h |               --
+  camera-checked negs only   AP 0.881 |0.70 0.72/0.77 23h |0.97 0.86/0.93 25h |               -- |               -- |               --
+  tracklet-averaged          AP 0.749 |0.59 0.42/1.00 23h |0.89 0.75/1.00 25h |0.98 0.67/1.00 10h |1.00 0.65/1.00  0h |               --
+
+[own+sit] leave-one-run-out with SiT in every fold
+                                      |     0-2 m AP P/R |     2-4 m AP P/R |     4-6 m AP P/R |     6-8 m AP P/R |    8-12 m AP P/R
+  all labels                 AP 0.973 |0.99 0.71/0.99 23h |0.97 0.92/0.92 25h |0.97 0.86/0.99 10h |0.92 0.73/0.88  0h |               --
+  camera-checked negs only   AP 0.993 |1.00 0.89/0.99 23h |0.99 1.00/0.92 25h |               -- |               -- |               --
+  tracklet-averaged          AP 0.990 |1.00 0.72/0.99 23h |1.00 0.98/0.92 25h |0.99 0.96/1.00 10h |1.00 1.00/1.00  0h |               --
+
+[own->sit] trained on robot bags, scored on SiT
+                                      |     0-2 m AP P/R |     2-4 m AP P/R |     4-6 m AP P/R |     6-8 m AP P/R |    8-12 m AP P/R
+  all labels                 AP 0.786 |0.70 0.56/0.90  8h |0.89 0.82/0.95 39h |0.88 0.83/0.80 32h |0.80 0.87/0.64 28h |0.68 0.86/0.30 62h
+
+[sit] leave-one-clip-out within SiT (for scale)
+                                      |     0-2 m AP P/R |     2-4 m AP P/R |     4-6 m AP P/R |     6-8 m AP P/R |    8-12 m AP P/R
+  all labels                 AP 0.953 |0.98 0.90/0.96  8h |0.99 0.93/0.96 39h |0.96 0.89/0.88 32h |0.95 0.86/0.90 28h |0.91 0.82/0.82 62h

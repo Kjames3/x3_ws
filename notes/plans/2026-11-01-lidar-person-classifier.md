@@ -95,10 +95,53 @@ within 0.6 m. Two people that close share an 18 cm grid component (> 0.9 m span)
 the > 1.1 m split separates them only sometimes. (SiT's higher sensor sees more upper
 body, so the robot's number may differ.) A crowd fix has to start in the extractor.
 
+## Synthetic people in real frames (2026-11-02, `synthetic_v1.txt`)
+`src/tools/perception/synthetic_people.py` (tests: `tests/test_synthetic_people.py`).
+Only the people are simulated: backgrounds are recorded frames from the 14 runs, and the
+rays are each frame's own Livox rays (direction + capture time), so the scan pattern,
+clutter and floor are real. Bodies are ~15 oriented ellipsoids (walking gait or standing,
+height 1.5-1.95 m, random girth/shoulders, 1 in 4 with a backpack), posed at each point's
+capture time (motion smear), with range noise and edge tails. Placement needs free floor
+and a line of sight (the lab is small: only ~10% of directions are open past 6 m, so
+bearings are drawn from rays that reach past the chosen range). No licence-bound assets
+(SMPL could replace the ellipsoids later). 4000 scenes / 6000 people run in ~13 s.
+
+**Checked against real people in the same frames** (synthetic person at the real one's
+range, other side): point count 647 vs 681, upper-body width 0.47 vs 0.49, legs while
+crossing 0.38 vs 0.42, along-ray tail shares within ~3 points (after fitting: noise
+0.008 + 0.0012 r, 12% of hits pushed back ~5 cm). The first body was 25% too narrow
+and strode too long; both fixed. Standing upper-body depth is still ~0.05 m shallower
+than real. Real camera-confirmed people are mostly face-on (walkup/idle), so compare by
+orientation, not pooled.
+
+**Extractor recall on our sensor (0.31 m), found / scored:**
+
+| nearest other person | 0-2 m | 2-4 m | 4-6 m | 6-8 m | all |
+|---|---|---|---|---|---|
+| < 0.6 m | 34% | 30% | 36% | 41% | 34% |
+| 0.6-1.0 m | 70% | 76% | 76% | 70% | 74% |
+| 1.0-1.5 m | 100% | 98% | 94% | 92% | 96% |
+| > 1.5 m (alone) | 100% | 99% | 93% | 86% | 96% |
+
+- Isolated people: ~99% when the same person is also found alone in that frame; the
+  few losses at 4-8 m are clutter/occlusion, not crowding. 8-12 m is too rarely visible
+  in this lab to score.
+- The SiT crowd finding holds on our sensor: 0.6-1.0 m apart loses a quarter, < 0.6 m
+  two thirds. At 0.6-1.0 m the losses are 'missed' (no candidate at all), not merged:
+  the pair is one component wider than 0.9 m and the split drops it. Under 0.6 m it is
+  both (a third of losses merged into one candidate covering both).
+- Single-knob fixes do not solve it (same 4000 scenes): isolation ring off 74->78% /
+  34->41% but +13% clutter candidates on bare frames; split grid 18->9 cm 74->80% /
+  34->35%, +22% clutter. A crowd fix needs a different split (e.g. head/shoulder
+  peaks in a height map), measured with `score(..., extract=new_extract)` on the same
+  `--seed`.
+
 ## Next
 1. Resolve the 0.69 m object; inspect high-scoring 'unknown' candidates.
 2. Recording session: several people, 4-10 m, behind the robot, a real crowd.
-3. Extractor: split merged people (e.g. per-height-slice clustering or a leg/torso
-   blob split) and re-measure recall on SiT.
+3. Extractor: split merged people (head/shoulder peaks, per-height-slice clustering or a
+   leg/torso blob split); measure on the synthetic scenes (same seed) AND SiT, and count
+   clutter candidates on bare frames so recall is not bought with false candidates.
+   Add seated synthetic poses (chairs next to them) for the furniture case.
 4. Only then: lidar-only births in the tracker (lower confidence class), shadow mode.
 5. JRDB (access requested 2026-11-01) as a second, robot-height dataset.
