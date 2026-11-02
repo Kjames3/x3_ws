@@ -68,5 +68,39 @@ def test_close_pair_is_scored_per_person():
     xyz, ts = _scene()
     people = [_person(4.0, -0.25), _person(4.0, 0.25, seed=1)]
     res = sp.score(*sp.insert(xyz, ts, people, np.random.default_rng(3)), people)
-    assert all(r[0] in sp.OUTCOMES for r in res)
+    assert all(r[0] in sp.OUTCOMES and r[3] >= 0 for r in res)
     assert sum(r[0] == 'found' for r in res) <= 2
+
+
+# -- head/shoulder peak split (person_candidates.extract(..., peaks=True)) -------------
+
+from yahboomcar_bringup import person_candidates as pc  # noqa: E402
+
+
+def _near(c, x, y, r=sp.MATCH_M):
+    return len(c) and np.hypot(c[:, 0] - x, c[:, 1] - y).min() < r
+
+
+def test_peaks_split_two_people_shoulder_to_shoulder():
+    xyz, ts = _scene()
+    people = [_person(4.0, -0.27), _person(4.0, 0.27, seed=1)]
+    out, _ = sp.insert(xyz, ts, people, np.random.default_rng(3))
+    base = pc.extract(out[:, 0], out[:, 1], out[:, 2], range_max=12)
+    split = pc.extract(out[:, 0], out[:, 1], out[:, 2], range_max=12, peaks=True)
+    assert not (_near(base, 4.0, -0.27) and _near(base, 4.0, 0.27))       # merged without peaks
+    assert _near(split, 4.0, -0.27) and _near(split, 4.0, 0.27)
+
+
+def test_peaks_leave_a_lone_walker_whole():
+    xyz, ts = _scene()
+    for seed in range(5):
+        out, _ = sp.insert(xyz, ts, [_person(3.0, 0.0, speed=1.3, seed=seed)], np.random.default_rng(seed))
+        c = pc.extract(out[:, 0], out[:, 1], out[:, 2], range_max=12, peaks=True)
+        assert ((np.hypot(c[:, 0] - 3.0, c[:, 1]) < 0.8).sum() == 1) if len(c) else False
+
+
+def test_peaks_do_not_cut_a_flat_panel_into_people():
+    rng = np.random.default_rng(0)
+    n = 4000                                            # 1.4 m wide, 1.8 m tall board at 4 m
+    pts = np.c_[np.full(n, 4.0) + rng.normal(0, 0.01, n), rng.uniform(-0.7, 0.7, n), rng.uniform(0.0, 1.8, n)]
+    assert len(pc.extract(pts[:, 0], pts[:, 1], pts[:, 2], peaks=True)) == 0

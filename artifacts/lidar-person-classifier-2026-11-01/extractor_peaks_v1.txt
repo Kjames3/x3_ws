@@ -1,0 +1,21 @@
+1572 background frames, 4000 synthetic scenes, 786 real frames
+
+                                           base        peaks
+synthetic recall, nearest 0.0-0.6 m  34.3% /1660  56.0% /1660
+synthetic recall, nearest 0.6-1.0 m  73.9% /1600  83.2% /1600
+synthetic recall, nearest 1.0-1.5 m   96.4% /980   96.6% /980
+synthetic recall, nearest alone (> 1.5 m)   95.8% /336   95.8% /336
+synthetic recall, >= 6 m, nn >= 1 m   91.0% /501   91.6% /501
+duplicates per person (all)               0.000        0.001
+duplicates per person (alone)             0.000        0.001
+real: candidates / frame                  11.08        11.27
+real: clutter (> 1 m from people)         10.15        10.34
+real people base found, still found  100.0% /672  100.0% /672
+real: extra candidates per person         0.000        0.003
+ms / frame (8 m, median)                   1.81         2.46
+ms / frame (8 m, p95)                      2.12         3.81
+SiT recall, nearest 0.0-0.6 m        36.4% /804   44.5% /804
+SiT recall, nearest 0.6-1.0 m       51.0% /2515  59.6% /2515
+SiT recall, nearest 1.0-1.5 m        72.2% /927   72.7% /927
+SiT recall, nearest alone           77.2% /2320  77.6% /2320
+SiT duplicates per person                 0.001        0.011

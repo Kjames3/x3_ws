@@ -68,6 +68,7 @@ DROP_P = 0.03                 # random no-return (dark clothing)
 GRAZE_COS = 0.12              # no return when the ray meets the surface flatter than this
 TIME_BINS = 5
 MATCH_M = 0.35
+DUP_M = 0.5
 MIN_VISIBLE = 10
 FREE_M = 0.4                  # no real points at body height this close to a placement
 REAL_CLEAR_M = 1.5
@@ -248,16 +249,22 @@ def sample_group(rng, occupied, avoid, open_bearing):
 
 def score(out, pid, people, extract=pc.extract):
     """Run the extractor on a frame with people inserted; per person (outcome, features,
-    visible points).  `extract` is swappable so a candidate extractor can be compared."""
+    visible points, duplicates).  Duplicates: other candidates within DUP_M of the person
+    whose nearest person is them (one person cut into several pieces).  `extract` is
+    swappable so a candidate extractor can be compared."""
     x, y, z = out[:, 0], out[:, 1], out[:, 2]
     cands = extract(x, y, z, origin=(0.0, 0.0), range_max=RANGE_MAX_M)
     P = np.array([[p['x'], p['y']] for p in people])
+    if len(cands):
+        dc = np.hypot(cands[:, None, 0] - P[None, :, 0], cands[:, None, 1] - P[None, :, 1])
+        owner, dist = dc.argmin(1), dc.min(1)
     res = []
     for k in range(len(people)):
         vis = int(((pid == k) & (z > 0.15) & (z < 2.2)).sum())
         outcome, feat = 'missed', np.full(len(cf.NAMES), np.nan, dtype=np.float32)
+        near_k = int(((owner == k) & (dist < DUP_M)).sum()) if len(cands) else 0
         if vis < MIN_VISIBLE:
-            res.append(('hidden', feat, vis))
+            res.append(('hidden', feat, vis, 0))
             continue
         for c in cands:
             d = np.hypot(P[:, 0] - c[0], P[:, 1] - c[1])
@@ -274,7 +281,7 @@ def score(out, pid, people, extract=pc.extract):
                 outcome = 'merged_person'
             elif mine:
                 outcome = 'merged_other'
-        res.append((outcome, feat, vis))
+        res.append((outcome, feat, vis, max(0, near_k - (outcome == 'found'))))
     return res
 
 
@@ -316,9 +323,9 @@ def run_scene(args, extract=pc.extract):
     for k, p in enumerate(people):
         others = np.delete(P, k, axis=0)
         nn = float(np.hypot(*(others - P[k]).T).min()) if len(others) else 99.0
-        outcome, feat, vis = res[k]
+        outcome, feat, vis, dups = res[k]
         rows.append(dict(range=float(math.hypot(p['x'], p['y'])), nn=nn, n_group=len(people),
-                         walking=p['speed'] > 0, visible=vis, outcome=outcome, alone=alone[k],
+                         walking=p['speed'] > 0, visible=vis, outcome=outcome, alone=alone[k], dups=dups,
                          X=feat, seed=seed))
     return rows
 

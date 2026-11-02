@@ -136,12 +136,48 @@ orientation, not pooled.
   peaks in a height map), measured with `score(..., extract=new_extract)` on the same
   `--seed`.
 
+## Extractor crowd fix: head/shoulder peak split (2026-11-02, `extractor_peaks_v1.txt`)
+`person_candidates.extract(..., peaks=True)`, **off by default**; nothing live changed.
+For components 0.55-2.5 m wide: an 8 cm height map, local maxima above 1.2 m (lower near
+the robot where the FOV top cuts people), and a peak is another person only if the
+height dips >= 15 cm on the line to every accepted peak within 1.2 m. Each peak takes
+the points within 0.45 m. A piece is kept if person-sized, compact (85% of its upper
+points within 0.3 m of the peak), top between 1.2 m (or the FOV top) and 2.1 m, n r^2 >=
+300, and isolated counting only points no other piece took. The usual split's pieces
+always stay; peak pieces are added beside them.
+
+Compared with `src/tools/perception/extractor_compare.py` (same synthetic seed, real
+frames, SiT, timing):
+
+| | base | peaks |
+|---|---|---|
+| synthetic, nearest other < 0.6 m | 34% | 56% |
+| synthetic, 0.6-1.0 m | 74% | 83% |
+| synthetic, alone / >= 6 m | 96% / 91% | 96% / 92% |
+| SiT, < 0.6 m / 0.6-1.0 m | 36% / 51% | 45% / 60% |
+| SiT alone | 77% | 78% |
+| real labelled people still found | 100% | 100% |
+| clutter candidates per real frame | 10.15 | 10.34 (+2%) |
+| duplicates per person (synthetic / SiT) | 0 / 0.001 | 0.001 / 0.011 |
+| Jetson ms/frame, x3_server running (median / p95) | 8.5 / 10.6 | 10.5 / 14.5 |
+
+How it got there (each step on the same seeds): the first version split people well
+(62% / 89%) but cut walls into 'people' (clutter 10 -> 28 per frame) and lost 10% of
+real people, by dropping the usual split's pieces when it found others in the same
+component. Fixes: keep the usual pieces; compactness; top height and n r^2 (these keep
+~93% of real and synthetic people's pieces and drop 2/3 of clutter pieces). Uncapped it
+reaches 62% / 89% at +10% clutter but costs 2x on the laptop (Jetson 16.7 / 29 ms); the
+2.5 m component cap gives up groups merged into a long wall. `PEAK_MAX_SPAN_M` is the knob.
+
+Not yet: the classifier was trained on base candidates only (rebuild own.npz with peaks
+before trusting its scores on peak pieces); Monday's real crowd runs are the real test;
+then shadow mode on the robot (both extractors, log only).
+
 ## Next
 1. Resolve the 0.69 m object; inspect high-scoring 'unknown' candidates.
 2. Recording session: several people, 4-10 m, behind the robot, a real crowd.
-3. Extractor: split merged people (head/shoulder peaks, per-height-slice clustering or a
-   leg/torso blob split); measure on the synthetic scenes (same seed) AND SiT, and count
-   clutter candidates on bare frames so recall is not bought with false candidates.
-   Add seated synthetic poses (chairs next to them) for the furniture case.
+3. Extractor: peak split built and measured offline (above). Next: score it on the
+   real crowd runs, rebuild own.npz with peaks and re-check the classifier, then shadow
+   mode. Add seated synthetic poses (chairs next to them) for the furniture case.
 4. Only then: lidar-only births in the tracker (lower confidence class), shadow mode.
 5. JRDB (access requested 2026-11-01) as a second, robot-height dataset.
