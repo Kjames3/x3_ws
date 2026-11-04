@@ -173,6 +173,37 @@ Not yet: the classifier was trained on base candidates only (rebuild own.npz wit
 before trusting its scores on peak pieces); Monday's real crowd runs are the real test;
 then shadow mode on the robot (both extractors, log only).
 
+## Real crowd runs, 2026-11-03 (`real_crowd_eval.py`)
+`artifacts/person-lidar-2026-11-03/` busy-r1, busy-r2 (300 s each, lab at its busiest),
+group-r1 (60 s); robot parked. Scored on the robot (the 2.6 GB copy over campus WiFi
+was ~0.35 MB/s; the copy to the laptop is still to do). Reference = C3 camera people
+in its reliable zone (0.8-3.8 m, +-40 deg), one-to-one matched within 0.5 m, so a
+merged pair counts as a miss whatever either extractor does.
+
+| 6381 frames, 4846 camera people | base | peaks |
+|---|---|---|
+| all | 72.2% | 75.3% |
+| nearest other < 0.6 m / 0.6-1.0 / 1.0-1.5 / alone | 53.6 / 81.0 / 67.0 / 73.5% | 54.3 / 81.2 / 69.0 / 78.3% |
+| 3+ people in view | 52.2% | 54.8% |
+| in-view candidates > 1 m from any camera person | 1.82 | 1.82 |
+
+- Peaks: +3 points overall at no in-view clutter cost, but almost nothing for close
+  pairs (< 1 pt), against the +9 to +22 synthetic predicted. Its gain is mostly people
+  with nobody near: likely a person merged with a desk or chair.
+- The baseline itself is the bigger problem: 72% here against 99.5% on the 10-30
+  open-floor runs, including people with nobody near. Untested guess: seated people at
+  desks (the camera counts them, the extractor's height rules drop them). Break the
+  misses down by height once the bags are on the laptop.
+- busy-r1: the camera saw >= 1 person in only 536 of 2930 records, never more than 2.
+  Camera-side group loss is being instrumented (C3 recorder, below), not yet measured.
+
+C3 recorder (`/tmp/x3_c3_record`, written by `record_person_lidar.sh`): per camera
+packet, person boxes before the confidence cut and NMS (>= 0.2), the kept boxes, torso
+measurements, tracker tracks, and the depth frame (`c3/c3_depth.bin`,
+`c3_live.read_depth_log`). Purpose: find where a 3+ group is lost (NMS IoU 0.5 /
+conf 0.5, the transitive seg box merge, torso depth on an occluded person, the 4 m
+depth cap) and replay threshold changes offline.
+
 ## Next
 1. Resolve the 0.69 m object; inspect high-scoring 'unknown' candidates.
 2. Recording session: several people, 4-10 m, behind the robot, a real crowd.

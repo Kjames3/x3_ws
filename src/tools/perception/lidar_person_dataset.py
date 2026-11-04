@@ -250,7 +250,11 @@ def label_tracklets(track, cam_hit, in_view, cam_near, xy, persist=None):
     return label, source
 
 
-def process_run(run_dir, overrides=()):
+def iter_frames(run_dir):
+    """Yield one dict per Livox frame of a run: odom-frame points (wx, wy, z, refl), the
+    robot pose at the frame end (fx, fy, fa), the sensor origin (ox, oy), the frame end
+    time, and the C3 record nearest that time (rec, or None) with its measured camera
+    people (cam, (K, 2) odom)."""
     run_dir = pathlib.Path(run_dir)
     recs = [json.loads(line) for line in open(run_dir / 'lidar_persons.ndjson')]
     rec_t = [r['stamp'] for r in recs]
@@ -260,7 +264,6 @@ def process_run(run_dir, overrides=()):
     poses = Poses([parse_odom(d) for (d,) in db.execute(
         'select data from messages where topic_id=?', (tid['/odom'],))])
     lx, ly, lz = LIVOX_XYZ
-    frames, rows = [], []
     for (data,) in db.execute('select data from messages where topic_id=? order by timestamp',
                               (tid['/livox/lidar'],)):
         p = decode_points(data)
@@ -283,18 +286,29 @@ def process_run(run_dir, overrides=()):
         wx, wy = c * sx - s * sy + px, s * sx + c * sy + py
         fx, fy, fa = (float(v[0]) for v in frame)
         ox, oy = fx + math.cos(fa) * lx, fy + math.sin(fa) * lx
-        cands = pc.extract(wx, wy, z, origin=(ox, oy), range_max=RANGE_MAX_M)
         i = bisect.bisect_left(rec_t, end)
         near = [k for k in (i - 1, i) if 0 <= k < len(recs) and abs(rec_t[k] - end) < 0.06]
         rec = recs[min(near, key=lambda k: abs(rec_t[k] - end))] if near else None
         cam = np.array(camera_people(rec, end, bad)).reshape(-1, 2)
+        yield dict(wx=wx, wy=wy, z=z, refl=p['r'], fx=fx, fy=fy, fa=fa, ox=ox, oy=oy,
+                   end=end, rec=rec, cam=cam, n_bad=len(bad))
+
+
+def process_run(run_dir, overrides=(), peaks=False):
+    run_dir = pathlib.Path(run_dir)
+    frames, rows = [], []
+    n_bad = 0
+    for f in iter_frames(run_dir):
+        wx, wy, z, fx, fy, fa, ox, oy = (f[k] for k in ('wx', 'wy', 'z', 'fx', 'fy', 'fa', 'ox', 'oy'))
+        end, rec, cam, n_bad = f['end'], f['rec'], f['cam'], f['n_bad']
+        cands = pc.extract(wx, wy, z, origin=(ox, oy), range_max=RANGE_MAX_M, peaks=peaks)
         xy = cands[:, :2].astype(np.float64)
         hits = {j for _, j in mutual_nearest(cam, xy, CAM_MATCH_M)}
         cf_, cs_ = math.cos(fa), math.sin(fa)
         for j, cand in enumerate(cands):
             m = cf.crop(wx, wy, z, cand)
             feat = cf.features(wx[m], wy[m], z[m], origin=(ox, oy))
-            refl = p['r'][m].astype(np.float32)
+            refl = f['refl'][m].astype(np.float32)
             dx, dy = cand[0] - fx, cand[1] - fy
             fwd, left = cf_ * dx + cs_ * dy, -cs_ * dx + cf_ * dy
             bearing = math.degrees(math.atan2(left, fwd))
@@ -323,7 +337,7 @@ def process_run(run_dir, overrides=()):
         bearing=np.array([r['bearing'] for r in rows], dtype=np.float32),
         in_view=np.array([r['in_view'] for r in rows]),
         run=np.array([run_dir.name] * len(rows)),
-        n_frames=len(frames), n_bad_camera=len(bad))
+        n_frames=len(frames), n_bad_camera=n_bad)
 
 
 def main():
@@ -331,11 +345,12 @@ def main():
     ap.add_argument('runs', nargs='+')
     ap.add_argument('-o', '--out', required=True)
     ap.add_argument('--overrides', help='JSON list of {run, x, y, r_m, label} hand corrections (odom)')
+    ap.add_argument('--peaks', action='store_true', help='extract with the head/shoulder peak split')
     a = ap.parse_args()
     overrides = json.load(open(a.overrides)) if a.overrides else []
     parts = []
     for run in a.runs:
-        r = process_run(run, overrides)
+        r = process_run(run, overrides, peaks=a.peaks)
         if r is None:
             print(f'{run}: no frames')
             continue

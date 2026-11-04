@@ -21,8 +21,12 @@ import bisect
 import json
 import logging
 import math
+import os
+import queue
+import struct
 import threading
 import time
+import zlib
 from collections import deque
 
 import numpy as np
@@ -37,6 +41,30 @@ PREDICT_S = 0.5       # CV prediction is only better than "hold" out to ~0.5-0.7
 POLL_S = 0.02
 POSE_MAX_AGE_S = 0.5
 POSE_HISTORY_S = 2.0
+
+# Recording on demand (scripts/record_person_lidar.sh): while this file holds a
+# directory, every packet goes to <dir>/c3.ndjson with the person boxes before
+# the confidence cut and NMS (down to RECORD_RAW_CONF), the boxes that survived,
+# the measurements and the tracks, and its depth to <dir>/c3_depth.bin.
+RECORD_FLAG = '/tmp/x3_c3_record'
+RECORD_RAW_CONF = 0.2
+DEPTH_STEP = 2          # depth is stored every 2nd pixel, uint16 mm, zlib
+
+
+def read_depth_log(path):
+    """c3_depth.bin -> list of (capture monotonic s, step, (H, W) float32 metres)."""
+    out = []
+    with open(path, 'rb') as f:
+        while True:
+            head = f.read(16)
+            if len(head) < 16:
+                break
+            t, h, w, step, n = struct.unpack('<dHHHH', head)
+            n_bytes = struct.unpack('<I', f.read(4))[0] if n == 0xFFFF else n
+            buf = f.read(n_bytes)
+            mm = np.frombuffer(zlib.decompress(buf), dtype='<u2').reshape(h, w)
+            out.append((t, step, mm.astype(np.float32) / 1000.0))
+    return out
 
 
 class C3Live:
@@ -70,6 +98,10 @@ class C3Live:
         self._thread = None
         self._poses = deque()   # (monotonic, x, y, unwrapped theta), sampled every poll
         self._meas_log = []
+        self._rec_dir = None       # RECORD_FLAG directory while recording
+        self._rec_checked = 0.0
+        self._rec_log = None
+        self._depth_q = None
 
     def start(self):
         self._running = True
@@ -83,6 +115,68 @@ class C3Live:
         if self._log is not None:
             self._log.close()
             self._log = None
+        self._set_recording(None)
+
+    def _check_recording(self, now):
+        """Start/stop recording when RECORD_FLAG changes (checked once a second)."""
+        if now - self._rec_checked < 1.0:
+            return
+        self._rec_checked = now
+        try:
+            with open(RECORD_FLAG) as f:
+                d = f.read().strip() or None
+        except OSError:
+            d = None
+        if d != self._rec_dir:
+            self._set_recording(d)
+
+    def _set_recording(self, d):
+        if self._rec_dir is not None:
+            self.oak.raw_person_log_conf = None
+            if self._rec_log is not None:
+                self._rec_log.close()
+                self._rec_log = None
+            try:
+                self._depth_q.put(None, timeout=1.0)     # writer closes its file
+            except queue.Full:
+                pass
+            self._depth_q = None
+            logger.info('C3 recording stopped (%s)', self._rec_dir)
+        self._rec_dir = None
+        if d is None:
+            return
+        try:
+            os.makedirs(d, exist_ok=True)
+            rec_log = open(os.path.join(d, 'c3.ndjson'), 'a', buffering=1)
+            depth_f = open(os.path.join(d, 'c3_depth.bin'), 'ab')
+        except OSError as e:
+            logger.warning('C3 recording to %s failed: %s', d, e)
+            return
+        self._rec_dir, self._rec_log = d, rec_log
+        self._depth_q = queue.Queue(maxsize=30)
+        self.oak.raw_person_log_conf = RECORD_RAW_CONF
+        threading.Thread(target=self._depth_writer, args=(depth_f, self._depth_q),
+                         name='c3-depth-rec', daemon=True).start()
+        logger.info('C3 recording packets to %s', d)
+
+    @staticmethod
+    def _depth_writer(f, q):
+        """Compress and append depth frames off the tracking thread."""
+        with f:
+            while True:
+                item = q.get()
+                if item is None:
+                    return
+                t, depth = item
+                d = depth[::DEPTH_STEP, ::DEPTH_STEP]
+                mm = np.where(np.isfinite(d), np.clip(d * 1000.0, 0, 65535), 0).astype('<u2')
+                buf = zlib.compress(mm.tobytes(), 1)
+                h, w = mm.shape
+                if len(buf) < 0xFFFF:
+                    f.write(struct.pack('<dHHHH', t, h, w, DEPTH_STEP, len(buf)))
+                else:
+                    f.write(struct.pack('<dHHHHI', t, h, w, DEPTH_STEP, 0xFFFF, len(buf)))
+                f.write(buf)
 
     def _write(self, rec):
         if self._log is not None:
@@ -194,6 +288,7 @@ class C3Live:
             time.sleep(POLL_S)
             try:
                 self._record_pose(time.monotonic())
+                self._check_recording(time.monotonic())
                 # The packet stamp is the only reliable "new packet" signal;
                 # a repeat would reach the tracker with dt=0 and reset it.
                 stamp = getattr(self.oak, '_latest_detections_t', 0.0)
@@ -235,13 +330,25 @@ class C3Live:
                 t0 = time.perf_counter()
                 self._meas_log = []
                 meas = self._measurements(detections, depth, intr, pose, masks)
-                self._write({'k': 'pkt', 'recv': round(self.oak._latest_detections_t, 4),
-                             'cap': None if cap_t is None else round(cap_t, 4),
-                             'timed': near is not None and pose_cap is not None,
-                             'depth_t': None if near is None else round(near[0], 4),
-                             'pose': {k: round(v, 5) for k, v in pose.items()},
-                             'intr': [round(v, 3) for v in intr[:4]] + list(intr[4:]),
-                             'depth_shape': list(depth.shape), 'meas': self._meas_log})
+                pkt = {'k': 'pkt', 'recv': round(self.oak._latest_detections_t, 4),
+                       'cap': None if cap_t is None else round(cap_t, 4),
+                       'timed': near is not None and pose_cap is not None,
+                       'depth_t': None if near is None else round(near[0], 4),
+                       'pose': {k: round(v, 5) for k, v in pose.items()},
+                       'intr': [round(v, 3) for v in intr[:4]] + list(intr[4:]),
+                       'depth_shape': list(depth.shape), 'meas': self._meas_log}
+                if self._rec_dir is not None:
+                    pkt['raw'] = self.oak.get_raw_people() if hasattr(self.oak, 'get_raw_people') else []
+                    pkt['dets'] = [{'bbox': d['bbox'], 'conf': round(d['conf'], 3),
+                                    'merged_from': d.get('merged_from', 1), 'mask_px': d.get('mask_px')}
+                                   for d in people]
+                    pkt['nn_conf'] = getattr(self.oak, 'nn_conf', None)
+                    pkt['nn_iou'] = getattr(self.oak, 'nn_iou', None)
+                    try:
+                        self._depth_q.put_nowait((stamp, depth))
+                        pkt['depth_rec'] = True
+                    except queue.Full:
+                        pkt['depth_rec'] = False
                 dg['meas'] += len(meas)
                 prev_t = self.tracker.last_t
                 if prev_t is not None and stamp - prev_t > self.tracker.config['max_dt_s']:
@@ -254,8 +361,19 @@ class C3Live:
                     now_pose['theta'] = pose['theta'] + math.atan2(
                         math.sin(now_pose['theta'] - pose['theta']),
                         math.cos(now_pose['theta'] - pose['theta']))
-                tracks = self._to_local(self.tracker.update(stamp, meas), now_pose,
+                raw_tracks = self.tracker.update(stamp, meas)
+                tracks = self._to_local(raw_tracks, now_pose,
                                         time.time() + stamp - time.monotonic())
+                if self._rec_dir is not None:
+                    pkt['tracks'] = [{'id': t['id'], 'x': round(t['x'], 3), 'y': round(t['y'], 3),
+                                      'confirmed': t['confirmed'], 'measured': t['measured'],
+                                      'mi': t['measurement_index']} for t in raw_tracks]
+                self._write(pkt)
+                if self._rec_log is not None:
+                    try:
+                        self._rec_log.write(json.dumps(pkt) + '\n')
+                    except (OSError, ValueError):
+                        pass
                 if people and tracks:
                     dg['ring_packets'] += 1
                 ms = (time.perf_counter() - t0) * 1e3

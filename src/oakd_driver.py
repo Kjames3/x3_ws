@@ -232,6 +232,8 @@ class OakDCamera:
         self._latest_imu = None
         self._latest_detections = []
         self._latest_detections_t = 0.0   # monotonic, last NN packet decoded
+        self.raw_person_log_conf = None   # C3 recorder: log person boxes from this score
+        self._latest_raw_people = []      # [x1, y1, x2, y2, score] pre-NMS (only when set)
         self._latest_detections_capture_t = None  # monotonic capture time of its frame
         # (capture monotonic s, metres) of recent depth frames, so a detection can
         # be paired with the depth taken with its image, not the newest one. NN
@@ -976,11 +978,17 @@ class OakDCamera:
         coef = None
         if self.nn_masks:
             kpts, coef = None, kpts
-        keep = scores >= self.nn_conf
+        # raw_person_log_conf (set by the C3 recorder, None otherwise): also keep
+        # person boxes down to this score, before the confidence cut and NMS, so
+        # thresholds can be replayed offline. Live output is unchanged.
+        log_conf = self.raw_person_log_conf
+        thr = self.nn_conf if log_conf is None else min(self.nn_conf, log_conf)
+        keep = scores >= thr
         if not keep.any():
             with self._lock:
                 self._latest_detections = []
                 self._latest_masks = []
+                self._latest_raw_people = []
                 self._latest_detection_meta = metadata
             return
         box, scores, cls_id = box[keep], scores[keep], cls_id[keep]
@@ -1009,6 +1017,25 @@ class OakDCamera:
         xyxy[:, 1] = box[:, 1] - box[:, 3] / 2.0
         xyxy[:, 2] = box[:, 0] + box[:, 2] / 2.0
         xyxy[:, 3] = box[:, 1] + box[:, 3] / 2.0
+
+        raw_people = []
+        if log_conf is not None:
+            person = np.array([0 <= c < len(self.labels) and self.labels[c] == "person" for c in cls_id], bool)
+            raw_people = [[round(float(v), 1) for v in b] + [round(float(sc), 3)]
+                          for b, sc in zip(xyxy[person], scores[person])]
+            hi = scores >= self.nn_conf
+            xyxy, scores, cls_id = xyxy[hi], scores[hi], cls_id[hi]
+            if kpts is not None:
+                kpts = kpts[hi]
+            if coef is not None:
+                coef = coef[hi]
+            if not hi.any():
+                with self._lock:
+                    self._latest_detections = []
+                    self._latest_masks = []
+                    self._latest_raw_people = raw_people
+                    self._latest_detection_meta = metadata
+                return
 
         kept = _nms(xyxy, scores, self.nn_iou)
         depth = self.get_raw_depth_frame()   # (nn_h, nn_w) metres, CAM_A-aligned
@@ -1060,6 +1087,7 @@ class OakDCamera:
         with self._lock:
             self._latest_detections = out
             self._latest_masks = masks
+            self._latest_raw_people = raw_people
             self._latest_detection_meta = metadata
 
     @staticmethod
@@ -1190,6 +1218,12 @@ class OakDCamera:
         """(detections, masks) from the same packet, read atomically."""
         with self._lock:
             return list(self._latest_detections), list(self._latest_masks)
+
+    def get_raw_people(self):
+        """Person boxes before the confidence cut and NMS, [x1, y1, x2, y2, score]
+        (empty unless raw_person_log_conf is set)."""
+        with self._lock:
+            return list(self._latest_raw_people)
 
     def get_detection_masks(self):
         """Masks aligned with get_detection_observation()[0] (None where unavailable).
