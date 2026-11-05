@@ -1,4 +1,24 @@
 {
   "_comment": "Map-frame polygons (metres) where lower-ToF obstacles are ignored; keys are map stems. See src/tof_exempt_zones.py. Fill in RealLab3 from RViz Publish Point clicks.",
-  "RealLab3": []
+  "RealLab3": [
+    [
+      [
+        2.89,
+        -6.53
+      ],
+      [
+        6.19,
+        -6.53
+      ],
+      [
+        6.19,
+        -3.23
+      ],
+      [
+        2.89,
+        -3.23
+      ]
+    ]
+  ],
+  "_RealLab3_note": "Provisional 2026-11-05: 3.3 m square around the ~2.5 m raised platform, centred on the robot's pose while it sat on it (4.54, -4.88). Refine with RViz corner clicks."
 }
