@@ -13,6 +13,9 @@ find_package(nav2_mppi_controller REQUIRED)
 find_package(x3_msgs REQUIRED)
 find_package(nav2_costmap_2d REQUIRED)
 find_package(nav2_util REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(geometry_msgs REQUIRED)
 
 add_library(${PROJECT_NAME} SHARED
   src/dbas_critic.cpp
@@ -29,6 +32,9 @@ ament_target_dependencies(${PROJECT_NAME}
   x3_msgs
   nav2_costmap_2d
   nav2_util
+  tf2
+  tf2_ros
+  geometry_msgs
 )
 
 pluginlib_export_plugin_description_file(nav2_mppi_controller dbas_critic.xml)

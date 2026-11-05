@@ -30,8 +30,14 @@ protected:
   x3_msgs::msg::PedestrianArray::SharedPtr latest_peds_;
   std::mutex peds_mutex_;
 
+  // A pedestrian moved into the costmap (trajectory) frame.
+  struct Ped { double x, y, vx, vy, r; };
+  bool pedsInCostmapFrame(
+    const x3_msgs::msg::PedestrianArray & msg, std::vector<Ped> & out);
+
   double safe_radius_;
   double collision_cost_;
+  double max_msg_age_;
 };
 
 }  // namespace mppi::critics

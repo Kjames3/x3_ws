@@ -16,6 +16,9 @@
   <depend>x3_msgs</depend>
   <depend>nav2_costmap_2d</depend>
   <depend>nav2_util</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>geometry_msgs</depend>
 
   <export>
     <build_type>ament_cmake</build_type>
