@@ -100,6 +100,7 @@ from drivers_x3 import (
     INA226BatteryMonitor, TeensyToFArrays, TEENSY_TOF_PORT, tof_valid_mask,
     frame_to_points, tof_zone_low_edge_points
 )
+import tof_exempt_zones
 from nav2_client import Nav2Client
 from frontier_explorer import FrontierExplorer
 from velocity_estimator import VelocityEstimator
@@ -964,6 +965,13 @@ class ROS2Bridge:
         # would run every high-rate /tf message through Python on this node.
         self._static_tf = {}
         self._tof_extrinsics = {}
+        # Raised-floor exemption for the lower ToF (src/tof_exempt_zones.py):
+        # map<-odom from the last /amcl_pose, so lower-array points can be
+        # placed on the map without a full TF listener.
+        self._tof_exempt = tof_exempt_zones.load_zones()
+        self._map_from_odom = None
+        if self._tof_exempt:
+            logger.info(f"ToF lower-array exempt zones for maps: {sorted(self._tof_exempt)}")
 
         # SLAM Toolbox publishes /map as TRANSIENT_LOCAL; match so late-joining still gets the map
         _map_qos = QoSProfile(depth=1,
@@ -1007,6 +1015,11 @@ class ROS2Bridge:
                 Twist, '/cmd_vel', self._gate_cmd_vel_cb,
                 QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT))
             self._gate_warned = 0.0
+
+        if self._tof_exempt:
+            from geometry_msgs.msg import PoseWithCovarianceStamped
+            self._node.create_subscription(PoseWithCovarianceStamped, '/amcl_pose',
+                                           self._amcl_pose_cb, 10)
 
         # Publishers for pedestrian tracking (EE244 Project)
         from geometry_msgs.msg import PoseArray
@@ -1323,6 +1336,22 @@ class ROS2Bridge:
             return [], stats
         return lidar_persons_local(results, self.get_pose_m()), stats
 
+    def _amcl_pose_cb(self, msg):
+        p, q = msg.pose.pose.position, msg.pose.pose.orientation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        # AMCL stamps its pose at the scan time; the odom pose now is close
+        # enough at walking speed (map<-odom drifts slowly).
+        with self._lock:
+            o = dict(self._pose_m)
+        self._map_from_odom = tof_exempt_zones.compose_map_from_odom(
+            (p.x, p.y, yaw), (o['x'], o['y'], o['theta']))
+
+    def _tof_exempt_polygons(self):
+        """Exempt polygons for the active Nav2 map, or None (SLAM, no AMCL pose, no map)."""
+        if not self._tof_exempt or self._map_from_odom is None or nav2_client is None:
+            return None
+        return self._tof_exempt.get(tof_exempt_zones.map_stem(getattr(nav2_client, '_current_map', None)))
+
     def get_pose_m(self) -> dict:
         """Return the robot pose in metres: {x, y, theta}."""
         with self._lock:
@@ -1389,6 +1418,13 @@ class ROS2Bridge:
         if extra_pass is not None:
             above |= extra_pass
         passed = above & (np.hypot(xy[:, 0], xy[:, 1]) < TOF_CBF_MAX_RANGE_M)
+        if name == 'lower':
+            exempt = getattr(self, '_tof_exempt_polygons', None)
+            polys = exempt() if exempt else None
+            if polys:
+                pose = self.get_pose_m()
+                passed &= ~tof_exempt_zones.exempt_mask(
+                    xy, (pose['x'], pose['y'], pose['theta']), self._map_from_odom, polys)
         streak = self._tof_streak.setdefault(name, np.zeros(64, dtype=np.int32))
         hit = np.zeros(64, dtype=bool)
         hit[zones[passed]] = True

@@ -1,0 +1,4 @@
+{
+  "_comment": "Map-frame polygons (metres) where lower-ToF obstacles are ignored; keys are map stems. See src/tof_exempt_zones.py. Fill in RealLab3 from RViz Publish Point clicks.",
+  "RealLab3": []
+}
