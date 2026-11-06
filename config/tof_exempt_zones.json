@@ -4,11 +4,11 @@
     [
       [
         2.89,
-        -6.53
+        -7.0
       ],
       [
         6.19,
-        -6.53
+        -7.0
       ],
       [
         6.19,
@@ -20,5 +20,5 @@
       ]
     ]
   ],
-  "_RealLab3_note": "Provisional 2026-11-05: 3.3 m square around the ~2.5 m raised platform, centred on the robot's pose while it sat on it (4.54, -4.88). Refine with RViz corner clicks."
+  "_RealLab3_note": "2026-11-05: around the ~2.5 m raised platform. South edge measured from bag nav_stuck_1105_1547: lower-ToF hits at y~-6.55 (x 4.9-5.2), so y_min is -7.0 (0.45 m approach margin). Other edges still provisional."
 }
