@@ -38,3 +38,20 @@ def test_segments_split_and_windows():
 def test_dedupe_drops_copy():
     a = np.random.rand(20, 5)
     assert len(tb.dedupe({1: a, 2: a.copy(), 3: a + 1})) == 2
+
+
+def test_ndjson_sources(tmp_path):
+    import json
+    f = tmp_path / 'lidar_persons.ndjson'
+    rows = []
+    for k in range(5):
+        lid = dict(id='L1', odom_x=0.1 * k, odom_y=0, odom_vx=1, odom_vy=0, confirmed=True,
+                   mode='coasting' if k == 2 else 'lidar held', lidar_age_s=0.0)
+        cams = [dict(id=7, odom_x=0.1 * k + 0.05, odom_y=0, measured=True, obs_age_s=0),   # same person
+                dict(id=8, odom_x=5, odom_y=5, measured=True, obs_age_s=0)]               # camera-only
+        rows.append(json.dumps(dict(stamp=100 + 0.1 * k, results=[lid], camera=cams)))
+    f.write_text('\n'.join(rows) + '\n')
+    lid = tb.tracks_from_ndjson(f, 'lidar')
+    assert set(lid) == {'L1'} and len(lid['L1']) == 4          # coasting row dropped
+    assert set(tb.tracks_from_ndjson(f, 'c3')) == {'C7', 'C8'}
+    assert set(tb.tracks_from_ndjson(f, 'fused')) == {'L1', 'C8'}

@@ -56,6 +56,44 @@ def tracks_from_run(run):
     return {i: np.array(sorted(r)) for i, r in out.items()}
 
 
+FUSE_M = 0.5          # a camera track this close to a lidar track is the same person
+
+
+def tracks_from_ndjson(path, source):
+    """Tracks from the lidar_persons.ndjson that record_person_lidar.sh writes.
+
+    source 'lidar': the live Livox tracker's results (L ids), confirmed and actually
+    measured this frame. 'coasting' rows are the tracker's own constant-velocity
+    extrapolation, so they are dropped: scoring a forecast against them would
+    flatter cv. 'c3': the camera tracks in the same file, measured samples only.
+    'fused': lidar where it has the person, plus camera tracks no lidar track is
+    within FUSE_M of (prefixed 'C' so the id spaces cannot collide).
+    """
+    out = {}
+    for line in open(path):
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        t = float(d['stamp'])
+        lid = [r for r in d.get('results', []) if r.get('confirmed') and r.get('mode') != 'coasting'
+               and r.get('lidar_age_s', 1.0) < 0.15]
+        near = d.get('results', [])     # coasting included: it still owns the person
+        cam = [c for c in d.get('camera', []) if c.get('measured', True) and c.get('obs_age_s', 0.0) < 0.15]
+        rows = []
+        if source in ('lidar', 'fused'):
+            rows += [('L' + str(r['id']).lstrip('L'), r) for r in lid]
+        if source == 'c3':
+            rows += [('C%s' % c['id'], c) for c in cam]
+        elif source == 'fused':
+            for c in cam:
+                if all(math.hypot(c['odom_x'] - r['odom_x'], c['odom_y'] - r['odom_y']) > FUSE_M for r in near):
+                    rows.append(('C%s' % c['id'], c))
+        for i, r in rows:
+            out.setdefault(i, []).append((t, r['odom_x'], r['odom_y'], r.get('odom_vx', 0.0), r.get('odom_vy', 0.0)))
+    return {i: np.array(sorted(v)) for i, v in out.items()}
+
+
 def dedupe(tracks, tol=0.02):
     """Drop tracks that duplicate another id sample-for-sample (seen in busy-r2)."""
     keep, ids = {}, sorted(tracks, key=lambda i: -len(tracks[i]))
@@ -137,20 +175,29 @@ PREDICTORS = ('stationary', 'cv_est', 'cv_fit', 'cv_damped', 'ctrv')
 
 # ───────────────────────────────── harness ──────────────────────────────────
 
-def collect(paths, rate=RATE_HZ, hist_s=HIST_S, horizons=HORIZONS):
-    import orca_cbf_compare as occ
+def load_tracks(p, source):
+    if source == 'oak':
+        import orca_cbf_compare as occ
+        return tracks_from_run(occ.to_world(occ.load_run(p)))
+    nd = Path(p) / 'lidar_persons.ndjson' if Path(p).is_dir() else Path(p)
+    if not nd.exists():
+        raise FileNotFoundError('no lidar_persons.ndjson (run predates the Livox recorder?)')
+    return tracks_from_ndjson(nd, source)
+
+
+def collect(paths, rate=RATE_HZ, hist_s=HIST_S, horizons=HORIZONS, source='oak'):
     hist_n = int(round(hist_s * rate)) + 1
     fut_n = int(round(max(horizons) * rate))
     H, F, R, runs = [], [], [], []
     for p in paths:
         try:
-            run = occ.to_world(occ.load_run(p))
+            tracks = load_tracks(p, source)
         except Exception as e:  # noqa: BLE001  (bad / empty bag)
             print('skip %s: %s' % (p, e), file=sys.stderr)
             continue
         ri = len(runs)
         runs.append(Path(p).name if Path(p).name != 'bag' else Path(p).parent.name)
-        for tr in dedupe(tracks_from_run(run)).values():
+        for tr in dedupe(tracks).values():
             for seg in segments(tr, rate):
                 for h, f in windows(seg, hist_n, fut_n):
                     H.append(h)
@@ -204,12 +251,18 @@ def main():
     ap.add_argument('--export', help='write windows to this .npz for training')
     ap.add_argument('--rate', type=float, default=RATE_HZ)
     ap.add_argument('--hist', type=float, default=HIST_S)
+    ap.add_argument('--source', choices=('oak', 'lidar', 'c3', 'fused'), default='oak',
+                    help='oak: /pedestrian_states from the bag (v3 estimator). lidar / c3 / fused: '
+                         'lidar_persons.ndjson (Livox tracker, C3 camera tracks, or both)')
+    ap.add_argument('--horizons', type=float, nargs='+', default=list(HORIZONS))
     a = ap.parse_args()
-    paths = sorted({p for g in a.runs for p in (glob.glob(g) or [g])
-                    if list(Path(p).glob('bag/*.db3')) or p.endswith('.db3')})
-    H, F, R, runs = collect(paths, a.rate, a.hist)
-    res = score(H, F, a.rate)
-    txt = report(res, runs, len(H))
+    hz = tuple(a.horizons)
+    ok = ((lambda p: list(Path(p).glob('bag/*.db3')) or p.endswith('.db3')) if a.source == 'oak'
+          else (lambda p: (Path(p) / 'lidar_persons.ndjson').exists() or p.endswith('.ndjson')))
+    paths = sorted({p for g in a.runs for p in (glob.glob(g) or [g]) if ok(p)})
+    H, F, R, runs = collect(paths, a.rate, a.hist, hz, a.source)
+    res = score(H, F, a.rate, hz)
+    txt = 'source: %s\n' % a.source + report(res, runs, len(H))
     print(txt)
     if a.out:
         o = Path(a.out)
@@ -217,7 +270,7 @@ def main():
         (o / 'report.txt').write_text(txt + '\n')
         per_run = {runs[i]: int((R == i).sum()) for i in range(len(runs))}
         (o / 'results.json').write_text(json.dumps(dict(
-            runs=per_run, rate=a.rate, hist_s=a.hist, moving_ms=MOVING_MS,
+            runs=per_run, source=a.source, rate=a.rate, hist_s=a.hist, moving_ms=MOVING_MS,
             results={str(k): v for k, v in res.items()}), indent=1))
     if a.export:
         np.savez_compressed(a.export, hist=H, fut=F, run=R, runs=np.array(runs), rate=a.rate)
