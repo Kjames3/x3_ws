@@ -249,11 +249,19 @@ def _peak_split(xs, ys, zs, origin, max_span, min_span, min_points, min_height):
 
 def extract(x, y, z, origin=(0.0, 0.0), cell=CELL_M, z_min=Z_MIN_M, z_max=Z_MAX_M,
             range_max=RANGE_MAX_M, min_points=MIN_POINTS, min_height=MIN_HEIGHT_M,
-            max_span=MAX_SPAN_M, min_span=MIN_SPAN_M, peaks=False):
+            max_span=MAX_SPAN_M, min_span=MIN_SPAN_M, peaks=False, extra_split_z=None):
     """x, y, z: point coordinates (any planar frame, z = height above the floor).
     origin: the robot's XY in that frame, for the range limit.
     peaks: also split components of several people by head/shoulder peaks
     (_peak_split; offline-evaluated 2026-11-02, off by default until shadow-tested).
+    extra_split_z: also split oversized components on their points above this height
+    (e.g. 0.9) and ADD the pieces the SPLIT_Z_M pass did not find.  A seated head tops
+    out ~1.07 m, under SPLIT_Z_M, so seated people merged with furniture are otherwise
+    never split out.  Offline 2026-11-07 at 0.9: seated found 4% -> 57%, standing
+    people never lost, clutter +24%.  BUT the classifier (model_base_1107) calls the
+    extra pieces people: lab non-person clusters scored person 1.02 -> 1.55 per frame
+    (labelled-negative FP 0-1% -> 9-16%), while seated people scored person barely
+    moved.  Left OFF; it needs seated training examples cut by this pass first.
     Returns an (N, 9) float32 array, columns FIELDS: median XY, XY/Z bounds, count."""
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
@@ -287,6 +295,10 @@ def extract(x, y, z, origin=(0.0, 0.0), cell=CELL_M, z_min=Z_MIN_M, z_max=Z_MAX_
             multi = _peak_split(xs, ys, zs, origin, max_span, min_span, min_points, min_height)
         if span > max_span:
             pieces = _split(xs, ys, zs, cell, max_span, min_span)
+            if extra_split_z is not None:
+                for q in _split(xs, ys, zs, cell, max_span, min_span, extra_split_z):
+                    if all(np.hypot(q[0] - o[0], q[1] - o[1]) > CORE_R_M for o in pieces):
+                        pieces.append(q)
             dx, dy = xs - origin[0], ys - origin[1]
             if (dx * dx + dy * dy).min() < NEAR_SPLIT_R_M ** 2:
                 for q in _split(xs, ys, zs, cell, max_span, min_span, NEAR_SPLIT_Z_M, origin):

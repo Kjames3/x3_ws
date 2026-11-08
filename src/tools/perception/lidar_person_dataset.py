@@ -294,14 +294,15 @@ def iter_frames(run_dir):
                    end=end, rec=rec, cam=cam, n_bad=len(bad))
 
 
-def process_run(run_dir, overrides=(), peaks=False):
+def process_run(run_dir, overrides=(), peaks=False, extra_split_z=None):
     run_dir = pathlib.Path(run_dir)
     frames, rows = [], []
     n_bad = 0
     for f in iter_frames(run_dir):
         wx, wy, z, fx, fy, fa, ox, oy = (f[k] for k in ('wx', 'wy', 'z', 'fx', 'fy', 'fa', 'ox', 'oy'))
         end, rec, cam, n_bad = f['end'], f['rec'], f['cam'], f['n_bad']
-        cands = pc.extract(wx, wy, z, origin=(ox, oy), range_max=RANGE_MAX_M, peaks=peaks)
+        cands = pc.extract(wx, wy, z, origin=(ox, oy), range_max=RANGE_MAX_M, peaks=peaks,
+                             extra_split_z=extra_split_z)
         xy = cands[:, :2].astype(np.float64)
         hits = {j for _, j in mutual_nearest(cam, xy, CAM_MATCH_M)}
         cf_, cs_ = math.cos(fa), math.sin(fa)
@@ -346,11 +347,12 @@ def main():
     ap.add_argument('-o', '--out', required=True)
     ap.add_argument('--overrides', help='JSON list of {run, x, y, r_m, label} hand corrections (odom)')
     ap.add_argument('--peaks', action='store_true', help='extract with the head/shoulder peak split')
+    ap.add_argument('--extra-split-z', type=float, help='also split at this height (seated people, e.g. 0.9)')
     a = ap.parse_args()
     overrides = json.load(open(a.overrides)) if a.overrides else []
     parts = []
     for run in a.runs:
-        r = process_run(run, overrides, peaks=a.peaks)
+        r = process_run(run, overrides, peaks=a.peaks, extra_split_z=a.extra_split_z)
         if r is None:
             print(f'{run}: no frames')
             continue
