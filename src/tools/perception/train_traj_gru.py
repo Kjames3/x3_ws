@@ -30,16 +30,20 @@ HORIZONS = (0.5, 1.0, 2.0, 3.0)
 
 
 class TrajGRU(nn.Module):
-    def __init__(self, fut_n, hidden=64, layers=2, dropout=0.1):
+    def __init__(self, fut_n, hidden=64, layers=2, dropout=0.1, nll=False):
         super().__init__()
-        self.fut_n = fut_n
+        self.fut_n, self.nll = fut_n, nll
         self.inp = nn.Linear(6, hidden)
         self.gru = nn.GRU(hidden, hidden, layers, batch_first=True, dropout=dropout if layers > 1 else 0)
-        self.head = nn.Sequential(nn.Linear(hidden, hidden), nn.ReLU(), nn.Linear(hidden, fut_n * 2))
+        self.head = nn.Sequential(nn.Linear(hidden, hidden), nn.ReLU(), nn.Linear(hidden, fut_n * (3 if nll else 2)))
 
     def forward(self, x):                       # x: [B, H, 6]
         h, _ = self.gru(torch.relu(self.inp(x)))
-        return self.head(h[:, -1]).view(-1, self.fut_n, 2)
+        o = self.head(h[:, -1]).view(-1, self.fut_n, 3 if self.nll else 2)
+        if not self.nll:
+            return o, None
+        # isotropic per-step sigma, floored at 1 cm
+        return o[..., :2], nn.functional.softplus(o[..., 2]) + 0.01
 
 
 def features(hist, dt):
@@ -52,6 +56,31 @@ def features(hist, dt):
 def cv_est(hist, fut_n, dt):
     steps = (np.arange(1, fut_n + 1) * dt)[None, :, None]
     return (hist[:, -1:, 2:4] * steps).astype(np.float32)          # relative to p0
+
+
+def cv_damped(hist, fut_n, dt, tau=1.5):
+    steps = (np.arange(1, fut_n + 1) * dt)[None, :, None]
+    return (hist[:, -1:, 2:4] * tau * (1 - np.exp(-steps / tau))).astype(np.float32)
+
+
+def nll_loss(pred, sig, y):
+    # 2-D isotropic Gaussian negative log-likelihood (constant dropped)
+    e2 = ((pred - y) ** 2).sum(-1)
+    return (2 * torch.log(sig) + e2 / (2 * sig ** 2)).mean()
+
+
+def calibration(pred, sig, gt, rate):
+    """Fraction of true positions inside k sigma. Ideal for a 2-D Gaussian:
+    1 sigma 39.3%, 2 sigma 86.5%, 2.45 sigma 95%."""
+    e = np.linalg.norm(pred - gt, axis=2)
+    out = {}
+    for hz in HORIZONS:
+        k = int(round(hz * rate))
+        if k <= e.shape[1]:
+            r = e[:, k - 1] / sig[:, k - 1]
+            out[str(hz)] = dict(in1=float((r < 1).mean()), in2=float((r < 2).mean()),
+                                in245=float((r < 2.45).mean()), sigma_med=float(np.median(sig[:, k - 1])))
+    return out
 
 
 def augment(x, y, b):
@@ -95,6 +124,8 @@ def main():
     ap.add_argument('--lr', type=float, default=2e-3)
     ap.add_argument('--batch', type=int, default=256)
     ap.add_argument('--seed', type=int, default=0)
+    ap.add_argument('--layers', type=int, default=2)
+    ap.add_argument('--nll', action='store_true', help='also predict a per-step sigma (Gaussian NLL loss)')
     a = ap.parse_args()
 
     torch.manual_seed(a.seed)
@@ -107,6 +138,7 @@ def main():
     X = features(hist, dt)
     Y = (fut - hist[:, -1:, :2]).astype(np.float32)
     Bse = cv_est(hist, fut_n, dt)
+    Bdm = cv_damped(hist, fut_n, dt)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     lf = open(a.log, 'w') if a.log else None
@@ -120,7 +152,7 @@ def main():
         f = int(np.argmin(load))
         fold_of[r], load[f] = f, load[f] + counts[r]
 
-    results, P_all, B_all, G_all = [], [], [], []
+    results, P_all, B_all, G_all, D_all, S_all = [], [], [], [], [], []
     t_start = time.time()
     for k in range(a.folds):
         te = fold_of[run] == k
@@ -129,13 +161,16 @@ def main():
         tr_runs = [r for r in range(len(runs)) if fold_of[r] != k and counts[r]]
         val_runs = set(rng.choice(tr_runs, max(1, len(tr_runs) // 10), replace=False).tolist())
         va = tr & np.isin(run, list(val_runs))
+        if len(tr_runs) < 10 or va.sum() > 0.3 * tr.sum():
+            # too few / too lopsided runs for a run-level validation split
+            va = tr & (rng.random(len(tr)) < 0.1)
         tr = tr & ~va
         T = lambda m: [torch.tensor(v[m], device=dev) for v in (X, Y, Bse)]
         xtr, ytr, btr = T(tr)
         xva, yva, bva = T(va)
         xte, yte, bte = T(te)
         sx = xtr.reshape(-1, 6).std(0) + 1e-3      # rotation-symmetric enough for a scale
-        model = TrajGRU(fut_n, a.hidden).to(dev)
+        model = TrajGRU(fut_n, a.hidden, a.layers, nll=a.nll).to(dev)
         opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=1e-4)
         sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, a.epochs)
         best, best_state = float('inf'), None
@@ -146,8 +181,9 @@ def main():
             for i in range(0, len(perm), a.batch):
                 j = perm[i:i + a.batch]
                 x, y, b = augment(xtr[j], ytr[j], btr[j])
-                pred = b + model(x / sx)
-                loss = torch.linalg.norm(pred - y, dim=-1).mean()   # ADE
+                o, sig = model(x / sx)
+                pred = b + o
+                loss = nll_loss(pred, sig, y) if a.nll else torch.linalg.norm(pred - y, dim=-1).mean()   # ADE
                 opt.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -156,7 +192,7 @@ def main():
             sched.step()
             model.eval()
             with torch.no_grad():
-                v = torch.linalg.norm(bva + model(xva / sx) - yva, dim=-1).mean().item() if len(xva) else tot
+                v = torch.linalg.norm(bva + model(xva / sx)[0] - yva, dim=-1).mean().item() if len(xva) else tot
             if v < best:
                 best, best_state = v, {kk: vv.clone() for kk, vv in model.state_dict().items()}
             log(lf, 'epoch %d/%d %d/%d train_ade %.3f val_ade %.3f best %.3f  %.0fs'
@@ -164,26 +200,46 @@ def main():
         model.load_state_dict(best_state)
         model.eval()
         with torch.no_grad():
-            p = (bte + model(xte / sx)).cpu().numpy()
+            o, sig = model(xte / sx)
+            p = (bte + o).cpu().numpy()
+            S_all.append(sig.cpu().numpy() if sig is not None else None)
         g, bb = yte.cpu().numpy(), bte.cpu().numpy()
         r = dict(fold=k, test_runs=[runs[i] for i in range(len(runs)) if fold_of[i] == k],
                  n_test=int(te.sum()), cv_est=metrics(bb, g, rate), gru=metrics(p, g, rate))
         results.append(r)
-        P_all.append(p); B_all.append(bb); G_all.append(g)
+        P_all.append(p); B_all.append(bb); G_all.append(g); D_all.append(Bdm[te])
         log(lf, 'fold %d  n=%d  FDE@1s cv %.3f gru %.3f   FDE@2s cv %.3f gru %.3f' % (
             k + 1, r['n_test'], r['cv_est']['1.0']['fde'], r['gru']['1.0']['fde'],
             r['cv_est']['2.0']['fde'], r['gru']['2.0']['fde']))
-        torch.save(dict(state=best_state, scale=sx.cpu(), fut_n=fut_n, hidden=a.hidden, rate=rate),
+        torch.save(dict(state=best_state, scale=sx.cpu(), fut_n=fut_n, hidden=a.hidden, layers=a.layers,
+                        nll=a.nll, rate=rate),
                    out / ('gru_fold%d.pt' % k))
 
     P, B, G = map(np.concatenate, (P_all, B_all, G_all))
-    pooled = dict(cv_est=metrics(B, G, rate), gru=metrics(P, G, rate))
-    lines = ['pooled over %d held-out windows (grouped-by-run %d folds)' % (len(G), a.folds),
-             '  horizon   cv_est ADE/FDE    gru ADE/FDE    FDE change']
+    Dm = np.concatenate(D_all)
+    pooled = dict(cv_est=metrics(B, G, rate), cv_damped=metrics(Dm, G, rate), gru=metrics(P, G, rate))
+    # moving windows only (mean speed over the horizon > 0.3 m/s), where prediction matters
+    pooled_moving = {}
     for hz in pooled['gru']:
-        c, g = pooled['cv_est'][hz], pooled['gru'][hz]
-        lines.append('  %5s s   %5.3f / %5.3f    %5.3f / %5.3f    %+5.1f%%' % (
-            hz, c['ade'], c['fde'], g['ade'], g['fde'], 100 * (g['fde'] / c['fde'] - 1)))
+        k = int(round(float(hz) * rate))
+        mv = np.linalg.norm(G[:, k - 1], axis=1) / float(hz) > 0.3
+        pooled_moving[hz] = {n: metrics(v[mv], G[mv], rate)[hz] for n, v in (('cv_est', B), ('cv_damped', Dm), ('gru', P))}
+        pooled_moving[hz]['n'] = int(mv.sum())
+    pooled['moving'] = pooled_moving
+    lines = ['pooled over %d held-out windows (grouped-by-run %d folds)' % (len(G), a.folds),
+             '  horizon   cv_est ADE/FDE   damped ADE/FDE   gru ADE/FDE   FDE vs best baseline | moving-only FDE cv/damped/gru (n)']
+    for hz in pooled['gru']:
+        c, dm, g, mv = pooled['cv_est'][hz], pooled['cv_damped'][hz], pooled['gru'][hz], pooled_moving[hz]
+        best = min(c['fde'], dm['fde'])
+        lines.append('  %5s s   %5.3f / %5.3f    %5.3f / %5.3f    %5.3f / %5.3f   %+5.1f%%   | %.3f / %.3f / %.3f (%d)' % (
+            hz, c['ade'], c['fde'], dm['ade'], dm['fde'], g['ade'], g['fde'], 100 * (g['fde'] / best - 1),
+            mv['cv_est']['fde'], mv['cv_damped']['fde'], mv['gru']['fde'], mv['n']))
+    if a.nll:
+        cal = calibration(P, np.concatenate(S_all), G, rate)
+        pooled['calibration'] = cal
+        lines.append('  calibration (ideal 39 / 86 / 95 %): ' + '  '.join(
+            '%s s: %.0f/%.0f/%.0f%% sigma %.2f m' % (hz, 100 * c['in1'], 100 * c['in2'], 100 * c['in245'], c['sigma_med'])
+            for hz, c in cal.items()))
     txt = '\n'.join(lines)
     log(lf, txt)
     (out / 'report.txt').write_text(txt + '\n')
