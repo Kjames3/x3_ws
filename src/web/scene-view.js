@@ -528,7 +528,7 @@
 
     function loadRobotModel(placeholder) {
         if (!THREE.GLTFLoader) return;
-        new THREE.GLTFLoader().load('models/x3_robot.glb?v=1', (gltf) => {
+        new THREE.GLTFLoader().load('models/x3_robot.glb?v=2', (gltf) => {
             const wrap = new THREE.Group();
             wrap.matrixAutoUpdate = false;
             wrap.matrix.set(0, -1, 0, 0,
