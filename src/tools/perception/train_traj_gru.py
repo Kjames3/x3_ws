@@ -113,6 +113,52 @@ def log(f, msg):
         f.flush()
 
 
+def fit(train, val, a, dev, lf, tag, t_start):
+    """Train one model with early stopping on val; returns (model, scale, best_state)."""
+    xtr, ytr, btr = train
+    xva, yva, bva = val
+    fut_n = ytr.shape[1]
+    sx = xtr.reshape(-1, 6).std(0) + 1e-3      # rotation-symmetric enough for a scale
+    model = TrajGRU(fut_n, a.hidden, a.layers, nll=a.nll).to(dev)
+    opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=1e-4)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, a.epochs)
+    best, best_state = float('inf'), None
+    for ep in range(a.epochs):
+        model.train()
+        perm = torch.randperm(len(xtr), device=dev)
+        tot = 0.0
+        for i in range(0, len(perm), a.batch):
+            j = perm[i:i + a.batch]
+            x, y, b = augment(xtr[j], ytr[j], btr[j])
+            o, sig = model(x / sx)
+            pred = b + o
+            loss = nll_loss(pred, sig, y) if a.nll else torch.linalg.norm(pred - y, dim=-1).mean()   # ADE
+            opt.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            opt.step()
+            tot += loss.item() * len(j)
+        sched.step()
+        model.eval()
+        with torch.no_grad():
+            v = torch.linalg.norm(bva + model(xva / sx)[0] - yva, dim=-1).mean().item() if len(xva) else tot
+        if v < best:
+            best, best_state = v, {kk: vv.clone() for kk, vv in model.state_dict().items()}
+        log(lf, 'epoch %s %d/%d train_ade %.3f val_ade %.3f best %.3f  %.0fs'
+            % (tag, ep + 1, a.epochs, tot / max(1, len(xtr)), v, best, time.time() - t_start))
+    model.load_state_dict(best_state)
+    model.eval()
+    return model, sx, best_state
+
+
+def export_numpy(state, sx, meta, path):
+    """Weights as plain arrays, so the robot runs the model without importing torch."""
+    arrs = {k: v.detach().cpu().numpy() for k, v in state.items()}
+    arrs['scale'] = sx.detach().cpu().numpy()
+    arrs['meta'] = np.array(json.dumps(meta))
+    np.savez(path, **arrs)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('npz')
@@ -126,6 +172,9 @@ def main():
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--layers', type=int, default=2)
     ap.add_argument('--nll', action='store_true', help='also predict a per-step sigma (Gaussian NLL loss)')
+    ap.add_argument('--deploy', action='store_true',
+                    help='skip cross-validation: train ONE model on every run (10%% of runs held out for early '
+                         'stopping) and write gru_deploy.pt + gru_deploy.npz (numpy weights for traj_predictor.py)')
     a = ap.parse_args()
 
     torch.manual_seed(a.seed)
@@ -152,6 +201,20 @@ def main():
         f = int(np.argmin(load))
         fold_of[r], load[f] = f, load[f] + counts[r]
 
+    if a.deploy:
+        t_start = time.time()
+        live = [r for r in range(len(runs)) if counts[r]]
+        val_runs = rng.choice(live, max(1, len(live) // 10), replace=False)
+        va = np.isin(run, val_runs)
+        T = lambda m: [torch.tensor(v[m], device=dev) for v in (X, Y, Bse)]
+        model, sx, state = fit(T(~va), T(va), a, dev, lf, 'deploy', t_start)
+        meta = dict(fut_n=fut_n, hidden=a.hidden, layers=a.layers, nll=a.nll, rate=rate,
+                    hist_n=hist.shape[1], val_runs=[str(runs[r]) for r in val_runs], npz=str(a.npz))
+        torch.save(dict(state=state, scale=sx.cpu(), **meta), out / 'gru_deploy.pt')
+        export_numpy(state, sx, meta, out / 'gru_deploy.npz')
+        log(lf, 'deploy model -> %s (val runs %s)' % (out, meta['val_runs']))
+        return
+
     results, P_all, B_all, G_all, D_all, S_all = [], [], [], [], [], []
     t_start = time.time()
     for k in range(a.folds):
@@ -166,37 +229,8 @@ def main():
             va = tr & (rng.random(len(tr)) < 0.1)
         tr = tr & ~va
         T = lambda m: [torch.tensor(v[m], device=dev) for v in (X, Y, Bse)]
-        xtr, ytr, btr = T(tr)
-        xva, yva, bva = T(va)
         xte, yte, bte = T(te)
-        sx = xtr.reshape(-1, 6).std(0) + 1e-3      # rotation-symmetric enough for a scale
-        model = TrajGRU(fut_n, a.hidden, a.layers, nll=a.nll).to(dev)
-        opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=1e-4)
-        sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, a.epochs)
-        best, best_state = float('inf'), None
-        for ep in range(a.epochs):
-            model.train()
-            perm = torch.randperm(len(xtr), device=dev)
-            tot = 0.0
-            for i in range(0, len(perm), a.batch):
-                j = perm[i:i + a.batch]
-                x, y, b = augment(xtr[j], ytr[j], btr[j])
-                o, sig = model(x / sx)
-                pred = b + o
-                loss = nll_loss(pred, sig, y) if a.nll else torch.linalg.norm(pred - y, dim=-1).mean()   # ADE
-                opt.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                opt.step()
-                tot += loss.item() * len(j)
-            sched.step()
-            model.eval()
-            with torch.no_grad():
-                v = torch.linalg.norm(bva + model(xva / sx)[0] - yva, dim=-1).mean().item() if len(xva) else tot
-            if v < best:
-                best, best_state = v, {kk: vv.clone() for kk, vv in model.state_dict().items()}
-            log(lf, 'epoch %d/%d %d/%d train_ade %.3f val_ade %.3f best %.3f  %.0fs'
-                % (k + 1, a.folds, ep + 1, a.epochs, tot / max(1, len(xtr)), v, best, time.time() - t_start))
+        model, sx, best_state = fit(T(tr), T(va), a, dev, lf, '%d/%d' % (k + 1, a.folds), t_start)
         model.load_state_dict(best_state)
         model.eval()
         with torch.no_grad():
