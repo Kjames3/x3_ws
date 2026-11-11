@@ -15,6 +15,12 @@ The skill list often shows these with no description, so the triggers are here.
 - `urdf-nudge`: a mount is installed and its STL is in `stls/`, "move it N mm".
 - `x3-robot`: any task that touches the robot, its services, ROS 2 graph, serial devices or web GUI.
 
+## Delegating (`.claude/agents/`)
+
+- `searcher` (Haiku, read-only): wide reading where only the conclusion is needed.
+- `runner` (Sonnet): laptop test runs, long local analyses, fully specified mechanical edits.
+- Robot work, and anything that changes CBF, estimator or navigation behaviour, stays in the main session.
+
 ## Build Commands
 
 ### Build ROS2 packages (run from workspace root)
