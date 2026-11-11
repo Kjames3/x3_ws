@@ -22,7 +22,7 @@ stall current exceeds 800 mA, so it is never on the Orin 40-pin 5 V rail.
 > `config/lidar_tilt_calibration.json` are all historical. Do not reason about
 > the tilt axis from them — the counts scale, the port, the units and the
 > calibration file are all different now. `src/lx16a_servo.py` is kept only for
-> the bench. Background in `notes/dynamixel_servo_history.md`.
+> the bench. Background in the memory note `project_historical_superseded.md` (`notes/dynamixel_servo_history.md` never existed).
 
 ```bash
 python3 src/dynamixel_tilt.py --status      # read-only (does NOT drop torque)
