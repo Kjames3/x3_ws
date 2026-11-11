@@ -188,7 +188,7 @@ publishes `/tof/{upper,lower}/points` (raw) and `/tof/{upper,lower}/obstacles`
 
 ## Web GUI
 - **[src/web/GUI.html](src/web/GUI.html)** — Single-page app: joystick control, camera feed, lidar visualization, SLAM map canvas, Nav2 goal clicking, telemetry display. Served via HTTP :8080 (required so Web Workers can load `lidar-worker.js`).
-- **[src/web/main.js](src/web/main.js)** — WebSocket client; camera frames received as **binary** WebSocket messages (not JSON).
+- **[src/web/main.js](src/web/main.js)** — WebSocket client. On the robot the camera feed is WebRTC, not this path: see memory note `project_gui_black_camera.md` ("The robot runs `--webrtc-camera`"). The binary-WebSocket JPEG path is the fallback.
 - **[src/web/lidar-worker.js](src/web/lidar-worker.js)** — Web Worker that decodes and transforms lidar point arrays off the main thread.
 
 ## Maps
@@ -196,6 +196,6 @@ Saved maps are stored as `.pgm`/`.yaml` pairs in `src/yahboomcar_nav/maps/`. New
 
 ## Performance Notes (from notes/plans/PERFORMANCE_PLAN.md)
 - Camera frame encoding (`cv2.imencode`) runs in a thread executor to avoid blocking the async event loop.
-- JPEG frames are sent as **binary WebSocket messages** (not base64 JSON) to save 2–5 ms/frame.
+- JPEG fallback path only (the robot feed is WebRTC, see Web GUI above): JPEG frames are sent as **binary WebSocket messages** (not base64 JSON) to save 2–5 ms/frame.
 - Lidar point conversion uses vectorized numpy operations.
 - Battery voltage is read at 1 Hz (cached), not per-loop.
