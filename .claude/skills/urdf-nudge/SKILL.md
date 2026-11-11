@@ -40,7 +40,8 @@ iterates on placement by eye in RViz: "move it down 0.5 mm, forward 0.5 mm".
 
 - `base_joint` z = 0.0815 (caliper-measured). Sensor joints were adjusted to
   keep their measured floor heights; changing it shifts everything.
-- `laser_joint` yaw = pi. Raw laser +X points at the robot's rear.
+- `laser_joint` yaw: the measured value in the URDF comment on that joint
+  (180 + 4.85 deg, 2026-10-11), not pi. Raw laser +X points at the robot's rear.
 - ToF pitches: upper 15 deg, lower 40 deg down.
 
 ## After a sensor moves
