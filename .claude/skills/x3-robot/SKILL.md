@@ -5,10 +5,11 @@ description: Working knowledge for the X3 Jetson robot - how to reach it, run RO
 
 # The X3 robot
 
-A Yahboom X3 on a Jetson, driven from this laptop. The `jetson-mcp` MCP server
-is configured for this project and its tools already encode everything below --
-prefer them over hand-rolled `ssh`. This file is for when you need to shell out
-anyway, or need to understand what a tool is doing.
+A Yahboom X3 on a Jetson, driven from this laptop. Use `ssh x3` (decided
+2026-11-11). The `jetson-mcp` MCP server is configured, but five tools this file
+used to rely on are not in its tool list: `restart_and_wait`, `journal_grep`,
+`check_robot_devices`, `diff_code` and `cleanup_strays`. Where one is marked
+"(gone)" below, use the shell command shown beside it.
 
 ## Reaching it
 
@@ -71,7 +72,7 @@ else that needs root, hand the user the command to run.
 
 Do not try to route a privileged command through `sudo bash -c '...'`; the
 sudoers rule does not authorize a shell. Run the `systemctl` call on its own and
-do the surrounding work unprivileged. `manage_service` and `restart_and_wait`
+do the surrounding work unprivileged. `manage_service` and `restart_and_wait` (gone)
 already split it that way.
 
 **`systemctl restart` returns long before the server is usable.** It spawns the
@@ -82,7 +83,7 @@ follow a restart with a fixed `sleep` -- wait for the log line:
 Server started on ws://0.0.0.0:8081
 ```
 
-`restart_and_wait("x3_server", ready_pattern="Server started on ws")` does this.
+`restart_and_wait("x3_server", ready_pattern="Server started on ws")` (gone) does this.
 
 Ask before restarting `x3_server` if the robot is physically powered on and
 someone may be driving it.
@@ -98,7 +99,7 @@ journalctl -u x3_server --since "-15min" --no-pager \
   | grep -viE 'Estimator\]|fps'
 ```
 
-`journal_grep` takes `since`, `pattern`, and `exclude` directly.
+`journal_grep` (gone) takes `since`, `pattern`, and `exclude` directly.
 
 ## Serial devices
 
@@ -112,7 +113,7 @@ Code opens stable udev symlinks, not raw tty nodes:
 
 `lsusb` showing the board is not enough -- the failure mode here is udev not
 publishing the symlink, so the raw node exists and the code still cannot open
-it. `check_robot_devices` checks the symlinks, the raw nodes, and the installed
+it. `check_robot_devices` (gone) checks the symlinks, the raw nodes, and the installed
 rules together.
 
 The XL430 runs at **1 Mbps**, not the 57600 factory default; it was written
@@ -121,14 +122,8 @@ into EEPROM on 2026-08-29. Its zero is the hand-levelled **2032 counts** (`confi
 ## Laptop and robot drift apart
 
 The two copies of `src/` routinely diverge -- this has cost real debugging time.
-Before changing robot code, check:
-
-```
-diff_code("/home/kamren/x3_ws/src/", "/home/jetson/x3_ws/src/")
-```
-
-It compares by checksum, ignores build artifacts, and says which side is ahead.
-`show_diff="path/to/file.py"` gives the unified diff of one file.
+Before changing robot code, run step 1 of the `robot-sync` skill
+(`bash scripts/diff_robot.sh`). The `diff_code` tool (gone) used to do this.
 
 `sync_code` defaults to `dry_run=True` -- read the plan, then call again with
 `dry_run=False`. Do not pass `delete=True` unless you mean it; the robot has
@@ -137,7 +132,7 @@ files (maps, logs, model weights, fixtures) that exist nowhere else.
 ## Benchmarking
 
 Kill orphaned nodes between runs or they keep publishing and poison the next
-measurement: `cleanup_strays("bench")`, `dry_run=False` once you have read the
+measurement: `cleanup_strays("bench")` (gone), `dry_run=False` once you have read the
 list.
 
 `server_x3.py` is largely single-threaded; three of the Jetson's cores sit idle

@@ -37,7 +37,7 @@ checkouts drift (see the `robot-sync` skill).
    ```bash
    ssh x3 'journalctl -u x3_server --since "-2min" --no-pager | grep "Server started on ws"'
    ```
-   The `jetson-mcp` tool `restart_and_wait` does both.
+   (The `jetson-mcp` tool `restart_and_wait` is gone; see the top of the `x3-robot` skill.)
 7. **Confirm data is flowing.** About one start in three comes up with ROS
    discovery fine and zero messages delivered. The tell is that `x3_server`
    itself receives nothing (lidar toggled on in the GUI shows no points).
