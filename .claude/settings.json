@@ -1,0 +1,9 @@
+{
+  "enabledPlugins": {
+    "expo@claude-plugins-official": false,
+    "product-skills@claude-code-skills": false,
+    "ra-qm-skills@claude-code-skills": false,
+    "pm-skills@claude-code-skills": false,
+    "frontend-design@claude-plugins-official": false
+  }
+}
