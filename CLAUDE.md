@@ -6,6 +6,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a **Yahboom X3 Mecanum Robot** workspace running on a **Jetson Orin Nano** (JetPack 6.2 / Ubuntu 22.04). It combines a Python WebSocket server, ROS2 Humble middleware, and a browser-based GUI for real-time control, SLAM, and autonomous navigation.
 
+## Repo skills (`.claude/skills/`)
+
+The skill list often shows these with no description, so the triggers are here.
+- `deploy`: "commit and deploy", "push this to the robot", restart the robot or server.
+- `robot-sync`: git is dirty or inconsistent, what differs between robot and laptop.
+- `capture`: recording runs (C1/C3 RGB-D, rosbags, OAK logs), "am I good to continue".
+- `urdf-nudge`: a mount is installed and its STL is in `stls/`, "move it N mm".
+- `x3-robot`: any task that touches the robot, its services, ROS 2 graph, serial devices or web GUI.
+
 ## Build Commands
 
 ### Build ROS2 packages (run from workspace root)
