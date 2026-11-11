@@ -21,11 +21,7 @@ bash scripts/build_ros2.sh
 This script passes `--symlink-install`. Not on the robot: the rule is step 5 of `.claude/skills/deploy/SKILL.md`.
 
 ### Run tests
-```bash
-source install/setup.bash
-colcon test --packages-select <package_name>
-colcon test-result --verbose
-```
+The test command is step 1 of `.claude/skills/deploy/SKILL.md` (pytest over `tests/`), the same suite CI runs.
 
 ## Running the System
 
