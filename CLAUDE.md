@@ -178,7 +178,7 @@ publishes `/tof/{upper,lower}/points` (raw) and `/tof/{upper,lower}/obstacles`
 
 ## Key Configuration Files
 - **[config/lidar_tilt_calibration_dynamixel.json](config/lidar_tilt_calibration_dynamixel.json)** — XL430 tilt zero (2032) + tolerance_counts (12). The older `lidar_tilt_calibration.json` is the retired LX-16A's and is dead.
-- **[src/yahboomcar_nav/params/nav2_params_x3.yaml](src/yahboomcar_nav/params/nav2_params_x3.yaml)** — Nav2 DWA planner/controller tuning
+- **[src/yahboomcar_nav/params/nav2_params_x3.yaml](src/yahboomcar_nav/params/nav2_params_x3.yaml)** — Nav2 planner/controller tuning (MPPI controller, named in the file header)
 - **[src/yahboomcar_nav/params/ekf_x3.yaml](src/yahboomcar_nav/params/ekf_x3.yaml)** — EKF fusion config
 - **[src/yahboomcar_nav/params/ydlidar_x3.yaml](src/yahboomcar_nav/params/ydlidar_x3.yaml)** — YDLidar driver params
 - **[src/yahboomcar_nav/params/slam_toolbox_params.yaml](src/yahboomcar_nav/params/slam_toolbox_params.yaml)** — SLAM Toolbox config
