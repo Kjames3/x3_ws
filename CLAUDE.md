@@ -117,7 +117,8 @@ Default domain is 0. Scripts use domain ID 42 for Jetson/laptop isolation. Serve
 - **Lidar**: Livox Mid-360S since 2026-10-29 (memory note `project-livox-mid360s.md`).
   The YDLidar X3 and its tilt mount are off the robot; their rules are kept word
   for word in `notes/tilting_lidar_mount_rules.md`.
-- **Camera**: Orbbec Astra Pro (RGB + depth)
+- **Camera**: OAK-D Pro W for depth and detection (memory note `project_oakd_pro_wide.md`).
+  The Orbbec Astra Pro still gives the GUI colour feed (memory note `project_gui_black_camera.md`).
 - **Compute**: Jetson Orin Nano (JetPack 6.2)
 
 **The Rosmaster and the LX-16A bridge were both CH340s (`1a86:7523`) with no
