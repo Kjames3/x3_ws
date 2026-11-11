@@ -42,8 +42,8 @@ checkouts drift (see the `robot-sync` skill).
    discovery fine and zero messages delivered. The tell is that `x3_server`
    itself receives nothing (lidar toggled on in the GUI shows no points).
    Fix: restart `x3_server`, then `foxglove_bridge`, in that order.
-   `foxglove_bridge` is NOT in the passwordless list, so hand the user:
-   `sudo systemctl restart foxglove_bridge`.
+   `foxglove_bridge` is NOT in the passwordless list; the rule for that case
+   is "Password sudo" in the `x3-robot` skill.
 8. **Report** the robot's new HEAD and what was and was not restarted.
 
 ## Changing server flags

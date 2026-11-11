@@ -64,6 +64,11 @@ Nothing else is passwordless; `sudo -n` on anything outside that list fails with
 `a password is required`. Reading state (`is-active`, `is-enabled`, `journalctl`)
 needs no sudo at all -- the `jetson` user is in `adm`.
 
+**Password sudo (decided 2026-11-11).** Use `sudo -n` for the units above. The
+recorded sudo password (the "Robot deploy & access" line of the memory index)
+may be used for other `systemctl` service commands on the robot. For anything
+else that needs root, hand the user the command to run.
+
 Do not try to route a privileged command through `sudo bash -c '...'`; the
 sudoers rule does not authorize a shell. Run the `systemctl` call on its own and
 do the surrounding work unprivileged. `manage_service` and `restart_and_wait`
