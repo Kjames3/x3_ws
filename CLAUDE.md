@@ -11,7 +11,7 @@ This is a **Yahboom X3 Mecanum Robot** workspace running on a **Jetson Orin Nano
 ### Build ROS2 packages (run from workspace root)
 ```bash
 source /opt/ros/humble/setup.bash
-colcon build --packages-select yahboomcar_msgs yahboomcar_description yahboomcar_base_node yahboomcar_bringup yahboomcar_nav ydlidar_ros2_driver
+colcon build --packages-select yahboomcar_msgs yahboomcar_description yahboomcar_base_node yahboomcar_bringup yahboomcar_nav ydlidar_ros2_driver x3_msgs nav2_mppi_dbas_controller yahboomcar_rviz
 ```
 
 ### Full build with dependency installation (includes YDLidar SDK)
