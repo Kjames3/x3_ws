@@ -60,7 +60,7 @@ journalctl -u x3_server -f
 Browser (HTTP :8080 for GUI files, WebSocket :8081 for control)
     │
     └─ src/server_x3.py          # Main async WebSocket server
-         ├─ Direct serial ──────→ Rosmaster controller (/dev/ttyCH341USB0)
+         ├─ Direct serial ──────→ Rosmaster controller (/dev/rosmaster, see Hardware)
          │                        └─ Motors, battery, OLED
          └─ ROS2Bridge (default) → /cmd_vel_safe pub (the driver's only input; the
                                     CBF gate filters everything arriving on /cmd_vel, incl. Nav2);
