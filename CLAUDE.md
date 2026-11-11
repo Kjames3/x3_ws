@@ -18,6 +18,7 @@ colcon build --packages-select yahboomcar_msgs yahboomcar_description yahboomcar
 ```bash
 bash scripts/build_ros2.sh
 ```
+This script passes `--symlink-install`. Not on the robot: the rule is step 5 of `.claude/skills/deploy/SKILL.md`.
 
 ### Run tests
 ```bash

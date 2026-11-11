@@ -94,6 +94,7 @@ The script handles:
 - Git submodule init (`ydlidar_ros2_driver`)
 - udev rules (YDLidar, Rosmaster, Orbbec camera symlinks)
 - User group membership (dialout, i2c, video, plugdev)
+> **Not on the robot.** `--symlink-install` must not be used there; the rule is step 5 of `.claude/skills/deploy/SKILL.md` and the "Never" list in `.claude/skills/robot-sync/SKILL.md`.
 - Full `colcon build --symlink-install`
 - `.bashrc` sourcing and aliases (`cb`, `cs`)
 
