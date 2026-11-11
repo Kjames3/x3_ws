@@ -125,9 +125,10 @@ The two copies of `src/` routinely diverge -- this has cost real debugging time.
 Before changing robot code, run step 1 of the `robot-sync` skill
 (`bash scripts/diff_robot.sh`). The `diff_code` tool (gone) used to do this.
 
-`sync_code` defaults to `dry_run=True` -- read the plan, then call again with
-`dry_run=False`. Do not pass `delete=True` unless you mean it; the robot has
-files (maps, logs, model weights, fixtures) that exist nowhere else.
+Tracked code reaches the robot through git, not copies: the rule is the first
+paragraph of the `deploy` skill. `sync_code` and `scp` are for untracked data
+only. Do not pass `delete=True`; the robot has files (maps, logs, model weights,
+fixtures) that exist nowhere else.
 
 ## Benchmarking
 
