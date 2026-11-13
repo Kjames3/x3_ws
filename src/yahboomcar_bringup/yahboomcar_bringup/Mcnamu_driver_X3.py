@@ -38,13 +38,15 @@ class MotorMappedCar:
 	positive PWM turns that wheel backward. set_motor() and
 	get_motor_encoder_report() are remapped; every other call passes through.
 
-	New chassis (2026-11-13, spun in the air): M1 = rear left,
-	M2 = rear right, M3 = front left, M4 = front right, so the map is
-	[3, 1, 4, 2]. All four encoders count down for positive PWM. With +30
-	on all four, the front-left and rear-right wheels rolled backward and
-	the rear-left and front-right forward (left tops moved toward each
-	other, right tops apart), so the sign is [-1, 1, 1, -1]. Flipping a
-	sign flips that encoder too, so counts still DEcrease driving forward.
+	New chassis (2026-11-13): M1 = rear left, M2 = rear right, M3 = front
+	RIGHT, M4 = front LEFT, so the map is [4, 1, 3, 2], and positive PWM
+	drives the left pair forward and the right pair backward: sign
+	[1, 1, -1, -1]. All four encoders count down for positive PWM.
+	M3/M4 were first recorded the other way round; an all-forward test
+	cannot tell them apart, but a strafe command then spun the robot in place
+	(vy -0.2 -> 730 deg CCW on the IMU, wheel counts exactly the strafe
+	pattern). Flipping a sign flips that encoder too, so counts still
+	DEcrease driving forward.
 	"""
 
 	def __init__(self, car, motor_map, motor_sign):
@@ -77,8 +79,8 @@ class yahboomcar_driver(Node):
 		self.declare_parameter('serial_port', '/dev/ttyCH341USB0')
 		serial_port = self.get_parameter('serial_port').get_parameter_value().string_value
 		# Board motor wired to each logical wheel FL, RL, FR, RR (see MotorMappedCar).
-		self.declare_parameter('motor_map', [3, 1, 4, 2])
-		self.declare_parameter('motor_sign', [-1, 1, 1, -1])
+		self.declare_parameter('motor_map', [4, 1, 3, 2])
+		self.declare_parameter('motor_sign', [1, 1, -1, -1])
 		self.car = MotorMappedCar(Rosmaster(com=serial_port),
 			list(self.get_parameter('motor_map').value),
 			list(self.get_parameter('motor_sign').value))
@@ -175,11 +177,10 @@ class yahboomcar_driver(Node):
 		self.declare_parameter('yaw_wheel_separation', 0.681)
 		# Fastest rim speed asked of any wheel; PWM 100 gives about 1.0 m/s.
 		self.declare_parameter('max_wheel_speed', 0.8)
-		# Encoder counts per metre of rim travel. 10100 was measured on the old
-		# X3; the new wheels are r=0.052 m on the same JGB37-520 motors, so
-		# 10100 * r_old / r_new. ESTIMATE until a tape-measure drive (r_old
-		# taken as 0.040 m).
-		self.declare_parameter('counts_per_m', 7770.0)
+		# Encoder counts per metre of rim travel. New chassis, 2026-11-13: 7624
+		# over a 2.4 m taped run (wheels 7568-7700; new_chassis_calib.py).
+		# The old X3 was 10100.
+		self.declare_parameter('counts_per_m', 7624.0)
 		# vel_raw linear x/y: 'encoders' computes them here from the remapped
 		# encoders; 'firmware' uses the board's own kinematics, which assume
 		# the stock Yahboom wiring and geometry and are wrong on this chassis.
