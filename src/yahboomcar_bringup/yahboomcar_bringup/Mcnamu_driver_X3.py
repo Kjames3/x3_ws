@@ -30,6 +30,44 @@ car_type_dic={
     'X3':1,
     'NONE':-1
 }
+class MotorMappedCar:
+	"""Rosmaster wrapper that puts the motors in the order the driver uses.
+
+	The driver works in logical order FL, RL, FR, RR. motor_map[i] is the
+	board motor (1..4) wired to logical wheel i, and motor_sign[i] is -1 if
+	positive PWM turns that wheel backward. set_motor() and
+	get_motor_encoder_report() are remapped; every other call passes through.
+
+	New chassis (2026-11-13, spun in the air): M1 = rear left,
+	M2 = rear right, M3 = front left, M4 = front right, so the map is
+	[3, 1, 4, 2]. All four encoders count down for positive PWM. With +30
+	on all four, the front-left and rear-right wheels rolled backward and
+	the rear-left and front-right forward (left tops moved toward each
+	other, right tops apart), so the sign is [-1, 1, 1, -1]. Flipping a
+	sign flips that encoder too, so counts still DEcrease driving forward.
+	"""
+
+	def __init__(self, car, motor_map, motor_sign):
+		if sorted(motor_map) != [1, 2, 3, 4] or len(motor_sign) != 4:
+			raise ValueError('motor_map must be a permutation of 1..4 and motor_sign have 4 entries')
+		self._car = car
+		self._map = [m - 1 for m in motor_map]
+		self._sign = [1 if s >= 0 else -1 for s in motor_sign]
+
+	def set_motor(self, fl, rl, fr, rr):
+		out = [0, 0, 0, 0]
+		for i, v in enumerate((fl, rl, fr, rr)):
+			out[self._map[i]] = int(v) * self._sign[i]
+		self._car.set_motor(*out)
+
+	def get_motor_encoder_report(self):
+		counts, seq = self._car.get_motor_encoder_report()
+		return [counts[self._map[i]] * self._sign[i] for i in range(4)], seq
+
+	def __getattr__(self, name):
+		return getattr(self._car, name)
+
+
 class yahboomcar_driver(Node):
 	def __init__(self, name):
 		super().__init__(name)
@@ -38,7 +76,12 @@ class yahboomcar_driver(Node):
 		#get parameter
 		self.declare_parameter('serial_port', '/dev/ttyCH341USB0')
 		serial_port = self.get_parameter('serial_port').get_parameter_value().string_value
-		self.car = Rosmaster(com=serial_port)
+		# Board motor wired to each logical wheel FL, RL, FR, RR (see MotorMappedCar).
+		self.declare_parameter('motor_map', [3, 1, 4, 2])
+		self.declare_parameter('motor_sign', [-1, 1, 1, -1])
+		self.car = MotorMappedCar(Rosmaster(com=serial_port),
+			list(self.get_parameter('motor_map').value),
+			list(self.get_parameter('motor_sign').value))
 		self.car.set_car_type(1)
 		self.declare_parameter('car_type', 'X3')
 		self.car_type = self.get_parameter('car_type').get_parameter_value().string_value
@@ -59,9 +102,10 @@ class yahboomcar_driver(Node):
 		self.angular_limit = self.get_parameter('angular_limit').get_parameter_value().double_value
 		print (self.angular_limit)
 
-		# Kinematic geometry: (half_wheelbase + half_track_width) from URDF.
-		# URDF wheel positions: x=±0.08 m, y=±0.0845 m → factor = 0.08+0.0845 = 0.1645
-		self.declare_parameter('wheel_separation_factor', 0.165)
+		# Kinematic geometry: half wheelbase + half track. New chassis
+		# (New_version/x3_description, 2026-11-13): wheels at x=±0.343,
+		# y=±0.338 m, so 0.681. The old X3 was 0.1645.
+		self.declare_parameter('wheel_separation_factor', 0.681)
 		# Per-wheel gain corrections for motor asymmetry.
 		# Robot drifts right → right motors are stronger → lower gain_fr / gain_rr.
 		# Tune in ~0.02 steps: drive straight, reduce the fast side until drift stops.
@@ -126,16 +170,30 @@ class yahboomcar_driver(Node):
 		# 0.1645 (wheel_separation_factor) turned at 0.77 of the command with
 		# every wheel on its target (gyro, 2026-10-11: 0.467 for 0.6 rad/s,
 		# 0.92 for 1.2), so the effective value is 0.1645 / 0.766.
-		self.declare_parameter('yaw_wheel_separation', 0.215)
+		# On the old X3 the effective value was 1.31x the geometric one; that
+		# has not been re-measured on the new chassis, so start geometric.
+		self.declare_parameter('yaw_wheel_separation', 0.681)
 		# Fastest rim speed asked of any wheel; PWM 100 gives about 1.0 m/s.
 		self.declare_parameter('max_wheel_speed', 0.8)
-		self.speed_ctrl = WheelSpeedController()
+		# Encoder counts per metre of rim travel. 10100 was measured on the old
+		# X3; the new wheels are r=0.052 m on the same JGB37-520 motors, so
+		# 10100 * r_old / r_new. ESTIMATE until a tape-measure drive (r_old
+		# taken as 0.040 m).
+		self.declare_parameter('counts_per_m', 7770.0)
+		# vel_raw linear x/y: 'encoders' computes them here from the remapped
+		# encoders; 'firmware' uses the board's own kinematics, which assume
+		# the stock Yahboom wiring and geometry and are wrong on this chassis.
+		self.declare_parameter('linear_vel_source', 'encoders')
+		self._enc_vel = (0.0, 0.0)
+		self._enc_prev = None
+		self.speed_ctrl = WheelSpeedController(
+			counts_per_m=self.get_parameter('counts_per_m').value)
 		self._speed_control_on = False
 		self._enc_seq = None
 		self._enc_time = self.get_clock().now()
 
-		# Wheel encoders, once per board report (every 40 ms), in the board's
-		# motor order M1..M4 = FL, RL, FR, RR. position = raw counts (they
+		# Wheel encoders, once per board report (every 40 ms), in logical
+		# order FL, RL, FR, RR (remapped from the board by MotorMappedCar). position = raw counts (they
 		# DEcrease driving forward), velocity = rim speed m/s (forward +),
 		# effort = [PWM sent M1..M4, then the ramped speed targets M1..M4]
 		# while speed_control is on.
@@ -228,8 +286,7 @@ class yahboomcar_driver(Node):
 			factor = 100.0 / max_val
 			fl *= factor; fr *= factor; rl *= factor; rr *= factor
 
-		# Hardware wiring: M1=FL, M2=RL, M3=FR, M4=RR
-		# (M2 and M3 cables are swapped on the Rosmaster board)
+		# Logical order; MotorMappedCar sends each to its board motor.
 		self.car.set_motor(int(fl), int(rl), int(fr), int(rr))
 	def RGBLightcallback(self,msg):
         # 流水灯控制，服务端回调函数 RGBLight control
@@ -269,13 +326,14 @@ class yahboomcar_driver(Node):
 				self.car.set_motor(0, 0, 0, 0)
 				self.get_logger().warn('no encoder report for 0.3 s; motors stopped')
 			return
+		self._update_enc_velocity(counts, seq)
 		self._enc_seq = seq
 		self._enc_time = now
 		self._diag_reports += 1
 
 		msg = JointState()
 		msg.header.stamp = now.to_msg()
-		msg.name = ["m1_fl", "m2_rl", "m3_fr", "m4_rr"]
+		msg.name = ["fl", "rl", "fr", "rr"]
 		msg.position = [float(c) for c in counts]
 		if on:
 			# Same 0.5 s watchdog as the open-loop path: no command, no motion.
@@ -288,6 +346,23 @@ class yahboomcar_driver(Node):
 			msg.velocity = [float(v) for v in self.speed_ctrl.speeds]
 			msg.effort = [float(p) for p in pwm] + [float(r) for r in self.speed_ctrl.ramped]
 		self.encPublisher.publish(msg)
+
+	def _update_enc_velocity(self, counts, seq):
+		"""Body vx, vy (m/s) from one encoder report, logical FL, RL, FR, RR.
+
+		Inverse of mecanum_targets(): counts DEcrease driving forward.
+		"""
+		prev = self._enc_prev
+		self._enc_prev = (list(counts), seq)
+		if prev is None:
+			return
+		n = seq - prev[1]
+		if n <= 0 or n > 5:
+			self._enc_vel = (0.0, 0.0)
+			return
+		k = 1.0 / (n * 0.040 * self.get_parameter('counts_per_m').value)
+		fl, rl, fr, rr = [-(c - p) * k for c, p in zip(counts, prev[0])]
+		self._enc_vel = ((fl + rl + fr + rr) / 4.0, (-fl + rl + fr - rr) / 4.0)
 
 	def _diag_reset(self):
 		self._diag_cb = self._diag_cb_nz = 0
@@ -388,6 +463,11 @@ class yahboomcar_driver(Node):
 		# because M2/M3 encoder cables are swapped on the board — the firmware
 		# computes ~0 angular velocity during pure rotation.  Use the IMU gyro gz
 		# (which reads the physical sensor directly) as the angular velocity source.
+		if self.get_parameter('linear_vel_source').value == 'encoders':
+			# Stale encoders (no report for 0.3 s) read as stopped.
+			if (self.get_clock().now() - self._enc_time).nanoseconds > 0.3e9:
+				self._enc_vel = (0.0, 0.0)
+			vx, vy = self._enc_vel
 		twist.linear.x = vx *1.0
 		twist.linear.y = vy *1.0
 		# Angular velocity source. The firmware's own value (get_motion_data) is
