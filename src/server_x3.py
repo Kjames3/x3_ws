@@ -526,7 +526,7 @@ FLOOR_STATE_PATH = os.path.expanduser('~/.x3_floor.json')
 # Strafe odometry scale per floor, measured against FAST-LIO 2026-10-30.  Keep in
 # step with STRAFE_SCALE in yahboomcar_nav/launch/x3_bringup.launch.py, which
 # applies it at startup; this copy is for the live switch in _auto_floor().
-FLOOR_STRAFE_SCALE = {'apartment_wood': -0.607, 'lab_carpet': -0.478}
+FLOOR_STRAFE_SCALE = {'apartment_wood': 1.0, 'lab_carpet': 1.0}  # new chassis 2026-11-13: encoder vel_raw, re-measure
 FLOORS = tuple(FLOOR_STRAFE_SCALE)
 
 

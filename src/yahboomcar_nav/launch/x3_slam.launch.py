@@ -127,8 +127,8 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'pub_odom_tf': False,       # EKF publishes odom→base_footprint TF
-            'linear_scale_x': -0.638,  # 2026-09-16: -0.686 over-read 7.0%/7.9% on two 3.000 m carpet drives (tape, +-1 cm)
-            'linear_scale_y': -0.5,  # provisional 2026-09-10: both 1 m strafes reported ~2 m opposite
+            'linear_scale_x': 1.0,  # new chassis: encoder vel_raw (see x3_bringup)
+            'linear_scale_y': 1.0,  # new chassis: encoder vel_raw (see x3_bringup)
             'angular_scale': 1.0,
         }]
     )

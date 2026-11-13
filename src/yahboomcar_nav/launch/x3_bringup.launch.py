@@ -28,7 +28,7 @@ from ament_index_python.packages import get_package_share_directory, PackageNotF
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction
 from launch.conditions import IfCondition, UnlessCondition
-from launch.substitutions import Command, LaunchConfiguration
+from launch.substitutions import Command, LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -149,7 +149,10 @@ def generate_launch_description():
     #   lab_carpet      0.955  (4 legs, 1.85 m, from lab_loop_2026-10-29_2)
     # server_x3 --floor selects one; unset keeps the old provisional -0.5.
     # Keep in step with FLOOR_STRAFE_SCALE in server_x3.py (live switching).
-    STRAFE_SCALE = {'apartment_wood': -0.607, 'lab_carpet': -0.478, 'unset': -0.5}
+    # 2026-11-13 new chassis: vel_raw x/y now come from the remapped encoders
+    # in SI with the right sign (the old negative factors corrected the stock
+    # firmware's kinematics). 1.0 everywhere until re-measured per floor.
+    STRAFE_SCALE = {'apartment_wood': 1.0, 'lab_carpet': 1.0, 'unset': 1.0}
     floor_arg = DeclareLaunchArgument(
         name='floor', default_value='unset', choices=list(STRAFE_SCALE),
         description='Floor surface; selects the strafe odometry scale')
@@ -163,7 +166,7 @@ def generate_launch_description():
             output='screen',
             parameters=[{
                 'pub_odom_tf': False,
-                'linear_scale_x': -0.638, # 2026-09-16: -0.686 over-read 7.0%/7.9% on two 3.000 m carpet drives (tape, +-1 cm)
+                'linear_scale_x': 1.0,  # new chassis: encoder vel_raw, re-measure with a tape drive
                 'linear_scale_y': STRAFE_SCALE[floor],
                 'angular_scale': 1.0,
             }]
@@ -174,11 +177,26 @@ def generate_launch_description():
     # Replaces the MPU9250, which reached ROS at 10 Hz through the Rosmaster's
     # 115200-baud serial bridge. 200 Hz, Jetson-side timestamps, measured gyro
     # bias subtracted from config/icm42688_calibration.json.
+    # Which IMU owns imu/data_raw. The rebuilt chassis (2026-11-13) has only
+    # the Livox's IMU; imu:=icm once the ICM-42688-P is mounted again.
+    imu_arg = DeclareLaunchArgument(
+        name='imu', default_value='livox', choices=['livox', 'icm'],
+        description='imu/data_raw source: livox (Mid-360S IMU via livox_imu_relay) or icm')
+    use_icm = IfCondition(PythonExpression(["'", LaunchConfiguration('imu'), "' == 'icm'"]))
+    use_livox_imu = IfCondition(PythonExpression(["'", LaunchConfiguration('imu'), "' == 'livox'"]))
+    livox_imu_node = Node(
+        package='yahboomcar_bringup',
+        executable='livox_imu_relay',
+        name='livox_imu_relay',
+        output='screen',
+        condition=use_livox_imu,
+    )
     icm_imu_node = Node(
         package='yahboomcar_bringup',
         executable='icm42688_node',
         name='icm42688_node',
         output='screen',
+        condition=use_icm,
         parameters=[{
             'i2c_bus': 7,          # pins 3/5, shared with the INA226 at 0x40
             'i2c_addr': 0x68,      # AD0 tied to GND
@@ -262,7 +280,9 @@ def generate_launch_description():
         joint_state_publisher_gui,
         driver_node,
         base_node,
+        imu_arg,
         icm_imu_node,
+        livox_imu_node,
         imu_filter_node,
         ekf_node,
         *livox_nodes,

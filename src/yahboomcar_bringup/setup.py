@@ -46,6 +46,7 @@ setup(
         'lidar_tilt_node = yahboomcar_bringup.lidar_tilt_node:main',
         'octomap_throttle_node = yahboomcar_bringup.octomap_throttle_node:main',   
         'icm42688_node = yahboomcar_bringup.icm42688_node:main',
+        'livox_imu_relay = yahboomcar_bringup.livox_imu_relay:main',
         'tof_node = yahboomcar_bringup.tof_node:main',
         'flow_node = yahboomcar_bringup.flow_node:main',
         ],
