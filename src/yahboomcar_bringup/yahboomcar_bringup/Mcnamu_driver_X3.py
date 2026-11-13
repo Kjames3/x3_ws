@@ -172,9 +172,11 @@ class yahboomcar_driver(Node):
 		# 0.1645 (wheel_separation_factor) turned at 0.77 of the command with
 		# every wheel on its target (gyro, 2026-10-11: 0.467 for 0.6 rad/s,
 		# 0.92 for 1.2), so the effective value is 0.1645 / 0.766.
-		# On the old X3 the effective value was 1.31x the geometric one; that
-		# has not been re-measured on the new chassis, so start geometric.
-		self.declare_parameter('yaw_wheel_separation', 0.681)
+		# New chassis, 2026-11-13: 0.374 from two gyro-timed turns in place
+		# (new_chassis_calib.py spin: 4.786 m of rim travel over 733.7 deg),
+		# 0.55x the geometric 0.681 -- the rollers slip, so it turns faster
+		# than geometry says. Keep cbf_filter's wheel_separation in step.
+		self.declare_parameter('yaw_wheel_separation', 0.374)
 		# Fastest rim speed asked of any wheel; PWM 100 gives about 1.0 m/s.
 		self.declare_parameter('max_wheel_speed', 0.8)
 		# Encoder counts per metre of rim travel. New chassis, 2026-11-13: 7624

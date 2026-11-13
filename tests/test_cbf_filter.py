@@ -112,7 +112,7 @@ def test_wheel_limit_is_a_diamond_and_shrinks_with_yaw_rate():
     vx, vy = cbf.filter_velocity(-0.6, -0.6, (0.0, 0.0), far)
     assert abs(vx) + abs(vy) == pytest.approx(0.5, abs=1e-7)
     vx, vy = cbf.filter_velocity(-0.6, -0.6, (0.0, 0.0), far, omega=1.0)
-    assert abs(vx) + abs(vy) == pytest.approx(0.5 - 0.215, abs=1e-7)
+    assert abs(vx) + abs(vy) == pytest.approx(0.5 - cbf.wheel_separation, abs=1e-7)
 
 
 def test_squeezed_between_two_obstacles_is_not_a_blind_stop():
