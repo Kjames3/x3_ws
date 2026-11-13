@@ -346,6 +346,13 @@ class yahboomcar_driver(Node):
 				self.speed_ctrl.set_targets([0.0] * 4)
 			pwm = self.speed_ctrl.update(counts, seq)
 			self.car.set_motor(*pwm)
+			trips = list(self.speed_ctrl.stall_trips)
+			if trips != getattr(self, '_stall_trips_seen', [0] * 4):
+				names = [n for n, a, b in zip(('FL', 'RL', 'FR', 'RR'), trips,
+					getattr(self, '_stall_trips_seen', [0] * 4)) if a != b]
+				self.get_logger().warn('wheel stalled at full PWM, resting it 1 s: %s (total %s)'
+					% (','.join(names), trips))
+				self._stall_trips_seen = trips
 			msg.velocity = [float(v) for v in self.speed_ctrl.speeds]
 			msg.effort = [float(p) for p in pwm] + [float(r) for r in self.speed_ctrl.ramped]
 		self.encPublisher.publish(msg)

@@ -153,3 +153,44 @@ def test_repeated_or_first_report_does_nothing():
     assert ctrl.update([0, 0, 0, 0], 7) == [0, 0, 0, 0]
     first = ctrl.update([-80, -80, -80, -80], 8)
     assert ctrl.update([-80, -80, -80, -80], 8) == first
+
+
+def _stalled_run(ctrl, reports, twitch_every=0):
+    """Drive one stuck wheel (M1) with occasional 1-count roller twitches."""
+    from yahboomcar_bringup.wheel_speed_control import REPORT_PERIOD_S  # noqa: F401
+    counts, pwms = [0, 0, 0, 0], []
+    for k in range(1, reports + 1):
+        if twitch_every and k % twitch_every == 0:
+            counts[0] -= 1        # one count 'forward'
+        pwms.append(ctrl.update(list(counts), k)[0])
+    return pwms
+
+
+def test_roller_twitch_does_not_reset_the_stall_boost():
+    from yahboomcar_bringup.wheel_speed_control import WheelSpeedController
+    c = WheelSpeedController()
+    c.set_targets([0.19, 0.0, 0.0, 0.0])
+    pwms = _stalled_run(c, 30, twitch_every=4)   # 1.2 s, twitching
+    # The push keeps building through the twitches instead of sawing back.
+    assert max(pwms[-8:]) >= 85
+    assert min(pwms[-8:]) >= 60
+
+
+def test_stalled_wheel_is_switched_off_then_retried():
+    from yahboomcar_bringup.wheel_speed_control import (WheelSpeedController, STALL_CUT_S,
+                                     STALL_REST_S, REPORT_PERIOD_S)
+    c = WheelSpeedController()
+    c.set_targets([0.19, 0.0, 0.0, 0.0])
+    n = int((STALL_CUT_S + STALL_REST_S) / REPORT_PERIOD_S) + 40
+    pwms = _stalled_run(c, n)
+    assert c.stall_trips[0] >= 1
+    first_off = pwms.index(0, 1)
+    rest = int(STALL_REST_S / REPORT_PERIOD_S)
+    assert all(p == 0 for p in pwms[first_off:first_off + rest])
+    assert any(p > 0 for p in pwms[first_off + rest + 1:])   # tries again
+    # never held at >= 85 PWM longer than the cut time without a rest
+    run = longest = 0
+    for p in pwms:
+        run = run + 1 if p >= 85 else 0
+        longest = max(longest, run)
+    assert longest * REPORT_PERIOD_S <= STALL_CUT_S + 2 * REPORT_PERIOD_S
