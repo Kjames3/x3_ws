@@ -60,7 +60,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('mode', choices=['straight', 'spin'])
     ap.add_argument('--distance', type=float, default=2.4, help='straight: metres between the marks')
-    ap.add_argument('--counts-per-m', type=float, default=7770.0, help='spin: value from the straight run')
+    ap.add_argument('--counts-per-m', type=float, default=7624.0, help='spin: value from the straight run (7624, 2026-11-13)')
     a = ap.parse_args()
 
     rclpy.init()
@@ -97,8 +97,11 @@ def main():
             raise SystemExit('turn too small to measure; do at least one full turn')
         print('==> yaw_wheel_separation = %.3f m  (rim %.3f m over %.1f deg; geometric 0.681)'
               % (rim / turn, rim, math.degrees(turn)))
-    node.destroy_node()
-    rclpy.shutdown()
+    # Exit without tearing rclpy down under the spinning daemon thread, which
+    # aborted with 'terminate called without an active exception'.
+    import os, sys
+    sys.stdout.flush()
+    os._exit(0)
 
 
 if __name__ == '__main__':
