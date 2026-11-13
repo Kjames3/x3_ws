@@ -199,7 +199,7 @@ def test_wheel_limit_applies_with_no_obstacles_too():
     vx, vy = cbf.filter_velocity(0.45, 0.45, (0.0, 0.0), [])
     assert (vx, vy) == pytest.approx((0.25, 0.25))
     vx, vy = cbf.filter_velocity(0.45, 0.0, (0.0, 0.0), [], omega=1.0)
-    assert (vx, vy) == pytest.approx((0.285, 0.0))
+    assert (vx, vy) == pytest.approx((0.5 - cbf.wheel_separation, 0.0))
 
 
 @pytest.mark.parametrize('bad', [float('nan'), float('inf'), -float('inf')])
