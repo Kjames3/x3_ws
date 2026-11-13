@@ -63,8 +63,13 @@ class LivoxImuRelay(Node):
     def _report(self):
         rate = self._n / 10.0
         self._n = 0
-        log = self.get_logger().warn if rate < 150.0 else self.get_logger().info
-        log('livox imu relay: %.0f Hz' % rate)
+        # Two call sites: rclpy refuses one call site switching severity
+        # ('Logger severity cannot be changed between calls'), which killed
+        # this node the first time the rate crossed 150 Hz.
+        if rate < 150.0:
+            self.get_logger().warn('livox imu relay: %.0f Hz (expected ~200)' % rate)
+        else:
+            self.get_logger().info('livox imu relay: %.0f Hz' % rate)
 
 
 def main(args=None):
