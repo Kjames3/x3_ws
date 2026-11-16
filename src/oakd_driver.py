@@ -33,6 +33,7 @@ OAK-specific getters:
 Resilience: missing depthai / no device / a dropped link leave the getters
 returning None/empty while the worker retries with exponential backoff.
 """
+import contextlib
 import json
 import logging
 import os
@@ -55,6 +56,22 @@ except Exception as _exc:  # pragma: no cover - import guard
     dai = None
     _DEPTHAI_AVAILABLE = False
     logger.warning(f"OakDCamera: depthai import failed ({_exc}); OAK-D disabled")
+
+
+def _depthai_major(version):
+    try:
+        return int(str(version).split(".")[0])
+    except ValueError:
+        return 0
+
+
+# depthai v3 (the AGX ships 3.11) removed XLinkOut, Device(pipeline) and
+# device.getOutputQueue: queues come from node outputs and the pipeline is
+# built against an already-open device. The legacy MonoCamera/ColorCamera
+# nodes are kept on v3 ON PURPOSE: Camera.requestOutput lets the SDK choose
+# the sensor mode, which would silently break the 1080P 2x-bin centre-crop
+# that c1_camera_geometry's intrinsics assume.
+_DAI_V3 = _DEPTHAI_AVAILABLE and _depthai_major(getattr(dai, "__version__", "0")) >= 3
 
 DEPTH_MIN_M = 0.3
 DEPTH_MAX_M = 5.0
@@ -276,8 +293,12 @@ class OakDCamera:
             self.nn_out_name = outs[0].get("name")
             output_shape = outs[0].get("shape")
             if output_shape and len(output_shape) == 3:
-                # Raw YOLO NCD output: anchor count changes with input size.
-                self._N_ANCHORS = int(output_shape[2])
+                # Raw YOLO output: anchor count changes with input size. The pose
+                # and seg configs list [1, rows, anchors]; yolo26n's lists
+                # [1, 6300, 85] (labelled "NCD" all the same), and taking shape[2]
+                # there made the driver decode 85 anchors of 6300. Anchors always
+                # outnumber rows (85/56/116 vs thousands), so take the larger.
+                self._N_ANCHORS = max(int(output_shape[1]), int(output_shape[2]))
                 if self._N_ANCHORS <= 0:
                     raise ValueError("YOLO output anchor count must be positive")
             # Segmentation heads add a prototype output (1, n_masks, H/4, W/4).
@@ -347,25 +368,53 @@ class OakDCamera:
     stop = cleanup
 
     # ------------------------------------------------------------------ pipeline
-    def _build_pipeline(self, with_spatial, economy=False):
-        pipeline = dai.Pipeline()
+    def _xout(self, pipeline, outs, name, output, queue_size=None, blocking=None):
+        """Stream `output` to the host as `name`.
+
+        v2: an XLinkOut node, whose device-side input can be sized.
+        v3: the output itself; _session() makes its host queue. v3 has no
+        device-side XLink input to size, so a requested size is logged, not
+        applied (the host queue is still non-blocking and bounded)."""
+        if _DAI_V3:
+            outs[name] = output
+            if queue_size is not None or blocking is not None:
+                logger.info("OakDCamera: depthai v3 has no XLinkOut input; device-side "
+                            "queue for '%s' (size %s, blocking %s) left at the SDK default",
+                            name, queue_size, blocking)
+            return
+        x = pipeline.create(dai.node.XLinkOut)
+        x.setStreamName(name)
+        if blocking is not None:
+            x.input.setBlocking(blocking)
+        if queue_size is not None:
+            x.input.setQueueSize(queue_size)
+        output.link(x.input)
+        outs[name] = x
+
+    @staticmethod
+    def _edit_stereo_config(stereo, edit):
+        """Apply edit(cfg) to the stereo node's initial config.
+        v2 hands out a copy (get/set); v3's initialConfig is the live object."""
+        ic = stereo.initialConfig
+        if not _DAI_V3 and hasattr(ic, "get"):
+            cfg = ic.get()
+            edit(cfg)
+            ic.set(cfg)
+        else:
+            edit(ic)
+
+    def _build_pipeline(self, with_spatial, economy=False, device=None):
+        """Returns (pipeline, outs): outs maps stream name -> v2 XLinkOut or v3 output."""
+        pipeline = dai.Pipeline(device) if _DAI_V3 else dai.Pipeline()
+        outs = {}
 
         monoLeft = pipeline.create(dai.node.MonoCamera)
         monoRight = pipeline.create(dai.node.MonoCamera)
         stereo = pipeline.create(dai.node.StereoDepth)
         imu = pipeline.create(dai.node.IMU)
-
-        xoutDepth = pipeline.create(dai.node.XLinkOut); xoutDepth.setStreamName("depth")
-        xoutImu = pipeline.create(dai.node.XLinkOut);   xoutImu.setStreamName("imu")
-        if self.record_rgbd:
-            xoutDepth.input.setBlocking(False)
-            xoutDepth.input.setQueueSize(2)
         # Economy (USB2): don't ship mono L/R to the host — those XLink streams eat
         # ~15 MB/s, which starves depth on a 480 Mbit link. get_stereo_frames() then
         # returns None (GUI stereo panels stay blank); depth + detection are unaffected.
-        if not economy and not self.record_rgbd:
-            xoutLeft = pipeline.create(dai.node.XLinkOut);  xoutLeft.setStreamName("left")
-            xoutRight = pipeline.create(dai.node.XLinkOut); xoutRight.setStreamName("right")
 
         monoLeft.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
         monoLeft.setBoardSocket(dai.CameraBoardSocket.CAM_B)
@@ -397,25 +446,33 @@ class OakDCamera:
         # This feed is shared: /oak/points, the Nav2 oak_voxel_layer and octomap
         # all consume the same depth, so verify 3D mapping after changing it.
         if self.speckle_filter:
-            try:
-                cfg = stereo.initialConfig.get()
+            def _speckle(cfg):
                 cfg.postProcessing.speckleFilter.enable = True
                 cfg.postProcessing.speckleFilter.speckleRange = self.speckle_range
-                stereo.initialConfig.set(cfg)
+            try:
+                self._edit_stereo_config(stereo, _speckle)
+                ic = stereo.initialConfig
+                back = (ic.get() if (not _DAI_V3 and hasattr(ic, "get")) else ic)
+                back = back.postProcessing.speckleFilter
+                if not (back.enable and back.speckleRange == self.speckle_range):
+                    raise RuntimeError(f"config read back enable={back.enable} "
+                                       f"range={back.speckleRange}")
                 logger.info("OakDCamera: speckle filter on (range=%d)",
                             self.speckle_range)
             except Exception as exc:
                 # An older depthai may not expose postProcessing; depth without
                 # the filter is still correct, so do not take the camera down.
-                logger.warning("OakDCamera: speckle filter unavailable (%s); "
-                               "continuing without post-processing", exc)
+                # On v3 the API exists, so a failure there is a porting bug:
+                # say so loudly (unfiltered speckle becomes phantom obstacles).
+                (logger.error if _DAI_V3 else logger.warning)(
+                    "OakDCamera: speckle filter unavailable (%s); "
+                    "continuing without post-processing", exc)
 
         # Optional spatial (edge-preserving, small hole filling) + range threshold,
         # for A/B testing: X3_OAK_DEPTH_FILTERS=1. Still no temporal filter (see
         # above). Shared feed: check 3D mapping before making it the default.
         if os.environ.get("X3_OAK_DEPTH_FILTERS") == "1":
-            try:
-                cfg = stereo.initialConfig.get()
+            def _filters(cfg):
                 sf = cfg.postProcessing.spatialFilter
                 sf.enable = True
                 sf.holeFillingRadius = 2
@@ -424,7 +481,8 @@ class OakDCamera:
                 sf.delta = 0
                 cfg.postProcessing.thresholdFilter.minRange = 200
                 cfg.postProcessing.thresholdFilter.maxRange = 8000
-                stereo.initialConfig.set(cfg)
+            try:
+                self._edit_stereo_config(stereo, _filters)
                 logger.info("OakDCamera: spatial filter + 0.2-8 m threshold ON (X3_OAK_DEPTH_FILTERS)")
             except Exception as exc:
                 logger.warning("OakDCamera: depth filters unavailable (%s)", exc)
@@ -437,10 +495,11 @@ class OakDCamera:
         monoLeft.out.link(stereo.left)
         monoRight.out.link(stereo.right)
         if not economy and not self.record_rgbd:
-            monoLeft.out.link(xoutLeft.input)
-            monoRight.out.link(xoutRight.input)
-        stereo.depth.link(xoutDepth.input)
-        imu.out.link(xoutImu.input)
+            self._xout(pipeline, outs, "left", monoLeft.out)
+            self._xout(pipeline, outs, "right", monoRight.out)
+        self._xout(pipeline, outs, "depth", stereo.depth,
+                   **(dict(queue_size=2, blocking=False) if self.record_rgbd else {}))
+        self._xout(pipeline, outs, "imu", imu.out)
 
         if with_spatial:
             # Color (CAM_A) feeds the NN only — not streamed. Depth is aligned to
@@ -472,34 +531,36 @@ class OakDCamera:
             nn.setNumInferenceThreads(int(inference_threads))
             logger.info("OakDCamera: NN inference threads %s", inference_threads)
             nn.input.setBlocking(False)
+            if _DAI_V3 and not self.record_rgbd:
+                # v3's default NN input queue backs up behind the ~12 Hz NN:
+                # capture->host latency median 888 ms vs 303 ms with size 1
+                # (AGX, depthai 3.11, 2026-11-16). Newest frame only.
+                nn.input.setMaxSize(1)
             if self.record_rgbd:
                 # NN queue references must not exhaust the RGB preview pool.
-                nn.input.setQueueSize(1)
+                # (v2 Input.setQueueSize was renamed setMaxSize in v3.)
+                (nn.input.setMaxSize if _DAI_V3 else nn.input.setQueueSize)(1)
                 camRgb.setPreviewNumFramesPool(8)
             camRgb.preview.link(nn.input)
             if self.record_rgbd:
-                xoutRgb = pipeline.create(dai.node.XLinkOut)
-                xoutRgb.setStreamName("record_rgb")
-                xoutRgb.input.setBlocking(False)
-                xoutRgb.input.setQueueSize(4)
-                camRgb.preview.link(xoutRgb.input)
+                self._xout(pipeline, outs, "record_rgb", camRgb.preview,
+                           queue_size=4, blocking=False)
 
-            xoutDet = pipeline.create(dai.node.XLinkOut)
-            xoutDet.setStreamName("det")
             # Controlled latency experiment: drop old results rather than let
             # host backpressure retain up to the SDK default eight outputs.
             if os.environ.get("X3_OAK_NN_LATEST_OUTPUT") == "1":
-                xoutDet.input.setQueueSize(1)
-                xoutDet.input.setBlocking(False)
-                logger.info("OakDCamera: NN output queue latest-only (size 1, nonblocking)")
-            nn.out.link(xoutDet.input)
+                self._xout(pipeline, outs, "det", nn.out, queue_size=1, blocking=False)
+                if not _DAI_V3:
+                    logger.info("OakDCamera: NN output queue latest-only (size 1, nonblocking)")
+            else:
+                self._xout(pipeline, outs, "det", nn.out)
         else:
             align_socket = (dai.CameraBoardSocket.CAM_B if self.align_depth_to_left
                             else dai.CameraBoardSocket.CAM_C)
             stereo.setDepthAlign(align_socket)
             stereo.setOutputSize(monoLeft.getResolutionWidth(), monoLeft.getResolutionHeight())
 
-        return pipeline
+        return pipeline, outs
 
     def _run(self):
         backoff = 1.0
@@ -508,22 +569,11 @@ class OakDCamera:
         while self._running:
             with_spatial = self._want_spatial and self._spatial_ok
             try:
-                pipeline = self._build_pipeline(with_spatial, economy)
-                max_speed = dai.UsbSpeed.HIGH if self.usb2_mode else dai.UsbSpeed.SUPER
-                with dai.Device(pipeline, maxUsbSpeed=max_speed) as device:
-                    self.usb_speed = device.getUsbSpeed().name
-                    # Auto-economy: match the pipeline to the link. On USB2 drop the mono
-                    # streams so depth/detection keep the bandwidth; on USB3 restore full.
-                    _want_eco = self._auto_economy and self.usb_speed not in ("SUPER", "SUPER_PLUS")
-                    if _want_eco != economy:
-                        economy = _want_eco
-                        if economy:
-                            logger.warning(f"OakDCamera: USB {self.usb_speed} (USB2 link) — economy "
-                                           "mode ON: mono L/R not streamed so depth + detection keep "
-                                           "the bandwidth (GUI stereo blank). USB3 restores full mode.")
-                        else:
-                            logger.info("OakDCamera: USB3 link — economy mode OFF (full stereo restored)")
+                with self._session(with_spatial, economy) as (device, queues, economy_now):
+                    if queues is None:      # v2 only: link mismatch, rebuild to match it
+                        economy = economy_now
                         continue    # exits `with` (closes device), rebuilds to match the link
+                    economy = economy_now
                     self.economy = economy
                     self.available = True
                     self.spatial_active = with_spatial
@@ -545,17 +595,10 @@ class OakDCamera:
                     # Live consumers get newest frames. C1 retains a bounded depth
                     # history so later-delivered RGB can find its temporal neighbour;
                     # non-blocking queues never backpressure the device.
-                    if not economy and not self.record_rgbd:
-                        qLeft = device.getOutputQueue("left", maxSize=1, blocking=False)
-                        qRight = device.getOutputQueue("right", maxSize=1, blocking=False)
-                    else:
-                        qLeft = qRight = None
-                    qDepth = device.getOutputQueue("depth", maxSize=32 if self.record_rgbd else 1, blocking=False)
-                    qImu = device.getOutputQueue("imu", maxSize=20, blocking=False)
-                    qDet = device.getOutputQueue("det", maxSize=1, blocking=False) if with_spatial else None
-
-                    qRgb = (device.getOutputQueue("record_rgb", maxSize=4, blocking=False)
-                            if self.record_rgbd and with_spatial else None)
+                    qLeft, qRight = queues.get("left"), queues.get("right")
+                    qDepth, qImu = queues["depth"], queues["imu"]
+                    qDet = queues.get("det") if with_spatial else None
+                    qRgb = queues.get("record_rgb") if self.record_rgbd and with_spatial else None
                     fps_n, fps_t = 0, time.monotonic()
                     # NN stall watchdog. The NN node has been seen to stop emitting
                     # (2026-09-28, yolo11n-pose + C1 recording) while depth and the
@@ -663,8 +706,66 @@ class OakDCamera:
         self.available = False
         self.spatial_active = False
 
+    def _host_queue_sizes(self):
+        """Host-side queue depth per stream. Live consumers get the newest frame;
+        C1 recording keeps a depth history so late RGB can find its neighbour."""
+        return {"left": 1, "right": 1, "depth": 32 if self.record_rgbd else 1,
+                "imu": 20, "det": 1, "record_rgb": 4}
+
+    def _link_economy(self, usb_speed, economy):
+        """Auto-economy: match the pipeline to the link. On USB2 drop the mono
+        streams so depth/detection keep the bandwidth; on USB3 restore full."""
+        want = self._auto_economy and usb_speed not in ("SUPER", "SUPER_PLUS")
+        if want != economy:
+            if want:
+                logger.warning(f"OakDCamera: USB {usb_speed} (USB2 link) — economy "
+                               "mode ON: mono L/R not streamed so depth + detection keep "
+                               "the bandwidth (GUI stereo blank). USB3 restores full mode.")
+            else:
+                logger.info("OakDCamera: USB3 link — economy mode OFF (full stereo restored)")
+        return want
+
+    @contextlib.contextmanager
+    def _session(self, with_spatial, economy):
+        """Open the device and start the pipeline; yields (device, queues, economy).
+
+        v2 builds the pipeline first and opens the device with it, so a link that
+        doesn't match `economy` yields queues=None and the caller rebuilds.
+        v3 opens the device first, so economy is matched before building and the
+        pipeline is stopped on every exit (stall break, error, shutdown)."""
+        max_speed = dai.UsbSpeed.HIGH if self.usb2_mode else dai.UsbSpeed.SUPER
+        sizes = self._host_queue_sizes()
+        if _DAI_V3:
+            with dai.Device(max_speed) as device:
+                self.usb_speed = device.getUsbSpeed().name
+                economy = self._link_economy(self.usb_speed, economy)
+                pipeline, outs = self._build_pipeline(with_spatial, economy, device)
+                queues = {name: out.createOutputQueue(maxSize=sizes[name], blocking=False)
+                          for name, out in outs.items()}
+                pipeline.start()
+                try:
+                    yield device, queues, economy
+                finally:
+                    try:
+                        pipeline.stop()
+                    except Exception as e:  # device may already be gone
+                        logger.warning(f"OakDCamera: pipeline stop: {e}")
+            return
+        pipeline, outs = self._build_pipeline(with_spatial, economy)
+        with dai.Device(pipeline, maxUsbSpeed=max_speed) as device:
+            self.usb_speed = device.getUsbSpeed().name
+            want = self._link_economy(self.usb_speed, economy)
+            if want != economy:
+                yield device, None, want
+                return
+            queues = {name: device.getOutputQueue(name, maxSize=sizes[name], blocking=False)
+                      for name in outs}
+            yield device, queues, economy
+
     def _read_intrinsics(self, device, with_spatial=True):
-        mxid = device.getMxId() if hasattr(device, "getMxId") else None
+        # Same string on both APIs; v3 deprecates getMxId in favour of getDeviceId.
+        id_fn = getattr(device, "getDeviceId", None) or getattr(device, "getMxId", None)
+        mxid = id_fn() if id_fn else None
         self._inv_depth_offset = load_depth_correction(mxid)
         logger.info("OakDCamera: %s depth correction 1/Z offset %.4f 1/m",
                     mxid, self._inv_depth_offset)
@@ -877,6 +978,11 @@ class OakDCamera:
             obj = None
             cls = A[:, 4:4 + self.nn_classes]
             kpts = A[:, 4 + self.nn_classes:4 + self.nn_classes + self.nn_masks]
+        elif has_obj == "dup":
+            # The yolo26n export's settled layout (see _dup_layout): ch4 is a
+            # copy of max(classes), not objectness. Score = max class.
+            obj = None
+            cls = A[:, 5:85]
         elif has_obj:
             obj = A[:, 4]
             cls = A[:, 5:85]
@@ -900,6 +1006,24 @@ class OakDCamera:
         else:
             scores = cls_sc
         return box, scores.astype(np.float32), cls_id, kpts
+
+    def _dup_layout(self, raw):
+        """True when the plain 85-row head has the yolo26n export's layout:
+        anchor-major [6300, 85], exactly ch0..3 box-like (pixels, > 1.5),
+        ch4 byte-equal to max(ch5:85). Settled by dumping real tensors
+        (2026-08 on v2, again 2026-11-16 on depthai 3.11): it holds on every
+        frame, including empty scenes. The hit-count guesser below cannot see
+        it on an empty scene (0 hits fails `1 <= n_hits`) and then locks a
+        channel-major reading whose box pixels become 1.0 class scores."""
+        if self.nn_kpts or self.nn_masks or self._nn_rows != 85:
+            return False
+        n = self._N_ANCHORS
+        if raw.size < 85 * n:
+            return False
+        A = raw[:85 * n].reshape(n, 85)
+        box_like = int((A.max(axis=0) > 1.5).sum())
+        dup = float(np.abs(A[:, 4] - A[:, 5:85].max(axis=1)).max())
+        return box_like == 4 and A[:, 0:4].max(axis=0).min() > 1.5 and dup == 0.0
 
     def _mode_plausible(self, box, scores):
         """Plausible = boxes lie inside the frame and detections are sparse."""
@@ -952,6 +1076,10 @@ class OakDCamera:
                 self._latest_detection_meta = metadata
             return
 
+        if self._decode_mode is None and self._dup_layout(raw):
+            self._decode_mode = ("am", "dup")
+            logger.info("OAK NN: layout anchor-major, box[0:4], ch4 == max(cls), cls[5:85]; "
+                        "locked decode mode ('am', 'dup')")
         if self._decode_mode is None:
             best, report = None, []
             for mode in self._DECODE_MODES:
@@ -1145,6 +1273,9 @@ class OakDCamera:
         first packet of each layer and used only if the two agree exactly.
         """
         def slow():
+            if not hasattr(nndata, "getLayerFp16"):   # depthai v3: tensors, not lists
+                t = nndata.getTensor(name) if name else nndata.getFirstTensor()
+                return np.asarray(t, dtype=np.float32).ravel()
             vals = nndata.getLayerFp16(name) if name else nndata.getFirstLayerFp16()
             return np.array(vals, dtype=np.float32)
 
