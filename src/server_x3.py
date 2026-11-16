@@ -136,6 +136,10 @@ parser.add_argument('--floor', default=None, choices=['apartment_wood', 'lab_car
 parser.add_argument('--tof-port', default=TEENSY_TOF_PORT, dest='tof_port',
                     help='Serial port of the ToF Teensy. Default /dev/teensy_tof from '
                          'deploy/udev/65-teensy-tof.rules; /dev/ttyACMn swaps with the OpenRB-150.')
+parser.add_argument('--battery-port', default='/dev/ttyTHS1', dest='battery_port',
+                    help='UART (or USB) port of the X3 v2 Teensy battery monitor '
+                         '(src/battery_monitor). Its SoC replaces the old-pack estimator '
+                         'while it streams. "none" disables it. ttyTHS1 is unverified.')
 parser.add_argument('--no-oak', action='store_true', dest='no_oak',
                     help='Disable the OAK-D Lite driver (stereo + depth + IMU). '
                          'When enabled (default), the OAK-D is the depth source.')
@@ -285,6 +289,7 @@ lidar = None
 camera = None
 oak = None          # OakDCamera instance (stereo + depth + IMU); depth source when present
 ina226 = None       # INA226 Battery Monitor
+teensy_batt = None  # teensy_battery.TeensyBatteryMonitor (X3 v2 pack, own SoC)
 tof_array = None    # upper + lower VL53L5CX arrays (see TeensyToFArrays)
 _tof_state = None   # {"upper": frame|None, "lower": frame|None} for the readout lane
 battery_estimator = None   # battery.BatteryEstimator — coulomb-counted SoC
@@ -2361,7 +2366,7 @@ def _encode_mapu(grid: dict) -> bytes | None:
 
 
 def initialize_hardware():
-    global ros_board, ros_bridge, drive, lidar, camera, oak, ina226, oak_ros_pub, oak_surroundings, model, oled, _gazebo_proc
+    global ros_board, ros_bridge, drive, lidar, camera, oak, ina226, teensy_batt, oak_ros_pub, oak_surroundings, model, oled, _gazebo_proc
     global tof_array
     global nav2_client, _ros2_stack_proc, frontier_explorer
     global velocity_estimator, active_velocity_model_name
@@ -2467,6 +2472,9 @@ def initialize_hardware():
         logger.info("Initializing INA226 Battery Monitor on bus 7...")
         ina226 = INA226BatteryMonitor(i2c_bus=7)
         _init_battery_estimator()
+        if args.battery_port.lower() != 'none':
+            from teensy_battery import TeensyBatteryMonitor
+            teensy_batt = TeensyBatteryMonitor(port=args.battery_port)
 
     # Dual VL53L5CX 8x8 arrays, read by a Teensy (firmware uploads and I2C
     # happen there) and streamed over USB. Non-blocking: a reader thread
@@ -2790,6 +2798,7 @@ def cleanup():
     if not (SIM_MODE or ROS2_MODE) and lidar: lidar.cleanup()
     if oled: oled.cleanup()
     if tof_array: tof_array.cleanup()
+    if teensy_batt: teensy_batt.cleanup()
 
 
 # =============================================================================
@@ -4474,6 +4483,11 @@ async def broadcast_loop():
                 _batt_cache_a_time = now
             batt_a = _batt_cache_a
             batt_w = _batt_cache_w
+            # X3 v2: the Teensy monitor measures the pack and keeps its own SoC.
+            # While it streams, it wins over the INA226/Rosmaster readings above.
+            _tb = teensy_batt.latest() if teensy_batt is not None else None
+            if _tb is not None:
+                batt_v, batt_a, batt_w = _tb.volts, _tb.amps, _tb.volts * _tb.amps
             batt_measured = batt_a is not None
 
             if not batt_measured:
@@ -4484,7 +4498,11 @@ async def broadcast_loop():
                 batt_w  = batt_v * batt_a
 
             batt_minutes = None
-            if battery_estimator is not None:
+            if _tb is not None:
+                # battery.BatteryEstimator models the OLD 4S 8.07 Ah pack; skip it.
+                batt_pct = _tb.pct
+                batt_minutes = teensy_batt.minutes_remaining()
+            elif battery_estimator is not None:
                 batt_pct = battery_estimator.update(
                     batt_v, batt_a if batt_measured else 0.0)
                 batt_minutes = battery_estimator.minutes_remaining
