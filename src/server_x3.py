@@ -590,7 +590,7 @@ CBF_SAFE_DISTANCE_M = float(os.environ.get('X3_CBF_SAFE_DISTANCE_M', 0.30))
 # from the base centre in metres -- front, rear, left, right (body x forward).
 # Measured 2026-10-11 by pushing each side against a wall and reading it with
 # the lidar (src/tools/calibration/footprint_measure.py): 0.153, 0.124, 0.102, 0.097, rounded up.
-# Front and rear are relative to where _scan_cb puts the lidar (x = 0.0435),
+# Front and rear are relative to where _scan_cb puts the lidar (LIDAR_X_M),
 # so a lidar point and this outline share any error in that figure.
 # The nose is the ToF bracket. Two values mean half length, half width.
 # 'circle' goes back to CBF_SAFE_DISTANCE_M round the centre, which stalls in
@@ -608,6 +608,12 @@ CBF_FOOTPRINT = None if _fp == 'circle' else tuple(float(v) for v in _fp.split('
 # 0.5 m away sits 4 cm off to the side. The URDF's laser_joint (what SLAM,
 # Nav2 and RViz use) still says exactly 180 deg.
 LIDAR_YAW_OFFSET_RAD = math.radians(float(os.environ.get('X3_LIDAR_YAW_OFFSET_DEG', 4.85)))
+# base_link -> laser_link x for the paths that turn /scan into base coordinates
+# WITHOUT TF (_scan_cb's CBF obstacles, site recognition, the initial-pose
+# seed). Must equal laser_joint in the URDF the bringup loads
+# (tests/test_x3_v2_urdf.py checks it): x3_v2 puts the Livox over the wheel
+# centroid (CAD, -0.0013); the old X3 Plus URDF had 0.0435.
+LIDAR_X_M = float(os.environ.get('X3_LIDAR_X_M', -0.0013))
 # Clearance kept round that outline.
 CBF_MARGIN_M = float(os.environ.get('X3_CBF_MARGIN_M', 0.10))
 # A walking person reaches the CBF as one point at the torso's depth, with
@@ -1099,7 +1105,7 @@ class ROS2Bridge:
                 # x_base = -x_laser + x_offset, y_base = -y_laser
                 x_laser = r * _math.cos(angle)
                 y_laser = r * _math.sin(angle)
-                x = -x_laser + 0.0435
+                x = -x_laser + LIDAR_X_M
                 y = -y_laser
                 obstacles.append((x, y))
             angle += msg.angle_increment
@@ -2928,7 +2934,7 @@ def _auto_floor(bridge) -> None:
             continue
         pts = scan_to_points(_np.asarray(scan.ranges), scan.angle_min,
                              scan.angle_increment, scan.range_min, 6.0,
-                             0.0435, 0.0, math.pi + LIDAR_YAW_OFFSET_RAD)
+                             LIDAR_X_M, 0.0, math.pi + LIDAR_YAW_OFFSET_RAD)
         result = ident.identify(pts)
         if result.accepted:
             break
@@ -2978,7 +2984,7 @@ def _auto_site_nav2(bridge, nav2_client) -> None:
         # laser_link -> base_link: 180 deg flip plus the measured mount yaw
         pts = scan_to_points(_np.asarray(scan.ranges), scan.angle_min,
                              scan.angle_increment, scan.range_min, 6.0,
-                             0.0435, 0.0, math.pi + LIDAR_YAW_OFFSET_RAD)
+                             LIDAR_X_M, 0.0, math.pi + LIDAR_YAW_OFFSET_RAD)
         result = ident.identify(pts)
         logger.info("[auto-site] attempt %d: %s", attempt + 1, result)
         if result.accepted:
@@ -3056,7 +3062,7 @@ def _seed_pose_from_scan(map_path: str | None = None) -> tuple[bool, str]:
     if matcher is None:
         matcher = _seed_matchers[map_path] = ScanMatcher(LikelihoodField.from_yaml(map_path))
     pts = _scan_to_points(np.asarray(scan.ranges), scan.angle_min, scan.angle_increment,
-                          scan.range_min, 6.0, 0.0435, 0.0, math.pi + LIDAR_YAW_OFFSET_RAD)
+                          scan.range_min, 6.0, LIDAR_X_M, 0.0, math.pi + LIDAR_YAW_OFFSET_RAD)
     result = matcher.locate(pts)
     if not result.accepted:
         return False, f"scan match not confident ({result.reason}); set the pose by hand"
@@ -3118,7 +3124,7 @@ def _current_scan_points():
     if scan is None:
         return None
     return _scan_to_points(np.asarray(scan.ranges), scan.angle_min, scan.angle_increment,
-                           scan.range_min, 6.0, 0.0435, 0.0, math.pi + LIDAR_YAW_OFFSET_RAD)
+                           scan.range_min, 6.0, LIDAR_X_M, 0.0, math.pi + LIDAR_YAW_OFFSET_RAD)
 
 
 def _prepare_test_localization(progress) -> tuple[bool, str]:

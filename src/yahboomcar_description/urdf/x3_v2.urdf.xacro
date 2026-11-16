@@ -1,0 +1,192 @@
+<?xml version="1.0"?>
+<!--
+  X3 v2: the X-frame T-slot chassis (2026-11-13) on the Orin AGX.
+
+  Geometry comes from config/x3_v2_cad_frames.yaml, which
+  src/tools/calibration/cad_x3_frames.py GENERATES from the SolidWorks
+  per-component STL export (levelled: the assembly is rolled 0.7 deg).
+  After a chassis change: re-export, re-run the script, rebuild. Do not
+  hand-edit the YAML. Measured or provisional values that override the CAD
+  live in the property block below, each marked.
+
+  Frame NAMES are the runtime's contract and match the old yahboomcar_X3.urdf:
+  base_footprint, base_link, {front,back}_{left,right}_wheel (+ _joint, which
+  Mcnamu_driver_X3 publishes), imu_link, icm_imu_link, livox_mount_link,
+  livox_frame, laser_link, oak-d-base-frame + oak_* (front OAK), and
+  oak_rear-d-base-frame + oak_rear_* (rear OAK). tests/test_x3_v2_urdf.py
+  checks them. Not mounted on v2 yet, so absent: ToF arrays, PAA5100JE, Astra
+  camera_link, battery_link.
+-->
+<robot name="x3_v2" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:property name="cad" value="${xacro.load_yaml('$(find yahboomcar_description)/config/x3_v2_cad_frames.yaml')}"/>
+
+  <!-- ===================== overrides / conventions ===================== -->
+  <!-- base_link height above base_footprint. A CONVENTION kept from the old
+       chassis (its caliper-measured plate height) so nothing downstream moves;
+       it is not a physical plate height on v2. Floor heights are what matter. -->
+  <xacro:property name="base_z" value="0.0815"/>
+
+  <!-- PLACEHOLDER (the frame is still changing): Livox optical centre above the
+       floor. 0.31 is the last floor-plane fit (livox_floor_fit.py, 2026-10-29);
+       the v2 CAD puts it near 0.248 (housing base + 54.5 mm). Re-fit with
+       livox_floor_fit.py once the mount is final; it also sets the /scan
+       slice height. -->
+  <xacro:property name="livox_z_floor" value="0.31"/>
+
+  <!-- laser_link keeps the OLD lidar's yaw (180 + 4.85 deg) so /scan beam
+       order and saved maps stay consistent; livox_scan_node rotates into it. -->
+  <xacro:property name="laser_yaw" value="3.226241"/>
+
+  <!-- OAK Pro W: oak-d-base-frame is the camera body centre, 11.6 mm behind
+       the front glass (old URDF, from the Luxonis STEP). Mono baseline 75 mm. -->
+  <xacro:property name="oak_glass_setback" value="0.0116"/>
+  <xacro:property name="oak_half_baseline" value="0.0375"/>
+  <xacro:property name="oak_pitch" value="0.0"/>
+
+  <!-- PLACEHOLDER: the Rosmaster's MPU9250 frame, carried over unchanged from
+       the old chassis. Its board position on v2 is not in the CAD export. -->
+  <xacro:property name="rosmaster_imu_xyz" value="-0.06 0.01 0.01"/>
+  <xacro:property name="rosmaster_imu_rpy" value="0 3.1415 1.5707"/>
+
+  <!-- ============================ chassis ============================== -->
+  <xacro:property name="mesh" value="${cad['draft_mesh_to_base_footprint']}"/>
+  <xacro:property name="ext" value="${cad['extent']}"/>
+  <xacro:property name="r" value="${cad['wheel_radius']}"/>
+
+  <link name="base_footprint"/>
+
+  <link name="base_link">
+    <visual>
+      <!-- draft mesh frame, registered onto the levelled wheel centres -->
+      <origin xyz="${mesh['xyz'][0]} ${mesh['xyz'][1]} ${mesh['xyz'][2] - base_z}"
+              rpy="${mesh['rpy'][0]} ${mesh['rpy'][1]} ${mesh['rpy'][2]}"/>
+      <geometry><mesh filename="package://yahboomcar_description/meshes/x3_v2/base_link.stl"/></geometry>
+      <material name="x3v2_grey"><color rgba="0.7 0.7 0.75 1"/></material>
+    </visual>
+    <collision>
+      <origin xyz="${(ext['x'][0] + ext['x'][1]) / 2} ${(ext['y'][0] + ext['y'][1]) / 2} ${(ext['z_top'] + r) / 2 - base_z}"/>
+      <geometry><box size="${ext['x'][1] - ext['x'][0]} ${ext['y'][1] - ext['y'][0]} ${ext['z_top'] - r}"/></geometry>
+    </collision>
+  </link>
+  <joint name="base_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 ${base_z}" rpy="0 0 0"/>
+  </joint>
+
+  <xacro:macro name="wheel" params="side mesh_name">
+    <xacro:property name="p" value="${cad['wheels'][side]}"/>
+    <link name="${side}_wheel">
+      <visual>
+        <origin xyz="0 0 0" rpy="${mesh['rpy'][0]} ${mesh['rpy'][1]} ${mesh['rpy'][2]}"/>
+        <geometry><mesh filename="package://yahboomcar_description/meshes/x3_v2/${mesh_name}.stl"/></geometry>
+        <material name="x3v2_dark"><color rgba="0.2 0.2 0.2 1"/></material>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="${pi / 2} 0 0"/>
+        <geometry><cylinder radius="${r}" length="0.04"/></geometry>
+      </collision>
+    </link>
+    <joint name="${side}_joint" type="continuous">
+      <parent link="base_link"/>
+      <child link="${side}_wheel"/>
+      <origin xyz="${p[0]} ${p[1]} ${p[2] - base_z}" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+    </joint>
+  </xacro:macro>
+  <xacro:wheel side="front_left" mesh_name="${cad['wheel_mesh']['front_left']}"/>
+  <xacro:wheel side="front_right" mesh_name="${cad['wheel_mesh']['front_right']}"/>
+  <xacro:wheel side="back_left" mesh_name="${cad['wheel_mesh']['back_left']}"/>
+  <xacro:wheel side="back_right" mesh_name="${cad['wheel_mesh']['back_right']}"/>
+
+  <!-- ============================== IMUs =============================== -->
+  <link name="imu_link"/>
+  <joint name="base_imu" type="fixed">
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+    <origin xyz="${rosmaster_imu_xyz}" rpy="${rosmaster_imu_rpy}"/>
+  </joint>
+
+  <!-- ICM-42688-P on the CAD mount below the Livox (top face of the mount).
+       Rotation is identity because icm42688_node remaps axes in software, but
+       that remap was derived for the OLD mounting: re-check it on v2 by
+       gravity (sensor Z) and a yaw-left test before trusting this frame. -->
+  <link name="icm_imu_link"/>
+  <joint name="base_icm_imu" type="fixed">
+    <parent link="base_link"/>
+    <child link="icm_imu_link"/>
+    <origin xyz="${cad['icm_mount']['centre'][0]} ${cad['icm_mount']['centre'][1]} ${cad['icm_mount']['top_z'] - base_z}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ============================== Livox ============================== -->
+  <xacro:property name="liv" value="${cad['livox_housing']}"/>
+  <link name="livox_mount_link"/>
+  <joint name="livox_mount_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="livox_mount_link"/>
+    <origin xyz="${liv['centre_xy'][0]} ${liv['centre_xy'][1]} ${liv['base_z'] - base_z}" rpy="0 0 0"/>
+  </joint>
+  <!-- Point-cloud origin; the Livox IMU relay also stamps this frame.
+       Axes x forward, z up; yaw error not yet measured on v2. -->
+  <link name="livox_frame"/>
+  <joint name="livox_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="livox_frame"/>
+    <origin xyz="${liv['centre_xy'][0]} ${liv['centre_xy'][1]} ${livox_z_floor - base_z}" rpy="0 0 0"/>
+  </joint>
+  <link name="laser_link"/>
+  <joint name="laser_joint" type="fixed">
+    <parent link="livox_frame"/>
+    <child link="laser_link"/>
+    <origin xyz="0 0 0" rpy="0 0 ${laser_yaw}"/>
+  </joint>
+
+  <!-- =============================== OAKs ============================== -->
+  <!-- One OAK Pro W frame set (depthai_ros naming). Pose from the CAD glass:
+       body centre = glass centre minus the setback along the view direction.
+       pitch > 0 = nose down; level by design (oak_pitch), as oakd_driver's
+       xyz_base_m also assumes. Which end is the FRONT comes from the CAD part
+       names (see the YAML's front_chosen_by); not yet confirmed physically. -->
+  <xacro:macro name="oak" params="base prefix pose">
+    <xacro:property name="g" value="${pose['glass_centre']}"/>
+    <xacro:property name="yaw" value="${pose['yaw']}"/>
+    <!-- Both OAKs are meant to be LEVEL (user, 2026-11-16); the CAD cradles
+         are adjustable and happen to sit at ~13 deg / ~1 deg. Set oak_pitch
+         from a measurement if a camera is ever tilted on purpose. -->
+    <xacro:property name="pit" value="${oak_pitch}"/>
+    <link name="${base}"/>
+    <joint name="${prefix}_center_joint" type="fixed">
+      <parent link="base_link"/>
+      <child link="${base}"/>
+      <origin xyz="${g[0] - oak_glass_setback * cos(pit) * cos(yaw)} ${g[1] - oak_glass_setback * cos(pit) * sin(yaw)} ${g[2] + oak_glass_setback * sin(pit) - base_z}"
+              rpy="0 ${pit} ${yaw}"/>
+    </joint>
+    <xacro:macro name="oak_cam" params="cam y">
+      <link name="${prefix}_${cam}_camera_frame"/>
+      <joint name="${prefix}_${cam}_camera_joint" type="fixed">
+        <parent link="${base}"/>
+        <child link="${prefix}_${cam}_camera_frame"/>
+        <origin xyz="0 ${y} 0" rpy="0 0 0"/>
+      </joint>
+      <link name="${prefix}_${cam}_camera_optical_frame"/>
+      <joint name="${prefix}_${cam}_camera_optical_joint" type="fixed">
+        <parent link="${prefix}_${cam}_camera_frame"/>
+        <child link="${prefix}_${cam}_camera_optical_frame"/>
+        <origin xyz="0 0 0" rpy="${-pi / 2} 0 ${-pi / 2}"/>
+      </joint>
+    </xacro:macro>
+    <xacro:oak_cam cam="rgb" y="0"/>
+    <xacro:oak_cam cam="left" y="${oak_half_baseline}"/>
+    <xacro:oak_cam cam="right" y="${-oak_half_baseline}"/>
+    <link name="${prefix}_imu_frame"/>
+    <joint name="${prefix}_imu_joint" type="fixed">
+      <parent link="${base}"/>
+      <child link="${prefix}_imu_frame"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+  </xacro:macro>
+  <xacro:oak base="oak-d-base-frame" prefix="oak" pose="${cad['oak_front']}"/>
+  <xacro:oak base="oak_rear-d-base-frame" prefix="oak_rear" pose="${cad['oak_rear']}"/>
+
+</robot>

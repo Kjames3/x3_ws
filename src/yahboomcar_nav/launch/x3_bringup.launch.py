@@ -41,20 +41,25 @@ def generate_launch_description():
     nav_share     = get_package_share_directory('yahboomcar_nav')
 
     # ── Paths ─────────────────────────────────────────────────────────
-    urdf_path      = os.path.join(desc_share,    'urdf',  'yahboomcar_X3.urdf')
+    # x3_v2.urdf.xacro = the X-frame chassis (2026-11-13); urdf:=yahboomcar_X3.urdf
+    # selects the old X3 Plus model.
+    urdf_dir       = os.path.join(desc_share, 'urdf')
     imu_filter_cfg = os.path.join(bringup_share, 'param', 'imu_filter_param.yaml')
     ekf_cfg        = os.path.join(nav_share,     'params', 'ekf_x3.yaml')
     ydlidar_cfg    = os.path.join(nav_share,     'params', 'ydlidar_x3.yaml')
     lidar3d_cfg    = os.path.join(nav_share, 'params', 'lidar_3d_processor.yaml')
 
     # ── Launch args ───────────────────────────────────────────────────
+    urdf_arg = DeclareLaunchArgument(
+        name='urdf', default_value='x3_v2.urdf.xacro',
+        description='Robot model in yahboomcar_description/urdf')
     gui_arg = DeclareLaunchArgument(
         name='gui', default_value='false', choices=['true', 'false'],
         description='Launch joint_state_publisher_gui instead of headless')
 
     # ── Robot description ─────────────────────────────────────────────
     robot_description = ParameterValue(
-        Command(['xacro ', urdf_path]), value_type=str)
+        Command(['xacro ', urdf_dir, '/', LaunchConfiguration('urdf')]), value_type=str)
 
     robot_state_publisher = Node(
         package='robot_state_publisher',
@@ -274,6 +279,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        urdf_arg,
         gui_arg,
         floor_arg,
         robot_state_publisher,
