@@ -191,6 +191,13 @@ parser.add_argument('--oak-det-log', default=None, metavar='DIR',
                     help='Append every OAK NN packet (detections, keypoints, depth) '
                          'as NDJSON to DIR/<model>-<time>.ndjson. Summarize with '
                          'src/tools/perception/oak_pose_summary.py.')
+parser.add_argument('--traj-shadow', default=None, metavar='DIR', dest='traj_shadow',
+                    help='Trajectory GRU shadow mode: predict every tracked person from the '
+                         'velocity estimator + /odom and log to DIR/traj-shadow-<time>.ndjson. '
+                         'Never touches control. Score with '
+                         'src/tools/perception/traj_shadow_score.py.')
+parser.add_argument('--traj-model', default=None, metavar='NPZ', dest='traj_model',
+                    help='GRU for --traj-shadow (default config/traj_gru_deploy.npz).')
 parser.add_argument('--no-c3-live', action='store_true', dest='no_c3_live',
                     help='Disable the diagnostic C3 person tracker (OAK YOLO boxes + '
                          'Kalman). It never reaches the CBF; it only feeds the GUI.')
@@ -315,6 +322,7 @@ _shutting_down  = False  # set on SIGINT/SIGTERM/cleanup so motion_loop stops pu
                          # context RCLError → C++ abort that orphaned the bringup stack)
 velocity_estimator = None  # VelocityEstimator instance (EE244 project)
 c3_live = None             # diagnostic C3 person tracker (src/c3_live.py), GUI only
+traj_shadow = None         # traj_shadow.TrajShadow: GRU predictions logged, never acted on
 foot_diagnostic = None     # isolated shadow evaluator; NEVER passed to drive/CBF
 active_velocity_model_name = "velocity_mlp_v3"  # currently loaded torchscript velocity model
 # v3 deployed 2026-09-04. Measured against v1 on one recorded capture replayed
@@ -2628,6 +2636,22 @@ def initialize_hardware():
     except Exception as e:
         logger.error(f"Failed to start VelocityEstimator: {e}")
 
+    # Trajectory GRU shadow mode: logs predictions next to what the CBF uses today.
+    global traj_shadow
+    if args.traj_shadow and velocity_estimator is not None:
+        try:
+            from traj_shadow import TrajShadow
+            _tdir = Path(args.traj_shadow)
+            _tdir.mkdir(parents=True, exist_ok=True)
+            _tmodel = args.traj_model or str(Path(__file__).resolve().parent.parent
+                                             / 'config' / 'traj_gru_deploy.npz')
+            _tlog = _tdir / f"traj-shadow-{time.strftime('%Y%m%d-%H%M%S')}.ndjson"
+            traj_shadow = TrajShadow(_tmodel, _tlog)
+            logger.info("Trajectory shadow mode: %s (model %s, %s) -> %s", "on", _tmodel,
+                        "loaded" if traj_shadow.model_loaded else "MISSING, cv fallback only", _tlog)
+        except Exception as e:
+            logger.error(f"Trajectory shadow mode failed to start: {e}")
+
     # Diagnostic C3 tracker: OAK person boxes -> torso depth -> CV Kalman.
     # GUI/telemetry only; nothing here reaches the CBF.
     global c3_live
@@ -2799,6 +2823,7 @@ def cleanup():
     if oled: oled.cleanup()
     if tof_array: tof_array.cleanup()
     if teensy_batt: teensy_batt.cleanup()
+    if traj_shadow: traj_shadow.close()
 
 
 # =============================================================================
@@ -4523,6 +4548,14 @@ async def broadcast_loop():
                         ros_bridge.publish_pedestrians(velocity_estimates)
                 except Exception as e:
                     logger.error(f"Failed to get velocity estimates: {e}")
+            if traj_shadow is not None and traj_shadow.enabled and ros_bridge is not None:
+                try:
+                    traj_shadow.update(velocity_estimates, ros_bridge.get_pose_m(),
+                                       odom_age_s=time.monotonic() - ros_bridge._odom_stamp)
+                except Exception as e:
+                    # never let a logging feature take the telemetry loop down
+                    logger.warning(f"Trajectory shadow mode disabled: {e}")
+                    traj_shadow.enabled = False
 
             c3_tracks, c3_stats = c3_live.get_tracks() if c3_live is not None else ([], None)
             lidar_persons, lidar_person_stats = (
