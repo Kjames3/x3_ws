@@ -6,6 +6,16 @@ WebSocket-based control server and ROS2 navigation stack for the **Yahboom X3 me
 
 ---
 
+## Chassis redesign
+
+![X-frame chassis redesign, v1 (CAD)](images/x3_v2_redesign_v1_cad.jpg)
+
+*v1 of the X-frame chassis redesign (Livox Mid-360 on the centre mast, Orin AGX).
+v2 is in progress: weight reduction, more wheel clearance and a smaller footprint.
+The `x3_v2` URDF tracks v1 and will be regenerated once v2 is final.*
+
+---
+
 ## Architecture
 
 ```

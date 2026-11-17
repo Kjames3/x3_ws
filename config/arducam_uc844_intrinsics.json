@@ -1,0 +1,9 @@
+{
+  "fx": 435.04967525087557,
+  "width": 1280,
+  "height": 800,
+  "hfov_deg": 111.58700279372646,
+  "vfov_deg": 85.19305148520338,
+  "method": "AprilTag 0.145 m at 1.5 m, square-on, pinhole, square pixels",
+  "date": "2026-11-17"
+}
