@@ -296,18 +296,27 @@ local_costmap:
       robot_base_frame: base_footprint
       use_sim_time: False
       rolling_window: true
-      width: 3
-      height: 3
+      # 4 m, not 3: MPPI's horizon (56 x 0.1 s at 0.26 m/s = 1.46 m) plus the
+      # chassis' 0.32 m front reaches 1.78 m, past a 3 m window's 1.5 m edge.
+      width: 4
+      height: 4
       resolution: 0.05
       # The chassis as the same rectangle the CBF uses (server_x3.py CBF_FOOTPRINT,
-      # lidar-measured, metres from the base origin: front 0.16, rear 0.13, left 0.11,
-      # right 0.11).  A circle of radius 0.15 let planner and MPPI pass 0.15 m from a box
-      # while the front corners sit 0.19 m out (box test 2026-10-22: nearest 0.13 m).
-      footprint: "[[0.16, 0.11], [0.16, -0.11], [-0.13, -0.11], [-0.13, 0.11]]"
+      # metres from the base origin: front 0.32, rear 0.32, left 0.29, right 0.29).
+      # X3 v2 locked geometry (Design_v2, 2026-11-18): CAD extent x +-0.320,
+      # y +-0.293 from the wheel centroid, which base_footprint sits on
+      # (yahboomcar_description/config/x3_v2_cad_frames.yaml). The wide
+      # 2026-11-13 frame was 0.41/0.37. The old X3 was [[0.16, 0.11], [0.16, -0.11], [-0.13, -0.11],
+      # [-0.13, 0.11]]; a circle there let MPPI pass 0.15 m from a box while the front
+      # corners sat 0.19 m out (box test 2026-10-22), hence a polygon.
+      footprint: "[[0.32, 0.29], [0.32, -0.29], [-0.32, -0.29], [-0.32, 0.29]]"
       plugins: ["obstacle_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.35   # circumscribed radius 0.19 m + the CBF's 0.10 m margin + room
+        # >= the circumscribed radius (hypot(0.32, 0.29) = 0.43 m) or MPPI's CostCritic
+        # footprint-checks every trajectory point. Inscribed is 0.29 m, so a 0.80 m
+        # doorway leaves 11 cm a side. (Wide 2026-11-13 frame: 0.65; old X3: 0.35.)
+        inflation_radius: 0.50
         cost_scaling_factor: 5.0
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -375,11 +384,8 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_footprint
       use_sim_time: False
-      # The chassis as the same rectangle the CBF uses (server_x3.py CBF_FOOTPRINT,
-      # lidar-measured, metres from the base origin: front 0.16, rear 0.13, left 0.11,
-      # right 0.11).  A circle of radius 0.15 let planner and MPPI pass 0.15 m from a box
-      # while the front corners sit 0.19 m out (box test 2026-10-22: nearest 0.13 m).
-      footprint: "[[0.16, 0.11], [0.16, -0.11], [-0.13, -0.11], [-0.13, 0.11]]"
+      # Same rectangle as local_costmap and the CBF (see the note there).
+      footprint: "[[0.32, 0.29], [0.32, -0.29], [-0.32, -0.29], [-0.32, 0.29]]"
       resolution: 0.05
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       obstacle_layer:
@@ -411,7 +417,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0
-        inflation_radius: 0.35   # circumscribed radius 0.19 m + the CBF's 0.10 m margin + room
+        inflation_radius: 0.50   # >= circumscribed 0.43 m; see local_costmap
       always_send_full_costmap: True
 
 # ── Map Server ───────────────────────────────────────────────────────────────

@@ -104,10 +104,10 @@ class yahboomcar_driver(Node):
 		self.angular_limit = self.get_parameter('angular_limit').get_parameter_value().double_value
 		print (self.angular_limit)
 
-		# Kinematic geometry: half wheelbase + half track. New chassis
-		# (New_version/x3_description, 2026-11-13): wheels at x=±0.343,
-		# y=±0.338 m, so 0.681. The old X3 was 0.1645.
-		self.declare_parameter('wheel_separation_factor', 0.681)
+		# Kinematic geometry: half wheelbase + half track. X3 v2 locked
+		# geometry (Design_v2, 2026-11-18): wheels at x=±0.267, y=±0.264 m,
+		# so 0.5305. The wide 2026-11-13 frame was 0.681, the old X3 0.1645.
+		self.declare_parameter('wheel_separation_factor', 0.5305)
 		# Per-wheel gain corrections for motor asymmetry.
 		# Robot drifts right → right motors are stronger → lower gain_fr / gain_rr.
 		# Tune in ~0.02 steps: drive straight, reduce the fast side until drift stops.

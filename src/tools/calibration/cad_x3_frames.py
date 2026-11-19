@@ -9,6 +9,15 @@ x3_v2.urdf.xacro loads. Re-run it after every chassis change:
     python3 src/tools/calibration/cad_x3_frames.py New_version/New_X3_components_STL \\
         --out src/yahboomcar_description/config/x3_v2_cad_frames.yaml
 
+Locked Design_v2 export (2026-11-18: assembly_poses.json + part-local STLs in
+stl/, unzip the *.STL.zip files there first) also writes the URDF meshes:
+
+    python3 src/tools/calibration/cad_x3_frames.py <Design_v2 dir> \
+        --out src/yahboomcar_description/config/x3_v2_cad_frames.yaml \
+        --mesh-dir src/yahboomcar_description/meshes/x3_v2
+
+Its front is the Top_bus_light_yahboom end (user-confirmed); see main_posed.
+
 Frame construction (nothing hand-entered):
   * wheel centres = bbox centres of each "Mecanum Wheel Assembly-N" group;
     radius = half their vertical extent;
@@ -112,8 +121,12 @@ def main():
                          "the part named front_bottomplate, i.e. the designer's own labels)")
     ap.add_argument("--draft-urdf", help="draft URDF whose wheel-joint xyz place its meshes "
                                          "(reports the mesh->base_footprint transform)")
+    ap.add_argument("--mesh-dir", help="posed export only: write decimated base_link.stl and "
+                                       "wheel_*.stl (base_footprint-aligned) here")
     a = ap.parse_args()
     d = a.stl_dir
+    if os.path.exists(os.path.join(d, "assembly_poses.json")):
+        return main_posed(a)
 
     wheels_raw, radius = [], 0.0
     for i in range(1, 5):
@@ -250,6 +263,187 @@ def main():
         with open(a.out, "w") as f:
             f.write(text)
         print(f"wrote {a.out}")
+        sys.stdout.write(text)
+
+
+# ---------------------------------------------------------------------------
+# Posed export (Design_v2, 2026-11-18): stl/<mesh>.STL in PART-LOCAL mm frames
+# plus assembly_poses.json (p_asm = R^T p_local + t, metres, +Y up).
+# ---------------------------------------------------------------------------
+def _load_tris(path):
+    with open(path, "rb") as f:
+        b = f.read()
+    n = struct.unpack("<I", b[80:84])[0]
+    if 84 + n * 50 != len(b):
+        raise SystemExit(f"{path}: not a binary STL")
+    a = np.frombuffer(b[84:], dtype=np.dtype([("n", "<3f4"), ("v", "<9f4"), ("a", "<u2")]), count=n)
+    return a["v"].reshape(-1, 3, 3).astype(float) / 1000.0
+
+
+def _write_stl(path, tris):
+    tris = np.asarray(tris, dtype="<f4")
+    n = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
+    n /= np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12)
+    rec = np.zeros(len(tris), dtype=np.dtype([("n", "<3f4"), ("v", "<9f4"), ("a", "<u2")]))
+    rec["n"] = n
+    rec["v"] = tris.reshape(-1, 9)
+    with open(path, "wb") as f:
+        f.write(b"x3_v2 cad_x3_frames.py".ljust(80, b" "))
+        f.write(struct.pack("<I", len(tris)))
+        f.write(rec.tobytes())
+
+
+def _decimate(tris, cell):
+    """Vertex clustering: snap to a grid, drop collapsed and duplicate triangles."""
+    q = np.round(tris / cell).astype(np.int64)
+    ok = ~((q[:, 0] == q[:, 1]).all(1) | (q[:, 1] == q[:, 2]).all(1) | (q[:, 0] == q[:, 2]).all(1))
+    q = q[ok]
+    key = np.sort(q.reshape(len(q), -1).view([("", np.int64)] * 3), axis=1)
+    _, idx = np.unique(key.reshape(len(q), -1), axis=0, return_index=True)
+    return q[np.sort(idx)] * cell
+
+
+class PosedExport:
+    def __init__(self, d):
+        import json
+        self.d = d
+        self.inst = json.load(open(os.path.join(d, "assembly_poses.json")))["instances"]
+        self._tris = {}
+
+    def local(self, mesh):
+        if mesh not in self._tris:
+            path = os.path.join(self.d, "stl", mesh + ".STL")
+            if not os.path.exists(path):
+                raise SystemExit(f"{path} missing (unzip the *.STL.zip files in stl/ first)")
+            self._tris[mesh] = _load_tris(path)
+        return self._tris[mesh]
+
+    @staticmethod
+    def pose(i):
+        return np.array(i["rotation_3x3"]).reshape(3, 3), np.array(i["translation_m"])
+
+    def tris(self, i):
+        R, t = self.pose(i)
+        return self.local(i["mesh"]) @ R + t           # row form of R^T p + t
+
+    def find(self, pred):
+        return [i for i in self.inst if pred(i)]
+
+
+def main_posed(a):
+    import fnmatch
+    X = PosedExport(a.stl_dir)
+    wheel_inst = sorted(X.find(lambda i: i["mesh"] == "Mecanum_Wheel_Assembly"), key=lambda i: i["instance"])
+    if len(wheel_inst) != 4:
+        raise SystemExit(f"expected 4 wheels, got {len(wheel_inst)}")
+    wl = X.local("Mecanum_Wheel_Assembly").reshape(-1, 3)
+    wc_local = bbox_centre(wl)
+    ext = wl.max(0) - wl.min(0)
+    axle_ax = int(np.argmin(ext))
+    radius = float(np.delete(ext, axle_ax).min() / 2)   # rollers overstate the other extent
+    wheels_raw = []
+    for i in wheel_inst:
+        R, t = X.pose(i)
+        wheels_raw.append(wc_local @ R + t)
+
+    oaks = X.find(lambda i: i["mesh"].startswith("DM9098ProW"))
+    # Front = the end with Top_bus_light_yahboom (user-confirmed, Design_v2 make_urdf.py);
+    # back_plate must then come out at the rear.
+    fp = bbox_centre(X.tris(X.find(lambda i: i["mesh"] == "Top_bus_light_yahboom")[0]).reshape(-1, 3))
+    by_name = min(range(len(oaks)), key=lambda k: np.linalg.norm(bbox_centre(X.tris(oaks[k]).reshape(-1, 3)) - fp))
+    front = (a.front_oak - 1) if a.front_oak else by_name
+    rear = 1 - front
+    F = RobotFrame(wheels_raw, radius, bbox_centre(X.tris(oaks[front]).reshape(-1, 3)))
+    bp = X.find(lambda i: i["mesh"] == "back_plate")
+    if bp and F.p(bbox_centre(X.tris(bp[0]).reshape(-1, 3)))[0] > 0:
+        print("WARNING: back_plate ends up at the FRONT of this frame", file=sys.stderr)
+
+    wheels, wheel_by_key = {}, {}
+    for i, w in zip(wheel_inst, wheels_raw):
+        p = F.p(w)
+        key = ("front" if p[0] > 0 else "back") + "_" + ("left" if p[1] > 0 else "right")
+        wheels[key] = r6(p)
+        wheel_by_key[key] = i
+    if len(wheels) != 4:
+        raise SystemExit(f"wheel quadrant assignment failed: {wheels}")
+
+    def to_robot(tris):
+        return (tris - F.origin) @ F.R.T
+
+    def oak(k):
+        # OAK Pro W enclosure 97 x 30 x 23 mm: the thinnest local axis is the view axis;
+        # the glass is the face on the outward side.
+        i = oaks[k]
+        v = X.local(i["mesh"]).reshape(-1, 3)
+        R, t = X.pose(i)
+        ax = int(np.argmin(v.max(0) - v.min(0)))
+        c = F.p(bbox_centre(v) @ R + t)
+        n = F.d(R[ax])                                     # local axis in assembly, then robot
+        n = n if n.dot(c - [0, 0, c[2]]) > 0 else -n
+        half = (v.max(0) - v.min(0))[ax] / 2
+        g = c + n * half
+        return {"glass_centre": r6(g), "yaw": round(float(np.arctan2(n[1], n[0])), 4),
+                "pitch": round(float(-np.arcsin(np.clip(n[2], -1, 1))), 4)}
+
+    def part_pts(mesh):
+        return np.vstack([to_robot(X.tris(i).reshape(-1, 3)) for i in X.find(lambda i: i["mesh"] == mesh)])
+
+    liv_r = part_pts("mid-360-asm")
+    icm_r = part_pts("ICM_imu_module_mount")
+    allv = np.vstack([to_robot(X.tris(i).reshape(-1, 3)) for i in X.inst])
+    arducams = []
+    for i in sorted(X.find(lambda i: i["mesh"] == "Arducam_B0332"), key=lambda i: i["instance"]):
+        c = bbox_centre(to_robot(X.tris(i).reshape(-1, 3)))
+        arducams.append(r6(c))
+
+    out = {
+        "source": os.path.basename(os.path.normpath(a.stl_dir)) + " (assembly_poses.json)",
+        "generated": str(date.today()),
+        "front_oak_enclosure": int(front + 1),
+        "front_chosen_by": "--front-oak" if a.front_oak else "Top_bus_light_yahboom end (user-confirmed)",
+        "assembly_roll_removed_deg": round(F.roll_deg, 3),
+        "wheel_radius": round(radius, 4),
+        "wheel_width": round(float(ext[axle_ax]), 4),
+        "wheels": wheels,
+        "wheelbase": round(float(np.mean([wheels["front_left"][0], wheels["front_right"][0]])
+                                 - np.mean([wheels["back_left"][0], wheels["back_right"][0]])), 4),
+        "track": round(float(np.mean([wheels["front_left"][1], wheels["back_left"][1]])
+                             - np.mean([wheels["front_right"][1], wheels["back_right"][1]])), 4),
+        "oak_front": oak(front),
+        "oak_rear": oak(rear),
+        "livox_housing": {"centre_xy": r6(bbox_centre(liv_r)[:2]),
+                          "base_z": round(float(liv_r[:, 2].min()), 4),
+                          "top_z": round(float(liv_r[:, 2].max()), 4)},
+        "icm_mount": {"centre": r6(bbox_centre(icm_r)), "top_z": round(float(icm_r[:, 2].max()), 4)},
+        "arducam_centres": arducams,
+        "extent": {"x": r6([allv[:, 0].min(), allv[:, 0].max()]),
+                   "y": r6([allv[:, 1].min(), allv[:, 1].max()]),
+                   "z_top": round(float(allv[:, 2].max()), 4)},
+        "wheel_mesh": {"front_left": "wheel_front_left", "front_right": "wheel_front_right",
+                       "back_left": "wheel_rear_left", "back_right": "wheel_rear_right"},
+        # meshes are written straight into base_footprint / wheel-centre frames
+        "draft_mesh_to_base_footprint": {"xyz": [0.0, 0.0, 0.0], "rpy": [0.0, 0.0, 0.0]},
+    }
+
+    if a.mesh_dir:
+        os.makedirs(a.mesh_dir, exist_ok=True)
+        body = np.vstack([to_robot(X.tris(i)) for i in X.inst if i["mesh"] != "Mecanum_Wheel_Assembly"])
+        _write_stl(os.path.join(a.mesh_dir, "base_link.stl"), _decimate(body, 0.002))
+        for key, i in wheel_by_key.items():
+            tri = to_robot(X.tris(i)) - np.array(wheels[key])
+            _write_stl(os.path.join(a.mesh_dir, out["wheel_mesh"][key] + ".stl"), _decimate(tri, 0.0015))
+        print(f"wrote meshes to {a.mesh_dir}", file=sys.stderr)
+
+    import yaml
+    text = ("# GENERATED by src/tools/calibration/cad_x3_frames.py -- do not edit by hand.\n"
+            "# base_footprint frame: floor under the wheel centroid, x forward, y left, z up (m, rad).\n"
+            + yaml.safe_dump(out, sort_keys=False, default_flow_style=None))
+    if a.out == "-":
+        sys.stdout.write(text)
+    else:
+        with open(a.out, "w") as f:
+            f.write(text)
+        print(f"wrote {a.out}", file=sys.stderr)
         sys.stdout.write(text)
 
 

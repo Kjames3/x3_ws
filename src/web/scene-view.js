@@ -20,7 +20,7 @@
     const WALL_H = 0.45;
     const RANGE_M = 6.0;
     const GHOST_S = 1.0;          // prediction horizon for the faded ghost
-    const LASER_X = -0.0013;      // base_link -> laser_link x (m); = server LIDAR_X_M, x3_v2 URDF (old X3: 0.044)
+    const LASER_X = -0.0025;      // base_link -> laser_link x (m); = server LIDAR_X_M, x3_v2 URDF (old X3: 0.044)
     const SCAN_STALE_MS = 1000;   // hide walls when /scan stops (e.g. 3D sweep gate)
 
     let lastPts = null, lastPtsAt = 0;

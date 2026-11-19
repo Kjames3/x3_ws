@@ -85,8 +85,11 @@ MONO_H = 400
 # convention is X right, Y down, Z forward, so base_x = MOUNT_X + z,
 # base_y = -x, base_z = MOUNT_Z - y.
 NN_STALL_S = 5.0          # no NN packet for this long while depth flows = stalled
-OAK_MOUNT_X = 0.107815
-OAK_MOUNT_Z = 0.1315
+# X3 v2 (Design_v2 CAD, 2026-11-18): front OAK body centre x=0.3069, lens
+# 0.198 m above the floor = 0.1167 above base_link (base_link stays 0.0815 up).
+# The comment above describes the old X3 Plus.
+OAK_MOUNT_X = 0.3069
+OAK_MOUNT_Z = 0.1167
 # Pose keypoint visibility threshold; same cut oak_pose_summary.py uses.
 KPT_VIS = 0.5
 

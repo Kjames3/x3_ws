@@ -268,23 +268,17 @@ def test_driver_clears_stale_intrinsics_when_calibration_fails():
 
 
 def test_driver_oak_extrinsics_match_urdf():
-    """Prevent the driver's base-frame projection drifting from robot geometry."""
+    """Prevent the driver's base-frame projection drifting from robot geometry:
+    the front OAK body centre of x3_v2.urdf.xacro (CAD glass minus the 11.6 mm
+    setback, z relative to base_link at 0.0815)."""
+    import yaml
     from oakd_driver import OAK_MOUNT_X, OAK_MOUNT_Z
 
-    urdf = Path(_SRC_DIR) / "yahboomcar_description" / "urdf" / "yahboomcar_X3.urdf"
-    root = ET.parse(urdf).getroot()
-    joint = next(j for j in root.findall("joint") if j.get("name") == "oak_center_joint")
-    x, _y, z = map(float, joint.find("origin").get("xyz").split())
-
-    assert np.isclose(OAK_MOUNT_X, x)
-    assert np.isclose(OAK_MOUNT_Z, z)
-
-
-def test_oak_mount_uses_measured_x3plus_position():
-    from oakd_driver import OAK_MOUNT_X, OAK_MOUNT_Z
-
-    assert np.isclose(OAK_MOUNT_X, 0.107815)
-    assert np.isclose(OAK_MOUNT_Z, 0.1315)
+    cad = yaml.safe_load(open(Path(_SRC_DIR) / "yahboomcar_description" / "config"
+                              / "x3_v2_cad_frames.yaml"))
+    g = cad["oak_front"]["glass_centre"]
+    assert abs(OAK_MOUNT_X - (g[0] - 0.0116)) < 0.002
+    assert abs(OAK_MOUNT_Z - (g[2] - 0.0815)) < 0.002
 
 
 def test_scaled_intrinsics_project_consistently():

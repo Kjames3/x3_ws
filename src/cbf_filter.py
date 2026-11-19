@@ -139,7 +139,8 @@ class HolonomicCBFFilter:
                 no load.
             wheel_separation (float): wheel rim speed per rad/s of yaw (m),
                 as Mcnamu_driver_X3's yaw_wheel_separation (measured 0.374 on
-                the new chassis, 2026-11-13; geometric 0.681).
+                the wide 2026-11-13 frame; NOT re-measured on the narrower
+                Design_v2 frame, whose geometric value is 0.5305).
         """
         self.safe_distance = safe_distance
         # (half_length, half_width) centred on the base origin, or

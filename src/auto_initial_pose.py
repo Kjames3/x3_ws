@@ -105,8 +105,9 @@ SEED_COV_XY_STORED = 0.12
 SEED_COV_YAW_STORED = 0.04
 
 # ── URDF fallback if TF is unavailable: base_link -> laser_link ─────────────
-# yahboomcar_X3.urdf.xacro laser_joint xyz="-0.0115 ~0 0.191" rpy="0 0 pi"
-FALLBACK_LASER_X = -0.0115
+# x3_v2.urdf.xacro laser_link x (= server_x3 LIDAR_X_M). The old
+# yahboomcar_X3.urdf.xacro had -0.0115.
+FALLBACK_LASER_X = -0.0025
 FALLBACK_LASER_Y = 0.0
 FALLBACK_LASER_YAW = math.pi
 

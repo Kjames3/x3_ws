@@ -608,10 +608,11 @@ CBF_SAFE_DISTANCE_M = float(os.environ.get('X3_CBF_SAFE_DISTANCE_M', 0.30))
 # The nose is the ToF bracket. Two values mean half length, half width.
 # 'circle' goes back to CBF_SAFE_DISTANCE_M round the centre, which stalls in
 # a 0.76 m doorway unless the robot is within ~6 cm of its middle.
-# New X-frame chassis (2026-11-13): wheel edges at x=+-0.395 and y=+-0.367
-# m from the wheel centroid (New_version/x3_description). The old X3 was
-# '0.16,0.13,0.11,0.11'.
-_fp = os.environ.get('X3_CBF_FOOTPRINT', '0.41,0.41,0.37,0.37').strip().lower()
+# X3 v2 locked geometry (Design_v2, 2026-11-18): the CAD extent is x +-0.320
+# (wheel rims front/rear) and y +-0.293 (wheel outer faces) from the wheel
+# centroid; see yahboomcar_description/config/x3_v2_cad_frames.yaml. The wide
+# 2026-11-13 frame was '0.41,0.41,0.37,0.37'; the old X3 '0.16,0.13,0.11,0.11'.
+_fp = os.environ.get('X3_CBF_FOOTPRINT', '0.32,0.32,0.29,0.29').strip().lower()
 CBF_FOOTPRINT = None if _fp == 'circle' else tuple(float(v) for v in _fp.split(','))
 # Yaw error of the lidar mount, added to every lidar bearing before it becomes
 # a CBF obstacle. Measured 2026-10-11 with src/tools/calibration/lidar_yaw_calib.py: +4.85 deg
@@ -625,8 +626,8 @@ LIDAR_YAW_OFFSET_RAD = math.radians(float(os.environ.get('X3_LIDAR_YAW_OFFSET_DE
 # WITHOUT TF (_scan_cb's CBF obstacles, site recognition, the initial-pose
 # seed). Must equal laser_joint in the URDF the bringup loads
 # (tests/test_x3_v2_urdf.py checks it): x3_v2 puts the Livox over the wheel
-# centroid (CAD, -0.0013); the old X3 Plus URDF had 0.0435.
-LIDAR_X_M = float(os.environ.get('X3_LIDAR_X_M', -0.0013))
+# centroid (Design_v2 CAD, -0.0025); the old X3 Plus URDF had 0.0435.
+LIDAR_X_M = float(os.environ.get('X3_LIDAR_X_M', -0.0025))
 # Clearance kept round that outline.
 CBF_MARGIN_M = float(os.environ.get('X3_CBF_MARGIN_M', 0.10))
 # A walking person reaches the CBF as one point at the torso's depth, with

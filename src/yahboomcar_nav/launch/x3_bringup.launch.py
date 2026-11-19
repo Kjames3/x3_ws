@@ -118,8 +118,8 @@ def generate_launch_description():
         remappings=[('cmd_vel', driver_cmd_topic)],
         parameters=[{
             'serial_port': serial_port,
-            # (half_wheelbase + half_track) from URDF: (0.08 + 0.0845) = 0.1645 m
-            'wheel_separation_factor': 0.681,
+            # half wheelbase + half track, x3_v2 CAD (Design_v2): 0.267 + 0.2636
+            'wheel_separation_factor': 0.5305,
             # Hold each wheel at its commanded speed from its encoder
             # (wheel_speed_control.py). False = the old open-loop PWM, which
             # ran at about 0.22 + 2*cmd m/s on wood. The gain_* values below

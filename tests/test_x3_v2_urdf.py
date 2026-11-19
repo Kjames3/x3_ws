@@ -110,7 +110,9 @@ def test_livox_and_laser(urdf):
     poses, _ = _fk(urdf)
     liv = poses["livox_frame"]
     las = poses["laser_link"]
-    assert abs(liv[2, 3] - 0.31) < 1e-6           # PLACEHOLDER until the v2 floor fit
+    hb = CAD["livox_housing"]                    # CAD-derived until the v2 floor fit
+    assert abs(liv[2, 3] - (hb["base_z"] + 0.0545)) < 1e-6
+    assert hb["base_z"] < liv[2, 3] < hb["top_z"]  # optical centre inside the housing
     assert np.allclose(liv[:3, :3], np.eye(3))
     assert np.allclose(las[:3, 3], liv[:3, 3])    # /scan ranges measured from the Livox
     yaw = math.atan2(las[1, 0], las[0, 0]) % (2 * math.pi)
@@ -134,6 +136,31 @@ def test_oaks_face_out_of_their_ends(urdf):
         assert abs(np.linalg.norm(left - right) - 0.075) < 1e-6
         # robot-left mono is on the camera's left: +y for the front camera, -y for the rear
         assert sign * (left[1] - right[1]) > 0
+
+
+def test_locked_design_v2_geometry():
+    """Design_v2 (2026-11-18): its own new_x3.urdf put the wheels at
+    x +-0.267, y +-0.2636, r 0.0521; the front is the Top_bus_light end."""
+    assert abs(CAD["wheelbase"] - 0.5338) < 0.002 and abs(CAD["track"] - 0.5272) < 0.002
+    assert CAD["oak_front"]["glass_centre"][0] > 0.3 and CAD["oak_rear"]["glass_centre"][0] < -0.3
+
+
+def test_footprints_cover_the_cad_extent():
+    """CBF and Nav2 outlines must contain the chassis, not the old frame."""
+    import re
+    ext = CAD["extent"]
+    srv = (ROOT / "src" / "server_x3.py").read_text()
+    m = re.search(r"X3_CBF_FOOTPRINT', '([0-9.,]+)'", srv)
+    front, rear, left, right = (float(v) for v in m.group(1).split(","))
+    assert front >= ext["x"][1] - 0.005 and rear >= -ext["x"][0] - 0.005
+    assert left >= ext["y"][1] - 0.005 and right >= -ext["y"][0] - 0.005
+    assert front < ext["x"][1] + 0.05 and left < ext["y"][1] + 0.05     # not a stale, larger frame
+    nav = yaml.safe_load(open(ROOT / "src" / "yahboomcar_nav" / "params" / "nav2_params_x3.yaml"))
+    for cm in ("local_costmap", "global_costmap"):
+        p = nav[cm][cm]["ros__parameters"]
+        fp = np.array(yaml.safe_load(p["footprint"]))
+        assert np.allclose(np.abs(fp), [[front, left]] * 4)
+        assert p["inflation_layer"]["inflation_radius"] >= math.hypot(front, left)
 
 
 def test_hard_coded_lidar_x_matches_the_urdf(urdf):
