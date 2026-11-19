@@ -53,6 +53,9 @@ class MotorMappedCar:
 	the user as M1 = RL, M2 = RR, M3 = front LEFT, M4 = front RIGHT, so the
 	map is [3, 1, 4, 2]. That is the reverse of the 11-13 strafe finding
 	above; re-check with a strafe if the robot spins instead of strafing.
+	In the air with sign [1, 1, -1, -1] both FRONT wheels ran backward on a
+	forward command (rotate looked like a strafe), so the front signs flip:
+	[-1, 1, 1, -1].
 	"""
 
 	def __init__(self, car, motor_map, motor_sign):
@@ -86,7 +89,7 @@ class yahboomcar_driver(Node):
 		serial_port = self.get_parameter('serial_port').get_parameter_value().string_value
 		# Board motor wired to each logical wheel FL, RL, FR, RR (see MotorMappedCar).
 		self.declare_parameter('motor_map', [3, 1, 4, 2])
-		self.declare_parameter('motor_sign', [1, 1, -1, -1])
+		self.declare_parameter('motor_sign', [-1, 1, 1, -1])
 		self.car = MotorMappedCar(Rosmaster(com=serial_port),
 			list(self.get_parameter('motor_map').value),
 			list(self.get_parameter('motor_sign').value))
