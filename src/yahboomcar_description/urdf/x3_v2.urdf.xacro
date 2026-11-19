@@ -45,7 +45,14 @@
        the front glass (old URDF, from the Luxonis STEP). Mono baseline 75 mm. -->
   <xacro:property name="oak_glass_setback" value="0.0116"/>
   <xacro:property name="oak_half_baseline" value="0.0375"/>
-  <xacro:property name="oak_pitch" value="0.0"/>
+  <!-- MEASURED 2026-11-18 (robot on the lab floor, Livox floor fit level to
+       0.4 deg): each OAK's BNO086 gravity rotated into CAM_A with its factory
+       IMU-to-camera extrinsics. + = nose DOWN, so both point slightly UP.
+       Front = 14442C103181D7D600 (sees the open aisle ahead; has the depth
+       correction): -1.98 deg, roll -0.26. Rear = 14442C10B1F4D2D600: -4.13 deg,
+       roll -1.91 (roll not modelled). CAD said -1.0 / -5.5. -->
+  <xacro:property name="oak_front_pitch" value="-0.0346"/>
+  <xacro:property name="oak_rear_pitch" value="-0.0721"/>
 
   <!-- PLACEHOLDER: the Rosmaster's MPU9250 frame, carried over unchanged from
        the old chassis. Its board position on v2 is not in the CAD export. -->
@@ -148,17 +155,12 @@
   <!-- =============================== OAKs ============================== -->
   <!-- One OAK Pro W frame set (depthai_ros naming). Pose from the CAD glass:
        body centre = glass centre minus the setback along the view direction.
-       pitch > 0 = nose down; level by design (oak_pitch), as oakd_driver's
-       xyz_base_m also assumes. Which end is the FRONT comes from the CAD part
-       names (see the YAML's front_chosen_by); not yet confirmed physically. -->
-  <xacro:macro name="oak" params="base prefix pose">
+       pitch > 0 = nose down, measured (see oak_front_pitch). oakd_driver's
+       xyz_base_m still assumes a level camera. The FRONT end (Top_bus_light)
+       was confirmed 2026-11-18: the front OAK sees the open space ahead. -->
+  <xacro:macro name="oak" params="base prefix pose pit">
     <xacro:property name="g" value="${pose['glass_centre']}"/>
     <xacro:property name="yaw" value="${pose['yaw']}"/>
-    <!-- Both OAKs are meant to be LEVEL (user, 2026-11-16); the CAD cradles
-         are adjustable. Design_v2 has the front at 1.0 deg and the rear at
-         5.5 deg nose-UP (YAML pitch, + = nose down); both forced to 0 here. Set oak_pitch
-         from a measurement if a camera is ever tilted on purpose. -->
-    <xacro:property name="pit" value="${oak_pitch}"/>
     <link name="${base}"/>
     <joint name="${prefix}_center_joint" type="fixed">
       <parent link="base_link"/>
@@ -190,7 +192,7 @@
       <origin xyz="0 0 0" rpy="0 0 0"/>
     </joint>
   </xacro:macro>
-  <xacro:oak base="oak-d-base-frame" prefix="oak" pose="${cad['oak_front']}"/>
-  <xacro:oak base="oak_rear-d-base-frame" prefix="oak_rear" pose="${cad['oak_rear']}"/>
+  <xacro:oak base="oak-d-base-frame" prefix="oak" pose="${cad['oak_front']}" pit="${oak_front_pitch}"/>
+  <xacro:oak base="oak_rear-d-base-frame" prefix="oak_rear" pose="${cad['oak_rear']}" pit="${oak_rear_pitch}"/>
 
 </robot>

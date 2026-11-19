@@ -124,11 +124,12 @@ def test_livox_and_laser(urdf):
 
 def test_oaks_face_out_of_their_ends(urdf):
     poses, _ = _fk(urdf)
+    measured_up = {"oak": 0.0346, "oak_rear": 0.0721}     # nose-up, rad (IMU, 2026-11-18)
     for name, sign in (("oak", 1), ("oak_rear", -1)):
         T = poses[f"{name}_rgb_camera_optical_frame"]
         view = T[:3, 2]                            # optical +Z = viewing direction
         assert sign * view[0] > 0.9, (name, view)
-        assert abs(view[2]) < 1e-6, (name, view)        # level by design (oak_pitch = 0)
+        assert abs(view[2] - math.sin(measured_up[name])) < 1e-4, (name, view)   # tilted UP
         assert sign * T[0, 3] > 0.3                # at that end of the chassis
         assert 0.10 < T[2, 3] < 0.25
         left = poses[f"{name}_left_camera_optical_frame"][:3, 3]
