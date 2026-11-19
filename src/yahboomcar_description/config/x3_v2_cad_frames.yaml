@@ -2,7 +2,7 @@
 # base_footprint frame: floor under the wheel centroid, x forward, y left, z up (m, rad).
 source: Design_v2 (assembly_poses.json)
 generated: '2026-11-18'
-front_oak_enclosure: 1
+front_oak_enclosure: 2
 front_chosen_by: Top_bus_light_yahboom end (user-confirmed)
 assembly_roll_removed_deg: 0.709
 wheel_radius: 0.0521

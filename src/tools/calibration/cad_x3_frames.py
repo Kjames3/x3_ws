@@ -34,8 +34,8 @@ Frame construction (nothing hand-entered):
     Not yet confirmed on the physical robot.
 
 Sensor poses are CAD positions of the mount parts. Anything the CAD gets wrong
-(the Livox height: CAD optical centre ~0.24 m vs 0.31 m floor fit) is
-overridden in the xacro, not here.
+is overridden in the xacro, not here (e.g. the Livox optical-centre offset
+above its housing base).
 """
 import argparse
 import glob
@@ -351,7 +351,9 @@ def main_posed(a):
     # back_plate must then come out at the rear.
     fp = bbox_centre(X.tris(X.find(lambda i: i["mesh"] == "Top_bus_light_yahboom")[0]).reshape(-1, 3))
     by_name = min(range(len(oaks)), key=lambda k: np.linalg.norm(bbox_centre(X.tris(oaks[k]).reshape(-1, 3)) - fp))
-    front = (a.front_oak - 1) if a.front_oak else by_name
+    # --front-oak N names the instance "...stp-N", as in the per-component export.
+    front = (next(k for k, i in enumerate(oaks) if i["instance"].endswith(f"-{a.front_oak}"))
+             if a.front_oak else by_name)
     rear = 1 - front
     F = RobotFrame(wheels_raw, radius, bbox_centre(X.tris(oaks[front]).reshape(-1, 3)))
     bp = X.find(lambda i: i["mesh"] == "back_plate")
@@ -399,7 +401,7 @@ def main_posed(a):
     out = {
         "source": os.path.basename(os.path.normpath(a.stl_dir)) + " (assembly_poses.json)",
         "generated": str(date.today()),
-        "front_oak_enclosure": int(front + 1),
+        "front_oak_enclosure": int(oaks[front]["instance"].rsplit("-", 1)[1]),   # stp-N, as the old export
         "front_chosen_by": "--front-oak" if a.front_oak else "Top_bus_light_yahboom end (user-confirmed)",
         "assembly_roll_removed_deg": round(F.roll_deg, 3),
         "wheel_radius": round(radius, 4),

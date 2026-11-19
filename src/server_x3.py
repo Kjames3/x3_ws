@@ -609,10 +609,11 @@ CBF_SAFE_DISTANCE_M = float(os.environ.get('X3_CBF_SAFE_DISTANCE_M', 0.30))
 # 'circle' goes back to CBF_SAFE_DISTANCE_M round the centre, which stalls in
 # a 0.76 m doorway unless the robot is within ~6 cm of its middle.
 # X3 v2 locked geometry (Design_v2, 2026-11-18): the CAD extent is x +-0.320
-# (wheel rims front/rear) and y +-0.293 (wheel outer faces) from the wheel
+# (wheel rims front/rear) and y +-0.293 (wheel outer faces, rounded up to
+# 0.30) from the wheel
 # centroid; see yahboomcar_description/config/x3_v2_cad_frames.yaml. The wide
 # 2026-11-13 frame was '0.41,0.41,0.37,0.37'; the old X3 '0.16,0.13,0.11,0.11'.
-_fp = os.environ.get('X3_CBF_FOOTPRINT', '0.32,0.32,0.29,0.29').strip().lower()
+_fp = os.environ.get('X3_CBF_FOOTPRINT', '0.32,0.32,0.30,0.30').strip().lower()
 CBF_FOOTPRINT = None if _fp == 'circle' else tuple(float(v) for v in _fp.split(','))
 # Yaw error of the lidar mount, added to every lidar bearing before it becomes
 # a CBF obstacle. Measured 2026-10-11 with src/tools/calibration/lidar_yaw_calib.py: +4.85 deg
@@ -1252,9 +1253,10 @@ class ROS2Bridge:
         """Decompose body twist into per-wheel linear velocities (m/s) via mecanum kinematics.
 
         Wheel order: FL, FR, RL, RR.
-        L = lx + ly ≈ 0.20 m for the Yahboom X3 (half-track + half-wheelbase).
+        L = lx + ly = 0.5305 m for x3_v2 (half-track + half-wheelbase; old X3 0.20).
+        GUI telemetry only.
         """
-        L = 0.20
+        L = 0.5305
         with self._lock:
             t = dict(self._twist)
         vx, vy, wz = t["vx"], t["vy"], t["wz"]

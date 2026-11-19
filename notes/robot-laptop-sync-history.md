@@ -12,3 +12,4 @@ Synced robot to 9d2b15f (scan-match AMCL seeding). Robot copies of server_x3.py,
 
 ## 2026-10-22
 Synced robot to the RotationShim commit (nav2 params; installed copy rebuilt). Earlier the same night: 4f7e1d1 (best-effort driver), dac2c98 (driver counters), 9d2b15f (auto-seed).
+- 2026-11-18: AGX (jetson@orin, now the robot's compute) ff-pulled c681992 -> e6cbe53 -> a76df68 (Design_v2 URDF); clean tree, yahboomcar_{description,bringup,nav} rebuilt, x3_server restarted. Laptop keeps uncommitted WIP (OAK surroundings, GUI, FastDDS/HTTP hunks in server_x3.py). diff_robot.sh needs X3_HOST=jetson@orin.

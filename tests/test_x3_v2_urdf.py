@@ -152,8 +152,8 @@ def test_footprints_cover_the_cad_extent():
     srv = (ROOT / "src" / "server_x3.py").read_text()
     m = re.search(r"X3_CBF_FOOTPRINT', '([0-9.,]+)'", srv)
     front, rear, left, right = (float(v) for v in m.group(1).split(","))
-    assert front >= ext["x"][1] - 0.005 and rear >= -ext["x"][0] - 0.005
-    assert left >= ext["y"][1] - 0.005 and right >= -ext["y"][0] - 0.005
+    assert front >= ext["x"][1] and rear >= -ext["x"][0]
+    assert left >= ext["y"][1] and right >= -ext["y"][0]
     assert front < ext["x"][1] + 0.05 and left < ext["y"][1] + 0.05     # not a stale, larger frame
     nav = yaml.safe_load(open(ROOT / "src" / "yahboomcar_nav" / "params" / "nav2_params_x3.yaml"))
     for cm in ("local_costmap", "global_costmap"):

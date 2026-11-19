@@ -302,20 +302,20 @@ local_costmap:
       height: 4
       resolution: 0.05
       # The chassis as the same rectangle the CBF uses (server_x3.py CBF_FOOTPRINT,
-      # metres from the base origin: front 0.32, rear 0.32, left 0.29, right 0.29).
+      # metres from the base origin: front 0.32, rear 0.32, left 0.30, right 0.30).
       # X3 v2 locked geometry (Design_v2, 2026-11-18): CAD extent x +-0.320,
-      # y +-0.293 from the wheel centroid, which base_footprint sits on
+      # y +-0.293 (rounded up to 0.30) from the wheel centroid, which base_footprint sits on
       # (yahboomcar_description/config/x3_v2_cad_frames.yaml). The wide
       # 2026-11-13 frame was 0.41/0.37. The old X3 was [[0.16, 0.11], [0.16, -0.11], [-0.13, -0.11],
       # [-0.13, 0.11]]; a circle there let MPPI pass 0.15 m from a box while the front
       # corners sat 0.19 m out (box test 2026-10-22), hence a polygon.
-      footprint: "[[0.32, 0.29], [0.32, -0.29], [-0.32, -0.29], [-0.32, 0.29]]"
+      footprint: "[[0.32, 0.30], [0.32, -0.30], [-0.32, -0.30], [-0.32, 0.30]]"
       plugins: ["obstacle_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # >= the circumscribed radius (hypot(0.32, 0.29) = 0.43 m) or MPPI's CostCritic
-        # footprint-checks every trajectory point. Inscribed is 0.29 m, so a 0.80 m
-        # doorway leaves 11 cm a side. (Wide 2026-11-13 frame: 0.65; old X3: 0.35.)
+        # >= the circumscribed radius (hypot(0.32, 0.30) = 0.44 m) or MPPI's CostCritic
+        # footprint-checks every trajectory point. Inscribed is 0.30 m, so a 0.80 m
+        # doorway leaves 10 cm a side. (Wide 2026-11-13 frame: 0.65; old X3: 0.35.)
         inflation_radius: 0.50
         cost_scaling_factor: 5.0
       obstacle_layer:
@@ -385,7 +385,7 @@ global_costmap:
       robot_base_frame: base_footprint
       use_sim_time: False
       # Same rectangle as local_costmap and the CBF (see the note there).
-      footprint: "[[0.32, 0.29], [0.32, -0.29], [-0.32, -0.29], [-0.32, 0.29]]"
+      footprint: "[[0.32, 0.30], [0.32, -0.30], [-0.32, -0.30], [-0.32, 0.30]]"
       resolution: 0.05
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       obstacle_layer:
@@ -417,7 +417,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 5.0
-        inflation_radius: 0.50   # >= circumscribed 0.43 m; see local_costmap
+        inflation_radius: 0.50   # >= circumscribed 0.44 m; see local_costmap
       always_send_full_costmap: True
 
 # ── Map Server ───────────────────────────────────────────────────────────────
