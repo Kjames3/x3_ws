@@ -12,6 +12,10 @@ sharpness), plus three test aids:
   tape-measured distance (--cal-dist, metres, lens to tag face) and press c.
   fx is averaged over 20 frames, HFOV/VFOV are printed and the result is saved
   to config/arducam_uc844_intrinsics.json (rescaled for other resolutions).
+* Fisheye lens calibration from a printed checkerboard (k). Each accepted
+  view is saved to disk; f fits the cv2.fisheye model, saves K/D into the
+  intrinsics file, and from then on tag and person ranges are undistorted.
+  u toggles an undistorted preview. --calib-from DIR refits saved views.
 * YOLO person detection (y). With fx and a camera height known, each person
   gets a flat-floor range from where their box meets the floor, the way a
   side camera would range them. Assumes the camera is level.
@@ -19,7 +23,13 @@ sharpness), plus three test aids:
     python3 src/tools/viewers/arducam_viewer.py
     python3 src/tools/viewers/arducam_viewer.py --cal-dist 1.00
 
-Keys: q/Esc quit, c calibrate fx, y person detection, t tag detection,
+Checkerboard: --squares is the count of SQUARES (default 9x6) and --square-mm
+the measured edge of one square. Keep it flat (tape it to card). In k mode
+press space to grab a view (it refuses near-duplicates), aim for ~25 views
+covering the whole frame, corners included, tilted up to ~45 deg, then f.
+
+Keys: q/Esc quit, c calibrate fx (tag), k checkerboard mode, space grab view,
+      f fit fisheye, u undistorted preview, y person detection, t tags,
       r cycle resolution, m MJPG/YUYV, h histogram, s snapshot,
       +/- manual exposure, a auto exposure.
 """
@@ -107,17 +117,92 @@ def save_fx(fx, w, h, dist, tag):
     return d
 
 
+def load_fisheye(w):
+    """(K, D) from the saved fisheye calibration, rescaled to width w, or None."""
+    try:
+        f = json.load(open(INTR_PATH))["fisheye"]
+    except (OSError, KeyError, ValueError):
+        return None
+    K = np.array(f["K"], np.float64)
+    K[:2] *= w / f["width"]
+    return K, np.array(f["D"], np.float64).reshape(4, 1)
+
+
+def undistort_px(pts, fe):
+    """Fisheye pixel coords -> ideal pinhole pixel coords with the same K."""
+    K, D = fe
+    p = np.asarray(pts, np.float64).reshape(-1, 1, 2)
+    return cv2.fisheye.undistortPoints(p, K, D, P=K).reshape(-1, 2)
+
+
+def find_board(gray, pattern):
+    """Checkerboard inner corners at full resolution, or None.
+    Detects on a half-size image (classic detector, ~10x faster) then refines."""
+    small = cv2.resize(gray, (gray.shape[1] // 2, gray.shape[0] // 2),
+                       interpolation=cv2.INTER_AREA)
+    ok, c = cv2.findChessboardCorners(
+        small, pattern, cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE
+        | cv2.CALIB_CB_FAST_CHECK)
+    if not ok:
+        return None
+    c = (c * 2.0).astype(np.float32)
+    cv2.cornerSubPix(gray, c, (7, 7), (-1, -1),
+                     (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 40, 0.01))
+    return c
+
+
+def fit_fisheye(views, pattern, square_m, size):
+    """cv2.fisheye.calibrate over a list of (N,1,2) corner arrays.
+    Drops the worst views if the solver rejects one as ill-conditioned."""
+    nx, ny = pattern
+    obj = np.zeros((1, nx * ny, 3), np.float64)
+    obj[0, :, :2] = np.mgrid[0:nx, 0:ny].T.reshape(-1, 2) * square_m
+    views = list(views)
+    flags = (cv2.fisheye.CALIB_RECOMPUTE_EXTRINSIC | cv2.fisheye.CALIB_CHECK_COND
+             | cv2.fisheye.CALIB_FIX_SKEW)
+    while len(views) >= 8:
+        try:
+            rms, K, D, _, _ = cv2.fisheye.calibrate(
+                [obj] * len(views), [v.reshape(1, -1, 2).astype(np.float64) for v in views],
+                size, None, None, flags=flags,
+                criteria=(cv2.TERM_CRITERIA_COUNT + cv2.TERM_CRITERIA_EPS, 100, 1e-6))
+            return rms, K, D, len(views)
+        except cv2.error as e:
+            msg = str(e)
+            # "CALIB_CHECK_COND - Ill-conditioned matrix for input array N"
+            idx = [int(t) for t in msg.replace(".", " ").split() if t.isdigit()]
+            if "Ill-conditioned" not in msg or not idx:
+                raise
+            print(f"dropping ill-conditioned view {idx[-1]}")
+            views.pop(idx[-1])
+    raise RuntimeError("fewer than 8 usable views")
+
+
+def save_fisheye(rms, K, D, n, w, h, square_m, pattern):
+    try:
+        d = json.load(open(INTR_PATH))
+    except (OSError, ValueError):
+        d = {}
+    hfov = math.degrees(2 * math.atan(w / 2 / K[0, 0]))  # pinhole-equivalent, centre
+    d["fisheye"] = {"K": K.tolist(), "D": D.ravel().tolist(), "rms_px": rms,
+                    "width": w, "height": h, "n_views": n,
+                    "board": f"{pattern[0] + 1}x{pattern[1] + 1} squares, {square_m * 1000:.1f} mm",
+                    "date": time.strftime("%Y-%m-%d")}
+    os.makedirs(os.path.dirname(INTR_PATH), exist_ok=True)
+    json.dump(d, open(INTR_PATH, "w"), indent=2)
+    return hfov
+
+
 def tag_side_px(c):
     """Mean edge length in pixels of a 4x2 corner array."""
     return float(np.mean([np.linalg.norm(c[i] - c[(i + 1) % 4]) for i in range(4)]))
 
 
-def tag_pose(c, fx, w, h, size):
+def tag_pose(c, K, size):
     """solvePnP for one tag. Returns (x right, y down, z forward) in metres."""
     s = size / 2
     obj = np.array([[-s, s, 0], [s, s, 0], [s, -s, 0], [-s, -s, 0]], np.float32)
-    K = np.array([[fx, 0, w / 2], [0, fx, h / 2], [0, 0, 1]], np.float64)
-    ok, _, t = cv2.solvePnP(obj, c.astype(np.float32), K, None,
+    ok, _, t = cv2.solvePnP(obj, c.astype(np.float32), np.asarray(K, np.float64), None,
                             flags=cv2.SOLVEPNP_IPPE_SQUARE)
     return t.ravel() if ok else None
 
@@ -138,8 +223,31 @@ def main():
     ap.add_argument("--fx", type=float, help="override focal length (px at --res)")
     ap.add_argument("--cam-height", type=float,
                     help="camera height for person ranging (default: from the tag)")
+    ap.add_argument("--squares", default="9x6", help="checkerboard SQUARES, cols x rows")
+    ap.add_argument("--square-mm", type=float, default=25.0,
+                    help="measured edge of one checkerboard square, mm")
+    ap.add_argument("--calib-from", help="refit the fisheye model from a saved view dir and exit")
     ap.add_argument("--snap-dir", default=os.path.expanduser("~/arducam_snaps"))
     args = ap.parse_args()
+    sq = [int(v) for v in args.squares.lower().split("x")]
+    pattern = (sq[0] - 1, sq[1] - 1)  # inner corners
+    square_m = args.square_mm / 1000.0
+
+    if args.calib_from:
+        views, size = [], None
+        for p in sorted(glob.glob(os.path.join(args.calib_from, "*.png"))):
+            g = cv2.imread(p, cv2.IMREAD_GRAYSCALE)
+            size = (g.shape[1], g.shape[0])
+            c = find_board(g, pattern)
+            print(p, "ok" if c is not None else "no board")
+            if c is not None:
+                views.append(c)
+        rms, K, D, n = fit_fisheye(views, pattern, square_m, size)
+        hfov = save_fisheye(rms, K, D, n, size[0], size[1], square_m, pattern)
+        print(f"RMS {rms:.3f} px from {n} views; fx {K[0, 0]:.1f} fy {K[1, 1]:.1f} "
+              f"cx {K[0, 2]:.1f} cy {K[1, 2]:.1f}; D {D.ravel()}; centre-HFOV {hfov:.1f}")
+        print("saved ->", INTR_PATH)
+        return
 
     dev, name = (args.dev, None) if args.dev is not None else find_arducam()
     if dev is None:
@@ -159,6 +267,8 @@ def main():
     yolo = None
     show_tag, show_yolo, show_hist = True, False, True
     cal_samples = None
+    board_mode, undist = False, False
+    views, view_dir, last_board = [], None, None
     cam_h_est = collections.deque(maxlen=30)
 
     win = "Arducam UC-844 (OV9281)"
@@ -186,6 +296,7 @@ def main():
         gray = frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         fh, fw = gray.shape
         fx = args.fx * fw / w if args.fx else load_fx(fw)
+        fe = load_fisheye(fw)
         mean = float(gray.mean())
         sat = 100.0 * float(np.count_nonzero(gray >= 250)) / gray.size
         dark = 100.0 * float(np.count_nonzero(gray <= 5)) / gray.size
@@ -199,6 +310,26 @@ def main():
         disp = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
         info = []
 
+        # ---- checkerboard ----
+        if board_mode:
+            last_board = find_board(gray, pattern)
+            gx, gy = 6, 4  # coverage grid
+            cov = np.zeros((gy, gx), int)
+            for v in views:
+                for x, y in v.reshape(-1, 2):
+                    cov[min(gy - 1, int(y * gy / fh)), min(gx - 1, int(x * gx / fw))] += 1
+            for r in range(gy):
+                for c in range(gx):
+                    x0, y0 = c * fw // gx, r * fh // gy
+                    col = (0, 0, 255) if cov[r, c] == 0 else (
+                        (0, 200, 255) if cov[r, c] < 40 else (0, 200, 0))
+                    cv2.rectangle(disp, (x0 + 2, y0 + 2), (x0 + fw // gx - 2, y0 + fh // gy - 2), col, 1)
+            if last_board is not None:
+                cv2.drawChessboardCorners(disp, pattern, last_board, True)
+            info.append(f"CHECKERBOARD {pattern[0] + 1}x{pattern[1] + 1} sq: views {len(views)}"
+                        f"  board {'FOUND - space to grab' if last_board is not None else 'not found'}"
+                        f"  (red cells need views, f to fit)")
+
         # ---- AprilTag ----
         if show_tag or cal_samples is not None:
             corners, ids, _ = tag_det.detectMarkers(gray)
@@ -208,16 +339,21 @@ def main():
                     cv2.polylines(disp, [c.astype(int)], True, (0, 255, 255), 2)
                     side = tag_side_px(c)
                     line = f"tag {i}: side {side:.0f} px"
-                    if fx:
-                        t = tag_pose(c, fx, fw, fh, args.tag_size)
-                        if t is not None:
-                            rng = float(np.linalg.norm(t))
-                            brg = math.degrees(math.atan2(t[0], t[2]))
-                            # camera level: tag centre is -y above the camera
-                            cam_h = args.tag_height + float(t[1])
-                            cam_h_est.append(cam_h)
-                            line += (f"  range {rng:.3f} m  fwd {t[2]:.3f}  "
-                                     f"brg {brg:+.1f} deg  cam h {cam_h:.3f} m")
+                    if fe is not None:
+                        t = tag_pose(undistort_px(c, fe), fe[0], args.tag_size)
+                    elif fx:
+                        t = tag_pose(c, np.array([[fx, 0, fw / 2], [0, fx, fh / 2], [0, 0, 1]]),
+                                     args.tag_size)
+                    else:
+                        t = None
+                    if t is not None:
+                        rng = float(np.linalg.norm(t))
+                        brg = math.degrees(math.atan2(t[0], t[2]))
+                        # camera level: tag centre is -y above the camera
+                        cam_h = args.tag_height + float(t[1])
+                        cam_h_est.append(cam_h)
+                        line += (f"  range {rng:.3f} m  fwd {t[2]:.3f}  "
+                                 f"brg {brg:+.1f} deg  cam h {cam_h:.3f} m")
                     info.append(line)
                     if cal_samples is not None:
                         cal_samples.append(side)
@@ -246,8 +382,12 @@ def main():
                 x1, y1, x2, y2 = b.astype(int)
                 cv2.rectangle(disp, (x1, y1), (x2, y2), (255, 120, 0), 2)
                 label = f"person {cf:.2f}"
-                if fx and cam_h and y2 < fh - 3 and y2 - fh / 2 > 2:
-                    z = fx * cam_h / (y2 - fh / 2)  # flat floor, level camera
+                fy_bot, f_use, cy = y2, fx, fh / 2
+                if fe is not None:
+                    fy_bot = undistort_px([[(x1 + x2) / 2, y2]], fe)[0, 1]
+                    f_use, cy = fe[0][1, 1], fe[0][1, 2]
+                if f_use and cam_h and y2 < fh - 3 and fy_bot - cy > 2:
+                    z = f_use * cam_h / (fy_bot - cy)  # flat floor, level camera
                     label += f"  {z:.2f} m"
                 elif y2 >= fh - 3:
                     label += "  feet cut off"
@@ -271,6 +411,9 @@ def main():
             draw_text(disp, [msg], y=fh - 20, color=(0, 200, 255))
         if show_hist:
             draw_hist(disp, gray)
+        if undist and fe is not None:
+            disp = cv2.fisheye.undistortImage(disp, fe[0], fe[1], Knew=fe[0])
+            draw_text(disp, ["UNDISTORTED preview (u)"], y=fh - 45, color=(255, 255, 0))
         proc_ms = (time.perf_counter() - t0) * 1000.0
         cv2.imshow(win, disp)
 
@@ -286,6 +429,32 @@ def main():
             rw, rh = RESOLUTIONS[res_i]
             cap = open_cam(dev, rw, rh, args.fps, fourcc)
             stamps.clear()
+        elif k == ord("k"):
+            board_mode = not board_mode
+        elif k == ord(" ") and board_mode and last_board is not None:
+            dup = any(np.mean(np.linalg.norm(v - last_board, axis=2)) < 0.04 * fw for v in views)
+            if dup:
+                msg, msg_until = "too similar to a grabbed view - move/tilt the board", now + 2
+            else:
+                if view_dir is None:
+                    view_dir = os.path.join(args.snap_dir, time.strftime("calib_%Y%m%d_%H%M%S"))
+                    os.makedirs(view_dir, exist_ok=True)
+                cv2.imwrite(os.path.join(view_dir, f"view_{len(views):03d}.png"), gray)
+                views.append(last_board.copy())
+                msg, msg_until = f"view {len(views)} grabbed", now + 1.5
+        elif k == ord("f") and views:
+            try:
+                rms, K, D, n = fit_fisheye(views, pattern, square_m, (fw, fh))
+                hfov = save_fisheye(rms, K, D, n, fw, fh, square_m, pattern)
+                msg = (f"fisheye RMS {rms:.3f} px, {n} views, fx {K[0, 0]:.0f}, "
+                       f"centre-HFOV {hfov:.1f} (saved)")
+                print(msg, "K", K.tolist(), "D", D.ravel().tolist(), "->", INTR_PATH)
+            except (RuntimeError, cv2.error) as e:
+                msg = f"fit failed: {e}"[:110]
+                print(msg)
+            msg_until = now + 10
+        elif k == ord("u"):
+            undist = not undist
         elif k == ord("c"):
             cal_samples = []
         elif k == ord("y"):
