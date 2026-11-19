@@ -185,7 +185,10 @@ class yahboomcar_driver(Node):
 		# (new_chassis_calib.py spin: 4.786 m of rim travel over 733.7 deg),
 		# 0.55x the geometric 0.681 -- the rollers slip, so it turns faster
 		# than geometry says. Keep cbf_filter's wheel_separation in step.
-		self.declare_parameter('yaw_wheel_separation', 0.374)
+		# Design_v2 (narrower) frame, 2026-11-18, lab floor: 0.559 from three
+		# turns in place (10.618 m of rim travel over 1088.7 deg, wheel counts
+		# equal within 0.4%), 1.05x the geometric 0.5305.
+		self.declare_parameter('yaw_wheel_separation', 0.559)
 		# Fastest rim speed asked of any wheel; PWM 100 gives about 1.0 m/s.
 		self.declare_parameter('max_wheel_speed', 0.8)
 		# Encoder counts per metre of rim travel. New chassis, 2026-11-13: 7624

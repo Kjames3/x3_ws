@@ -107,7 +107,7 @@ def _project(u_nom, n, c):
 
 class HolonomicCBFFilter:
     def __init__(self, safe_distance=0.3, gamma=1.0, max_wheel_speed=0.5,
-                 wheel_separation=0.374, footprint=None, margin=0.10,
+                 wheel_separation=0.559, footprint=None, margin=0.10,
                  hold_band=0.03):
         """
         Args:
@@ -138,9 +138,8 @@ class HolonomicCBFFilter:
                 load (m/s). The 205 rpm motors on 65 mm wheels do 0.70 m/s with
                 no load.
             wheel_separation (float): wheel rim speed per rad/s of yaw (m),
-                as Mcnamu_driver_X3's yaw_wheel_separation (measured 0.374 on
-                the wide 2026-11-13 frame; NOT re-measured on the narrower
-                Design_v2 frame, whose geometric value is 0.5305).
+                as Mcnamu_driver_X3's yaw_wheel_separation (measured 0.559 on
+                the Design_v2 frame, 2026-11-18; geometric 0.5305).
         """
         self.safe_distance = safe_distance
         # (half_length, half_width) centred on the base origin, or

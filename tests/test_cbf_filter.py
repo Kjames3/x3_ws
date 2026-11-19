@@ -111,8 +111,10 @@ def test_wheel_limit_is_a_diamond_and_shrinks_with_yaw_rate():
     far = [(0.9, 0.9)]
     vx, vy = cbf.filter_velocity(-0.6, -0.6, (0.0, 0.0), far)
     assert abs(vx) + abs(vy) == pytest.approx(0.5, abs=1e-7)
-    vx, vy = cbf.filter_velocity(-0.6, -0.6, (0.0, 0.0), far, omega=1.0)
-    assert abs(vx) + abs(vy) == pytest.approx(0.5 - cbf.wheel_separation, abs=1e-7)
+    # omega 0.5, not 1.0: the measured x3_v2 lever arm (0.559 m) spends the
+    # whole 0.5 m/s budget at 1 rad/s, which would leave no diamond to check.
+    vx, vy = cbf.filter_velocity(-0.6, -0.6, (0.0, 0.0), far, omega=0.5)
+    assert abs(vx) + abs(vy) == pytest.approx(0.5 - 0.5 * cbf.wheel_separation, abs=1e-7)
 
 
 def test_squeezed_between_two_obstacles_is_not_a_blind_stop():
@@ -198,8 +200,10 @@ def test_wheel_limit_applies_with_no_obstacles_too():
     assert cbf.filter_velocity(0.45, 0.0, (0.0, 0.0), []) == (0.45, 0.0)
     vx, vy = cbf.filter_velocity(0.45, 0.45, (0.0, 0.0), [])
     assert (vx, vy) == pytest.approx((0.25, 0.25))
-    vx, vy = cbf.filter_velocity(0.45, 0.0, (0.0, 0.0), [], omega=1.0)
-    assert (vx, vy) == pytest.approx((0.5 - cbf.wheel_separation, 0.0))
+    vx, vy = cbf.filter_velocity(0.45, 0.0, (0.0, 0.0), [], omega=0.5)
+    assert (vx, vy) == pytest.approx((0.5 - 0.5 * cbf.wheel_separation, 0.0))
+    # at 1 rad/s the turn alone uses the whole wheel budget: no translation left
+    assert cbf.filter_velocity(0.45, 0.0, (0.0, 0.0), [], omega=1.0) == pytest.approx((0.0, 0.0))
 
 
 @pytest.mark.parametrize('bad', [float('nan'), float('inf'), -float('inf')])
@@ -356,7 +360,7 @@ def test_turn_is_eased_when_no_translation_can_make_it_safe():
 
 
 def test_yaw_is_untouched_in_open_space_and_in_circle_mode():
-    assert rect().filter_twist(0.1, 0.0, 1.0, (0.0, 0.0), [(1.5, 0.0)]) == pytest.approx((0.1, 0.0, 1.0))
+    assert rect().filter_twist(0.1, 0.0, 0.5, (0.0, 0.0), [(1.5, 0.0)]) == pytest.approx((0.1, 0.0, 0.5))
     circle = HolonomicCBFFilter()
     assert circle.filter_twist(0.0, 0.0, 1.0, (0.0, 0.0), [(0.25, 0.0), (-0.2, 0.0)])[2] == 1.0
 

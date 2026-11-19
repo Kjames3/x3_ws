@@ -95,7 +95,7 @@ def main():
         rim = (-fl - rl + fr + rr) / 4.0 / a.counts_per_m   # m, + = left turn
         if abs(turn) < math.radians(90):
             raise SystemExit('turn too small to measure; do at least one full turn')
-        print('==> yaw_wheel_separation = %.3f m  (rim %.3f m over %.1f deg; geometric 0.681)'
+        print('==> yaw_wheel_separation = %.3f m  (rim %.3f m over %.1f deg; geometric 0.5305)'
               % (rim / turn, rim, math.degrees(turn)))
     # Exit without tearing rclpy down under the spinning daemon thread, which
     # aborted with 'terminate called without an active exception'.
