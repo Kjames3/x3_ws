@@ -29,15 +29,13 @@
        it is not a physical plate height on v2. Floor heights are what matter. -->
   <xacro:property name="base_z" value="0.0815"/>
 
-  <!-- CAD-DERIVED, re-fit pending: Livox optical centre above the floor =
-       Design_v2 housing base (0.2369 m, on the new riser) + 54.5 mm (ASSUMED
-       offset, carried from the earlier comment, not from the Mid-360 drawing). The old
-       0.31 floor fit (2026-10-29) was on an earlier mount and would put the
-       optical centre above the housing top (0.297). Confirm with
-       livox_floor_fit.py on the locked frame; it also sets the /scan slice
-       height. -->
-  <xacro:property name="livox_optical_above_base" value="0.0545"/>
-  <xacro:property name="livox_z_floor" value="${cad['livox_housing']['base_z'] + livox_optical_above_base}"/>
+  <!-- MEASURED 2026-11-18 on the locked Design_v2 frame (lab floor, plane fit
+       to Livox returns 2.3-7 m out, 5.8k inliers, residual std 7 mm, sectors
+       within 2.4 mm, tilt < 0.4 deg): Livox optical centre 0.2731 m above the
+       floor, 36 mm above the CAD housing base (0.2369). Older values: 0.31
+       (floor fit on the pre-riser mount, 2026-10-29); 0.291 (CAD + an assumed
+       54.5 mm). Re-fit with livox_floor_fit.py if the Livox mount changes. -->
+  <xacro:property name="livox_z_floor" value="0.2731"/>
 
   <!-- laser_link keeps the OLD lidar's yaw (180 + 4.85 deg) so /scan beam
        order and saved maps stay consistent; livox_scan_node rotates into it. -->

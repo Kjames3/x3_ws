@@ -110,8 +110,8 @@ def test_livox_and_laser(urdf):
     poses, _ = _fk(urdf)
     liv = poses["livox_frame"]
     las = poses["laser_link"]
-    hb = CAD["livox_housing"]                    # CAD-derived until the v2 floor fit
-    assert abs(liv[2, 3] - (hb["base_z"] + 0.0545)) < 1e-6
+    hb = CAD["livox_housing"]
+    assert abs(liv[2, 3] - 0.2731) < 1e-6         # floor fit, 2026-11-18
     assert hb["base_z"] < liv[2, 3] < hb["top_z"]  # optical centre inside the housing
     assert np.allclose(liv[:3, :3], np.eye(3))
     assert np.allclose(las[:3, 3], liv[:3, 3])    # /scan ranges measured from the Livox
