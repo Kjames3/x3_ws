@@ -2515,7 +2515,9 @@ def initialize_hardware():
         # In ROS2 mode the depth stream is owned by the orbbec_depth service,
         # so direct USB depth stream initialization is disabled to prevent conflicts.
         _enable_direct_depth = not ROS2_MODE
-        camera = AstraCamera(width=640, height=480, sim_mode=False, enable_depth=_enable_direct_depth)
+        # 1280x800 is the Arducam OV9281's full sensor; its 640x480 mode is a
+        # window that shows only part of the view.
+        camera = AstraCamera(width=1280, height=800, sim_mode=False, enable_depth=_enable_direct_depth)
     elif WEBRTC_CAMERA:
         logger.info("Camera: --webrtc-camera set — Astra released for the WebRTC/mediamtx feed")
         _launch_mediamtx()
@@ -4418,7 +4420,7 @@ async def broadcast_loop():
                     if not cam_targets:
                         return dets, b""
                     # Downscale visualization to 320x240 before compressing (Idea 106)
-                    frame_downscaled = cv2.resize(frame, (320, 240), interpolation=cv2.INTER_AREA)
+                    frame_downscaled = cv2.resize(frame, (round(240 * frame.shape[1] / frame.shape[0]), 240), interpolation=cv2.INTER_AREA)
                     _, buf = cv2.imencode('.jpg', frame_downscaled, [cv2.IMWRITE_JPEG_QUALITY, 70])
                     return dets, bytes(buf)
                 last_detections_frame = [int(frame.shape[1]), int(frame.shape[0])]
@@ -4428,7 +4430,7 @@ async def broadcast_loop():
             elif frame is not None and cam_targets:
                 def _encode_frame():
                     # Downscale visualization to 320x240 before compressing (Idea 106)
-                    frame_downscaled = cv2.resize(frame, (320, 240), interpolation=cv2.INTER_AREA)
+                    frame_downscaled = cv2.resize(frame, (round(240 * frame.shape[1] / frame.shape[0]), 240), interpolation=cv2.INTER_AREA)
                     _, buf = cv2.imencode('.jpg', frame_downscaled, [cv2.IMWRITE_JPEG_QUALITY, 70])
                     return bytes(buf)
                 img_bytes = await loop.run_in_executor(None, _encode_frame)

@@ -225,6 +225,11 @@ class AstraCamera:
         """
         import glob
 
+        # 0. Arducam OV9281 side camera (the Astra is no longer on the robot)
+        arducam = sorted(glob.glob("/dev/v4l/by-id/*Arducam*-video-index0"))
+        if arducam:
+            return arducam[0]
+
         # 1. udev symlink
         if os.path.exists("/dev/camera_depth"):
             return "/dev/camera_depth"
