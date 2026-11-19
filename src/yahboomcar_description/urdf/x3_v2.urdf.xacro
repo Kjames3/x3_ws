@@ -47,12 +47,13 @@
   <xacro:property name="oak_half_baseline" value="0.0375"/>
   <!-- MEASURED 2026-11-18 (robot on the lab floor, Livox floor fit level to
        0.4 deg): each OAK's BNO086 gravity rotated into CAM_A with its factory
-       IMU-to-camera extrinsics. + = nose DOWN, so both point slightly UP.
-       Front = 14442C103181D7D600 (sees the open aisle ahead; has the depth
-       correction): -1.98 deg, roll -0.26. Rear = 14442C10B1F4D2D600: -4.13 deg,
-       roll -1.91 (roll not modelled). CAD said -1.0 / -5.5. -->
-  <xacro:property name="oak_front_pitch" value="-0.0346"/>
-  <xacro:property name="oak_rear_pitch" value="-0.0721"/>
+       IMU-to-camera extrinsics. + = nose DOWN.
+       Front = 14442C10B1F4D2D600 (sees the AprilTag down the aisle ahead;
+       re-aimed by the user that day): +0.11 deg, roll -1.91 (roll not
+       modelled). Rear = 14442C103181D7D600: -1.84 deg (nose up), roll 0.17.
+       An earlier reading the same day had the two units swapped. -->
+  <xacro:property name="oak_front_pitch" value="0.0019"/>
+  <xacro:property name="oak_rear_pitch" value="-0.0321"/>
 
   <!-- PLACEHOLDER: the Rosmaster's MPU9250 frame, carried over unchanged from
        the old chassis. Its board position on v2 is not in the CAD export. -->

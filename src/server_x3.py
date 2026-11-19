@@ -2528,7 +2528,10 @@ def initialize_hardware():
             oak = OakDCamera(mono_fps=80, spatial_blob=_spatial_blob, spatial_config=_spatial_cfg,
                              conf_threshold=0.35, accel_hz=500, gyro_hz=400,
                              record_rgbd=args.c1_recording,
-                             subpixel=args.c1_recording and args.c1_subpixel)
+                             subpixel=args.c1_recording and args.c1_subpixel,
+                             # x3_v2 has two OAKs; open the FRONT one (B1F4 since
+                             # 2026-11-18). X3_OAK_DEVICE_ID="" = first found.
+                             device_id=os.environ.get('X3_OAK_DEVICE_ID', '14442C10B1F4D2D600'))
             if args.oak_det_log and _spatial_blob:
                 _log_dir = Path(args.oak_det_log)
                 _log_dir.mkdir(parents=True, exist_ok=True)

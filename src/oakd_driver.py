@@ -196,8 +196,11 @@ class OakDCamera:
                  accel_hz=250, gyro_hz=200, left_right_check=True, sim_mode=False,
                  spatial_blob=None, spatial_config=None, auto_economy=True,
                  conf_threshold=None, speckle_filter=True, speckle_range=50,
-                 record_rgbd=False, subpixel=False):
+                 record_rgbd=False, subpixel=False, device_id=None):
         self.record_rgbd = record_rgbd
+        # Which OAK to open when several are plugged in (x3_v2 carries two).
+        # None/"" = the first one found, the old behaviour.
+        self.device_id = device_id or None
         self.subpixel = bool(subpixel)
         self._rgbd_pairs = deque(maxlen=16)
         self._display_rgbd_pair = None
@@ -738,8 +741,9 @@ class OakDCamera:
         pipeline is stopped on every exit (stall break, error, shutdown)."""
         max_speed = dai.UsbSpeed.HIGH if self.usb2_mode else dai.UsbSpeed.SUPER
         sizes = self._host_queue_sizes()
+        info = dai.DeviceInfo(self.device_id) if self.device_id else None
         if _DAI_V3:
-            with dai.Device(max_speed) as device:
+            with (dai.Device(info, max_speed) if info else dai.Device(max_speed)) as device:
                 self.usb_speed = device.getUsbSpeed().name
                 economy = self._link_economy(self.usb_speed, economy)
                 pipeline, outs = self._build_pipeline(with_spatial, economy, device)
@@ -755,7 +759,8 @@ class OakDCamera:
                         logger.warning(f"OakDCamera: pipeline stop: {e}")
             return
         pipeline, outs = self._build_pipeline(with_spatial, economy)
-        with dai.Device(pipeline, maxUsbSpeed=max_speed) as device:
+        with (dai.Device(pipeline, info, maxUsbSpeed=max_speed) if info
+              else dai.Device(pipeline, maxUsbSpeed=max_speed)) as device:
             self.usb_speed = device.getUsbSpeed().name
             want = self._link_economy(self.usb_speed, economy)
             if want != economy:
