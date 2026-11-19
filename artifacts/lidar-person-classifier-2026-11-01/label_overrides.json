@@ -54,5 +54,213 @@
   "r_m": 0.45,
   "label": "sitting",
   "note": "user 2026-11-07: seated, robot ~1.5 m behind over the left shoulder; position from the C3 track (camera range matched the user's estimate)"
+ },
+ {
+  "run": "apt-desk2-trial",
+  "x": 2.75,
+  "y": -2.47,
+  "r_m": 0.45,
+  "label": "sitting",
+  "note": "user 2026-11-08: roommate seated at desk all run, seen from behind"
+ },
+ {
+  "run": "apt-desk2-park15-r1",
+  "x": 2.75,
+  "y": -2.47,
+  "r_m": 0.45,
+  "label": "sitting",
+  "note": "user 2026-11-08: roommate seated at desk all run, seen from behind"
+ },
+ {
+  "run": "apt-desk2-trial",
+  "x": 1.33,
+  "y": -3.62,
+  "r_m": 0.45,
+  "label": "sitting",
+  "note": "user 2026-11-08: user seated at own desk all run (out of camera view)"
+ },
+ {
+  "run": "apt-desk2-park15-r1",
+  "x": 1.33,
+  "y": -3.62,
+  "r_m": 0.45,
+  "label": "sitting",
+  "note": "user 2026-11-08: user seated at own desk all run (out of camera view)"
+ },
+ {
+  "run": "apt-desk2-empty-park15-r1",
+  "x": 1.33,
+  "y": -3.62,
+  "r_m": 0.45,
+  "label": "sitting",
+  "note": "user 2026-11-08: user seated at own desk all run (out of camera view)"
+ },
+ {
+  "run": "apt-desk2-empty-park15-r1",
+  "x": 2.75,
+  "y": -2.47,
+  "r_m": 0.45,
+  "label": "not_person",
+  "note": "roommate chair empty",
+  "t_to": 18
+ },
+ {
+  "run": "apt-desk2-empty-park15-r1",
+  "x": 2.75,
+  "y": -2.47,
+  "r_m": 0.45,
+  "label": "sitting",
+  "note": "roommate seated ~20-40 s",
+  "t_from": 20,
+  "t_to": 40
+ },
+ {
+  "run": "apt-desk2-empty-park15-r1",
+  "x": 2.75,
+  "y": -2.47,
+  "r_m": 0.45,
+  "label": "not_person",
+  "note": "roommate chair empty after he left for the bed",
+  "t_from": 62
+ },
+ {
+  "run": "apt-desk2-park07-r1",
+  "x": 1.2,
+  "y": 3.6,
+  "r_m": 0.25,
+  "label": "not_person",
+  "note": "bed/cabinet left of the robot (user 2026-11-09)"
+ },
+ {
+  "run": "apt-desk2-park07-r1",
+  "x": 3.4,
+  "y": 3.0,
+  "r_m": 0.45,
+  "label": "sitting",
+  "note": "user 2026-11-09: user seated at desk right of the roommate"
+ },
+ {
+  "run": "apt-desk2-park30-r1",
+  "x": 1.2,
+  "y": 3.6,
+  "r_m": 0.25,
+  "label": "not_person",
+  "note": "bed/cabinet left of the robot (user 2026-11-09)"
+ },
+ {
+  "run": "apt-desk2-park30-r1",
+  "x": 3.4,
+  "y": 3.0,
+  "r_m": 0.45,
+  "label": "sitting",
+  "note": "user 2026-11-09: user seated at desk right of the roommate"
+ },
+ {
+  "run": "apt-desk2-drive-r1",
+  "x": 1.2,
+  "y": 3.6,
+  "r_m": 0.25,
+  "label": "not_person",
+  "note": "bed/cabinet left of the robot (user 2026-11-09)"
+ },
+ {
+  "run": "apt-desk2-drive-r1",
+  "x": 3.4,
+  "y": 3.0,
+  "r_m": 0.45,
+  "label": "sitting",
+  "note": "user 2026-11-09: user seated at desk right of the roommate"
+ },
+ {
+  "run": "apt-desk2-drive-r2",
+  "x": 1.2,
+  "y": 3.6,
+  "r_m": 0.25,
+  "label": "not_person",
+  "note": "bed/cabinet left of the robot (user 2026-11-09)"
+ },
+ {
+  "run": "apt-desk2-drive-r2",
+  "x": 3.4,
+  "y": 3.0,
+  "r_m": 0.45,
+  "label": "sitting",
+  "note": "user 2026-11-09: user seated at desk right of the roommate"
+ },
+ {
+  "run": "apt-desk2-park07-r1",
+  "x": 1.8,
+  "y": 3.33,
+  "r_m": 0.4,
+  "label": "sitting",
+  "note": "user 2026-11-09: roommate seated all run"
+ },
+ {
+  "run": "apt-desk2-park30-r1",
+  "x": 1.8,
+  "y": 3.33,
+  "r_m": 0.4,
+  "label": "sitting",
+  "note": "user 2026-11-09: roommate seated all run"
+ },
+ {
+  "run": "apt-desk2-drive-r1",
+  "x": 1.8,
+  "y": 3.33,
+  "r_m": 0.4,
+  "label": "sitting",
+  "note": "user 2026-11-09: roommate seated all run"
+ },
+ {
+  "run": "apt-desk2-drive-r2",
+  "x": 1.8,
+  "y": 3.33,
+  "r_m": 0.4,
+  "label": "sitting",
+  "note": "roommate seated before restroom break",
+  "t_to": 30
+ },
+ {
+  "run": "apt-desk2-drive-r2",
+  "x": 1.8,
+  "y": 3.33,
+  "r_m": 0.4,
+  "label": "not_person",
+  "note": "roommate away (restroom), chair empty",
+  "t_from": 38,
+  "t_to": 95
+ },
+ {
+  "run": "apt-desk2-drive-r2",
+  "x": 1.63,
+  "y": 3.45,
+  "r_m": 0.4,
+  "label": "sitting",
+  "note": "roommate back, sat ~0.17 m off the old spot",
+  "t_from": 103
+ },
+ {
+  "run": "apt-desk2-empty-drive-r1",
+  "x": -2.65,
+  "y": 1.13,
+  "r_m": 0.5,
+  "label": "not_person",
+  "note": "empty desk chair; position from scan matching to drive-r1 (~0.6 m uncertain)"
+ },
+ {
+  "run": "apt-desk2-empty-drive-r1",
+  "x": -2.54,
+  "y": 2.71,
+  "r_m": 0.5,
+  "label": "not_person",
+  "note": "empty desk chair; position from scan matching to drive-r1 (~0.6 m uncertain)"
+ },
+ {
+  "run": "apt-desk2-empty-drive-r1",
+  "x": -2.4,
+  "y": 2.2,
+  "r_m": 1.6,
+  "label": "not_person",
+  "note": "user 2026-11-10: bedroom empty for the whole run (user alone, in the living room); camera false detections near the desks (stickered desktop PC on the floor?) are not people"
  }
 ]

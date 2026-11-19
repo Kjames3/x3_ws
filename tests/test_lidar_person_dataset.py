@@ -101,3 +101,13 @@ def test_overrides_relabel_only_their_run_and_radius():
           {'run': 'b', 'x': 2.0, 'y': 0.0, 'label': 'person'}]
     label, source = lpd.apply_overrides('a', xy, label, source, ov)
     assert label.tolist() == [2, 2, 0] and source[0] == 'override_sitting' and source[2] == 'persistent'
+
+
+def test_overrides_time_window():
+    xy = np.zeros((4, 2))
+    t = np.array([100.0, 110.0, 125.0, 150.0])
+    label = np.zeros(4, dtype=np.int8)
+    source = np.array(['persistent'] * 4, dtype=object)
+    ov = [{'run': 'a', 'x': 0.0, 'y': 0.0, 'label': 'sitting', 't_from': 10, 't_to': 40}]
+    label, _ = lpd.apply_overrides('a', xy, label, source, ov, t)
+    assert label.tolist() == [0, 2, 2, 0]

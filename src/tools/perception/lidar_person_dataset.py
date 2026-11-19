@@ -71,15 +71,20 @@ LABEL_NAMES = {1: 'person', 0: 'not_person', 2: 'sitting', -1: 'unknown'}
 OVERRIDE_LABELS = {'person': 1, 'not_person': 0, 'sitting': 2, 'unknown': -1}
 
 
-def apply_overrides(run, xy, label, source, overrides):
+def apply_overrides(run, xy, label, source, overrides, t=None):
     """Hand corrections: every candidate of `run` within r_m of (x, y) in odom gets the
     entry's label.  The persistent rule cannot tell a person sitting still from a chair
     (furniture-r1: a seated person 0.69 m from the robot was labelled not-person), so
-    the user's word wins.  'sitting' (2) is left out of training, as SiT's seated people are."""
+    the user's word wins.  'sitting' (2) is left out of training, as SiT's seated people are.
+    Optional t_from / t_to (seconds since the run's first candidate) limit an entry to a time
+    window, e.g. a chair that is occupied only part of the run."""
     for o in overrides:
         if o['run'] != run:
             continue
         m = np.hypot(xy[:, 0] - o['x'], xy[:, 1] - o['y']) < o.get('r_m', 0.5)
+        if t is not None and ('t_from' in o or 't_to' in o):
+            rel = t - t.min()
+            m &= (rel >= o.get('t_from', -np.inf)) & (rel < o.get('t_to', np.inf))
         label[m] = OVERRIDE_LABELS[o['label']]
         source[m] = 'override_' + o['label']
     return label, source
@@ -329,7 +334,8 @@ def process_run(run_dir, overrides=(), peaks=False, extra_split_z=None):
     label, source = label_tracklets(track, np.array([r['cam_hit'] for r in rows]),
                                     np.array([r['in_view'] for r in rows]),
                                     np.array([r['cam_near'] for r in rows]), xy, persist)
-    label, source = apply_overrides(run_dir.name, xy, label, source, overrides)
+    label, source = apply_overrides(run_dir.name, xy, label, source, overrides,
+                                    np.array([r['t'] for r in rows]))
     return dict(
         X=np.stack([r['feat'] for r in rows]),
         refl=np.array([r['refl'] for r in rows], dtype=np.float32),
