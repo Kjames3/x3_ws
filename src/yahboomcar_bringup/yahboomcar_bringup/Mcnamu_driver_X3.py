@@ -47,6 +47,12 @@ class MotorMappedCar:
 	(vy -0.2 -> 730 deg CCW on the IMU, wheel counts exactly the strafe
 	pattern). Flipping a sign flips that encoder too, so counts still
 	DEcrease driving forward.
+
+	2026-11-18, after the Design_v2 rebuild: pulse test (each motor alone,
+	encoders confirm one channel each, all counting down for +PWM) seen by
+	the user as M1 = RL, M2 = RR, M3 = front LEFT, M4 = front RIGHT, so the
+	map is [3, 1, 4, 2]. That is the reverse of the 11-13 strafe finding
+	above; re-check with a strafe if the robot spins instead of strafing.
 	"""
 
 	def __init__(self, car, motor_map, motor_sign):
@@ -79,7 +85,7 @@ class yahboomcar_driver(Node):
 		self.declare_parameter('serial_port', '/dev/ttyCH341USB0')
 		serial_port = self.get_parameter('serial_port').get_parameter_value().string_value
 		# Board motor wired to each logical wheel FL, RL, FR, RR (see MotorMappedCar).
-		self.declare_parameter('motor_map', [4, 1, 3, 2])
+		self.declare_parameter('motor_map', [3, 1, 4, 2])
 		self.declare_parameter('motor_sign', [1, 1, -1, -1])
 		self.car = MotorMappedCar(Rosmaster(com=serial_port),
 			list(self.get_parameter('motor_map').value),
