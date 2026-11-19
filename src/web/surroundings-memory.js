@@ -1,13 +1,29 @@
 // Bounded local display memory in odom. Never used by navigation or clearance.
 (function (root) {
     const SIZE = .10, TTL = 8, LIMIT = 12000;
-    const key = (x, y, z) => `${Math.floor(x / SIZE)},${Math.floor(y / SIZE)},${Math.floor(z / SIZE)}`;
+    const key = (x, y, z, size) => `${Math.floor(x / size)},${Math.floor(y / size)},${Math.floor(z / size)}`;
+    function voxelize(xyz, size = SIZE) {
+        const cells = new Map();
+        for (let i = 0; i < xyz.length; i += 3) {
+            const x = xyz[i], y = xyz[i + 1], z = xyz[i + 2];
+            if (![x, y, z].every(Number.isFinite) || z < -.15) continue;
+            const k = key(x, y, z, size);
+            if (!cells.has(k)) cells.set(k, {x: (Math.floor(x / size) + .5) * size,
+                y: (Math.floor(y / size) + .5) * size, z: (Math.floor(z / size) + .5) * size});
+        }
+        return [...cells.values()].slice(0, LIMIT);
+    }
     const world = (x, y, pose) => [pose.x + Math.cos(pose.yaw) * x - Math.sin(pose.yaw) * y,
         pose.y + Math.sin(pose.yaw) * x + Math.cos(pose.yaw) * y];
     const local = (x, y, pose) => [Math.cos(pose.yaw) * (x - pose.x) + Math.sin(pose.yaw) * (y - pose.y),
         -Math.sin(pose.yaw) * (x - pose.x) + Math.cos(pose.yaw) * (y - pose.y)];
     class Memory {
-        constructor() { this.clear(); }
+        constructor(size = SIZE) { this.size = size === .05 ? .05 : SIZE; this.clear(); }
+        setSize(size) {
+            size = size === .05 ? .05 : SIZE;
+            if (size === this.size) return false;
+            this.size = size; this.clear(); return true;
+        }
         clear() { this.cells = new Map(); this.floor = new Map(); this.previous = null; this.dynamic = []; this.revision = (this.revision || 0) + 1; }
         ingest(xyz, pose, movers = []) {
             if (!pose || ![pose.x, pose.y, pose.yaw, pose.stamp].every(Number.isFinite)) return false;
@@ -17,12 +33,13 @@
                 if (dt <= 0 || dt > 2 || Math.hypot(pose.x - this.previous.x, pose.y - this.previous.y) > .5 + .8 * dt || da > .4 + 2 * dt) this.clear();
             }
             this.previous = pose;
+            const size = this.size;
             const now = pose.stamp, observed = new Map(), hits = [], dynamic = [];
             const moving = (x, y) => movers.some(m => Math.hypot(x - m.x, y - m.y) < .45);
             for (let i = 0; i < xyz.length; i += 3) {
                 const x = xyz[i], y = xyz[i + 1], z = xyz[i + 2];
                 if (![x, y, z].every(Number.isFinite) || z < -.15) continue;
-                const [wx, wy] = world(x, y, pose), k = key(wx, wy, z);
+                const [wx, wy] = world(x, y, pose), k = key(wx, wy, z, size);
                 hits.push([wx, wy, z]);
                 if (moving(x, y)) { dynamic.push({x, y, z, age: 0, confidence: 0}); continue; }
                 if (!observed.has(k)) observed.set(k, {x: wx, y: wy, z});
@@ -40,8 +57,8 @@
             for (let i = 0; i < hits.length; i += stride) {
                 const h = hits[i], dx = h[0] - sx, dy = h[1] - sy, dz = h[2] - sz;
                 const length = Math.hypot(dx, dy, dz);
-                for (let d = .15; d < length - .20; d += .08) {
-                    const k = key(sx + dx * d / length, sy + dy * d / length, sz + dz * d / length);
+                for (let d = .15; d < length - .20; d += Math.min(.08, size * .8)) {
+                    const k = key(sx + dx * d / length, sy + dy * d / length, sz + dz * d / length, size);
                     if (this.cells.has(k) && !observed.has(k)) cleared.add(k);
                 }
             }
@@ -49,8 +66,8 @@
             for (const [k, p] of observed) {
                 let c = this.cells.get(k);
                 if (!c || now - c.seen > 1.2 && c.hits < 3) {
-                    c = { x: (Math.floor(p.x / SIZE) + .5) * SIZE, y: (Math.floor(p.y / SIZE) + .5) * SIZE,
-                        z: (Math.floor(p.z / SIZE) + .5) * SIZE, hits: 0, seen: now, misses: 0 };
+                    c = { x: (Math.floor(p.x / size) + .5) * size, y: (Math.floor(p.y / size) + .5) * size,
+                        z: (Math.floor(p.z / size) + .5) * size, hits: 0, seen: now, misses: 0 };
                     this.cells.set(k, c);
                 }
                 c.hits = Math.min(8, c.hits + 1); c.seen = now; c.misses = 0;
@@ -81,7 +98,7 @@
             return {cells, floor};
         }
     }
-    const api = {Memory, world, local, SIZE, TTL, LIMIT};
+    const api = {Memory, voxelize, world, local, SIZE, TTL, LIMIT};
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     else root.SurroundingsMemory = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

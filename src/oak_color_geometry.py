@@ -1,6 +1,7 @@
 """Bounded display-only OAK geometry; no ROS or device access."""
 import numpy as np
 import cv2
+import time
 
 def prepare_geometry(rgb, depth, support, correction, edge_margin=12):
     if rgb.shape != (*depth.shape, 3) or support.shape != depth.shape:
@@ -53,14 +54,27 @@ def balanced_pixels(valid, budget):
 
 
 
-def refine(rgb, depth, support, k, correction, budget=6000, margin=12):
+def refine(rgb, depth, support, k, correction, budget=6000, margin=12, timings=None):
     # Reuse the earlier conservative mask as COLOR confidence only. It is not
     # a geometry correctness guarantee and does not fix stereo edge fattening.
+    if timings is not None:
+        start = (time.perf_counter(), time.thread_time())
     z, valid, confident = prepare_geometry(rgb, depth, support, correction, margin)
+    if timings is not None:
+        masked = (time.perf_counter(), time.thread_time())
     y,x=balanced_pixels(valid,budget)
+    if timings is not None:
+        sampled = (time.perf_counter(), time.thread_time())
     zz=z[y,x]
     xyz=np.column_stack(((x-k[0,2])*zz/k[0,0],(y-k[1,2])*zz/k[1,1],zz)).astype('<f4')
     color_valid=confident[y,x]
     colors=np.full((len(x),3),160,dtype=np.uint8)
     colors[color_valid]=rgb[y[color_valid],x[color_valid],::-1]
-    return xyz,colors,color_valid,np.column_stack((y,x))
+    pixels = np.column_stack((y,x))
+    if timings is not None:
+        end = (time.perf_counter(), time.thread_time())
+        for name, a, b in [('mask', start, masked), ('sampling', masked, sampled),
+                           ('projection_color', sampled, end), ('total', start, end)]:
+            timings[name] = {'wall_ms': (b[0]-a[0])*1000,
+                             'thread_cpu_ms': (b[1]-a[1])*1000}
+    return xyz,colors,color_valid,pixels

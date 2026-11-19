@@ -1833,7 +1833,7 @@ function parseSurroundingsCDR(buf, payloadOffset, colored = false) {
     }
     const bigEndian = r.readInt8() !== 0;
     const step = r.readUint32(), rowStep = r.readUint32(), size = r.readUint32();
-    if (frame !== (colored ? 'odom' : 'base_footprint') || height !== 1 || width > 6000 || step !== (colored ? 16 : 12) ||
+    if (frame !== (colored ? 'odom' : 'base_footprint') || height !== 1 || width > (colored ? 12000 : 6000) || step !== (colored ? 16 : 12) ||
         (colored && !fields.some(f => f.name === 'rgb' && f.offset === 12 && f.type === 6 && f.count === 1)) ||
         rowStep !== width * step || size !== rowStep || r.offset + size > buf.byteLength ||
         !['x', 'y', 'z'].every((name, i) => fields.some(f => f.name === name && f.offset === i * 4 && f.type === 7 && f.count === 1))) {

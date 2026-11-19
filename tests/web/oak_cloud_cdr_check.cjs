@@ -4,9 +4,13 @@ const scope={TextDecoder,Float32Array,DataView,Uint8Array};vm.createContext(scop
 vm.runInContext(source.slice(source.indexOf('class CDRReader'),source.indexOf('function parseLaserScanCDR'))+source.slice(source.indexOf('function parseSurroundingsCDR'),source.indexOf('/**\n * Parse a Foxglove binary MessageData'))+';this.parse=parseSurroundingsCDR;',scope);
 const cdr=fs.readFileSync(process.argv[2]),frame=new Uint8Array(13+cdr.length);frame.set(cdr,13);
 const cloud=scope.parse(frame.buffer,13,true);
-assert(cloud.length>0 && cloud.length<=18000 && cloud.colors.length===cloud.length);
+assert(cloud.length>0 && cloud.length<=36000 && cloud.colors.length===cloud.length);
 assert([...cloud].every(Number.isFinite));assert([...cloud.colors].every(c=>c>=0&&c<=1));
 assert.throws(()=>scope.parse(frame.buffer.slice(0,100),13,true));
+vm.runInContext('this.widthOffset=(buf,offset)=>{const r=new CDRReader(buf,offset);r.readInt32();r.readUint32();r.readString();r.readUint32();return r.offset;}',scope);
+const oversized=frame.buffer.slice(0);
+new DataView(oversized).setUint32(scope.widthOffset(oversized,13),12001,true);
+assert.throws(()=>scope.parse(oversized,13,true));
 assert.throws(()=>scope.parse(frame.buffer,13,false));
 if(process.argv[3]==='fixture') {
  assert.deepStrictEqual([...cloud],[1,2,3,4,5,6]);

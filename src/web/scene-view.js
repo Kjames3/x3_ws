@@ -16,6 +16,10 @@
 // Velocities use the same convention the CBF uses (vx=forward, vy=left).
 // =================================================================
 (() => {
+    // Avoid invalidating layout when a telemetry label has not changed.
+    function setText(element, value) {
+        if (element.textContent !== value) element.textContent = value;
+    }
     const MAX_WALL_PTS = 1500;
     const WALL_H = 0.45;
     const RANGE_M = 6.0;
@@ -59,7 +63,7 @@
         const enabled = document.getElementById('person-cloud-toggle').checked;
         const xyz = d.surroundingsCloud;
         const pose = (d.surroundingsPoses || []).find(p => Math.abs(p.stamp - xyz?.stamp) < .00001);
-        const fresh = enabled && document.getElementById('surroundings-cloud-toggle').checked && xyz && now - d.surroundingsCloudAt < 600;
+        const fresh = enabled && !oakOnlyEnvironment() && document.getElementById('surroundings-cloud-toggle').checked && xyz && now - d.surroundingsCloudAt < 600;
         const status = document.getElementById('person-cloud-status');
         const packetAge = (d.c3Stats?.packet_age_s ?? Infinity) + Math.max(0, (now - (d.c3TracksAt ?? -Infinity)) / 1000);
         associatedPoints.visible = !!fresh && !!pose;
@@ -67,7 +71,7 @@
             personCloudTracker.clear(); associatedCloud = null; associatedCamera = null; associationPose = null;
             associationResults = []; associationGeometry.setDrawRange(0, 0);
             for (const marker of associationMarkers.values()) marker.group.visible = false;
-            status.textContent = !enabled ? 'Person/cloud association off' : !fresh ? 'Person/cloud: waiting for fresh 3D points' : 'Person/cloud: waiting for synchronized pose';
+            setText(status, !enabled ? 'Person/cloud association off' : !fresh ? 'Person/cloud: waiting for fresh 3D points' : 'Person/cloud: waiting for synchronized pose');
             associationWasEnabled = enabled; return;
         }
         if (!associationWasEnabled) { personCloudTracker.clear(); associatedCloud = null; }
@@ -159,8 +163,15 @@
     const cloudPositions = new Float32Array(6000 * 3);
     const cloudColors = new Float32Array(6000 * 3);
 
-    let oakPoints, oakGeometry;
-    const oakPositions = new Float32Array(6000*3), oakColors = new Float32Array(6000*3);
+    let oakPoints, oakGeometry, oakDotMaterial, oakSplatMaterial, lastSplatCloud = null, lastOakCloud = null, lastOakPose = null;
+    function oakOnlyEnvironment() {
+        return document.getElementById('surroundings-oak-toggle').checked &&
+            document.getElementById('surroundings-oak-view').value === 'oak';
+    }
+    document.getElementById('surroundings-oak-view').addEventListener('change', event => {
+        if (event.target.value === 'oak') document.getElementById('surroundings-oak-toggle').checked = true;
+    });
+    const oakPositions = new Float32Array(12000*3), oakColors = new Float32Array(12000*3);
     function updateOakCloud(d, now) {
         const enabled = document.getElementById('surroundings-oak-toggle').checked;
         const status = document.getElementById('surroundings-oak-status');
@@ -172,29 +183,53 @@
         const fresh = enabled && xyz && pose && now-d.oakCloudAt < 750 && age >= -.1 && age < .75;
         oakPoints.visible = !!fresh;
         if (!fresh) {
-            status.textContent = enabled ? 'Waiting for fresh OAK color and pose' : 'Off · gray points mean uncertain color, not gray material.';
+            setText(status, enabled ? 'Waiting for fresh OAK color and pose' : 'Off · gray points mean uncertain color, not gray material.');
             return;
         }
-        const c = Math.cos(pose.yaw), s = Math.sin(pose.yaw);
-        for (let i=0; i<xyz.length; i+=3) {
-            const dx=xyz[i]-pose.x, dy=xyz[i+1]-pose.y;
-            oakPositions[i] = s*dx-c*dy;
-            oakPositions[i+1] = xyz[i+2];
-            oakPositions[i+2] = -(c*dx+s*dy);
+        const splats = document.getElementById('surroundings-oak-render').value === 'splats';
+        oakPoints.material = splats ? oakSplatMaterial : oakDotMaterial;
+        oakDotMaterial.size = Number(document.getElementById('surroundings-oak-size').value);
+        document.getElementById('surroundings-oak-size').disabled = splats;
+        const newCloud = xyz !== lastOakCloud;
+        const moved = !lastOakPose || pose.x !== lastOakPose.x || pose.y !== lastOakPose.y || pose.yaw !== lastOakPose.yaw;
+        setText(status, `OAK color · ${xyz.length/3} ${splats ? 'splats' : 'points'} · gray = uncertain color · display only`);
+        if (splats && xyz !== lastSplatCloud) {
+            oakGeometry.attributes.splatDiameter.array.set(OakSplats.diameters(xyz,xyz.colors));
+            oakGeometry.attributes.splatDiameter.needsUpdate = true;
+            lastSplatCloud = xyz;
         }
-        oakColors.set(xyz.colors);
-        oakGeometry.setDrawRange(0,xyz.length/3);
-        oakGeometry.attributes.position.needsUpdate = true;
-        oakGeometry.attributes.color.needsUpdate = true;
-        status.textContent = `OAK color · ${xyz.length/3} points · gray = uncertain color · display only`;
+        if (!newCloud && !moved) return;
+        if (moved) {
+            const c = Math.cos(pose.yaw), s = Math.sin(pose.yaw);
+            // odom -> current robot-relative scene: right, up, -forward.
+            // Upload the cloud once; pose updates change only this matrix.
+            oakPoints.matrix.set(
+                s, -c, 0, -s*pose.x+c*pose.y,
+                0,  0, 1, 0,
+               -c, -s, 0,  c*pose.x+s*pose.y,
+                0,  0, 0, 1);
+            oakPoints.matrixWorldNeedsUpdate = true;
+        }
+        if (newCloud) {
+            oakPositions.set(xyz);
+            oakColors.set(xyz.colors);
+            oakGeometry.setDrawRange(0,xyz.length/3);
+            oakGeometry.attributes.position.needsUpdate = true;
+            oakGeometry.attributes.color.needsUpdate = true;
+        }
+        lastOakCloud = xyz; lastOakPose = {x:pose.x,y:pose.y,yaw:pose.yaw};
     }
 
     function initCloud() {
         oakGeometry = new THREE.BufferGeometry();
         oakGeometry.setAttribute('position', new THREE.BufferAttribute(oakPositions,3));
         oakGeometry.setAttribute('color', new THREE.BufferAttribute(oakColors,3));
+        oakGeometry.setAttribute('splatDiameter', new THREE.BufferAttribute(new Float32Array(12000),1));
         oakGeometry.setDrawRange(0,0);
-        oakPoints = new THREE.Points(oakGeometry,new THREE.PointsMaterial({size:.025,vertexColors:true}));
+        oakDotMaterial = new THREE.PointsMaterial({size:.025,vertexColors:true});
+        oakSplatMaterial = OakSplats.material(THREE);
+        oakPoints = new THREE.Points(oakGeometry,oakDotMaterial);
+        oakPoints.matrixAutoUpdate=false;
         oakPoints.frustumCulled=false; oakPoints.visible=false; scene.add(oakPoints);
         cloudGeometry = new THREE.BufferGeometry();
         cloudGeometry.setAttribute('position', new THREE.BufferAttribute(cloudPositions, 3));
@@ -231,7 +266,7 @@
     }
 
     function updateCloud(d, now) {
-        const enabled = document.getElementById('surroundings-cloud-toggle').checked;
+        const enabled = document.getElementById('surroundings-cloud-toggle').checked && !oakOnlyEnvironment();
         const hideCeiling = document.getElementById('surroundings-ceiling-toggle').checked;
         const fresh = enabled && d.surroundingsCloud && now - d.surroundingsCloudAt < 1000;
         const mode = document.getElementById('surroundings-mode').value;
@@ -240,6 +275,8 @@
         const height = Number.isFinite(inputHeight) ? Math.min(1, Math.max(.2, inputHeight)) : .4;
         const memoryEnabled = document.getElementById('surroundings-memory-toggle').checked;
         const coverage = document.getElementById('surroundings-coverage-toggle').checked;
+        const voxelSize = Number(document.getElementById('surroundings-voxel-size').value) === .05 ? .05 : .10;
+        if (surroundingsMemory.setSize(voxelSize)) memoryCloud = null;
         const pose = (d.surroundingsPoses || []).find(p => Math.abs(p.stamp - d.surroundingsCloud?.stamp) < .00001);
         if (memoryReset) { surroundingsMemory.clear(); memoryCloud = null; memoryReset = false; }
         if (fresh && memoryEnabled && pose && memoryCloud !== d.surroundingsCloud) {
@@ -250,7 +287,7 @@
             memoryCloud = d.surroundingsCloud; memoryPose = pose;
         }
         const useMemory = memoryEnabled && pose && memoryCloud === d.surroundingsCloud;
-        const options = `${mode}/${overlay}/${height}/${useMemory}/${coverage}/${surroundingsMemory.revision}`;
+        const options = `${mode}/${voxelSize}/${overlay}/${height}/${useMemory}/${coverage}/${surroundingsMemory.revision}`;
         floorTiles.visible = !!fresh && coverage && !!useMemory;
         floorBase.material.color.setHex(coverage ? 0xd6d9de : 0xf8f9fa);
         cloud.visible = !!fresh && mode === 'raw';
@@ -261,7 +298,7 @@
         const chip = document.getElementById('surroundings-metrics-chip');
         if (!fresh || !overlay) chip.hidden = true;
         if (!fresh) {
-            status.textContent = 'Clearance unknown — no fresh 3D observations';
+            setText(status, oakOnlyEnvironment() ? 'Livox surfaces and clearance hidden for OAK comparison' : 'Clearance unknown — no fresh 3D observations');
             document.getElementById('surroundings-memory-status').textContent = 'Memory hidden — waiting for fresh cloud';
             return false;
         }
@@ -286,14 +323,15 @@
             cloudGeometry.attributes.position.needsUpdate = true;
             cloudGeometry.attributes.color.needsUpdate = true;
             const snapshot = useMemory ? surroundingsMemory.snapshot(memoryPose) : null;
-            const displayCells = snapshot ? snapshot.cells : clearance.cells;
+            const displayCells = snapshot ? snapshot.cells : SurroundingsMemory.voxelize(xyz, voxelSize);
             const matrix = new THREE.Matrix4();
             let count = 0;
             for (const c of displayCells) {
-                if (hideCeiling && c.z - .05 > 2) continue;
-                matrix.makeTranslation(-c.y, c.z, -c.x);
+                if (hideCeiling && c.z - voxelSize / 2 > 2) continue;
+                matrix.makeScale(voxelSize / SurroundingsGeometry.CELL, voxelSize / SurroundingsGeometry.CELL, voxelSize / SurroundingsGeometry.CELL);
+                matrix.setPosition(-c.y, c.z, -c.x);
                 voxels.setMatrixAt(count, matrix);
-                const risk = useMemory ? (c.age < .4 ? riskCells.get(`${Math.floor(c.x / .1)},${Math.floor(c.y / .1)},${Math.floor(c.z / .1)}`) : 0) : c.risk;
+                const risk = !useMemory || c.age < .4 ? riskCells.get(`${Math.floor(c.x / .1)},${Math.floor(c.y / .1)},${Math.floor(c.z / .1)}`) : 0;
                 if (overlay && risk) color.setHex(risk === 2 ? 0xef4444 : 0xf59e0b);
                 else color.setHSL((.60 - Math.min(3, Math.max(0, c.z)) * .25 + 1) % 1, .45, .62);
                 if (useMemory && (c.age > .5 || !c.confidence)) color.lerp(new THREE.Color(0xcbd0d7), c.confidence ? Math.min(.85, .35 + c.age / 10) : .8);
@@ -331,7 +369,7 @@
             const parts = [`Observed front: ${fmt(clearance.front)}`, `left: ${fmt(clearance.left)}`, `right: ${fmt(clearance.right)}`, `overhead spare: ${fmt(clearance.overhead)}`];
             if (clearance.overlap) parts.unshift('Observed envelope overlap');
             if (clearance.gap) parts.push(`Sampled gap: ${fmt(clearance.gap.width)} (${Math.round(clearance.gap.spare * 100)} cm beyond robot width)`);
-            status.textContent = overlay ? parts.join(' · ') : 'Clearance overlay off';
+            setText(status, overlay ? parts.join(' · ') : 'Clearance overlay off');
             const cm = v => Number.isFinite(v) ? `${Math.round(v * 100)}` : '?';
             chip.textContent = `${clearance.overlap ? 'OVERLAP · ' : ''}F ${cm(clearance.front)} · L ${cm(clearance.left)} · R ${cm(clearance.right)} · up ${cm(clearance.overhead)} cm`
                 + (clearance.gap ? ` · gap ${cm(clearance.gap.width)}` : '');
@@ -1109,7 +1147,7 @@
     function syncScanSubscription(visible) {
         if (typeof foxgloveResubscribe !== 'function') return;
         for (const topic of ['/surroundings/points', '/surroundings/pose']) {
-            if (visible && document.getElementById('surroundings-cloud-toggle').checked) foxgloveResubscribe(topic);
+            if (visible && !oakOnlyEnvironment() && document.getElementById('surroundings-cloud-toggle').checked) foxgloveResubscribe(topic);
             else foxgloveUnsubscribe(topic);
         }
         const oakEnabled = visible && document.getElementById('surroundings-oak-toggle').checked;
@@ -1154,7 +1192,7 @@
         updatePersonCloud(d, now);
         const cloudFresh = updateCloud(d, now);
         updateOakCloud(d, now);
-        panels.visible = posts.visible = !cloudFresh;
+        panels.visible = posts.visible = !cloudFresh && !oakOnlyEnvironment();
         const scanFresh = lastPts && now - lastPtsAt < SCAN_STALE_MS;
         if (!scanFresh && (panels.count || posts.count)) {
             clearBins(); panels.count = 0; posts.count = 0;
@@ -1169,7 +1207,8 @@
         updateTilt(d.readout);
         if (hint) {
             const msgs = [];
-            if (cloudFresh) msgs.push(`Live 3D · ${document.getElementById("surroundings-mode").value === "clean" ? voxels.count + " voxels" : cloudGeometry.drawRange.count + " points"}`);
+            if (oakOnlyEnvironment()) msgs.push('OAK-only environment · lidar surfaces hidden');
+            else if (cloudFresh) msgs.push(`Live 3D · ${document.getElementById("surroundings-mode").value === "clean" ? voxels.count + " voxels" : cloudGeometry.drawRange.count + " points"}`);
             else if (document.getElementById('surroundings-cloud-toggle').checked) msgs.push('3D unavailable/stale · 2D fallback');
             if (!scanFresh && !cloudFresh) msgs.push('No lidar scan');
             if (!avatars.length) msgs.push('No people tracked');
@@ -1180,7 +1219,7 @@
                 : 'Leg pose observed · depth approximated');
             if (document.getElementById('body-facing-toggle') && document.getElementById('body-facing-toggle').checked) msgs.push('Facing estimate enabled');
             if (d.c3Stats) msgs.push(`C3 ${d.c3Tracks.length} trk · ${d.c3Stats.hz} Hz · ${d.c3Stats.update_ms_avg} ms`);
-            hint.textContent = msgs.join(' · ');
+            setText(hint, msgs.join(' · '));
         }
         updateView(now);
         fadeUniforms.camera.value.copy(camera.position);

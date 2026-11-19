@@ -73,3 +73,44 @@ not identified causes. Next refinement should distinguish viewing a stationary
 cloud from actual robot/object movement, and isolate the OAK layer from Livox
 before changing calibration or increasing point count. Keep opt-in and no motion
 validation claimed.
+
+## Browser isolation refinement before battery charging
+
+Current integration committed a181893 (not pushed). Subsequent frontend-only
+refinement is deployed, uncommitted: Environment selector chooses Combined or
+OAK only; selecting OAK only enables the OAK checkbox, hides Livox3D/2D fallback
+surfaces, observation tiles and clearance/association geometry, and releases
+Livox display-cloud subscriptions. Robot/person context remains. Scan remains
+subscribed for existing GUI behavior; safety topics are unchanged.
+Point-size selector keeps2.5cm default and offers1cm dots to isolate visual overlap.
+No new sensor detail/calibration is implied. OAK buffers only update when cloud
+or pose values change; colors upload only on new clouds. No measured FPS benefit
+claimed yet. Script cache version advanced to24.
+
+Frontend files copied and served bytes verified; JS syntax and diff checks pass.
+No server restart, motion or capture for this refinement. User can power down for
+charging now. After charging, compare same stationary scene: Combined/Standard,
+OAK-only/Standard, then OAK-only/Fine. A change from Combined to OAK-only suggests
+layer overlap; a change with point size suggests raster overlap. Persistent color
+errors still need RGB/depth analysis; neither comparison alone qualifies geometry.
+Backup frontend files on robot: artifacts/oak-colored-cloud-2026-10-30/pre-isolation/.
+
+## 2026-11-08 refinement
+
+User stationary comparison: Fine dots help most. This supports raster overlap
+as a contributor, not proof that registration is correct. Fine (1 cm) is now
+the default; Standard remains selectable. Robot was serving v23 without the
+isolation controls despite the earlier deployment note. Backed up its frontend
+under artifacts/oak-refinement-2026-11-08/pre-change and deployed the existing
+isolation controls plus Fine default as v25. Browser confirms 0.01 default.
+No service restart or robot movement. Python checks: 3 passed, 1 skipped
+(rclpy unavailable); JS syntax and recorded CDR parser checked.
+
+Added bounded per-stage timing samples locally in oak_surroundings.py for pair
+access, TF/validation, rectification, geometry, packing and publish, plus input
+age. Not deployed or measured live yet. Existing live log observed work p95
+97.4 ms and age p95 230.5 ms, without component attribution.
+
+Next: collect stage timing in the running worker, validate registration on
+multiple independent ranges/edges, then motion and sustained/reconnect checks.
+Do not infer alignment improvement from smaller points alone.

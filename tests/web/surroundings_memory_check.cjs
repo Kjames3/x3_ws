@@ -29,3 +29,21 @@ m=new Memory();const pts=[];for(let i=0;i<15000;i++)pts.push((i%100)*.11,Math.fl
 m.ingest(pts,pose(0));assert(m.cells.size<=LIMIT);
 m.ingest([],pose(10));assert.equal(m.cells.size,0);
 console.log('Surroundings memory: alignment, persistence, floor evidence, ray clearing, people masks, resets and limits passed');
+// Fine display preserves samples that share one coarse cell; clearance stays independent.
+const {voxelize} = require('../../src/web/surroundings-memory.js');
+const geometry = require('../../src/web/surroundings-geometry.js');
+const pair = [1.01,.01,.21, 1.06,.01,.21];
+assert.equal(voxelize(pair,.1).length,1);
+assert.equal(voxelize(pair,.05).length,2);
+assert.equal(geometry.CELL,.1);
+for (const size of [.05,.1]) {
+    m=new Memory(size);
+    for(let i=0;i<3;i++)m.ingest([1.025,0,.31],pose(i*.2));
+    for(let i=0;i<3;i++)m.ingest([2.05,0,.31],pose(.6+i*.2));
+    assert.equal(m.cells.size,1,'measured rays clear old cells at either size');
+    m.ingest(pts,pose(1.2));assert(m.snapshot(pose(1.2)).cells.length<=LIMIT);
+    assert(m.setSize(size===.05?.1:.05));assert.equal(m.cells.size,0);
+    assert.equal(m.previous,null);
+}
+assert.equal(voxelize([NaN,0,0,0,0,-1],.05).length,0);
+console.log('Fine/coarse grids, size reset, ray clearing and shared capacity passed');
