@@ -628,6 +628,9 @@ LIDAR_YAW_OFFSET_RAD = math.radians(float(os.environ.get('X3_LIDAR_YAW_OFFSET_DE
 # (tests/test_x3_v2_urdf.py checks it): x3_v2 puts the Livox over the wheel
 # centroid (Design_v2 CAD, -0.0025); the old X3 Plus URDF had 0.0435.
 LIDAR_X_M = float(os.environ.get('X3_LIDAR_X_M', -0.0025))
+# While this file exists the CBF is bypassed for manual driving (calibration
+# runs). Remove it to re-arm; nothing else changes.
+CBF_OFF_FILE = os.environ.get('X3_CBF_OFF_FILE', '/tmp/x3_cbf_off')
 # Clearance kept round that outline.
 CBF_MARGIN_M = float(os.environ.get('X3_CBF_MARGIN_M', 0.10))
 # A walking person reaches the CBF as one point at the torso's depth, with
@@ -1614,6 +1617,14 @@ class ROS2Bridge:
             # scanning station anyway, and every step-and-stare guarantee depends
             # on it not moving. Hold still, rotation included.
             safe_vx, safe_vy, omega = 0.0, 0.0, 0.0
+        elif os.path.exists(CBF_OFF_FILE):
+            # Operator override for calibration drives (touch the file, rm to
+            # re-arm; checked every command). Same pass-through as blind.
+            safe_vx, safe_vy = vx, vy
+            if (vx or vy) and not getattr(self, '_warned_cbf_off', False):
+                self._warned_cbf_off = True
+                logger.warning("CBF OFF by %s: driving UNPROTECTED until it is removed.",
+                               CBF_OFF_FILE)
         elif obst_age > OBSTACLE_STALE_S:
             # Blind. Pass the operator's own command through untouched, but never
             # let the CBF ADD motion nobody asked for.
@@ -1625,6 +1636,7 @@ class ROS2Bridge:
                     "UNPROTECTED until /scan resumes.", obst_age)
         else:
             self._warned_stale_obst = False
+            self._warned_cbf_off = False
             # Robot is at (0,0) in its local frame, matching the obstacle coords.
             velocities = radii = gammas = soft = None
             if moving:
