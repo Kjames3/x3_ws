@@ -221,10 +221,9 @@ AUTO_NAV2_MAP = args.auto_nav2_map  # None = do not auto-launch Nav2/AMCL (see -
 if args.domain_id is not None:
     os.environ['ROS_DOMAIN_ID'] = str(args.domain_id)
 
-# Force FastDDS to use the TCP profile for large messages when in Simple Discovery mode
-if os.environ.get('X3_SIMPLE_DISCOVERY') == '1':
-    os.environ['FASTRTPS_DEFAULT_PROFILES_FILE'] = '/home/jetson/x3_ws/config/fastdds_tcp_server.xml'
-    os.environ['FASTDDS_DEFAULT_PROFILES_FILE'] = '/home/jetson/x3_ws/config/fastdds_tcp_server.xml'
+# Honor explicitly configured DDS transports. Simple discovery uses the ROS
+# defaults unless a profile is supplied by the environment; forcing the same
+# TCP listening port onto every bringup participant causes binding conflicts.
 
 def _resolve_discovery_server() -> str:
     """Resolve the active IP address to use for the FastDDS Discovery Server.
@@ -5019,7 +5018,7 @@ def _start_http_server():
             super().log_message(fmt, *args)
 
     handler = functools.partial(NoCacheHandler, directory=web_dir)
-    httpd = http.server.HTTPServer(('0.0.0.0', HTTP_PORT), handler)
+    httpd = http.server.ThreadingHTTPServer(('0.0.0.0', HTTP_PORT), handler)
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
     logger.info(f"GUI available at http://0.0.0.0:{HTTP_PORT}/GUI.html")
