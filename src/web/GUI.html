@@ -197,12 +197,14 @@
                 </div>
             </div>
             <div class="card-body" style="position: relative;">
+                <label id="camera-role-control" hidden>Camera <select id="camera-role" aria-label="Camera view"></select></label> <span id="camera-feed-status" role="status"></span>
                 <div id="camera-panels" style="display: flex; gap: 0.5rem; width: 100%;">
                     <!-- RGB Panel -->
                     <div id="rgb-panel" style="flex: 1; position: relative; min-width: 0;">
                         <!-- WebRTC feed (shown when server runs with --webrtc-camera) -->
                         <video id="webrtc-cam" class="camera-feed" autoplay muted playsinline style="display: none; width: 100%;"></video>
                         <canvas id="camera-canvas" class="camera-feed" style="display: none; width: 100%;"></canvas>
+                        <div id="camera-grid" style="display: none; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.5rem;"></div>
                         <div id="camera-placeholder" class="camera-placeholder">
                             <span class="camera-placeholder-icon"></span>
                             <span>Awaiting camera feed...</span>
@@ -877,7 +879,7 @@
         </section>
     </div>
 
-    <script src="main.js?v=detail-13"></script>
+    <script src="main.js?v=camera-grid-1"></script>
     <script src="dashboard.js?v=2"></script>
     <script src="log-console.js?v=2"></script>
     <script src="vendor/three/GLTFLoader.js"></script>
@@ -888,7 +890,7 @@
     <script src="surroundings-memory.js?v=2"></script>
     <script src="person-cloud-tracker.js?v=1"></script>
     <script src="oak-splats.js?v=2"></script>
-    <script src="scene-view.js?v=30"></script>
+    <script src="scene-view.js?v=33"></script>
     <script src="mobile.js?v=1"></script>
 </body>
 

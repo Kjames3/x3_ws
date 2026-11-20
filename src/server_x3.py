@@ -136,6 +136,10 @@ parser.add_argument('--floor', default=None, choices=['apartment_wood', 'lab_car
 parser.add_argument('--tof-port', default=TEENSY_TOF_PORT, dest='tof_port',
                     help='Serial port of the ToF Teensy. Default /dev/teensy_tof from '
                          'deploy/udev/65-teensy-tof.rules; /dev/ttyACMn swaps with the OpenRB-150.')
+# CAM1 binary envelope: role index, flags (bit 0 = detection source), JPEG.
+CAMERA_ROLES = ('front', 'rear', 'left', 'right')
+parser.add_argument('--camera-role', choices=CAMERA_ROLES, default=os.environ.get('X3_PRIMARY_CAMERA_ROLE'),
+                    help='Physical role of the primary RGB feed. Enables tagged JPEGs.')
 parser.add_argument('--battery-port', default='/dev/ttyTHS1', dest='battery_port',
                     help='UART (or USB) port of the X3 v2 Teensy battery monitor '
                          '(src/battery_monitor). Its SoC replaces the old-pack estimator '
@@ -2491,8 +2495,10 @@ def initialize_hardware():
         lidar = YDLidarDriver(port=LIDAR_PORT, sim_mode=False)
 
     if not SIM_MODE:
-        logger.info("Initializing INA226 Battery Monitor on bus 7...")
-        ina226 = INA226BatteryMonitor(i2c_bus=7)
+        # On the AGX chassis the INA226 is wired exclusively to the Teensy.
+        if os.environ.get("X3_LOCAL_INA226", "1") != "0":
+            logger.info("Initializing INA226 Battery Monitor on bus 7...")
+            ina226 = INA226BatteryMonitor(i2c_bus=7)
         _init_battery_estimator()
         if args.battery_port.lower() != 'none':
             from teensy_battery import TeensyBatteryMonitor
@@ -4370,6 +4376,55 @@ def _camera_targets():
     return targets
 
 
+def _rear_preview(device_id, stop, latest):
+    """Open the dedicated rear OAK by serial; drop old frames on a slow link."""
+    import depthai as dai
+    while not stop.is_set():
+        try:
+            with dai.Device(dai.DeviceInfo(device_id)) as dev, dai.Pipeline(dev) as pipeline:
+                cam = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_A)
+                stream = cam.requestOutput((480, 300), type=dai.ImgFrame.Type.BGR888p, fps=8)
+                queue = stream.createOutputQueue(maxSize=1, blocking=False)
+                pipeline.start()
+                while not stop.wait(0.04):
+                    packet = queue.tryGet()
+                    if packet is not None:
+                        latest[0] = packet.getCvFrame()
+        except Exception as exc:
+            logger.warning("Rear OAK preview unavailable: %s", exc)
+        latest[0] = None
+        stop.wait(3)
+
+
+async def oak_camera_feed_loop():
+    rear_id = os.environ.get('X3_REAR_OAK_ID')
+    if not rear_id or SIM_MODE:
+        return
+    rear = [None]
+    stop = threading.Event()
+    worker = threading.Thread(target=_rear_preview, args=(rear_id, stop, rear), daemon=True)
+    worker.start()
+    previous = {}
+    try:
+        while not _shutting_down:
+            targets = _camera_targets()
+            if targets:
+                front = oak.get_stereo_frames()[0] if oak is not None else None
+                for role, image in (('front', front), ('rear', rear[0])):
+                    if image is None or image is previous.get(role):
+                        continue
+                    previous[role] = image
+                    ok, jpg = await asyncio.to_thread(cv2.imencode, '.jpg', image,
+                                                      [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    if ok:
+                        header = b'CAM1' + bytes((CAMERA_ROLES.index(role), 0))
+                        websockets.broadcast(targets, header + jpg.tobytes())
+            await asyncio.sleep(0.12)
+    finally:
+        stop.set()
+        await asyncio.to_thread(worker.join, 3)
+
+
 async def broadcast_loop():
     global _cam_frame_count, _yolo_frame_count, _fps_last_time
     global fps_camera, fps_detection, last_detections, last_detections_t, last_detections_frame
@@ -4583,6 +4638,8 @@ async def broadcast_loop():
 
             # P3: send camera frame as a binary WebSocket message (raw JPEG, no base64)
             if img_bytes:
+                if args.camera_role:
+                    img_bytes = b"CAM1" + bytes((CAMERA_ROLES.index(args.camera_role), 1)) + img_bytes
                 websockets.broadcast(cam_targets, img_bytes)
 
             # 7b. Tilt mount — sampled at 50 Hz by _tilt_sampler but, until now,
@@ -5562,7 +5619,7 @@ async def main():
     # Disable websockets deflate compression to avoid blocking main thread zlib operations (Idea 117)
     async with websockets.serve(handle_client, "0.0.0.0", WS_PORT, compression=None):
         logger.info(f"Server started on ws://0.0.0.0:{WS_PORT}")
-        await asyncio.gather(broadcast_loop(), motion_loop(), oled_loop(), map_push_loop(),
+        await asyncio.gather(broadcast_loop(), oak_camera_feed_loop(), motion_loop(), oled_loop(), map_push_loop(),
                              lidar_scan_loop(), tof_loop(), log_push_loop())
 
 if __name__ == "__main__":

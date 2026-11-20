@@ -1230,6 +1230,7 @@ function connect() {
     };
 
     state.ws.onclose = () => {
+        resetCameraFeeds();
         state.connected = false;
         updateConnectionStatus('disconnected');
         if (elements.controlArea) elements.controlArea.classList.add('disabled-overlay');
@@ -1507,6 +1508,7 @@ function sendMessage(data) {
 // Binary Frame Handling (Steps 1, 3)
 // =================================================================
 function handleBinaryFrame(buf) {
+    if (buf.byteLength < 4) return;
     const tag = String.fromCharCode(...new Uint8Array(buf, 0, 4));
 
     if (tag === 'LIDR') {
@@ -1543,8 +1545,15 @@ function handleBinaryFrame(buf) {
         return;
     }
 
-    // Fallback: untagged binary = raw camera JPEG.
-    showCameraJpeg(buf);
+    const bytes = new Uint8Array(buf);
+    if (tag === 'CAM1') {
+        const role = ['Front', 'Rear', 'Left', 'Right'][bytes[4]];
+        if (role && bytes[6] === 0xff && bytes[7] === 0xd8) {
+            receiveCameraJpeg(role, bytes.subarray(6), Boolean(bytes[5] & 1));
+        }
+    } else if (bytes[0] === 0xff && bytes[1] === 0xd8) {
+        receiveCameraJpeg('Primary', bytes, true);
+    }
 }
 
 // Decode off the main thread via createImageBitmap and blit to a reused canvas —
@@ -1554,14 +1563,142 @@ function handleBinaryFrame(buf) {
 // (and frames can no longer paint out of order). Nothing is decoded while the Drive
 // tab is hidden.
 let _camDecoding = false, _camPending = null;
-function showCameraJpeg(buf) {
+const cameraFeeds = new Map();
+const cameraSelect = document.getElementById('camera-role');
+const cameraRoleControl = document.getElementById('camera-role-control');
+let cameraGeneration = 0;
+let cameraChosenByUser = false;
+const cameraStatus = document.getElementById('camera-feed-status');
+setInterval(() => {
+    const now = performance.now();
+    if (cameraSelect.value === 'All') {
+        const stale = [...cameraFeeds.values()].filter(f => now - f.received > 2000).map(f => f.role);
+        cameraStatus.textContent = stale.length ? `Paused: ${stale.join(', ')}` : '';
+        return;
+    }
+    const frame = cameraFeeds.get(cameraSelect.value);
+    cameraStatus.textContent = frame && now - frame.received > 2000
+        ? 'Feed paused' : '';
+}, 500);
+
+function resetCameraFeeds() {
+    cameraGeneration++;
+    cameraChosenByUser = false;
+    cameraStatus.textContent = "";
+    _camPending = null;
+    cameraFeeds.clear();
+    cameraSelect.replaceChildren();
+    cameraRoleControl.hidden = true;
+    cameraGrid.replaceChildren();
+    cameraGridTiles.clear();
+    setCameraGridMode(false);
+}
+
+// "All" view: every role in its own tile, each with its own one-in-flight decode.
+const CAMERA_ALL = 'All';
+const cameraGrid = document.getElementById('camera-grid');
+const cameraGridTiles = new Map();
+
+function setCameraGridMode(on) {
+    cameraGrid.style.display = on ? 'grid' : 'none';
+    if (on) {
+        elements.cameraCanvas.style.display = 'none';
+        if (elements.cameraPlaceholder) elements.cameraPlaceholder.style.display = 'none';
+    }
+}
+
+function cameraGridTile(role) {
+    let tile = cameraGridTiles.get(role);
+    if (tile) return tile;
+    const box = document.createElement('div');
+    box.style.cssText = 'position: relative; min-width: 0;';
+    const cvs = document.createElement('canvas');
+    cvs.className = 'camera-feed';
+    cvs.style.width = '100%';
+    const chip = document.createElement('div');
+    chip.className = 'overlay-chip';
+    chip.textContent = role.toUpperCase();
+    box.append(cvs, chip);
+    const order = ['Front', 'Left', 'Right', 'Rear', 'Primary'];
+    const before = [...cameraGridTiles.entries()]
+        .find(([r]) => order.indexOf(r) > order.indexOf(role));
+    cameraGrid.insertBefore(box, before ? before[1].box : null);
+    tile = {box, cvs, decoding: false, pending: null};
+    cameraGridTiles.set(role, tile);
+    return tile;
+}
+
+function showCameraGridJpeg(frame) {
+    if (frame.generation !== cameraGeneration || cameraSelect.value !== CAMERA_ALL) return;
+    if (!cameraGrid.offsetParent) return;
+    const tile = cameraGridTile(frame.role);
+    if (tile.decoding) { tile.pending = frame; return; }
+    tile.decoding = true;
+    createImageBitmap(new Blob([frame.buf], { type: 'image/jpeg' })).then(bitmap => {
+        if (frame.generation !== cameraGeneration || cameraSelect.value !== CAMERA_ALL) {
+            bitmap.close();
+            return;
+        }
+        const cvs = tile.cvs;
+        const shown = cvs.clientWidth || bitmap.width;
+        const w = Math.max(bitmap.width, Math.min(1280, Math.round(shown * (window.devicePixelRatio || 1))));
+        const h = Math.round(w * bitmap.height / bitmap.width);
+        if (cvs.width !== w || cvs.height !== h) { cvs.width = w; cvs.height = h; cvs._ctx = null; }
+        const ctx = cvs._ctx || (cvs._ctx = cvs.getContext('2d'));
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(bitmap, 0, 0, w, h);
+        bitmap.close();
+        if (frame.detections) drawDetectionBoxes(ctx, w, h);
+        state.latestData.fps._renderFrames++;
+    }).catch(() => {}).finally(() => {
+        tile.decoding = false;
+        const next = tile.pending;
+        tile.pending = null;
+        if (next) showCameraGridJpeg(next);
+    });
+}
+
+function receiveCameraJpeg(role, buf, detections) {
+    if (!cameraFeeds.has(role)) {
+        const allOpt = [...cameraSelect.options].find(o => o.value === CAMERA_ALL);
+        cameraSelect.insertBefore(new Option(role, role), allOpt || null);
+    }
+    if (!cameraChosenByUser && role === "Front") cameraSelect.value = role;
+    const frame = {role, buf, detections, generation: cameraGeneration, received: performance.now()};
+    cameraFeeds.set(role, frame);
+    if (cameraFeeds.size >= 2 && ![...cameraSelect.options].some(o => o.value === CAMERA_ALL)) {
+        cameraSelect.add(new Option('All (grid)', CAMERA_ALL));
+    }
+    cameraRoleControl.hidden = cameraFeeds.size === 1 && role === 'Primary';
+    if (cameraSelect.value === CAMERA_ALL) showCameraGridJpeg(frame);
+    else if (cameraSelect.value === role) showCameraJpeg(frame);
+}
+
+cameraSelect.addEventListener('change', () => {
+    cameraChosenByUser = true;
+    const all = cameraSelect.value === CAMERA_ALL;
+    setCameraGridMode(all);
+    if (all) {
+        cameraFeeds.forEach(showCameraGridJpeg);
+        return;
+    }
+    const frame = cameraFeeds.get(cameraSelect.value);
+    if (frame) showCameraJpeg(frame);
+});
+
+function showCameraJpeg(frame) {
+    if (frame.generation !== cameraGeneration || frame.role !== cameraSelect.value) return;
     const cvs = elements.cameraCanvas;
     if (!cvs || !cvs.parentElement || !cvs.parentElement.offsetParent) return;
     // WebRTC video already on screen: don't stack a second picture under it.
     if (elements.webrtcCam && elements.webrtcCam.style.display === 'block') return;
-    if (_camDecoding) { _camPending = buf; return; }
+    if (_camDecoding) { _camPending = frame; return; }
     _camDecoding = true;
-    createImageBitmap(new Blob([buf], { type: 'image/jpeg' })).then(bitmap => {
+    createImageBitmap(new Blob([frame.buf], { type: 'image/jpeg' })).then(bitmap => {
+        if (frame.generation !== cameraGeneration || frame.role !== cameraSelect.value) {
+            bitmap.close();
+            return;
+        }
         // Draw at the size it is displayed (capped), not the 320x240 it was sent
         // at, so the detection boxes and labels drawn on top are sharp.
         const shown = cvs.clientWidth || cvs.parentElement.clientWidth || bitmap.width;
@@ -1576,7 +1713,7 @@ function showCameraJpeg(buf) {
         ctx.imageSmoothingQuality = 'high';
         ctx.drawImage(bitmap, 0, 0, w, h);
         bitmap.close();
-        drawDetectionBoxes(ctx, w, h);
+        if (frame.detections) drawDetectionBoxes(ctx, w, h);
         state.latestData.fps._renderFrames++; // client-side render-rate counter
         if (cvs.style.display === 'none') cvs.style.display = 'block';
         if (elements.cameraPlaceholder && elements.cameraPlaceholder.style.display !== 'none') {
