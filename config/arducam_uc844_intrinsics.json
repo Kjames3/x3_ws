@@ -5,5 +5,42 @@
   "hfov_deg": 111.58700279372646,
   "vfov_deg": 85.19305148520338,
   "method": "AprilTag 0.145 m at 1.5 m, square-on, pinhole, square pixels",
-  "date": "2026-11-17"
+  "date": "2026-11-17",
+  "fisheye": {
+    "K": [
+      [
+        696.259661081453,
+        0.0,
+        672.493051149089
+      ],
+      [
+        0.0,
+        696.3477494832784,
+        452.4584132655384
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "D": [
+      -0.039448347036245925,
+      -0.025242688834537716,
+      0.027075143730046637,
+      -0.014533836503079574
+    ],
+    "rms_px": 0.09084354189978193,
+    "width": 1280,
+    "height": 800,
+    "n_views": 32,
+    "board": "9x6 squares, 23.3 mm",
+    "date": "2026-11-20",
+    "dropped_views": [
+      "view_010.png",
+      "view_021.png",
+      "view_022.png"
+    ],
+    "note": "refit on laptop 2026-11-20 without views whose per-view RMS > 1 px (bad corner detections)"
+  }
 }

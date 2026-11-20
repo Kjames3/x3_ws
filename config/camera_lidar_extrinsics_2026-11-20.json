@@ -1,0 +1,121 @@
+{
+ "format": "T_lidar_camera = [x, y, z, qx, qy, qz, qw]: camera OPTICAL frame (z forward, x right, y down) pose in livox_frame (p_lidar = T * p_cam). Solver: koide3 direct_visual_lidar_calibration (NID), 9 static stations in the apartment 2026-11-20, checked against tag36h11 143.88 mm wall tags (camera PnP plane vs lidar plane).",
+ "front": {
+  "frame": "oak_rgb_camera_optical_frame",
+  "device": "14442C10B1F4D2D600",
+  "T_lidar_camera": [
+   0.3094,
+   0.0011,
+   -0.0749,
+   0.5159496833278043,
+   -0.47716875770947764,
+   0.5163784818128082,
+   -0.4893456492711789
+  ],
+  "status": "PROVISIONAL rotation",
+  "note": "Translation = URDF (tape 31-32 cm confirms). Rotation from the solve with EEPROM intrinsics (3.9 deg from URDF, mostly roll about the optical axis); the re-solve with refit intrinsics failed (NaN initial cost). Tags: -2.3 cm median plane offset, 1.2 deg."
+ },
+ "rear": {
+  "frame": "oak_rear_rgb_camera_optical_frame",
+  "device": "14442C103181D7D600",
+  "T_lidar_camera": [
+   -0.3147109101724107,
+   -0.0004829879226173929,
+   -0.0749720476811724,
+   -0.4850054257658103,
+   -0.4963092134054767,
+   0.5119593480053389,
+   0.5063047774379688
+  ],
+  "status": "good",
+  "note": "Solved with refit intrinsics, 1.5 cm from URDF translation. Tags: -0.1 cm median plane offset, 1.3 deg."
+ },
+ "right": {
+  "frame": "arducam_optical_frame",
+  "device": "Arducam OV9281 UC599",
+  "T_lidar_camera": [
+   0.0007443542643021694,
+   -0.0400823874568948,
+   -0.06894053084946274,
+   -0.008605129982353847,
+   -0.6487770513546,
+   0.7608727751146201,
+   0.009322524496850233
+  ],
+  "status": "good",
+  "note": "New frame (not in URDF). Hand measurement 4 cm right, 7 cm below Livox window, 10 deg up; solve stayed within 1 cm. Tags: +0.6 cm, 2.2 deg. Intrinsics: config/arducam_uc844_intrinsics.json fisheye, RMS 0.091 px."
+ },
+ "oak_rgb_intrinsics_1920x1440": {
+  "front": {
+   "K": [
+    1092.1663393573751,
+    0.0,
+    950.4673827698516,
+    0.0,
+    1091.1983043391317,
+    729.4921582790915,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "D": [
+    13.210274696350098,
+    8.50071907043457,
+    0.0004544873954728246,
+    -0.0008455474162474275,
+    -2.84116530418396,
+    13.1605224609375,
+    12.542871475219727,
+    -2.9208078384399414,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.001021826290525496,
+    -0.006114576943218708
+   ],
+   "model": "rational_polynomial",
+   "w": 1920,
+   "h": 1440,
+   "rms_px": 0.3988527504769217,
+   "n_views": 15,
+   "note": "EEPROM distortion, K refit on iPad checkerboard 2026-11-20 (views with RMS>1px dropped)"
+  },
+  "rear": {
+   "K": [
+    1089.1011885490311,
+    0.0,
+    972.9575648219378,
+    0.0,
+    1088.5582620154578,
+    724.6050123145933,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "D": [
+    11.713120460510254,
+    6.956235408782959,
+    0.0006406876491382718,
+    -0.0003644858079496771,
+    -2.6257388591766357,
+    11.707921981811523,
+    10.450398445129395,
+    -2.8145837783813477,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    -0.0009280565427616239,
+    -0.004476451780647039
+   ],
+   "model": "rational_polynomial",
+   "w": 1920,
+   "h": 1440,
+   "rms_px": 0.40097732921866963,
+   "n_views": 16,
+   "note": "EEPROM distortion, K refit on iPad checkerboard 2026-11-20 (views with RMS>1px dropped)"
+  },
+  "note": "EEPROM fx at 1920x1440 (CAM_A requestOutput) reads ~5% high (front 1150.5 -> 1092.2, rear 1142.4 -> 1089.1). EEPROM distortion kept; K refit on an iPad checkerboard. oakd_driver uses its own 480x640 geometry (fx 681.8), verified separately on 2026-11-18 -- this does not apply to it."
+ }
+}
