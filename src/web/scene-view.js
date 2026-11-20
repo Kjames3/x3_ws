@@ -400,6 +400,13 @@
         _m = new THREE.Matrix4(); _dir = new THREE.Vector3(); _org = new THREE.Vector3();
         // 1.5x is visually the same as 2x on HiDPI here and draws ~44% fewer pixels.
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+        // A cleared canvas (resize, a skipped or failed frame) shows the clear
+        // colour: make it the scene background, not black, so it cannot flash.
+        renderer.setClearColor(0xe9ecef, 1);
+        renderer.domElement.addEventListener('webglcontextlost', (e) => {
+            e.preventDefault();   // lets the browser restore the context
+            if (hint) hint.textContent = 'Graphics context lost · restoring';
+        });
         // No shadow map: the soft shadows under the robot and wall panels cost a
         // second render pass of the scene every frame. The castShadow flags left
         // on meshes below are inert without it.
@@ -612,9 +619,13 @@
     function resize() {
         const w = container.clientWidth, h = container.clientHeight;
         if (!w || !h) return;
-        renderer.setSize(w, h, false);
+        if (renderer.domElement.width === Math.floor(w * renderer.getPixelRatio()) &&
+            renderer.domElement.height === Math.floor(h * renderer.getPixelRatio())) return;
+        renderer.setSize(w, h, false);   // clears the canvas
         camera.aspect = w / h;
         camera.updateProjectionMatrix();
+        // Redraw now rather than at the next throttled frame (up to 33 ms of blank).
+        try { renderer.render(scene, camera); } catch (e) { /* the loop reports errors */ }
     }
 
     // ---- Wall post-processing (all browser-side) ---------------------------
