@@ -175,3 +175,17 @@ def test_hard_coded_lidar_x_matches_the_urdf(urdf):
     js = (ROOT / "src" / "web" / "scene-view.js").read_text()
     m = re.search(r"const LASER_X = ([-0-9.]+);", js)
     assert m and abs(float(m.group(1)) - laser_x_base_link) < 0.002
+
+
+def test_arducam_matches_the_calibration_json(urdf):
+    """arducam_optical_frame in livox_frame == the 2026-11-20 solve (within 1 mm / 0.05 deg)."""
+    import json
+    from scipy.spatial.transform import Rotation
+    poses, _ = _fk(urdf)
+    T = np.linalg.inv(poses["livox_frame"]) @ poses["arducam_optical_frame"]
+    v = json.loads((ROOT / "config" / "camera_lidar_extrinsics_2026-11-20.json").read_text())["right"]["T_lidar_camera"]
+    assert np.allclose(T[:3, 3], v[:3], atol=1e-3)
+    d = Rotation.from_matrix(T[:3, :3]).inv() * Rotation.from_quat(v[3:])
+    assert math.degrees(d.magnitude()) < 0.05
+    # faces the robot's right: optical z mostly along -y of base
+    assert (poses["arducam_optical_frame"][:3, 2] @ np.array([0, -1, 0])) > 0.95
