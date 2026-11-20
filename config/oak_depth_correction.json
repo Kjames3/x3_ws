@@ -11,7 +11,8 @@
   "14442C10B1F4D2D600": {
    "model": "OAK-D-PRO-W (x3_v2 FRONT camera)",
    "inv_depth_offset_per_m": 0.0,
-   "fitted": "2026-11-18: through oakd_driver's own pipeline (400P monos, CAM_A-aligned 480x640, depthai v3) the RAW depth at a tag36h11 (143 mm) tape-measured 2.43 m away read 2.439 m (170 frames, p10-p90 2.426-2.452): +0.4%, within tape error, so no correction. The driver's RGB intrinsics (c1_camera_geometry 1080P crop model, fx 681.8) put the tag at 2.410 m by PnP (-0.8%). A first fit of 0.0143 came from a DIFFERENT stereo setup (v3 auto-created 1280x800 monos, read 2.523) and over-corrected the driver to 2.364; corrections only transfer within one pipeline config. Spot-check at ~1 m and ~3 m."
+   "fitted": "2026-11-18: through oakd_driver's own pipeline (400P monos, CAM_A-aligned 480x640, depthai v3) the RAW depth at a tag36h11 (143 mm) tape-measured 2.43 m away read 2.439 m (170 frames, p10-p90 2.426-2.452): +0.4%, within tape error, so no correction. The driver's RGB intrinsics (c1_camera_geometry 1080P crop model, fx 681.8) put the tag at 2.410 m by PnP (-0.8%). A first fit of 0.0143 came from a DIFFERENT stereo setup (v3 auto-created 1280x800 monos, read 2.523) and over-corrected the driver to 2.364; corrections only transfer within one pipeline config. Spot-check at ~1 m and ~3 m.",
+   "spot_check_2026-11-20": "Same driver pipeline (oak_depth_spot_check.py, central ROI on a bare wall, tape from the OAK glass): 1.00 m read 1.030 (894 frames, +3.0%), 3.00 m read 3.046 (83 frames, p10-p90 3.002-3.066, +1.5%). With 2.43 -> 2.439 from 11-18 the error is a roughly constant +1 to +5 cm, not a disparity offset (a 1/Z fit would need c=0.030 at 1 m but 0.005 at 3 m). The depth origin sits behind the glass (setback ~1.2 cm) and the tape/squareness error is a few cm, so still no correction."
   }
  }
 }

@@ -14,6 +14,7 @@ from time import sleep
 from .Rosmaster_Lib import Rosmaster
 from .wheel_speed_control import (WheelSpeedController, mecanum_targets,
 	limit_targets)
+from .heading_hold import HeadingHold
 
 #ros lib
 import rclpy
@@ -146,6 +147,15 @@ class yahboomcar_driver(Node):
 		self._ext_wz = None
 		self._ext_t = 0.0
 		self._ext_warned = False
+		# IMU heading hold (heading_hold.py): while translating with no commanded
+		# turn, trim angular.z to keep the yaw. Off by default; live switch:
+		#   ros2 param set /driver_node heading_hold true
+		self.declare_parameter('heading_hold', False)
+		self.declare_parameter('heading_hold_kp', 2.0)
+		self.declare_parameter('heading_hold_ki', 0.5)
+		self.declare_parameter('heading_hold_max_corr', 0.3)
+		self.hh = HeadingHold()
+		self._hh_log_t = 0.0
 		self.sub_ext_imu = self.create_subscription(
 			Imu, 'imu/data_raw', self.ext_imu_callback, 20)
 
@@ -238,6 +248,7 @@ class yahboomcar_driver(Node):
 		# pointless -- the launch sets publish_imu False alongside this.
 		self._ext_wz = msg.angular_velocity.z
 		self._ext_t = self.get_clock().now().nanoseconds / 1e9
+		self.hh.integrate_rate(self._ext_t, self._ext_wz)
 
 	#callback function
 	def cmd_vel_callback(self, msg):
@@ -258,6 +269,19 @@ class yahboomcar_driver(Node):
 		vx    = msg.linear.x
 		vy    = msg.linear.y
 		omega = msg.angular.z
+		if self.get_parameter('heading_hold').value:
+			hh = self.hh
+			hh.kp = self.get_parameter('heading_hold_kp').value
+			hh.ki = self.get_parameter('heading_hold_ki').value
+			hh.max_corr = self.get_parameter('heading_hold_max_corr').value
+			_now = self.get_clock().now().nanoseconds / 1e9
+			_omega_in = omega
+			omega = hh.correct(_now, vx, vy, omega)
+			if abs(omega - _omega_in) > 0.1 and _now - self._hh_log_t > 2.0:
+				self._hh_log_t = _now
+				self.get_logger().debug('heading hold: correction %.3f rad/s' % (omega - _omega_in))
+		else:
+			self.hh.reset()
 
 		# Mecanum wheel mixing: M1=FL, M2=FR, M3=RL, M4=RR
 		L     = self.get_parameter('wheel_separation_factor').value

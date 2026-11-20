@@ -125,6 +125,14 @@ def generate_launch_description():
             # ran at about 0.22 + 2*cmd m/s on wood. The gain_* values below
             # apply to the open-loop path only.
             'speed_control': True,
+            # IMU heading hold on pure translation (heading_hold.py). Floor-tested
+            # 2026-11-20 on wood, CBF off, 2 m runs: strafe right -2.9 -> +2.4 deg,
+            # left +1.2, straight 1.9 (was a few deg left); wheels rebalanced to
+            # within 5%. Switch off live with ros2 param set /driver_node heading_hold false
+            'heading_hold': True,
+            'heading_hold_kp': 2.0,
+            'heading_hold_ki': 0.5,
+            'heading_hold_max_corr': 0.3,
             # Per-wheel gain: reduces faster motor side to correct drift/circle.
             # Robot drifts right → right is stronger → gain_fr/rr < 1.0.
             # Tune with: ros2 param set /driver_node gain_fr 0.93
@@ -157,7 +165,7 @@ def generate_launch_description():
     # 2026-11-13 new chassis: vel_raw x/y now come from the remapped encoders
     # in SI with the right sign (the old negative factors corrected the stock
     # firmware's kinematics). 1.0 everywhere until re-measured per floor.
-    STRAFE_SCALE = {'apartment_wood': 1.0, 'lab_carpet': 1.0, 'unset': 1.0}
+    STRAFE_SCALE = {'apartment_wood': 0.98, 'lab_carpet': 1.0, 'unset': 1.0}  # wood measured 2026-11-20
     floor_arg = DeclareLaunchArgument(
         name='floor', default_value='unset', choices=list(STRAFE_SCALE),
         description='Floor surface; selects the strafe odometry scale')

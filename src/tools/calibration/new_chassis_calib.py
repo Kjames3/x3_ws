@@ -4,6 +4,10 @@ Drive with the GUI/controller while this records; it needs no motor access.
 
   straight : press Enter at the start mark, drive to the end mark (any speed,
              stop fully), press Enter. counts_per_m = forward counts / distance.
+  strafe   : like straight, but strafe sideways between the marks. Prints
+             linear_scale_y = true distance / odom displacement (odom uses
+             the CURRENT linear_scale_y, printed by base_node at startup;
+             multiply it by the ratio if it is not 1.0).
   spin     : press Enter, turn in place N full turns (stop roughly where you
              began), press Enter. Turn angle comes from the integrated
              /imu/data_raw gyro, so stopping exactly is not needed.
@@ -11,6 +15,7 @@ Drive with the GUI/controller while this records; it needs no motor access.
 
 Usage (on the robot, x3_server running):
   python3 src/tools/calibration/new_chassis_calib.py straight --distance 2.4
+  python3 src/tools/calibration/new_chassis_calib.py strafe --distance 2.0
   python3 src/tools/calibration/new_chassis_calib.py spin --counts-per-m <from straight>
 
 /wheel_encoders positions are logical FL, RL, FR, RR, already sign-corrected
@@ -58,8 +63,8 @@ class Rec(Node):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('mode', choices=['straight', 'spin'])
-    ap.add_argument('--distance', type=float, default=2.4, help='straight: metres between the marks')
+    ap.add_argument('mode', choices=['straight', 'strafe', 'spin'])
+    ap.add_argument('--distance', type=float, default=2.4, help='straight/strafe: metres between the marks')
     ap.add_argument('--counts-per-m', type=float, default=7624.0, help='spin: value from the straight run (7624, 2026-11-13)')
     a = ap.parse_args()
 
@@ -91,6 +96,14 @@ def main():
         print('per-wheel counts/m:', [round(abs(v) / a.distance) for v in d])
         print('==> counts_per_m = %.0f  (forward mean over %.3f m; heading changed %.1f deg)'
               % (cpm, a.distance, math.degrees(turn)))
+    elif a.mode == 'strafe':
+        lat = (-fl + rl + fr - rr) / 4.0 / a.counts_per_m   # m of rim travel, + = left (mecanum X)
+        print('wheel rim lateral %.3f m (slip-free estimate; true %.3f m)' % (lat, a.distance))
+        if not (o0 and o1):
+            raise SystemExit('no /odom; cannot give linear_scale_y')
+        moved = math.hypot(o1[0] - o0[0], o1[1] - o0[1])
+        print('==> linear_scale_y ratio = %.3f  (true %.3f m / odom %.3f m; heading changed %.1f deg)'
+              % (a.distance / moved, a.distance, moved, math.degrees(turn)))
     else:
         rim = (-fl - rl + fr + rr) / 4.0 / a.counts_per_m   # m, + = left turn
         if abs(turn) < math.radians(90):
