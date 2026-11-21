@@ -335,24 +335,24 @@ const elements = {
 function updateClassFilterBtn(btn, allClasses) {
     if (allClasses) {
         btn.textContent = 'All Classes';
-        btn.style.color = '#4ade80';
-        btn.style.borderColor = '#4ade80';
+        btn.style.color = 'var(--accent)';
+        btn.style.borderColor = 'var(--accent)';
     } else {
         btn.textContent = 'Cans Only';
-        btn.style.color = 'var(--accent-warning, #facc15)';
-        btn.style.borderColor = 'var(--accent-warning, #facc15)';
+        btn.style.color = 'var(--text-secondary)';
+        btn.style.borderColor = 'var(--border-strong)';
     }
 }
 
 function updateLabelToggleBtn(btn, labelsOn) {
     if (labelsOn) {
         btn.textContent = 'Labels On';
-        btn.style.color = '#60a5fa'; // blue
-        btn.style.borderColor = '#60a5fa';
+        btn.style.color = 'var(--accent)';
+        btn.style.borderColor = 'var(--accent)';
     } else {
         btn.textContent = 'Labels Off';
-        btn.style.color = '#6b7280'; // grey
-        btn.style.borderColor = '#6b7280';
+        btn.style.color = 'var(--text-muted)';
+        btn.style.borderColor = 'var(--text-muted)';
     }
 }
 
@@ -707,9 +707,9 @@ function drawNavMap() {
             ctx.drawImage(mapSource, -W / 2, -H / 2, W, H);
             ctx.restore();
         } else {
-            ctx.fillStyle = '#060e1a';
+            ctx.fillStyle = '#08080a';
             ctx.fillRect(0, 0, W, H);
-            ctx.strokeStyle = '#1e3a5f';
+            ctx.strokeStyle = '#2c2c31';
             ctx.lineWidth = 1;
             const step = W / 10;
             for (let i = 0; i <= 10; i++) {
@@ -1028,10 +1028,10 @@ function updateSlamStatus(active) {
 
 const FRONTIER_STATE_COLORS = {
     IDLE: { bg: 'var(--bg-tertiary)', color: 'var(--text-muted)' },
-    SELECTING: { bg: '#1e3a5f', color: '#60a5fa' },
-    EXPLORING: { bg: '#14532d', color: '#4ade80' },
-    COMPLETE: { bg: '#1a2e1a', color: '#86efac' },
-    STOPPED: { bg: '#3b1515', color: '#f87171' },
+    SELECTING: { bg: 'var(--accent-bg)', color: 'var(--accent)' },
+    EXPLORING: { bg: 'var(--ok-bg)', color: 'var(--ok-bright)' },
+    COMPLETE: { bg: 'var(--ok-bg)', color: 'var(--ok-bright)' },
+    STOPPED: { bg: 'var(--bad-bg)', color: 'var(--bad-bright)' },
 };
 
 function updateFrontierStatus(frontier) {
@@ -1572,8 +1572,8 @@ const cameraStatus = document.getElementById('camera-feed-status');
 setInterval(() => {
     const now = performance.now();
     if (cameraSelect.value === 'All') {
-        const stale = [...cameraFeeds.values()].filter(f => now - f.received > 2000).map(f => f.role);
-        cameraStatus.textContent = stale.length ? `Paused: ${stale.join(', ')}` : '';
+        // Offline cameras show as chips under the grid; no status text needed.
+        cameraStatus.textContent = '';
         return;
     }
     const frame = cameraFeeds.get(cameraSelect.value);
@@ -1595,15 +1595,33 @@ function resetCameraFeeds() {
 }
 
 // "All" view: every role in its own tile, each with its own one-in-flight decode.
+// The grid is laid out to FIT the panel (no scrolling): rows x cols are chosen
+// from the number of live cameras and the space available, so each tile is as
+// large as it can be while keeping its camera's aspect ratio (letterboxed).
+// A camera whose last frame is older than CAMERA_STALE_MS drops out of the grid
+// and shows as a small grey chip instead (or is hidden, with the toggle).
 const CAMERA_ALL = 'All';
+const CAMERA_STALE_MS = 2000;
+const CAMERA_ORDER = ['Front', 'Left', 'Right', 'Rear', 'Primary'];
 const cameraGrid = document.getElementById('camera-grid');
+const cameraOfflineStrip = document.getElementById('camera-offline-strip');
+const cameraHideOffline = document.getElementById('camera-hide-offline');
+const cameraHideOfflineControl = document.getElementById('camera-hide-offline-control');
 const cameraGridTiles = new Map();
+try { cameraHideOffline.checked = localStorage.getItem('x3.cam.hideOffline') === '1'; } catch (e) {}
+cameraHideOffline.addEventListener('change', () => {
+    try { localStorage.setItem('x3.cam.hideOffline', cameraHideOffline.checked ? '1' : '0'); } catch (e) {}
+    layoutCameraGrid();
+});
 
 function setCameraGridMode(on) {
     cameraGrid.style.display = on ? 'grid' : 'none';
+    cameraHideOfflineControl.hidden = !on;
+    if (!on) cameraOfflineStrip.hidden = true;
     if (on) {
         elements.cameraCanvas.style.display = 'none';
         if (elements.cameraPlaceholder) elements.cameraPlaceholder.style.display = 'none';
+        layoutCameraGrid();
     }
 }
 
@@ -1611,27 +1629,95 @@ function cameraGridTile(role) {
     let tile = cameraGridTiles.get(role);
     if (tile) return tile;
     const box = document.createElement('div');
-    box.style.cssText = 'position: relative; min-width: 0;';
+    box.className = 'camera-tile';
     const cvs = document.createElement('canvas');
-    cvs.className = 'camera-feed';
-    cvs.style.width = '100%';
+    cvs.className = 'camera-tile-feed';
     const chip = document.createElement('div');
     chip.className = 'overlay-chip';
     chip.textContent = role.toUpperCase();
     box.append(cvs, chip);
-    const order = ['Front', 'Left', 'Right', 'Rear', 'Primary'];
     const before = [...cameraGridTiles.entries()]
-        .find(([r]) => order.indexOf(r) > order.indexOf(role));
+        .find(([r]) => CAMERA_ORDER.indexOf(r) > CAMERA_ORDER.indexOf(role));
     cameraGrid.insertBefore(box, before ? before[1].box : null);
-    tile = {box, cvs, decoding: false, pending: null};
+    tile = {role, box, cvs, decoding: false, pending: null, aspect: 4 / 3, live: true};
     cameraGridTiles.set(role, tile);
+    layoutCameraGrid();
     return tile;
 }
 
+// Height the grid may use: the cap the single-camera view gets in this layout
+// (the feed's computed max-height, set per breakpoint in dashboard/mobile.css,
+// already sized so the card fits the window in each layout). Not the space
+// below the grid's current position: in the stacked phone layout the card sits
+// below the fold and that would shrink the grid to nothing.
+function cameraGridHeight() {
+    const cap = parseFloat(getComputedStyle(elements.cameraCanvas).maxHeight);
+    const h = Number.isFinite(cap) ? cap : window.innerHeight * 0.6;
+    return Math.max(160, Math.min(h, window.innerHeight * 0.9));
+}
+
+// Best rows x cols for n tiles of aspect `aspect` in a W x H box: maximise tile size.
+function bestCameraGrid(n, W, H, gap, aspect) {
+    let best = {cols: 1, rows: n, w: 0};
+    for (let cols = 1; cols <= n; cols++) {
+        const rows = Math.ceil(n / cols);
+        const w = Math.min((W - gap * (cols - 1)) / cols, ((H - gap * (rows - 1)) / rows) * aspect);
+        if (w > best.w + 0.5) best = {cols, rows, w};
+    }
+    return best;
+}
+
+function layoutCameraGrid() {
+    if (cameraGrid.style.display === 'none') return;
+    const now = performance.now();
+    const live = [], offline = [];
+    cameraGridTiles.forEach(tile => {
+        const f = cameraFeeds.get(tile.role);
+        tile.live = !!f && now - f.received <= CAMERA_STALE_MS;
+        (tile.live ? live : offline).push(tile);
+    });
+    const hide = cameraHideOffline.checked;
+    offline.forEach(t => { t.box.style.display = 'none'; });
+    const chips = offline.map(t => {
+        const c = document.createElement('span');
+        c.className = 'camera-offline-chip';
+        c.textContent = `${t.role} \u00b7 offline`;
+        return c;
+    });
+    cameraOfflineStrip.replaceChildren(...chips);
+    cameraOfflineStrip.hidden = hide || !chips.length;
+    const n = live.length;
+    if (!n) { cameraGrid.style.gridTemplateColumns = ''; return; }
+    const gap = 8;
+    const W = cameraGrid.clientWidth || cameraGrid.parentElement.clientWidth;
+    const H = cameraGridHeight() - (cameraOfflineStrip.hidden ? 0 : 34);
+    const aspect = live.reduce((a, t) => a + t.aspect, 0) / n;
+    const g = bestCameraGrid(n, W, H, gap, aspect);
+    const tw = Math.floor(g.w), th = Math.floor(g.w / aspect);
+    cameraGrid.style.gridTemplateColumns = `repeat(${g.cols}, ${tw}px)`;
+    cameraGrid.style.gap = `${gap}px`;
+    live.forEach(t => {
+        t.box.style.display = '';
+        t.box.style.width = `${tw}px`;
+        t.box.style.height = `${th}px`;
+    });
+}
+
+window.addEventListener('resize', layoutCameraGrid);
+if (window.ResizeObserver) new ResizeObserver(layoutCameraGrid).observe(cameraGrid.parentElement);
+setInterval(() => {
+    // Re-layout only when some camera crossed the stale line.
+    const now = performance.now();
+    for (const t of cameraGridTiles.values()) {
+        const f = cameraFeeds.get(t.role);
+        if ((!!f && now - f.received <= CAMERA_STALE_MS) !== t.live) { layoutCameraGrid(); break; }
+    }
+}, 500);
+
 function showCameraGridJpeg(frame) {
     if (frame.generation !== cameraGeneration || cameraSelect.value !== CAMERA_ALL) return;
-    if (!cameraGrid.offsetParent) return;
     const tile = cameraGridTile(frame.role);
+    if (!cameraGrid.offsetParent) return;
     if (tile.decoding) { tile.pending = frame; return; }
     tile.decoding = true;
     createImageBitmap(new Blob([frame.buf], { type: 'image/jpeg' })).then(bitmap => {
@@ -1640,7 +1726,10 @@ function showCameraGridJpeg(frame) {
             return;
         }
         const cvs = tile.cvs;
-        const shown = cvs.clientWidth || bitmap.width;
+        const aspect = bitmap.width / bitmap.height;
+        if (Math.abs(aspect - tile.aspect) > 0.01) { tile.aspect = aspect; layoutCameraGrid(); }
+        if (!tile.live) layoutCameraGrid();
+        const shown = Math.min(tile.box.clientWidth, tile.box.clientHeight * aspect) || bitmap.width;
         const w = Math.max(bitmap.width, Math.min(1280, Math.round(shown * (window.devicePixelRatio || 1))));
         const h = Math.round(w * bitmap.height / bitmap.width);
         if (cvs.width !== w || cvs.height !== h) { cvs.width = w; cvs.height = h; cvs._ctx = null; }
@@ -2095,9 +2184,9 @@ function handleMessage(data) {
         }
 
         const styles = {
-            sim: { text: 'SIM', bg: '#92400e', color: '#fde68a', border: '#f59e0b' },
-            ros2: { text: 'ROS2', bg: '#1e3a5f', color: '#93c5fd', border: '#3b82f6' },
-            direct: { text: 'DIRECT', bg: '#14532d', color: '#86efac', border: '#22c55e' },
+            sim: { text: 'SIM', bg: 'var(--warn-dim)', color: 'var(--warn-bright)', border: 'var(--warn)' },
+            ros2: { text: 'ROS2', bg: 'var(--accent-bg)', color: 'var(--text-secondary)', border: 'var(--accent)' },
+            direct: { text: 'DIRECT', bg: 'var(--ok-bg)', color: 'var(--ok-bright)', border: 'var(--ok)' },
         };
         const s = styles[mode] || styles.direct;
         label.textContent = s.text;
@@ -2206,7 +2295,7 @@ function handleMessage(data) {
         const { frontierStatusText } = elements;
         if (frontierStatusText) {
             frontierStatusText.textContent = data.msg || '';
-            frontierStatusText.style.color = data.success ? 'var(--text-secondary)' : '#f87171';
+            frontierStatusText.style.color = data.success ? 'var(--text-secondary)' : 'var(--bad-bright)';
         }
         return;
     }
@@ -2376,7 +2465,7 @@ function handleMessage(data) {
         // Flash the dropdown border green/red so there's a visible cue
         if (modelSelect) {
             modelSelect.style.transition = 'border-color 0.3s';
-            modelSelect.style.borderColor = data.success ? '#4ade80' : '#f87171';
+            modelSelect.style.borderColor = data.success ? 'var(--ok-bright)' : 'var(--bad-bright)';
             setTimeout(() => { modelSelect.style.borderColor = ''; }, 2000);
         }
         // Sync the class-filter button to whatever the server now has active
@@ -2393,7 +2482,7 @@ function handleMessage(data) {
         }
         if (elements.velocityModelSelect) {
             elements.velocityModelSelect.style.transition = 'border-color 0.3s';
-            elements.velocityModelSelect.style.borderColor = data.success ? '#a855f7' : '#f87171';
+            elements.velocityModelSelect.style.borderColor = data.success ? 'var(--accent)' : 'var(--bad-bright)';
             setTimeout(() => { elements.velocityModelSelect.style.borderColor = ''; }, 2000);
         }
 
@@ -2771,10 +2860,10 @@ function updateP2pButtonUI() {
     if (!elements.p2pTestBtn) return;
     if (state.p2pTestRunning) {
         elements.p2pTestBtn.textContent = 'Cancel P2P Test';
-        elements.p2pTestBtn.style.background = '#ef4444'; // Red
+        elements.p2pTestBtn.style.background = 'var(--bad)'; // Red
     } else {
         elements.p2pTestBtn.textContent = 'Start P2P Test';
-        elements.p2pTestBtn.style.background = '#3b82f6'; // Blue
+        elements.p2pTestBtn.style.background = 'var(--accent)'; // Blue
     }
 }
 
@@ -2784,10 +2873,10 @@ function updateModeDisplay(enabled) {
     el.style.display = 'block';
     if (enabled) {
         el.textContent = 'PREDICTIVE MODE';
-        el.style.color = '#00ff88';
+        el.style.color = 'var(--ok-bright)';
     } else {
         el.textContent = 'REACTIVE MODE';
-        el.style.color = '#ff4444';
+        el.style.color = 'var(--bad)';
     }
 }
 
@@ -2812,7 +2901,7 @@ function updateAbTestButtonsUI() {
 
     if (elements.velEstToggleBtn) {
         elements.velEstToggleBtn.textContent = state.velocityEstimationEnabled ? 'Est: ON' : 'Est: OFF';
-        elements.velEstToggleBtn.style.background = state.velocityEstimationEnabled ? '#10b981' : '#6b7280';
+        elements.velEstToggleBtn.style.background = state.velocityEstimationEnabled ? 'var(--ok)' : 'var(--text-muted)';
     }
     if (elements.abDistanceSlider) {
         elements.abDistanceSlider.disabled = running;
@@ -2823,10 +2912,10 @@ function updateAbTestButtonsUI() {
     if (elements.abReactiveBtn) {
         if (running && mode === 'reactive') {
             elements.abReactiveBtn.textContent = 'Cancel Reactive';
-            elements.abReactiveBtn.style.background = '#7f1d1d';
+            elements.abReactiveBtn.style.background = 'var(--accent-strong)';
         } else {
             elements.abReactiveBtn.textContent = 'Run Reactive';
-            elements.abReactiveBtn.style.background = '#ef4444';
+            elements.abReactiveBtn.style.background = 'var(--bg-tertiary)';
             elements.abReactiveBtn.disabled = running;
             elements.abReactiveBtn.style.opacity = (running && mode !== 'reactive') ? '0.45' : '1';
         }
@@ -2834,12 +2923,12 @@ function updateAbTestButtonsUI() {
     if (elements.abPredictiveBtn) {
         if (running && mode === 'predictive') {
             elements.abPredictiveBtn.textContent = 'Cancel Predictive';
-            elements.abPredictiveBtn.style.background = '#064e3b';
-            elements.abPredictiveBtn.style.color = '#fff';
+            elements.abPredictiveBtn.style.background = 'var(--accent-strong)';
+            elements.abPredictiveBtn.style.color = 'var(--text-on-accent)';
         } else {
             elements.abPredictiveBtn.textContent = 'Run Predictive';
-            elements.abPredictiveBtn.style.background = '#00cc66';
-            elements.abPredictiveBtn.style.color = '#000';
+            elements.abPredictiveBtn.style.background = 'var(--accent)';
+            elements.abPredictiveBtn.style.color = 'var(--text-on-accent)';
             elements.abPredictiveBtn.disabled = running;
             elements.abPredictiveBtn.style.opacity = (running && mode !== 'predictive') ? '0.45' : '1';
         }
@@ -3039,7 +3128,7 @@ function drawLidar(points) {
     ctx.fillRect(0, 0, width, height);
 
     // Grid
-    ctx.strokeStyle = '#1e293b';
+    ctx.strokeStyle = '#26262a';
     ctx.lineWidth = 1;
     [1, 2].forEach(r => {
         ctx.beginPath();
@@ -3160,14 +3249,14 @@ function updateDemoModeButton(active) {
     if (!btn) return;
     if (active) {
         btn.textContent = "Stop Demo";
-        btn.style.background = "#7c3aed";
-        btn.style.color = "#fff";
-        btn.style.borderColor = "#7c3aed";
+        btn.style.background = "var(--accent-strong)";
+        btn.style.color = "var(--text-on-status)";
+        btn.style.borderColor = "var(--accent-strong)";
     } else {
         btn.textContent = "Demo Mode";
         btn.style.background = "var(--bg-tertiary)";
-        btn.style.color = "#a78bfa";
-        btn.style.borderColor = "#a78bfa";
+        btn.style.color = "var(--accent)";
+        btn.style.borderColor = "var(--accent)";
     }
 }
 
@@ -3178,7 +3267,7 @@ function updateDemoBannerFromEvent(data) {
         banner.style.display = "flex";
         if (elements.demoBannerRole) {
             elements.demoBannerRole.textContent = data.role === "teacher" ? "TEACHER" : "STUDENT (KD)";
-            elements.demoBannerRole.style.color = data.role === "teacher" ? "#fca5a5" : "#86efac";
+            elements.demoBannerRole.style.color = "var(--text-on-status)";
         }
         if (elements.demoBannerModel) elements.demoBannerModel.textContent = data.display_name;
     }
@@ -3733,9 +3822,9 @@ function drawGamepadWidget(axes, buttons) {
 
     // Button pills
     const pillDefs = [
-        { idx: 0, label: 'Stop', color: '#f87171' },
-        { idx: 2, label: 'Detect', color: '#a78bfa' },
-        { idx: 3, label: 'Auto', color: '#34d399' },
+        { idx: 0, label: 'Stop', color: 'var(--bad-bright)' },
+        { idx: 2, label: 'Detect', color: 'var(--accent)' },
+        { idx: 3, label: 'Auto', color: 'var(--accent)' },
     ];
     const pillContainer = document.getElementById('gamepad-btns');
     if (pillContainer) {
@@ -3743,7 +3832,7 @@ function drawGamepadWidget(axes, buttons) {
             pillDefs.forEach(({ label }, i) => {
                 const pill = document.createElement('span');
                 pill.id = `gp-pill-${i}`;
-                pill.style.cssText = 'padding: 0.15rem 0.5rem; border-radius: 999px; border: 1px solid #334155; background: var(--bg-secondary); color: #64748b; transition: all 0.1s;';
+                pill.style.cssText = 'padding: 0.15rem 0.5rem; border-radius: 999px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-muted); transition: all 0.1s;';
                 pill.textContent = label;
                 pillContainer.appendChild(pill);
             });
@@ -3753,8 +3842,8 @@ function drawGamepadWidget(axes, buttons) {
             if (!pill) return;
             const pressed = buttons[idx] && buttons[idx].pressed;
             pill.style.background = pressed ? color : 'var(--bg-secondary)';
-            pill.style.color = pressed ? '#0f172a' : '#64748b';
-            pill.style.borderColor = pressed ? color : '#334155';
+            pill.style.color = pressed ? 'var(--bg-primary)' : 'var(--text-muted)';
+            pill.style.borderColor = pressed ? color : 'var(--border-color)';
         });
     }
 }

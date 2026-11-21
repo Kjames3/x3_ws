@@ -2,27 +2,61 @@
    CSS Variables & Reset
    ================================================================= */
 :root {
-    --bg-primary: #0f172a;
-    --bg-secondary: #1e293b;
-    --bg-tertiary: #334155;
-    --bg-hover: #475569;
+    /* Minimal palette: near-black backgrounds, grey panels and text, ONE accent
+       (muted orange) for buttons, active controls and focus. Green/amber/red
+       are reserved for status meaning (ok/warn/fault). */
+    --bg-primary: #0b0b0c;
+    --bg-secondary: #141416;
+    --bg-tertiary: #1e1e21;
+    --bg-hover: #2a2a2e;
+    --bg-sunken: #08080a;
+    --bg-video: #000;
+    --bg-input: rgba(255, 255, 255, 0.05);
 
-    --text-primary: #f8fafc;
-    --text-secondary: #94a3b8;
-    --text-muted: #64748b;
+    --text-primary: #e8e8ea;
+    --text-secondary: #a1a1aa;
+    --text-muted: #71717a;
+    --text-on-accent: #0b0b0c;
+    --text-on-status: #fff;
 
-    --accent-cyan: #06b6d4;
-    --accent-cyan-dark: #0891b2;
-    --accent-green: #22c55e;
-    --accent-red: #ef4444;
-    --accent-yellow: #eab308;
-    --accent-purple: #a855f7;
+    --border-color: #2c2c31;
+    --border-strong: #3f3f46;
 
-    --border-color: #475569;
-    --shadow-lg: 0 10px 40px rgba(0, 0, 0, 0.4);
-    --glow-cyan: 0 0 20px rgba(6, 182, 212, 0.3);
-    --glow-green: 0 0 20px rgba(34, 197, 94, 0.3);
-    --glow-red: 0 0 20px rgba(239, 68, 68, 0.3);
+    --accent: #d9773f;
+    --accent-strong: #b9612f;
+    --accent-bright: #eb935f;
+    --accent-bg: #2a1a10;
+    /* Legacy names: every former cyan/purple use is the one accent now. */
+    --accent-cyan: var(--accent);
+    --accent-cyan-dark: var(--accent-strong);
+    --accent-purple: var(--accent);
+
+    /* Status colours: meaning only, never decoration. */
+    --ok: #22c55e;
+    --ok-bright: #4ade80;
+    --ok-dim: #166534;
+    --ok-bg: #0d2316;
+    --warn: #f59e0b;
+    --warn-bright: #fde68a;
+    --warn-strong: #d97706;
+    --warn-dim: #92400e;
+    --warn-bg: #2a1c06;
+    --bad: #ef4444;
+    --bad-bright: #f87171;
+    --bad-strong: #dc2626;
+    --bad-dark: #b91c1c;
+    --bad-darker: #991b1b;
+    --bad-dim: #7f1d1d;
+    --bad-bg: #2a0f0f;
+    --idle: var(--text-muted);
+    --accent-green: var(--ok);
+    --accent-red: var(--bad);
+    --accent-yellow: var(--warn);
+
+    --shadow-lg: 0 10px 40px rgba(0, 0, 0, 0.5);
+    --glow-cyan: 0 0 0 1px var(--accent), 0 0 14px color-mix(in srgb, var(--accent) 30%, transparent);
+    --glow-green: 0 0 16px color-mix(in srgb, var(--ok) 30%, transparent);
+    --glow-red: 0 0 16px color-mix(in srgb, var(--bad) 30%, transparent);
 
     --radius-sm: 6px;
     --radius-md: 10px;
@@ -154,7 +188,7 @@ body {
 .header-title h1 {
     font-size: 1.75rem;
     font-weight: 700;
-    background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+    background: var(--accent);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
@@ -163,7 +197,7 @@ body {
 .header-title .logo {
     width: 40px;
     height: 40px;
-    background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+    background: var(--accent);
     border-radius: var(--radius-md);
     display: flex;
     align-items: center;
@@ -193,18 +227,18 @@ body {
     border-radius: 50%;
     background: var(--accent-red);
     animation: pulse 2s infinite;
-    box-shadow: 0 0 8px rgba(239, 68, 68, 0.5);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--bad) 50%, transparent);
 }
 
 .status-dot.connected {
     background: var(--accent-green);
-    box-shadow: 0 0 12px rgba(34, 197, 94, 0.6);
+    box-shadow: 0 0 12px color-mix(in srgb, var(--ok) 60%, transparent);
     animation: pulse-glow 1.5s infinite;
 }
 
 .status-dot.connecting {
     background: var(--accent-yellow);
-    box-shadow: 0 0 10px rgba(234, 179, 8, 0.5);
+    box-shadow: 0 0 10px color-mix(in srgb, var(--warn) 50%, transparent);
     animation: pulse 1s infinite;
 }
 
@@ -262,11 +296,11 @@ body {
 
     0%,
     100% {
-        box-shadow: 0 0 8px rgba(34, 197, 94, 0.4);
+        box-shadow: 0 0 8px color-mix(in srgb, var(--ok) 40%, transparent);
     }
 
     50% {
-        box-shadow: 0 0 16px rgba(34, 197, 94, 0.8);
+        box-shadow: 0 0 16px color-mix(in srgb, var(--ok) 80%, transparent);
     }
 }
 
@@ -303,7 +337,7 @@ body {
     position: absolute;
     top: 0.5rem;
     right: 0.5rem;
-    background: rgba(15, 23, 42, 0.85);
+    background: color-mix(in srgb, var(--bg-primary) 85%, transparent);
     /* matches theme base with alpha */
     backdrop-filter: blur(4px);
     border: 1px solid var(--border-color);
@@ -359,8 +393,8 @@ body {
 }
 
 .btn-primary {
-    background: linear-gradient(135deg, var(--accent-cyan), var(--accent-cyan-dark));
-    color: white;
+    background: var(--accent);
+    color: var(--text-on-accent);
 }
 
 .btn-primary:hover:not(:disabled) {
@@ -369,8 +403,8 @@ body {
 }
 
 .btn-danger {
-    background: linear-gradient(135deg, var(--accent-red), #dc2626);
-    color: white;
+    background: linear-gradient(135deg, var(--accent-red), var(--bad-strong));
+    color: var(--text-on-status);
 }
 
 .btn-danger:hover:not(:disabled) {
@@ -491,7 +525,7 @@ body {
 .d-btn:active,
 .d-btn.active {
     background: var(--accent-cyan);
-    color: #000;
+    color: var(--bg-video);
     transform: translateY(2px);
 }
 
@@ -549,7 +583,7 @@ body {
     bottom: 0;
     left: 0;
     right: 0;
-    background: linear-gradient(to top, var(--accent-green), #4ade80);
+    background: linear-gradient(to top, var(--accent-green), var(--ok-bright));
     border-radius: 40px;
     opacity: 0.8;
     pointer-events: none;
@@ -573,8 +607,8 @@ body {
     left: 50%;
     width: 70px;
     height: 70px;
-    background: #e2e8f0;
-    border: 2px solid #cbd5e1;
+    background: var(--text-primary);
+    border: 2px solid var(--text-primary);
     border-radius: 20px;
     transform: translate(-50%, 50%);
     bottom: 50%;
@@ -610,19 +644,19 @@ body {
     width: 120px;
     height: 120px;
     border-radius: 50%;
-    background: linear-gradient(145deg, var(--accent-red), #b91c1c);
-    border: 4px solid #991b1b;
-    color: white;
+    background: linear-gradient(145deg, var(--accent-red), var(--bad-dark));
+    border: 4px solid var(--bad-darker);
+    color: var(--text-on-status);
     font-size: 1.5rem;
     font-weight: 700;
     cursor: pointer;
     transition: all var(--transition);
-    box-shadow: 0 8px 24px rgba(239, 68, 68, 0.3);
+    box-shadow: 0 8px 24px color-mix(in srgb, var(--bad) 30%, transparent);
 }
 
 .stop-btn:hover {
     transform: scale(1.05);
-    box-shadow: 0 12px 32px rgba(239, 68, 68, 0.4);
+    box-shadow: 0 12px 32px color-mix(in srgb, var(--bad) 40%, transparent);
 }
 
 .stop-btn:active {
@@ -642,7 +676,7 @@ body {
     width: 100%;
     max-width: 300px;
     aspect-ratio: 1;
-    background: #000;
+    background: var(--bg-video);
     border-radius: var(--radius-md);
 }
 
@@ -795,7 +829,7 @@ body {
     left: 3px;
     width: 20px;
     height: 20px;
-    background: white;
+    background: var(--text-primary);
     border-radius: 50%;
     transition: all var(--transition);
 }
@@ -842,7 +876,7 @@ body {
     width: 100%;
     aspect-ratio: 16 / 9;
     object-fit: contain;
-    background: #000;
+    background: var(--bg-video);
     border-radius: var(--radius-md);
 }
 
@@ -854,7 +888,7 @@ body {
     align-items: center;
     justify-content: center;
     gap: 0.75rem;
-    background: linear-gradient(135deg, #0a0f1a 0%, var(--bg-tertiary) 100%);
+    background: var(--bg-sunken);
     border-radius: var(--radius-md);
     color: var(--text-muted);
     font-size: 0.875rem;
@@ -935,7 +969,7 @@ body {
 .detection-badge {
     padding: 0.25rem 0.5rem;
     background: var(--accent-cyan);
-    color: white;
+    color: var(--text-on-accent);
     border-radius: var(--radius-sm);
     font-size: 0.75rem;
     font-weight: 600;
@@ -1045,7 +1079,7 @@ body {
 .nav-canvas {
     width: 100%;
     aspect-ratio: 1 / 1;
-    background: #060e1a;
+    background: var(--bg-sunken);
     border-radius: var(--radius-md);
     cursor: crosshair;
     border: 1px solid var(--border-color);
@@ -1071,13 +1105,13 @@ body {
     border: 1px solid transparent;
 }
 
-.nav-badge.unavailable { background: #1e293b; color: #64748b; border-color: #334155; }
-.nav-badge.idle        { background: #1e293b; color: #94a3b8; border-color: #475569; }
-.nav-badge.planning    { background: #422006; color: #f59e0b; border-color: #92400e; }
-.nav-badge.executing   { background: #0e2d3d; color: #22d3ee; border-color: #164e63; box-shadow: 0 0 6px rgba(34,211,238,0.25); }
-.nav-badge.succeeded   { background: #052e16; color: #22c55e; border-color: #166534; }
-.nav-badge.failed      { background: #2d0e0e; color: #ef4444; border-color: #7f1d1d; }
-.nav-badge.cancelling  { background: #2d1e05; color: #f97316; border-color: #7c2d12; }
+.nav-badge.unavailable { background: var(--bg-tertiary); color: var(--text-muted); border-color: var(--border-color); }
+.nav-badge.idle        { background: var(--bg-tertiary); color: var(--text-secondary); border-color: var(--border-strong); }
+.nav-badge.planning    { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-dim); }
+.nav-badge.executing   { background: var(--accent-bg); color: var(--accent); border-color: var(--accent-strong); box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 25%, transparent); }
+.nav-badge.succeeded   { background: var(--ok-bg); color: var(--ok); border-color: var(--ok-dim); }
+.nav-badge.failed      { background: var(--bad-bg); color: var(--bad); border-color: var(--bad-dim); }
+.nav-badge.cancelling  { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-dim); }
 
 /* Button row */
 .nav-controls {
@@ -1091,8 +1125,8 @@ body {
     font-size: 0.75rem;
     font-weight: 600;
     background: var(--bg-tertiary);
-    color: #22d3ee;
-    border: 1px solid #22d3ee;
+    color: var(--accent);
+    border: 1px solid var(--accent);
     border-radius: 4px;
     cursor: pointer;
     transition: all 0.2s;
@@ -1100,7 +1134,7 @@ body {
 }
 
 .btn-nav:hover {
-    background: rgba(34, 211, 238, 0.12);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .btn-nav:disabled {
@@ -1109,40 +1143,40 @@ body {
 }
 
 .btn-nav.btn-nav-danger {
-    color: #ef4444;
-    border-color: #ef4444;
+    color: var(--bad);
+    border-color: var(--bad);
 }
 
 .btn-nav.btn-nav-danger:hover {
-    background: rgba(239, 68, 68, 0.12);
+    background: color-mix(in srgb, var(--bad) 12%, transparent);
 }
 
 .btn-nav.btn-nav-warn {
-    color: #f97316;
-    border-color: #f97316;
+    color: var(--warn);
+    border-color: var(--warn);
 }
 
 .btn-nav.btn-nav-warn:hover {
-    background: rgba(249, 115, 22, 0.12);
+    background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
 
 .btn-nav.active {
-    background: rgba(34, 211, 238, 0.18);
-    box-shadow: 0 0 6px rgba(34, 211, 238, 0.3);
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
 /* Selected state for a segmented choice (sweep style) and for the 3D Scan
    toggle button, which has set this class since it was added but never had a
    rule to match -- so it changed its label and nothing else. */
 .btn-nav.btn-nav-active {
-    background: #22d3ee;
-    color: var(--bg-primary, #0b1120);
-    border-color: #22d3ee;
-    box-shadow: 0 0 8px rgba(34, 211, 238, 0.45);
+    background: var(--accent);
+    color: var(--bg-primary);
+    border-color: var(--accent);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
 .btn-nav.btn-nav-active:hover {
-    background: #67e8f9;
+    background: var(--accent-bright);
 }
 
 .btn-nav-sm {
@@ -1150,8 +1184,8 @@ body {
     font-size: 0.72rem;
     font-weight: 600;
     background: var(--bg-tertiary);
-    color: #22d3ee;
-    border: 1px solid #22d3ee;
+    color: var(--accent);
+    border: 1px solid var(--accent);
     border-radius: 4px;
     cursor: pointer;
     transition: all 0.2s;
@@ -1159,7 +1193,7 @@ body {
 }
 
 .btn-nav-sm:hover {
-    background: rgba(34, 211, 238, 0.12);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 /* Map selector and stats rows */
@@ -1183,7 +1217,7 @@ body {
 }
 
 .nav-map-input:focus {
-    border-color: var(--accent-cyan, #22d3ee);
+    border-color: var(--accent-cyan);
 }
 
 .nav-stats {
@@ -1219,7 +1253,7 @@ body {
     height: 160px;
     background: transparent;
     border-radius: 40px 40px 80px 80px;
-    border: 2px solid #54657b;
+    border: 2px solid var(--border-strong);
     box-shadow: none;
 }
 
@@ -1245,7 +1279,7 @@ body {
     position: absolute;
     background: var(--bg-secondary);
     border-radius: 4px;
-    border: 2px solid #54657b;
+    border: 2px solid var(--border-strong);
     box-shadow: none;
 }
 /* Use bg color to hide intersecting borders cleanly */
@@ -1256,8 +1290,8 @@ body {
 .gp-dpad-h {
     left: 0; top: 17px; width: 50px; height: 16px;
     z-index: 4;
-    border-left: 2px solid #54657b;
-    border-right: 2px solid #54657b;
+    border-left: 2px solid var(--border-strong);
+    border-right: 2px solid var(--border-strong);
     border-top: none;
     border-bottom: none;
 }
@@ -1270,7 +1304,7 @@ body {
 .gp-dpad-right { left: 34px; top: 17px; }
 .gp-dpad-down { left: 17px; top: 34px; }
 .gp-dpad-left { left: 0; top: 17px; }
-.gp-dpad-pressed { background: rgba(148, 163, 184, 0.4) !important; }
+.gp-dpad-pressed { background: color-mix(in srgb, var(--text-secondary) 40%, transparent) !important; }
 
 /* Buttons */
 .gp-buttons {
@@ -1286,14 +1320,14 @@ body {
     height: 22px;
     border-radius: 50%;
     background: transparent;
-    color: #94a3b8;
+    color: var(--text-secondary);
     font-size: 11px;
     display: flex;
     justify-content: center;
     align-items: center;
     font-family: sans-serif;
     font-weight: bold;
-    border: 2px solid #54657b;
+    border: 2px solid var(--border-strong);
     box-shadow: none;
     transition: transform 0.05s linear, background 0.05s linear;
 }
@@ -1304,7 +1338,7 @@ body {
 
 .gp-btn.pressed {
     transform: translateY(2px);
-    background: rgba(148, 163, 184, 0.4) !important;
+    background: color-mix(in srgb, var(--text-secondary) 40%, transparent) !important;
 }
 
 .gp-stick {
@@ -1313,7 +1347,7 @@ body {
     height: 50px;
     background: transparent;
     border-radius: 50%;
-    border: 2px solid #54657b;
+    border: 2px solid var(--border-strong);
     display: flex;
     justify-content: center;
     align-items: center;
@@ -1327,7 +1361,7 @@ body {
     height: 32px;
     border-radius: 50%;
     background: transparent;
-    border: 2px solid #54657b;
+    border: 2px solid var(--border-strong);
     box-shadow: none;
     transition: transform 0.03s linear;
 }
@@ -1340,7 +1374,7 @@ body {
     background: transparent;
     border-radius: 12px 12px 0 0;
     z-index: 0;
-    border: 2px solid #54657b;
+    border: 2px solid var(--border-strong);
     border-bottom: none;
 }
 .gp-shoulder-l { left: 45px; }
@@ -1353,7 +1387,7 @@ body {
     margin-top: 10px;
     font-size: 11px;
     font-weight: bold;
-    color: #64748b;
+    color: var(--text-muted);
 }
 
 /* =================================================================
@@ -1379,7 +1413,7 @@ body {
 
 .velocity-item:hover {
     border-color: var(--accent-purple);
-    box-shadow: 0 4px 12px rgba(168, 85, 247, 0.1);
+    box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 10%, transparent);
     transform: translateY(-2px);
 }
 
@@ -1391,8 +1425,8 @@ body {
 
 .velocity-badge {
     padding: 0.25rem 0.6rem;
-    background: linear-gradient(135deg, var(--accent-purple), #a855f7);
-    color: white;
+    background: var(--accent);
+    color: var(--text-on-accent);
     border-radius: var(--radius-sm);
     font-size: 0.75rem;
     font-weight: 600;
@@ -1433,7 +1467,7 @@ body {
 
 .velocity-fill {
     height: 100%;
-    background: linear-gradient(90deg, #a855f7, #3b82f6);
+    background: var(--accent);
     border-radius: 3px;
     transition: width var(--transition);
 }
@@ -1541,20 +1575,20 @@ body {
 .tof-cell {
     aspect-ratio: 1 / 1;
     border-radius: 3px;
-    background: var(--bg-tertiary, #161b22);
+    background: var(--bg-tertiary);
     display: flex;
     align-items: center;
     justify-content: center;
     font-size: 0.5rem;
     font-weight: 700;
-    color: #08090c;
+    color: var(--bg-sunken);
     overflow: hidden;
     font-variant-numeric: tabular-nums;
     transition: background-color 0.08s linear;
 }
 .tof-cell.tof-bad {
-    background: var(--bg-tertiary, #161b22);
-    color: var(--text-muted, #484f58);
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
     font-weight: 400;
 }
 .tof-legend {
@@ -1573,3 +1607,54 @@ body {
         rgb(255,236,179), rgb(252,176,64), rgb(233,105,44),
         rgb(186,53,90), rgb(104,52,139), rgb(38,54,120), rgb(14,26,48));
 }
+
+/* =================================================================
+   Multi-camera grid (layout computed in main.js layoutCameraGrid)
+   ================================================================= */
+.camera-grid {
+    justify-content: center;
+    align-content: start;
+    width: 100%;
+}
+.camera-tile {
+    position: relative;
+    min-width: 0;
+    background: var(--bg-video);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+}
+.camera-tile-feed {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;   /* letterbox, never crop */
+    background: var(--bg-video);
+}
+.camera-offline-strip {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.4rem;
+    margin-top: 0.5rem;
+}
+.camera-offline-strip[hidden] { display: none; }
+.camera-offline-chip {
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    border: 1px solid var(--border-color);
+}
+.cam-hide-offline {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-left: 0.5rem;
+    cursor: pointer;
+}
+.cam-hide-offline[hidden] { display: none; }
+
+/* The panel being worked in gets the one accent on its frame. */
+.card:focus-within { border-color: color-mix(in srgb, var(--accent) 70%, transparent); }
+body { accent-color: var(--accent); }

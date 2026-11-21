@@ -9,9 +9,9 @@
     <script src="vendor/three/three.min.js"></script>
     <script src="vendor/three/OrbitControls.js"></script>
 
-    <link rel="stylesheet" href="style.css?v=6">
-    <link rel="stylesheet" href="dashboard.css?v=7">
-    <link rel="stylesheet" href="mobile.css?v=1">
+    <link rel="stylesheet" href="style.css?v=7">
+    <link rel="stylesheet" href="dashboard.css?v=8">
+    <link rel="stylesheet" href="mobile.css?v=2">
 </head>
 
 <body>
@@ -28,8 +28,8 @@
                         padding:0.2rem 0.55rem; border-radius:3px; letter-spacing:0.05em;
                         text-transform:uppercase;"></span>
                     <button id="launch-gazebo-btn" style="display:none; font-size:0.7rem;
-                        padding:0.2rem 0.6rem; background:linear-gradient(135deg,#f59e0b,#d97706);
-                        color:#fff; border:none; border-radius:3px; cursor:pointer;"
+                        padding:0.2rem 0.6rem; background:var(--bg-tertiary);
+                        color:var(--text-on-status); border:none; border-radius:3px; cursor:pointer;"
                         title="Launch Gazebo with X3 robot">
                          Gazebo
                     </button>
@@ -182,29 +182,31 @@
                             style="background: var(--bg-tertiary); border: 1px solid var(--border-color);"
                             title="Download all captured images as ZIP"> Download All</button>
                         <button id="blur-sweep-btn" class="btn toolbar-btn"
-                            style="background: linear-gradient(135deg, var(--accent-purple), #7c3aed); color: white; border: none; box-shadow: 0 4px 12px rgba(168, 85, 247, 0.3);"
+                            style="background: var(--accent); color: var(--text-on-accent); border: none; box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 30%, transparent);"
                             title="Capture 25 images with focus 0.0-12.0 (step 0.5)"> Blur Sweep</button>
                         <button id="golden-set-btn" class="btn toolbar-btn"
-                            style="background: linear-gradient(135deg, var(--accent-yellow), #d97706); color: white; border: none; box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);"
+                            style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-strong) !important; border: none; box-shadow: 0 4px 12px color-mix(in srgb, var(--warn) 30%, transparent);"
                             title="Start continuous collection of dynamic motion blur frames (600 max)"> Golden Set: Start</button>
                         <button id="class-filter-toggle" class="btn toolbar-btn" title="Toggle detected classes"
-                            style="font-size: 0.72rem; padding: 0.3rem 0.7rem; background: var(--bg-tertiary); color: var(--accent-warning, #facc15); border: 1px solid var(--accent-warning, #facc15); border-radius: 4px; cursor: pointer; white-space: nowrap; transition: all 0.25s;">
+                            style="font-size: 0.72rem; padding: 0.3rem 0.7rem; background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border-strong); border-radius: 4px; cursor: pointer; white-space: nowrap; transition: all 0.25s;">
                              Cans Only</button>
                         <button id="label-toggle" class="btn toolbar-btn" title="Toggle detection labels"
-                            style="font-size: 0.72rem; padding: 0.3rem 0.7rem; background: var(--bg-tertiary); color: #60a5fa; border: 1px solid #60a5fa; border-radius: 4px; cursor: pointer; white-space: nowrap; transition: all 0.25s;">
+                            style="font-size: 0.72rem; padding: 0.3rem 0.7rem; background: var(--bg-tertiary); color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; cursor: pointer; white-space: nowrap; transition: all 0.25s;">
                              Labels On</button>
                     </div>
                 </div>
             </div>
             <div class="card-body" style="position: relative;">
                 <label id="camera-role-control" hidden>Camera <select id="camera-role" aria-label="Camera view"></select></label> <span id="camera-feed-status" role="status"></span>
+                <label id="camera-hide-offline-control" class="cam-hide-offline" hidden><input type="checkbox" id="camera-hide-offline"> Hide offline</label>
                 <div id="camera-panels" style="display: flex; gap: 0.5rem; width: 100%;">
                     <!-- RGB Panel -->
                     <div id="rgb-panel" style="flex: 1; position: relative; min-width: 0;">
                         <!-- WebRTC feed (shown when server runs with --webrtc-camera) -->
                         <video id="webrtc-cam" class="camera-feed" autoplay muted playsinline style="display: none; width: 100%;"></video>
                         <canvas id="camera-canvas" class="camera-feed" style="display: none; width: 100%;"></canvas>
-                        <div id="camera-grid" style="display: none; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 0.5rem;"></div>
+                        <div id="camera-grid" class="camera-grid" style="display: none;"></div>
+                        <div id="camera-offline-strip" class="camera-offline-strip" hidden></div>
                         <div id="camera-placeholder" class="camera-placeholder">
                             <span class="camera-placeholder-icon"></span>
                             <span>Awaiting camera feed...</span>
@@ -217,12 +219,12 @@
                             <span class="camera-placeholder-icon"></span>
                             <span>Awaiting depth feed...</span>
                         </div>
-                        <div class="overlay-chip" style="color: #67e8f9;">DEPTH</div>
+                        <div class="overlay-chip" style="color: var(--text-secondary);">DEPTH</div>
                     </div>
                     <!-- Mini Map Panel (hidden until map toggle is on) -->
                     <div id="minimap-panel" style="flex: 1; position: relative; min-width: 0; display: none;">
-                        <canvas id="mini-map-canvas" class="nav-canvas" style="width: 100%; height: auto; aspect-ratio: 1; background: #000; border-radius: 8px;"></canvas>
-                        <div class="overlay-chip" style="color: #a78bfa;">MAP</div>
+                        <canvas id="mini-map-canvas" class="nav-canvas" style="width: 100%; height: auto; aspect-ratio: 1; background: var(--bg-video); border-radius: 8px;"></canvas>
+                        <div class="overlay-chip" style="color: var(--text-secondary);">MAP</div>
                     </div>
                     <!-- OAK-D Stereo Panels (hidden until stereo toggle is on) -->
                     <div id="oak-left-panel" style="flex: 1; position: relative; min-width: 0; display: none;">
@@ -231,7 +233,7 @@
                             <span class="camera-placeholder-icon"></span>
                             <span>Awaiting OAK-D left...</span>
                         </div>
-                        <div class="overlay-chip" style="color: #86efac;">OAK L</div>
+                        <div class="overlay-chip" style="color: var(--text-secondary);">OAK L</div>
                     </div>
                     <div id="oak-right-panel" style="flex: 1; position: relative; min-width: 0; display: none;">
                         <img id="oak-right-feed" class="camera-feed" alt="OAK-D right" style="display: none; width: 100%;">
@@ -239,27 +241,27 @@
                             <span class="camera-placeholder-icon"></span>
                             <span>Awaiting OAK-D right...</span>
                         </div>
-                        <div class="overlay-chip" style="color: #86efac;">OAK R</div>
+                        <div class="overlay-chip" style="color: var(--text-secondary);">OAK R</div>
                     </div>
                 </div>
 
                 <!-- OAK-D telemetry strip: IMU + on-device 3D spatial detections -->
                 <div id="oak-info-strip" style="display: none; gap: 0.75rem; margin-top: 0.5rem; flex-wrap: wrap;">
                     <div id="oak-imu-box" style="flex: 1; min-width: 200px; padding: 0.5rem 0.75rem; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 6px; font-size: 0.75rem; font-family: monospace;">
-                        <div style="color: #86efac; font-weight: 600; margin-bottom: 0.25rem;">OAK-D IMU (BMI270)</div>
+                        <div style="color: var(--text-secondary); font-weight: 600; margin-bottom: 0.25rem;">OAK-D IMU (BMI270)</div>
                         <div>accel: <span id="oak-imu-accel">—</span> m/s²</div>
                         <div>gyro:&nbsp; <span id="oak-imu-gyro">—</span> rad/s</div>
                     </div>
                     <div id="oak-det-box" style="flex: 2; min-width: 240px; padding: 0.5rem 0.75rem; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 6px; font-size: 0.75rem;">
-                        <div style="color: #86efac; font-weight: 600; margin-bottom: 0.25rem;">OAK-D 3D detections <span id="oak-det-count" style="color: var(--text-secondary);">(0)</span></div>
+                        <div style="color: var(--text-secondary); font-weight: 600; margin-bottom: 0.25rem;">OAK-D 3D detections <span id="oak-det-count" style="color: var(--text-secondary);">(0)</span></div>
                         <div id="oak-det-list" style="font-family: monospace; line-height: 1.5;"><span style="color: var(--text-secondary);">none</span></div>
                     </div>
                 </div>
 
                 <!-- Demo Mode Banner Overlay -->
                 <div id="demo-banner" style="display: none; position: absolute; top: 0; left: 0; right: 0;
-                     background: linear-gradient(90deg, rgba(109,40,217,0.85), rgba(167,139,250,0.85));
-                     color: #fff; padding: 0.35rem 0.7rem; font-size: 0.78rem; font-weight: 600;
+                     background: color-mix(in srgb, var(--accent-strong) 90%, transparent);
+                     color: var(--text-on-status); padding: 0.35rem 0.7rem; font-size: 0.78rem; font-weight: 600;
                      z-index: 20; display: none; align-items: center; gap: 0.5rem; border-radius: 4px 4px 0 0;">
                     <span> DEMO</span>
                     <span id="demo-banner-role" style="font-size: 0.68rem; opacity: 0.85;"></span>
@@ -420,8 +422,8 @@
                                     Disable Movement
                                 </button>
                                 <button id="demo-mode-btn" class="btn" style="font-size: 0.75rem; padding: 0.4rem 0.8rem;
-                                           background: var(--bg-tertiary); color: #a78bfa;
-                                           border: 1px solid #a78bfa; border-radius: 4px;
+                                           background: var(--bg-tertiary); color: var(--accent);
+                                           border: 1px solid var(--accent); border-radius: 4px;
                                            cursor: pointer; transition: all 0.25s;"
                                     title="Cycle teacher/student models every 30s while auto-driving">
                                      Demo Mode
@@ -621,22 +623,22 @@
                         <option value="velocity_mlp_finetuned">TorchScript MLP (Finetuned)</option>
                     </select>
                     <button id="p2p-test-btn" class="btn"
-                        style="padding: 0.3rem 0.6rem; font-size: 0.75rem; background: #3b82f6; color: white; border: none; font-weight: 500; cursor: pointer; border-radius: 4px; transition: all 0.2s;">
+                        style="padding: 0.3rem 0.6rem; font-size: 0.75rem; background: var(--accent); color: var(--text-on-accent); border: none; font-weight: 500; cursor: pointer; border-radius: 4px; transition: all 0.2s;">
                         Start P2P Test
                     </button>
                     <!-- A/B comparison controls -->
                     <button id="vel-est-toggle-btn" class="btn"
-                        style="padding: 0.3rem 0.6rem; font-size: 0.75rem; background: #10b981; color: white; border: none; font-weight: 600; cursor: pointer; border-radius: 4px; transition: all 0.2s; min-width: 5.5rem;"
+                        style="padding: 0.3rem 0.6rem; font-size: 0.75rem; background: var(--ok); color: var(--text-on-status); border: none; font-weight: 600; cursor: pointer; border-radius: 4px; transition: all 0.2s; min-width: 5.5rem;"
                         title="Toggle velocity estimator on/off for A/B comparison">
                         Est: ON
                     </button>
                     <button id="ab-reactive-btn" class="btn"
-                        style="padding: 0.3rem 0.6rem; font-size: 0.75rem; background: #ef4444; color: white; border: none; font-weight: 500; cursor: pointer; border-radius: 4px; transition: all 0.2s;"
+                        style="padding: 0.3rem 0.6rem; font-size: 0.75rem; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-strong); font-weight: 500; cursor: pointer; border-radius: 4px; transition: all 0.2s;"
                         title="Run A/B test with velocity estimation OFF (reactive)">
                         Run Reactive
                     </button>
                     <button id="ab-predictive-btn" class="btn"
-                        style="padding: 0.3rem 0.6rem; font-size: 0.75rem; background: #00cc66; color: #000; border: none; font-weight: 500; cursor: pointer; border-radius: 4px; transition: all 0.2s;"
+                        style="padding: 0.3rem 0.6rem; font-size: 0.75rem; background: var(--accent); color: var(--text-on-accent); border: none; font-weight: 500; cursor: pointer; border-radius: 4px; transition: all 0.2s;"
                         title="Run A/B test with velocity estimation ON (predictive)">
                         Run Predictive
                     </button>
@@ -652,7 +654,7 @@
                     </div>
                     <div style="width: 1px; height: 1.2rem; background: var(--border-color); display: inline-block;"></div>
                     <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: var(--text-secondary); cursor: pointer; user-select: none; font-weight: 500;">
-                        <input type="checkbox" id="ab-repeat-check" style="accent-color: #00cc66; cursor: pointer; width: 16px; height: 16px; margin: 0; border-radius: 4px; background: rgba(0,0,0,0.3); border: 1px solid var(--border-color);">
+                        <input type="checkbox" id="ab-repeat-check" style="accent-color: var(--accent); cursor: pointer; width: 16px; height: 16px; margin: 0; border-radius: 4px; background: rgba(0,0,0,0.3); border: 1px solid var(--border-color);">
                         <span> Continuous Loop (Repeat)</span>
                     </label>
                     <span id="ab-test-status-text" class="test-status-text"
@@ -879,7 +881,7 @@
         </section>
     </div>
 
-    <script src="main.js?v=camera-grid-1"></script>
+    <script src="main.js?v=camera-grid-2"></script>
     <script src="dashboard.js?v=2"></script>
     <script src="log-console.js?v=2"></script>
     <script src="vendor/three/GLTFLoader.js"></script>

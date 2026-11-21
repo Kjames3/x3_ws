@@ -31,31 +31,31 @@ body.touch-ui.phone .m-overlay { --m-stick: 112px; }
 .m-pill {
     font: 700 0.72rem/1 system-ui, sans-serif; letter-spacing: 0.04em;
     padding: 0.35rem 0.6rem; border-radius: 999px; white-space: nowrap;
-    background: rgba(15, 23, 42, 0.82); color: #cbd5e1; border: 1px solid #334155;
+    background: color-mix(in srgb, var(--bg-primary) 82%, transparent); color: var(--text-primary); border: 1px solid var(--border-color);
 }
-.m-pill.ok   { color: #4ade80; border-color: #166534; }
-.m-pill.warn { color: #fbbf24; border-color: #92400e; }
-.m-pill.bad  { color: #fff; background: #b91c1c; border-color: #fca5a5; }
+.m-pill.ok   { color: var(--ok-bright); border-color: var(--ok-dim); }
+.m-pill.warn { color: var(--warn); border-color: var(--warn-dim); }
+.m-pill.bad  { color: var(--text-on-status); background: var(--bad-dark); border-color: var(--bad-bright); }
 .m-pill[hidden] { display: none; }
 
 .m-stick {
     position: absolute; width: var(--m-stick); height: var(--m-stick);
     bottom: calc(env(safe-area-inset-bottom, 0px) + 22px);
     border-radius: 50%; pointer-events: auto; touch-action: none;
-    background: rgba(30, 41, 59, 0.55); border: 2px solid rgba(148, 163, 184, 0.7);
+    background: color-mix(in srgb, var(--bg-tertiary) 55%, transparent); border: 2px solid color-mix(in srgb, var(--text-secondary) 70%, transparent);
 }
 .m-stick.left  { left:  calc(env(safe-area-inset-left, 0px) + 22px); }
 .m-stick.right { right: calc(env(safe-area-inset-right, 0px) + 22px); }
 .m-stick .m-knob {
     position: absolute; left: 50%; top: 50%; width: 46%; height: 46%;
     margin: -23% 0 0 -23%; border-radius: 50%;
-    background: rgba(56, 189, 248, 0.85); border: 2px solid #e0f2fe;
+    background: color-mix(in srgb, var(--accent) 85%, transparent); border: 2px solid var(--text-primary);
     pointer-events: none;
 }
 .m-stick .m-label {
     position: absolute; left: 0; right: 0; top: -1.3rem; text-align: center;
-    font: 600 0.65rem system-ui, sans-serif; color: #cbd5e1;
-    text-shadow: 0 1px 2px #000; pointer-events: none;
+    font: 600 0.65rem system-ui, sans-serif; color: var(--text-primary);
+    text-shadow: 0 1px 2px var(--bg-video); pointer-events: none;
 }
 .m-stick.disabled { opacity: 0.35; }
 
@@ -67,22 +67,22 @@ body.touch-ui.phone .m-overlay { --m-stick: 112px; }
 }
 .m-bottom > * { pointer-events: auto; touch-action: manipulation; }
 .m-stop {
-    min-width: 110px; padding: 0.9rem 1.4rem; border-radius: 12px; border: 2px solid #fecaca;
-    background: #dc2626; color: #fff; font: 800 1.15rem system-ui, sans-serif;
+    min-width: 110px; padding: 0.9rem 1.4rem; border-radius: 12px; border: 2px solid var(--bad-bright);
+    background: var(--bad-strong); color: var(--text-on-status); font: 800 1.15rem system-ui, sans-serif;
     letter-spacing: 0.06em;
 }
-.m-stop:active { background: #991b1b; }
+.m-stop:active { background: var(--bad-darker); }
 .m-row { display: flex; gap: 8px; align-items: center; }
 .m-chip {
     padding: 0.5rem 0.75rem; border-radius: 8px; font: 700 0.72rem system-ui, sans-serif;
-    background: rgba(15, 23, 42, 0.85); color: #e2e8f0; border: 1px solid #475569;
+    background: color-mix(in srgb, var(--bg-primary) 85%, transparent); color: var(--text-primary); border: 1px solid var(--border-strong);
 }
-.m-chip.on { color: #4ade80; border-color: #166534; }
-.m-chip.off { color: #f87171; border-color: #7f1d1d; }
+.m-chip.on { color: var(--ok-bright); border-color: var(--ok-dim); }
+.m-chip.off { color: var(--bad-bright); border-color: var(--bad-dim); }
 .m-speed {
     display: flex; align-items: center; gap: 6px; padding: 0.3rem 0.6rem; border-radius: 8px;
-    background: rgba(15, 23, 42, 0.85); border: 1px solid #475569;
-    font: 700 0.65rem system-ui, sans-serif; color: #cbd5e1;
+    background: color-mix(in srgb, var(--bg-primary) 85%, transparent); border: 1px solid var(--border-strong);
+    font: 700 0.65rem system-ui, sans-serif; color: var(--text-primary);
 }
 .m-speed input { width: 110px; touch-action: pan-x; }
 
@@ -117,7 +117,7 @@ body.touch-ui.phone .tabbar .tab.m-extra { display: none; }
 body.touch-ui.phone .tabbar.m-more-open .tab.m-extra { display: inline-block; }
 body.touch-ui.phone .tabbar .m-more-btn {
     flex: 0 0 auto; padding: 0.6rem 0.9rem; font-size: 0.85rem; background: none;
-    border: 0; color: var(--text-secondary, #94a3b8); cursor: pointer;
+    border: 0; color: var(--text-secondary); cursor: pointer;
 }
 
 /* Drive tab: just the camera. */
