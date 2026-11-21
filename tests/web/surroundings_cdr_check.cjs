@@ -4,7 +4,7 @@ const scope = {TextDecoder, Float32Array, DataView, Uint8Array};
 vm.createContext(scope);
 vm.runInContext(source.slice(source.indexOf('class CDRReader'),source.indexOf('function parseLaserScanCDR'))+source.slice(source.indexOf('function parseSurroundingsCDR'),source.indexOf('/**\n * Parse a Foxglove binary MessageData'))+';this.parse=parseSurroundingsCDR;',scope);
 const cdr=fs.readFileSync(process.argv[2]);const b=new Uint8Array(13+cdr.length);b.set(cdr,13);
-const xyz=scope.parse(b.buffer,13);assert(xyz.length>0 && xyz.length<=18000);assert([...xyz].every(Number.isFinite));
+const xyz=scope.parse(b.buffer,13);assert(xyz.length>0 && xyz.length<=12000*3);assert([...xyz].every(Number.isFinite));
 assert.throws(()=>scope.parse(b.buffer.slice(0,100),13));
 console.log('Browser decoder: real ROS CDR with Foxglove offset and truncated input checks passed');
 if (process.argv[3]) {

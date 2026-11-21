@@ -47,3 +47,22 @@ for (const size of [.05,.1]) {
 }
 assert.equal(voxelize([NaN,0,0,0,0,-1],.05).length,0);
 console.log('Fine/coarse grids, size reset, ray clearing and shared capacity passed');
+// 2.5 cm near mode: mixed cells, memory near-only, far floor still observed.
+{
+    const {voxelizeMixed, NEAR, FAR, NEAR_RADIUS} = require('../../src/web/surroundings-memory.js');
+    const near2 = [1.005,.005,.2, 1.035,.005,.2];          // two 2.5 cm cells, one 5 cm cell
+    const far2 = [4.005,.005,.2, 4.035,.005,.2];           // one 5 cm cell beyond 3 m
+    const cells = voxelizeMixed([...near2, ...far2]);
+    assert.equal(cells.filter(c => c.s === NEAR).length, 2);
+    assert.equal(cells.filter(c => c.s === FAR).length, 1);
+    assert.equal(voxelizeMixed([...near2, ...far2], {far: false}).length, 2);
+    m = new Memory(NEAR); assert.equal(m.size, NEAR);
+    for (let i = 0; i < 3; i++) m.ingest([...near2, ...far2, 4.5,0,0], pose(i*.2));
+    assert.equal(m.cells.size, 2, 'memory keeps only near cells in 2.5 cm mode');
+    assert(m.floor.size >= 1, 'far floor returns still mark coverage');
+    // A near cell that ends up beyond the radius after the robot moves is dropped.
+    let p; for (let i = 1; i <= 4; i++) { p = pose(.4 + i*.2, -.6*i, 0, 0); m.ingest([], p); }
+    assert.equal(m.cells.size, 0, 'near cells now 3.4 m away are pruned');
+    assert(m.setSize(.05) && m.size === .05 && m.cells.size === 0);
+    console.log('2.5 cm near mode: mixed voxelize, near-only memory and far floor coverage passed');
+}

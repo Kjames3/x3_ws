@@ -58,6 +58,39 @@ def decode_points(data):
     return None
 
 
+# Display cloud (/surroundings/points): 2.5 cm cells within NEAR_RADIUS of the
+# robot (horizontal), 5 cm beyond, at most DISPLAY_CAP points. The browser
+# re-voxelizes this at 2.5/5, 5 or 10 cm and uses the same radius.
+NEAR_RADIUS = 3.0
+NEAR_CELL, FAR_CELL = 0.025, 0.05
+DISPLAY_CAP = 12000  # 12 B/pt at 5 Hz: ~700 KB/s, 2x the old 6000 cap
+
+
+def _first_per_cell(xyz, cell):
+    if not len(xyz):
+        return xyz
+    _, idx = np.unique(np.floor(xyz / cell).astype(np.int32), axis=0, return_index=True)
+    return xyz[np.sort(idx)]
+
+
+def display_voxels(xyz, near_radius=NEAR_RADIUS, cap=DISPLAY_CAP):
+    """One point per 2.5 cm cell near the robot and per 5 cm cell beyond.
+
+    Over the cap, the far shell is thinned first but keeps at least a third of
+    the budget, so distant walls never vanish behind a cluttered near field.
+    """
+    xyz = np.asarray(xyz)
+    near_mask = np.hypot(xyz[:, 0], xyz[:, 1]) < near_radius
+    near = _first_per_cell(xyz[near_mask], NEAR_CELL)
+    far = _first_per_cell(xyz[~near_mask], FAR_CELL)
+    if len(near) + len(far) > cap:
+        far_keep = min(len(far), max(cap - len(near), cap // 3))
+        near_keep = min(len(near), cap - far_keep)
+        far = far[np.linspace(0, len(far) - 1, far_keep, dtype=int)] if far_keep else far[:0]
+        near = near[np.linspace(0, len(near) - 1, near_keep, dtype=int)] if near_keep else near[:0]
+    return np.concatenate((near, far)) if len(far) else near
+
+
 def quat_to_mat(q):
     x, y, z, w = q.x, q.y, q.z, q.w
     return np.array([
@@ -172,7 +205,8 @@ class LivoxScanNode(Node):
         return True
 
     def publish_surroundings(self, pts, data):
-        """Bounded display-only cloud: 5 Hz, 5 cm voxels, <=6000 XYZ points.
+        """Bounded display-only cloud: 5 Hz, 2.5 cm voxels within 3 m and 5 cm
+        beyond, <=12000 XYZ points (see display_voxels).
 
         Acquisition-time odometry de-skews the display cloud when available.
         Matching /surroundings/pose enables bounded browser-side memory.
@@ -207,10 +241,7 @@ class LivoxScanNode(Node):
                 xyz[:, 0] = c * (wx - fx) + sn * (wy - fy)
                 xyz[:, 1] = -sn * (wx - fx) + c * (wy - fy)
         if len(xyz):
-            _, indices = np.unique(np.floor(xyz / 0.05).astype(np.int32), axis=0, return_index=True)
-            xyz = xyz[indices]
-            if len(xyz) > 6000:
-                xyz = xyz[np.linspace(0, len(xyz) - 1, 6000, dtype=int)]
+            xyz = display_voxels(xyz)
         xyz = np.asarray(xyz, dtype='<f4')
         msg = PointCloud2()
         sec, nsec = struct.unpack_from('<iI', data, 4)

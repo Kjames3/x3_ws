@@ -7,12 +7,42 @@ import numpy as np
 from sensor_msgs.msg import PointCloud2, PointField
 from rclpy.serialization import serialize_message
 from types import SimpleNamespace as NS
+def _display_defs(tree):
+    """Module-level display voxelizer (constants + helpers) for exec'd tests."""
+    names={'NEAR_RADIUS','NEAR_CELL','FAR_CELL','DISPLAY_CAP','_first_per_cell','display_voxels'}
+    out=[]
+    for n in tree.body:
+        if isinstance(n,ast.FunctionDef) and n.name in names: out.append(n)
+        elif isinstance(n,ast.Assign) and any(getattr(t,'id',None) in names or
+                (isinstance(t,ast.Tuple) and any(getattr(e,'id',None) in names for e in t.elts)) for t in n.targets): out.append(n)
+    return out
+
+
+def _display_ns():
+    tree=ast.parse(pathlib.Path('src/yahboomcar_bringup/yahboomcar_bringup/livox_scan_node.py').read_text())
+    ns=dict(np=np); exec(compile(ast.Module(body=_display_defs(tree),type_ignores=[]),'dv','exec'),ns)
+    return ns
+
+
+def test_display_voxels_near_fine_far_coarse_and_capped():
+    ns=_display_ns(); dv=ns['display_voxels']
+    # Two points 3 cm apart: separate 2.5 cm cells near, one 5 cm cell far.
+    near=np.array([[1.005,.005,.2],[1.035,.005,.2]]); far=near+[3,0,0]
+    assert len(dv(near))==2 and len(dv(far))==1
+    # Over the cap: total bounded, far shell keeps at least a third.
+    rng=np.random.default_rng(0)
+    big=np.vstack([rng.uniform(-2,2,(40000,3)), rng.uniform(3.2,5.5,(40000,3))])
+    out=dv(big,cap=9000); r=np.hypot(out[:,0],out[:,1])
+    assert len(out)==9000 and (r>=3).sum()>=3000
+    assert ns['DISPLAY_CAP']==12000
+
+
 def test_publisher_browser_roundtrip():
     path=pathlib.Path('src/yahboomcar_bringup/yahboomcar_bringup/livox_scan_node.py')
     tree=ast.parse(path.read_text()); cls=next(n for n in tree.body if isinstance(n,ast.ClassDef))
     method=next(n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name=='publish_surroundings')
     ns=dict(np=np,struct=struct,PointCloud2=PointCloud2,PointField=PointField)
-    exec(compile(ast.Module(body=[method],type_ignores=[]),'cloud','exec'),ns)
+    exec(compile(ast.Module(body=_display_defs(tree)+[method],type_ignores=[]),'cloud','exec'),ns)
     messages=[]
     clock=NS(now=lambda:NS(nanoseconds=1_000_000_000))
     obj=NS(get_clock=lambda:clock, cloud_pub=NS(get_subscription_count=lambda:1,publish=messages.append),pose_at=lambda stamps: None,cloud_last_ns=0,cloud_R=np.eye(3),cloud_t=np.array([.0432,0,.31]))
@@ -20,7 +50,7 @@ def test_publisher_browser_roundtrip():
     for i,k in enumerate('xyz'):pts[k]=xyz[:,i]
     pts['x'][0]=float('nan');pts['x'][1]=pts['y'][1]=pts['z'][1]=0
     ns['publish_surroundings'](obj,pts,struct.pack('<I i I',256,123,456))
-    m=messages[0];assert 0<m.width<=6000 and m.header.frame_id=='base_footprint'
+    m=messages[0];assert 0<m.width<=12000 and m.header.frame_id=='base_footprint'
     assert np.isfinite(np.frombuffer(m.data,dtype='<f4')).all()
     with tempfile.TemporaryDirectory() as directory:
         fixture = pathlib.Path(directory) / 'cloud.cdr'
@@ -46,7 +76,7 @@ def test_acquisition_pose_interpolation_and_cloud_deskew():
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
     methods = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in ('pose_at', 'publish_surroundings')]
     ns = dict(np=np, struct=struct, math=math, PoseStamped=PoseStamped, PointCloud2=PointCloud2, PointField=PointField)
-    exec(compile(ast.Module(body=methods, type_ignores=[]), 'cloud', 'exec'), ns)
+    exec(compile(ast.Module(body=_display_defs(tree) + methods, type_ignores=[]), 'cloud', 'exec'), ns)
     clouds, poses = [], []
     # A robot translating 1 m/s and turning 1 rad/s, with bracketing odometry.
     obj = NS(pose_history=[(10., 0, 0, 0, 1, 0, 1), (10.1, .1, 0, .1, 1, 0, 1)],

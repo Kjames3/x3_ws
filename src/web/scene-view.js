@@ -160,8 +160,11 @@
         };
     }
     let lastCloud = null, lastCeiling = null, lastOptions = null, clearance = null;
-    const cloudPositions = new Float32Array(6000 * 3);
-    const cloudColors = new Float32Array(6000 * 3);
+    // Sized for livox_scan_node's DISPLAY_CAP (12000) with headroom; voxel
+    // instances hold near memory (<= SurroundingsMemory.LIMIT) plus live far cells.
+    const CLOUD_CAP = 15000, VOXEL_CAP = 28000;
+    const cloudPositions = new Float32Array(CLOUD_CAP * 3);
+    const cloudColors = new Float32Array(CLOUD_CAP * 3);
 
     let oakPoints, oakGeometry, oakDotMaterial, oakSplatMaterial, lastSplatCloud = null, lastOakCloud = null, lastOakPose = null;
     function oakOnlyEnvironment() {
@@ -243,14 +246,14 @@
         scene.add(cloud);
         const cell = SurroundingsGeometry.CELL;
         voxels = new THREE.InstancedMesh(new THREE.BoxGeometry(cell * .94, cell * .94, cell * .94),
-            new THREE.MeshLambertMaterial({ color: 0xffffff }), 12000);
+            new THREE.MeshLambertMaterial({ color: 0xffffff }), VOXEL_CAP);
         voxels.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
         // three r128 sizes instanceColor from the CURRENT count on the first
         // setColorAt: called after count = 0 it allocates a zero-length buffer,
         // every colour write is dropped and the voxels render black/white.
         voxels.setColorAt(0, new THREE.Color(0xffffff));
         voxels.frustumCulled = false; voxels.count = 0;
-        voxels.geometry.setAttribute('memoryOpacity', new THREE.InstancedBufferAttribute(new Float32Array(12000).fill(1), 1));
+        voxels.geometry.setAttribute('memoryOpacity', new THREE.InstancedBufferAttribute(new Float32Array(VOXEL_CAP).fill(1), 1));
         fadeOccluders(voxels.material, true);
         scene.add(voxels);
         floorTiles = new THREE.InstancedMesh(new THREE.PlaneGeometry(.245, .245),
@@ -275,7 +278,9 @@
         const height = Number.isFinite(inputHeight) ? Math.min(1, Math.max(.2, inputHeight)) : .4;
         const memoryEnabled = document.getElementById('surroundings-memory-toggle').checked;
         const coverage = document.getElementById('surroundings-coverage-toggle').checked;
-        const voxelSize = Number(document.getElementById('surroundings-voxel-size').value) === .05 ? .05 : .10;
+        // .025 = "2.5 cm near": 2.5 cm cells within NEAR_RADIUS, 5 cm beyond.
+        const voxelSize = {'0.025': .025, '0.05': .05}[document.getElementById('surroundings-voxel-size').value] ?? .10;
+        const mixed = voxelSize === SurroundingsMemory.NEAR;
         if (surroundingsMemory.setSize(voxelSize)) memoryCloud = null;
         const pose = (d.surroundingsPoses || []).find(p => Math.abs(p.stamp - d.surroundingsCloud?.stamp) < .00001);
         if (memoryReset) { surroundingsMemory.clear(); memoryCloud = null; memoryReset = false; }
@@ -307,7 +312,7 @@
             const xyz = d.surroundingsCloud, color = new THREE.Color();
             const riskCells = new Map(clearance.cells.map(c => [`${Math.floor(c.x / .1)},${Math.floor(c.y / .1)},${Math.floor(c.z / .1)}`, c.risk]));
             let n = 0;
-            for (let i = 0; i < xyz.length && n < 6000; i += 3) {
+            for (let i = 0; i < xyz.length && n < CLOUD_CAP; i += 3) {
                 const x = xyz[i], y = xyz[i + 1], z = xyz[i + 2];
                 if (![x, y, z].every(Number.isFinite) || z < -0.15 || (hideCeiling && z > 2)) continue;
                 // base_footprint (forward,left,up) -> scene (right,up,back).
@@ -323,12 +328,19 @@
             cloudGeometry.attributes.position.needsUpdate = true;
             cloudGeometry.attributes.color.needsUpdate = true;
             const snapshot = useMemory ? surroundingsMemory.snapshot(memoryPose) : null;
-            const displayCells = snapshot ? snapshot.cells : SurroundingsMemory.voxelize(xyz, voxelSize);
+            // 2.5 cm mode: memory holds the near field only (see surroundings-memory.js),
+            // so cells beyond NEAR_RADIUS come live from this frame at 5 cm.
+            const displayCells = mixed
+                ? (snapshot ? snapshot.cells.concat(SurroundingsMemory.voxelizeMixed(xyz, {near: false}))
+                    : SurroundingsMemory.voxelizeMixed(xyz))
+                : (snapshot ? snapshot.cells : SurroundingsMemory.voxelize(xyz, voxelSize));
             const matrix = new THREE.Matrix4();
             let count = 0;
             for (const c of displayCells) {
-                if (hideCeiling && c.z - voxelSize / 2 > 2) continue;
-                matrix.makeScale(voxelSize / SurroundingsGeometry.CELL, voxelSize / SurroundingsGeometry.CELL, voxelSize / SurroundingsGeometry.CELL);
+                if (count >= VOXEL_CAP) break;
+                const size = c.s || voxelSize;
+                if (hideCeiling && c.z - size / 2 > 2) continue;
+                matrix.makeScale(size / SurroundingsGeometry.CELL, size / SurroundingsGeometry.CELL, size / SurroundingsGeometry.CELL);
                 matrix.setPosition(-c.y, c.z, -c.x);
                 voxels.setMatrixAt(count, matrix);
                 const risk = !useMemory || c.age < .4 ? riskCells.get(`${Math.floor(c.x / .1)},${Math.floor(c.y / .1)},${Math.floor(c.z / .1)}`) : 0;

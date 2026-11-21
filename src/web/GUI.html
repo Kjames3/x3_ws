@@ -353,7 +353,7 @@
                             <p id="surroundings-oak-status" class="scene-options-note">Off · gray points mean uncertain color, not gray material.</p>
                             <label><input type="checkbox" id="surroundings-ceiling-toggle" checked> Hide ceiling (above 2 m)</label>
                             <label>Show <select id="surroundings-mode"><option value="clean">Clean voxels</option><option value="raw">Raw points</option></select></label>
-                            <label>Livox voxel size <select id="surroundings-voxel-size"><option value="0.05">Fine (5 cm)</option><option value="0.10">Standard (10 cm)</option></select></label>
+                            <label>Livox voxel size <select id="surroundings-voxel-size"><option value="0.025">Near (2.5 cm within 3 m, 5 cm beyond)</option><option value="0.05" selected>Fine (5 cm)</option><option value="0.10">Standard (10 cm)</option></select></label>
                             <label><input type="checkbox" id="surroundings-memory-toggle" checked> Stabilize static surroundings</label>
                             <label><input type="checkbox" id="surroundings-coverage-toggle" checked> Observation coverage</label>
                             <button id="surroundings-memory-reset" type="button">Clear memory</button>
@@ -881,7 +881,7 @@
         </section>
     </div>
 
-    <script src="main.js?v=camera-grid-2"></script>
+    <script src="main.js?v=surroundings-near-1"></script>
     <script src="dashboard.js?v=2"></script>
     <script src="log-console.js?v=2"></script>
     <script src="vendor/three/GLTFLoader.js"></script>
@@ -889,10 +889,10 @@
     <script src="pose-refinement.js?v=1"></script>
     <script src="humanoid.js?v=4"></script>
     <script src="surroundings-geometry.js?v=1"></script>
-    <script src="surroundings-memory.js?v=2"></script>
+    <script src="surroundings-memory.js?v=3"></script>
     <script src="person-cloud-tracker.js?v=1"></script>
     <script src="oak-splats.js?v=2"></script>
-    <script src="scene-view.js?v=34"></script>
+    <script src="scene-view.js?v=35"></script>
     <script src="mobile.js?v=1"></script>
 </body>
 
