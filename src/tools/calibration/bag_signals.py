@@ -19,9 +19,11 @@ import struct
 
 import numpy as np
 
-LIVOX_POINT_DT = np.dtype({'names': ['t', 'x', 'y', 'z'],
-                           'formats': ['<u4', '<f4', '<f4', '<f4'],
-                           'offsets': [0, 4, 8, 12], 'itemsize': 20})
+# Livox CustomPoint: offset_time u32, x y z f32, reflectivity u8 (0-150 diffuse,
+# 151-255 retroreflective), tag u8, line u8; 20-byte stride in the CDR array.
+LIVOX_POINT_DT = np.dtype({'names': ['t', 'x', 'y', 'z', 'reflectivity', 'tag', 'line'],
+                           'formats': ['<u4', '<f4', '<f4', '<f4', 'u1', 'u1', 'u1'],
+                           'offsets': [0, 4, 8, 12, 16, 17, 18], 'itemsize': 20})
 
 # Types whose CDR starts with std_msgs/Header (so the stamp sits at byte 4).
 STAMPED_TYPES = {

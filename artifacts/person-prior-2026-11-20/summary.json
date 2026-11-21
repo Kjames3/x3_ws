@@ -1,0 +1,76 @@
+{
+  "map": "RealLab3",
+  "cell_m": 0.25,
+  "origin": [
+    -3.01,
+    -10.8
+  ],
+  "shape": [
+    52,
+    66
+  ],
+  "runs": [
+    {
+      "run": "artifacts/person-lidar-2026-10-30/goal-on-r1",
+      "frames": 439,
+      "person_cells": 0,
+      "clutter_in_view": 643
+    },
+    {
+      "run": "artifacts/person-lidar-2026-10-30/goal-on-r2",
+      "frames": 137,
+      "person_cells": 57,
+      "clutter_in_view": 226
+    },
+    {
+      "run": "artifacts/person-lidar-2026-10-30/goal-on-r3",
+      "frames": 601,
+      "person_cells": 178,
+      "clutter_in_view": 1031
+    },
+    {
+      "run": "artifacts/person-lidar-2026-10-30/goal-on-r4",
+      "frames": 575,
+      "person_cells": 135,
+      "clutter_in_view": 424
+    },
+    {
+      "run": "artifacts/person-lidar-2026-10-30/idle-off-r1",
+      "frames": 587,
+      "person_cells": 444,
+      "clutter_in_view": 599
+    },
+    {
+      "run": "artifacts/person-lidar-2026-10-30/idle-on-r1",
+      "frames": 592,
+      "person_cells": 471,
+      "clutter_in_view": 641
+    },
+    {
+      "run": "artifacts/person-lidar-2026-11-03/busy-r1",
+      "frames": 2930,
+      "person_cells": 673,
+      "clutter_in_view": 6564
+    },
+    {
+      "run": "artifacts/person-lidar-2026-11-03/busy-r2",
+      "frames": 2903,
+      "person_cells": 4536,
+      "clutter_in_view": 7084
+    },
+    {
+      "run": "artifacts/person-lidar-2026-11-03/group-r1",
+      "frames": 577,
+      "person_cells": 934,
+      "clutter_in_view": 560
+    }
+  ],
+  "params": {
+    "lidar_range": 8.0,
+    "cam_range": 4.0,
+    "cam_hfov": 80.0,
+    "clear": 0.6,
+    "min_exposure": 50
+  },
+  "status": "pipeline proof; not for the tracker (see docstring)"
+}
