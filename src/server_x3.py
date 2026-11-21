@@ -913,6 +913,9 @@ class ROS2Bridge:
         import rclpy
         from rclpy.node import Node
         from sensor_msgs.msg import Image
+        from ros_data_watchdog import DataWatchdog
+        # /scan is the Livox path (driver -> livox_scan_node), /odom the EKF path.
+        self.data_watchdog = DataWatchdog(['/scan', '/odom'])
         from geometry_msgs.msg import Twist
         from nav_msgs.msg import Odometry, OccupancyGrid
         from std_msgs.msg import Float32
@@ -1115,6 +1118,7 @@ class ROS2Bridge:
             self._node.destroy_client(cli)
 
     def _scan_cb(self, msg):
+        self.data_watchdog.beat('/scan')
         import math as _math
         obstacles = []
         # LIDAR_YAW_OFFSET_RAD: the mount's measured yaw error, added to every
@@ -1224,6 +1228,8 @@ class ROS2Bridge:
     def _odom_cb(self, msg, fused=True):
         """Extract position (metres), yaw (radians), and body twist from nav_msgs/Odometry."""
         self._odom_stamp = time.monotonic()  # Idea 225: record arrival time for staleness guard
+        if fused:
+            self.data_watchdog.beat('/odom')
         import math
         p = msg.pose.pose.position
         q = msg.pose.pose.orientation
@@ -4440,6 +4446,32 @@ async def oak_camera_feed_loop():
         await asyncio.to_thread(worker.join, 3)
 
 
+_ros_data_state = None   # last DataWatchdog.check(); sent in the readout as "ros_data"
+
+
+async def ros_data_watchdog_loop():
+    """1 Hz: log the ROS data-plane stall (see ros_data_watchdog.py) on transitions.
+
+    Detection only. Recovery (restart bringup + foxglove_bridge) comes later.
+    """
+    global _ros_data_state
+    was_ok = None
+    while not _shutting_down:
+        wd = getattr(ros_bridge, 'data_watchdog', None)
+        if wd is not None:
+            st = wd.check()
+            _ros_data_state = st
+            if st['ok'] is False and was_ok is not False:
+                logger.error("ROS data stall: no %s for %s (ages %s, counts %s); "
+                             "manual fix: restart x3_server, then foxglove_bridge",
+                             ', '.join(st['stalled']), 'startup' if all(st['counts'][t] == 0 for t in st['stalled'])
+                             else f"{st['stalled_for']} s", st['ages'], st['counts'])
+            elif st['ok'] and was_ok is False:
+                logger.warning("ROS data recovered (ages %s)", st['ages'])
+            was_ok = st['ok']
+        await asyncio.sleep(1.0)
+
+
 async def broadcast_loop():
     global _cam_frame_count, _yolo_frame_count, _fps_last_time
     global fps_camera, fps_detection, last_detections, last_detections_t, last_detections_frame
@@ -4698,6 +4730,7 @@ async def broadcast_loop():
                 "left_power": current_left_power,
                 "right_power": current_right_power,
                 "detection_enabled": detection_enabled,
+                "ros_data": _ros_data_state,
                 "is_auto_driving": is_auto_driving,
                 "cbf": getattr(ros_bridge, 'cbf_info', None) if ros_bridge is not None else None,
                 "detections": last_detections,
@@ -5614,6 +5647,7 @@ async def main():
                      daemon=True).start()
     import loop_stall_probe
     _stall_beat = asyncio.ensure_future(loop_stall_probe.start(threading.get_ident()))
+    _data_watch = asyncio.ensure_future(ros_data_watchdog_loop())
 
     # Graceful shutdown: on SIGINT/SIGTERM (e.g. `systemctl restart`) set the flag so
     # the async loops exit, gather() returns, and the finally-block cleanup() runs —
