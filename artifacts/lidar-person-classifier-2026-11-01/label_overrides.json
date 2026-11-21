@@ -262,5 +262,23 @@
   "r_m": 1.6,
   "label": "not_person",
   "note": "user 2026-11-10: bedroom empty for the whole run (user alone, in the living room); camera false detections near the desks (stickered desktop PC on the floor?) are not people"
+ },
+ {
+  "run": "seated-r1",
+  "x": -3.63,
+  "y": 4.02,
+  "r_m": 0.6,
+  "label": "sitting",
+  "note": "user 2026-11-20 lab: seated at their desk all run; near_camera: odom heading drifted during these runs (pre bias fix), so match the camera person per frame",
+  "near_camera": true
+ },
+ {
+  "run": "seated-r2",
+  "x": -4.4,
+  "y": 2.43,
+  "r_m": 0.6,
+  "label": "sitting",
+  "note": "same desk, second run; near_camera: odom heading drifted during these runs (pre bias fix), so match the camera person per frame",
+  "near_camera": true
  }
 ]

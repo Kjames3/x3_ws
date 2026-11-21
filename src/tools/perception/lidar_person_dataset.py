@@ -71,17 +71,26 @@ LABEL_NAMES = {1: 'person', 0: 'not_person', 2: 'sitting', -1: 'unknown'}
 OVERRIDE_LABELS = {'person': 1, 'not_person': 0, 'sitting': 2, 'unknown': -1}
 
 
-def apply_overrides(run, xy, label, source, overrides, t=None):
+def apply_overrides(run, xy, label, source, overrides, t=None, cam_d=None):
     """Hand corrections: every candidate of `run` within r_m of (x, y) in odom gets the
     entry's label.  The persistent rule cannot tell a person sitting still from a chair
     (furniture-r1: a seated person 0.69 m from the robot was labelled not-person), so
     the user's word wins.  'sitting' (2) is left out of training, as SiT's seated people are.
     Optional t_from / t_to (seconds since the run's first candidate) limit an entry to a time
-    window, e.g. a chair that is occupied only part of the run."""
+    window, e.g. a chair that is occupied only part of the run.
+    "near_camera": true matches candidates within r_m of a measured camera person IN THE
+    SAME FRAME instead of a fixed (x, y): for parked runs whose odom heading drifted (the
+    2026-11-20 lab seated runs, before the /imu/data bias fix), a fixed seat smears by
+    ~1 m but camera and lidar drift together."""
     for o in overrides:
         if o['run'] != run:
             continue
-        m = np.hypot(xy[:, 0] - o['x'], xy[:, 1] - o['y']) < o.get('r_m', 0.5)
+        if o.get('near_camera'):
+            if cam_d is None:
+                continue
+            m = cam_d < o.get('r_m', 0.5)
+        else:
+            m = np.hypot(xy[:, 0] - o['x'], xy[:, 1] - o['y']) < o.get('r_m', 0.5)
         if t is not None and ('t_from' in o or 't_to' in o):
             rel = t - t.min()
             m &= (rel >= o.get('t_from', -np.inf)) & (rel < o.get('t_to', np.inf))
@@ -299,6 +308,20 @@ def iter_frames(run_dir):
                    end=end, rec=rec, cam=cam, n_bad=len(bad))
 
 
+REFL_NAMES = ('refl_mean', 'refl_std', 'refl_median', 'refl_p90', 'refl_retro_frac', 'refl_rangenorm')
+
+
+def refl_features(refl, rng):
+    """Livox reflectivity of one candidate (0-150 diffuse, >150 retroreflective).
+    refl_rangenorm = log1p(mean) + 0.5 log(range), the same mild range flattening
+    lidar_intensity_check.py uses (Livox already compensates most of the falloff)."""
+    if not len(refl):
+        return np.zeros(len(REFL_NAMES), dtype=np.float32)
+    m = float(refl.mean())
+    return np.array([m, refl.std(), np.median(refl), np.percentile(refl, 90), (refl > 150).mean(),
+                     np.log1p(m) + 0.5 * np.log(min(max(rng, 0.3), 20.0))], dtype=np.float32)
+
+
 def process_run(run_dir, overrides=(), peaks=False, extra_split_z=None):
     run_dir = pathlib.Path(run_dir)
     frames, rows = [], []
@@ -320,10 +343,11 @@ def process_run(run_dir, overrides=(), peaks=False, extra_split_z=None):
             bearing = math.degrees(math.atan2(left, fwd))
             view = (rec is not None and abs(bearing) < VIEW_HALF_DEG
                     and VIEW_RANGE_M[0] < math.hypot(fwd, left) < VIEW_RANGE_M[1])
-            near_cam = bool(len(cam)) and np.hypot(cam[:, 0] - cand[0], cam[:, 1] - cand[1]).min() < CAM_CLEAR_M
-            rows.append(dict(frame=len(frames), feat=feat, refl=(refl.mean() if len(refl) else 0.0, refl.std() if len(refl) else 0.0),
+            cam_d = float(np.hypot(cam[:, 0] - cand[0], cam[:, 1] - cand[1]).min()) if len(cam) else np.inf
+            near_cam = cam_d < CAM_CLEAR_M
+            rows.append(dict(frame=len(frames), feat=feat, refl=refl_features(refl, float(feat[0])),
                              t=end, x=float(cand[0]), y=float(cand[1]), bearing=bearing,
-                             cam_hit=j in hits, in_view=view, cam_near=near_cam))
+                             cam_hit=j in hits, in_view=view, cam_near=near_cam, cam_d=cam_d))
         frames.append((end, xy))
     ids = link(frames)
     track = np.concatenate(ids) if ids else np.zeros(0, dtype=np.int64)
@@ -335,7 +359,8 @@ def process_run(run_dir, overrides=(), peaks=False, extra_split_z=None):
                                     np.array([r['in_view'] for r in rows]),
                                     np.array([r['cam_near'] for r in rows]), xy, persist)
     label, source = apply_overrides(run_dir.name, xy, label, source, overrides,
-                                    np.array([r['t'] for r in rows]))
+                                    np.array([r['t'] for r in rows]),
+                                    np.array([r['cam_d'] for r in rows]))
     return dict(
         X=np.stack([r['feat'] for r in rows]),
         refl=np.array([r['refl'] for r in rows], dtype=np.float32),
@@ -354,11 +379,16 @@ def main():
     ap.add_argument('--overrides', help='JSON list of {run, x, y, r_m, label} hand corrections (odom)')
     ap.add_argument('--peaks', action='store_true', help='extract with the head/shoulder peak split')
     ap.add_argument('--extra-split-z', type=float, help='also split at this height (seated people, e.g. 0.9)')
+    ap.add_argument('--jobs', type=int, default=1, help='runs processed in parallel')
     a = ap.parse_args()
     overrides = json.load(open(a.overrides)) if a.overrides else []
     parts = []
-    for run in a.runs:
-        r = process_run(run, overrides, peaks=a.peaks, extra_split_z=a.extra_split_z)
+    from concurrent.futures import ProcessPoolExecutor
+    from functools import partial
+    work = partial(process_run, overrides=overrides, peaks=a.peaks, extra_split_z=a.extra_split_z)
+    with ProcessPoolExecutor(max_workers=a.jobs) as ex:
+        results = list(ex.map(work, a.runs))
+    for run, r in zip(a.runs, results):
         if r is None:
             print(f'{run}: no frames')
             continue
@@ -377,6 +407,7 @@ def main():
         off += int(p['track'].max()) + 1 if len(p['track']) else 0
     out['track'] = np.concatenate(tr)
     out['feature_names'] = np.array(cf.NAMES)
+    out['refl_names'] = np.array(REFL_NAMES)
     np.savez_compressed(a.out, **out)
     print(f'wrote {a.out}: {len(out["y"])} candidates')
 

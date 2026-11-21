@@ -127,9 +127,16 @@ def main():
     ap.add_argument('--sit-sitting-as-person', action='store_true',
                     help="count SiT's seated pedestrians as people (default: left out)")
     ap.add_argument('--drop', default='', help='comma-separated feature names to leave out')
+    ap.add_argument('--refl', action='store_true',
+                    help='append the Livox reflectivity features (own data only; SiT has none)')
     a = ap.parse_args()
     own = _sitting(dict(np.load(a.own, allow_pickle=True)), a.exclude_sitting)
     names = [str(n) for n in own['feature_names']]
+    if a.refl:
+        if a.sit:
+            raise SystemExit('--refl cannot be combined with --sit (no reflectivity in SiT)')
+        own['X'] = np.hstack([own['X'], own['refl']])
+        names += [str(n) for n in own['refl_names']]
     feats = [i for i, n in enumerate(names) if n not in set(filter(None, a.drop.split(',')))]
     print(f'features: {len(feats)} of {len(names)}')
     u = _usable(own)

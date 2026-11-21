@@ -1,0 +1,9 @@
+features: 24 of 24
+robot: 23251 person, 12501 camera-checked + 67221 persistent not-person, runs 36  (cells: AP precision/recall@0.5, persons in hundreds)
+
+[own] leave-one-run-out, robot bags only
+                                      |     0-2 m AP P/R |     2-4 m AP P/R |     4-6 m AP P/R |     6-8 m AP P/R |    8-12 m AP P/R
+  all labels                 AP 0.904 |0.99 0.88/0.99 105h |0.87 0.69/0.93 76h |0.76 0.67/0.73 49h |0.05 0.06/0.41  0h |               --
+  camera-checked negs only   AP 0.960 |0.99 0.91/0.99 105h |0.92 0.87/0.93 76h |1.00 1.00/0.73 49h |               -- |               --
+  tracklet-averaged          AP 0.931 |0.99 0.89/1.00 105h |0.89 0.70/0.96 76h |0.82 0.70/0.69 49h |0.97 0.09/1.00  0h |               --
+saved artifacts/lidar-person-classifier-2026-11-01/model_base_1121.joblib
