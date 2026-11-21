@@ -4421,7 +4421,9 @@ async def oak_camera_feed_loop():
                         continue
                     # Send each new frame, at most OAK_FEED_FPS per role (the
                     # front mono runs at 30 fps; full rate would double WiFi load).
-                    if now - sent_at.get(role, 0.0) < 1.0 / OAK_FEED_FPS:
+                    # 0.8x the interval: with 20 ms polling a full-interval gate
+                    # skips frames that land just short of it (measured 11.7 fps).
+                    if now - sent_at.get(role, 0.0) < 0.8 / OAK_FEED_FPS:
                         continue
                     previous[role] = image
                     sent_at[role] = now
