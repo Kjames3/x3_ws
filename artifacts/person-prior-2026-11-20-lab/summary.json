@@ -1,0 +1,58 @@
+{
+  "map": "RealLab3",
+  "cell_m": 0.25,
+  "origin": [
+    -3.01,
+    -10.8
+  ],
+  "shape": [
+    52,
+    66
+  ],
+  "runs": [
+    {
+      "parked_pose": [
+        2.05,
+        -2.7700000000000005,
+        -52.25,
+        0.7339403136064745
+      ],
+      "run": "artifacts/person-lidar-2026-11-20/empty-r1",
+      "frames": 1188,
+      "person_cells": 0,
+      "clutter_in_view": 2196
+    },
+    {
+      "parked_pose": [
+        1.7799999999999998,
+        -2.4000000000000004,
+        -51.25,
+        0.7348159968086168
+      ],
+      "run": "artifacts/person-lidar-2026-11-20/walk-r1",
+      "frames": 1200,
+      "person_cells": 175,
+      "clutter_in_view": 2534
+    },
+    {
+      "parked_pose": [
+        1.7799999999999998,
+        -2.4000000000000004,
+        -51.25,
+        0.733269694533762
+      ],
+      "run": "artifacts/person-lidar-2026-11-20/walk-r2",
+      "frames": 1203,
+      "person_cells": 257,
+      "clutter_in_view": 2559
+    }
+  ],
+  "params": {
+    "lidar_range": 8.0,
+    "cam_range": 4.0,
+    "cam_hfov": 80.0,
+    "clear": 0.6,
+    "min_exposure": 50
+  },
+  "status": "pipeline proof; not for the tracker (see docstring)"
+}

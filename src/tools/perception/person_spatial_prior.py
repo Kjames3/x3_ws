@@ -59,6 +59,35 @@ def interp_pose(st, val, t):
     return (x0 + a * (x1 - x0), y0 + a * (y1 - y0), h0 + a * dh)
 
 
+def fit_parked_pose(db, prior, seed, n_scans=30, a_span=1.0, a_aspan=25.0):
+    """Grid-search ONE map->base pose for a parked robot from /scan in the base frame."""
+    import bag_signals as bs
+    from bag_map_alignment import scans
+    from map_prior import STATIC
+    static = bs.static_tf_tree(db)
+    pts = []
+    for s in scans(db, n_scans):
+        Tb = bs.lookup(static, 'base_footprint', s.header.frame_id)
+        r = np.asarray(s.ranges, float)
+        ang = s.angle_min + s.angle_increment * np.arange(len(r))
+        ok = np.isfinite(r) & (r > s.range_min) & (r < 12)
+        pts.append((Tb @ np.stack([r[ok] * np.cos(ang[ok]), r[ok] * np.sin(ang[ok]), 0 * r[ok], 1 + 0 * r[ok]]))[:2])
+    P = np.vstack([np.hstack(pts), np.ones(sum(p.shape[1] for p in pts))])
+
+    def score(x, y, th):
+        return float((prior.label((T2(x, y, th) @ P)[:2].T) == STATIC).mean())
+    best = (score(*seed), *seed)
+    for span, step, aspan, astep in ((a_span, 0.1 if a_span <= 1.0 else 0.2, a_aspan, 1.0 if a_aspan <= 25 else 2.0), (0.25, 0.05, 3.0, 0.5), (0.06, 0.02, 1.0, 0.25)):
+        cx, cy, cth = best[1:]
+        for dth in np.arange(-aspan, aspan + 1e-9, astep):
+            for dx in np.arange(-span, span + 1e-9, step):
+                for dy in np.arange(-span, span + 1e-9, step):
+                    s_ = score(cx + dx, cy + dy, cth + math.radians(dth))
+                    if s_ > best[0]:
+                        best = (s_, cx + dx, cy + dy, cth + math.radians(dth))
+    return best[1], best[2], best[3], best[0]
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('runs', nargs='+')
@@ -69,6 +98,13 @@ def main(argv=None):
     ap.add_argument('--cam-hfov', type=float, default=80.0, help='deg; conservative for the front OAK')
     ap.add_argument('--clear', type=float, default=0.6, help='m from a confirmed track to count as clutter')
     ap.add_argument('--min-exposure', type=float, default=50, help='frames; rates below this are NaN')
+    ap.add_argument('--parked', action='store_true',
+                    help='robot did not move: fit ONE map->base pose per run from /scan (searched around '
+                         '--seed or the bag\'s first AMCL pose) and ignore map->odom. Use when odom yaw '
+                         'drifts while parked (2026-11-20: /imu/data had a 0.17 deg/s bias).')
+    ap.add_argument('--seed', type=float, nargs=3, metavar=('X', 'Y', 'YAW_DEG'))
+    ap.add_argument('--search-m', type=float, default=1.0, help='--parked: +- search around the seed (m)')
+    ap.add_argument('--search-deg', type=float, default=25.0)
     ap.add_argument('--out', required=True)
     a = ap.parse_args(argv)
 
@@ -94,15 +130,29 @@ def main(argv=None):
             continue
         mst, mval = tf_series(dbs[0], 'map', 'odom')
         ost, oval = tf_series(dbs[0], 'odom', 'base_footprint')
-        if not len(mst) or not len(ost):
+        if not len(ost) or (not len(mst) and not (a.parked and a.seed)):
             print(f'skip {run}: no map->odom or odom->base_footprint')
             continue
+        fit = None
+        if a.parked:
+            if a.seed:
+                seed = (a.seed[0], a.seed[1], math.radians(a.seed[2]))
+            else:
+                m0 = T2(*mval[0]) @ T2(*oval[0])
+                seed = (m0[0, 2], m0[1, 2], math.atan2(m0[1, 0], m0[0, 0]))
+            fit = fit_parked_pose(dbs[0], prior, seed, a_span=a.search_m, a_aspan=a.search_deg)
+            print(f'{run}: parked pose ({fit[0]:.2f}, {fit[1]:.2f}, {math.degrees(fit[2]):.1f} deg), '
+                  f'wall fit {100 * fit[3]:.1f}%')
+            T_map_base = T2(*fit[:3])
         n_frames = n_person = n_clutter = 0
         with open(nd) as fh:
             for line in fh:
                 fr = json.loads(line)
                 t = fr['stamp']
-                Tm = T2(*interp_pose(mst, mval, t))
+                if fit is not None:
+                    Tm = T_map_base @ np.linalg.inv(T2(*interp_pose(ost, oval, t)))
+                else:
+                    Tm = T2(*interp_pose(mst, mval, t))
                 rx, ry, rh = interp_pose(ost, oval, t)
                 bx, by, _ = Tm @ np.array([rx, ry, 1.0])
                 bh = rh + math.atan2(Tm[1, 0], Tm[0, 0])
@@ -130,7 +180,8 @@ def main(argv=None):
                     np.add.at(grids['clutter'], (iy[inview], ix[inview]), 1)
                     n_clutter += int(inview.sum())
                 n_frames += 1
-        used.append({'run': run, 'frames': n_frames, 'person_cells': n_person, 'clutter_in_view': n_clutter})
+        used.append({'parked_pose': None if fit is None else [fit[0], fit[1], math.degrees(fit[2]), fit[3]],
+                     'run': run, 'frames': n_frames, 'person_cells': n_person, 'clutter_in_view': n_clutter})
         print(f'{run}: {n_frames} frames, {n_person} person hits, {n_clutter} in-view clutter candidates')
 
     os.makedirs(a.out, exist_ok=True)

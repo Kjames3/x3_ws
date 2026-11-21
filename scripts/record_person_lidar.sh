@@ -19,7 +19,14 @@ set -euo pipefail
 name="${1:?usage: record_person_lidar.sh <run-name> [seconds]}"; secs="${2:-60}"
 cd "$HOME/x3_ws"; out="$PWD/artifacts/person-lidar-$(date +%F)/$name"
 if [ -e "$out" ]; then echo "$out exists; pick the next name" >&2; exit 1; fi
-unset ROS_DISCOVERY_SERVER FASTDDS_DEFAULT_PROFILES_FILE
+# The AGX chassis runs ROS through the FastDDS discovery server (fastdds_discovery.service);
+# without it, plain multicast. Match whatever x3_server uses or nothing gets recorded.
+if systemctl is-active --quiet fastdds_discovery 2>/dev/null; then
+    export ROS_DISCOVERY_SERVER=127.0.0.1:11811 ROS_SUPER_CLIENT=TRUE
+    export FASTDDS_DEFAULT_PROFILES_FILE="$HOME/x3_ws/config/fastdds_tcp_server.xml"
+else
+    unset ROS_DISCOVERY_SERVER FASTDDS_DEFAULT_PROFILES_FILE
+fi
 set +u; source /opt/ros/humble/setup.bash; source install/setup.bash 2>/dev/null
 source ~/ws_livox/install/setup.bash 2>/dev/null; set -u
 export ROS_DOMAIN_ID=42

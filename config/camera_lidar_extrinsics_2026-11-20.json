@@ -4,16 +4,16 @@
   "frame": "oak_rgb_camera_optical_frame",
   "device": "14442C10B1F4D2D600",
   "T_lidar_camera": [
-   0.3094,
-   0.0011,
-   -0.0749,
-   0.5159496833278043,
-   -0.47716875770947764,
-   0.5163784818128082,
-   -0.4893456492711789
+   0.3140638038969092,
+   0.0080999956225351,
+   -0.05850390149181834,
+   0.5056323086715071,
+   -0.4826294209798936,
+   0.5231143691624671,
+   -0.4876024684185761
   ],
-  "status": "PROVISIONAL rotation",
-  "note": "Translation = URDF (tape 31-32 cm confirms). Rotation from the solve with EEPROM intrinsics (3.9 deg from URDF, mostly roll about the optical axis); the re-solve with refit intrinsics failed (NaN initial cost). Tags: -2.3 cm median plane offset, 1.2 deg."
+  "status": "good (lab re-solve)",
+  "note": "Re-solved 2026-11-20 evening in the UCR lab: 10 stations, refit K (fx 1092), koide3 NID seeded from the provisional value, converged (no NaN). Change vs provisional: 1.4 deg yaw (optical y), 0.5/0.4 deg about x/z, 1.8 cm. Intensity overlay: TIAGo vent-box edge offset ~25 px -> ~0; edge score lab 13.9->13.2 px, apartment (held out) 15.0->13.9. Provisional value was [0.3094, 0.0011, -0.0749, 0.5159496833278043, -0.47716875770947764, 0.5163784818128082, -0.4893456492711789]."
  },
  "rear": {
   "frame": "oak_rear_rgb_camera_optical_frame",
