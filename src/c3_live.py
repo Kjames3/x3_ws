@@ -68,7 +68,8 @@ def read_depth_log(path):
 
 
 class C3Live:
-    def __init__(self, oak, pose_fn, mount_x, mount_z=0.0, log_path=None, tracker_config=None):
+    def __init__(self, oak, pose_fn, mount_x, mount_z=0.0, log_path=None, tracker_config=None,
+                 depth_mode='window', clip_box=True):
         """pose_fn() -> {'x','y','theta'} in odom, or None when stale.
 
         log_path: optional NDJSON debug log of raw measurements and the pose
@@ -76,6 +77,8 @@ class C3Live:
         timing offset. tracker_config optionally overrides the frozen baseline;
         measurement covariance uses its depth coefficient, floor and spread scale.
         """
+        self.depth_mode = depth_mode      # 'window' | 'nearest_mode' (person_measurement)
+        self.clip_box = clip_box          # clip boxes to the image before the depth window
         self._log = open(log_path, 'a', buffering=1) if log_path else None
         self._log_pose_n = 0
         self.oak = oak
@@ -204,7 +207,8 @@ class C3Live:
             if d.get('label') != 'person' or not d.get('bbox'):
                 continue
             mask = masks[i] if masks is not None and i < len(masks) else None
-            m = pt.person_measurement(depth, d['bbox'], mask=mask)
+            m = pt.person_measurement(depth, d['bbox'], mask=mask, clip_box=self.clip_box,
+                                      depth_mode=self.depth_mode)
             if m is None:
                 continue
             fwd = self.mount_x + m['z']

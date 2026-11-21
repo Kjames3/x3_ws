@@ -85,27 +85,119 @@ def rotate_cov_to_odom(cov_fl, rot):
     return basis @ cov_fl @ basis.T
 
 
-def person_measurement(depth_m, box, min_valid_px=30, min_valid_fraction=0.2, mask=None):
+# Histogram depth mode (opt-in, see _nearest_mode_depth). Bins are 5 cm; a peak
+# is smoothed over three bins because a person spans 20-30 cm of depth.
+HIST_BIN_M = 0.05
+HIST_MIN_FRACTION = 0.15     # a peak must hold this share of the valid pixels
+HIST_ROW_FRACTION = 0.6      # histogram reads only the top 60 % of the clipped box
+DEPTH_MODES = ('window', 'nearest_mode')
+
+
+def clip_box_to_image(box, shape):
+    """Clip an (x1, y1, x2, y2) box to a (rows, cols) image; None if nothing is left.
+
+    The detector box covers the whole body even when the head is above the
+    frame, so y1 can be hundreds of pixels negative. Fractions of the unclipped
+    box slide the torso window up past the image top and onto whatever lies
+    behind the person.
+    """
+    rows, cols = shape[:2]
+    x1, y1, x2, y2 = (float(v) for v in box)
+    x1, x2 = max(0.0, x1), min(float(cols), x2)
+    y1, y2 = max(0.0, y1), min(float(rows), y2)
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return x1, y1, x2, y2
+
+
+def _nearest_mode_depth(region, min_valid_px, min_fraction=HIST_MIN_FRACTION, ground=None):
+    """Depth of the nearest substantial peak of the in-range depth histogram.
+
+    Returns (valid_count, selected_pixel_mask) or None. ``ground`` is an
+    optional bool mask (same shape as ``region``) of floor pixels to ignore.
+    The peak is a local maximum of the 3-bin smoothed counts holding at least
+    ``min_fraction`` of the valid pixels, so a flat wall spiking one bin does not
+    hide a person spread over several, and the rising flank of a peak is never
+    taken for the peak. The result is the median of the pixels in those 3 bins.
+    """
+    ok = (region >= DEPTH_RANGE_M[0]) & (region <= DEPTH_RANGE_M[1])
+    if ground is not None:
+        ok &= ~ground
+    n_valid = int(ok.sum())
+    if n_valid < min_valid_px:
+        return None
+    lo = DEPTH_RANGE_M[0]
+    n_bins = int(math.ceil((DEPTH_RANGE_M[1] - lo) / HIST_BIN_M)) + 1
+    idx = np.clip(((region[ok] - lo) / HIST_BIN_M).astype(int), 0, n_bins - 1)
+    counts = np.bincount(idx, minlength=n_bins).astype(float)
+    smooth = np.convolve(counts, np.ones(3), mode='same')
+    need = max(float(min_valid_px), min_fraction * n_valid)
+    for b in range(n_bins):
+        left = smooth[b - 1] if b > 0 else -1.0
+        right = smooth[b + 1] if b + 1 < n_bins else -1.0
+        if smooth[b] >= need and smooth[b] >= left and smooth[b] > right:
+            sel = ok & (np.abs(((region - lo) / HIST_BIN_M).astype(int) - b) <= 1)
+            return n_valid, sel
+    return None
+
+
+def person_measurement(depth_m, box, min_valid_px=30, min_valid_fraction=0.2, mask=None,
+                       clip_box=True, depth_mode='window', ground_mask=None):
     """Robust torso depth inside a person box on the depth pixel grid.
 
-    Uses the central 40 % of the width and 20-55 % of the height, where the
-    box is least likely to contain background or floor. Returns None when the
-    support is too thin, otherwise pixel centre, median depth and quality.
+    depth_mode 'window' (default): the central 40 % of the width and 20-55 % of
+    the height, where the box is least likely to contain background or floor.
+    'nearest_mode' (opt-in): the nearest substantial peak of the depth histogram
+    over the central 60 % of the width and the top HIST_ROW_FRACTION of the box
+    (the person is in front of the wall or partition behind them; the lower rows
+    are where a desk or the floor in front shows up). u, v are then the centroid
+    of the pixels in that peak, not the window centre. ``ground_mask`` (bool,
+    depth shape) drops floor pixels from the histogram when the caller has one.
+
+    clip_box (default True) clips the box to the image before any window is
+    computed; False reproduces the old behaviour of windowing the unclipped box.
+    A segmentation ``mask`` takes precedence over either box mode.
+    Returns None when the support is too thin, otherwise pixel centre, depth and quality.
     """
     if mask is not None and mask.shape == depth_m.shape:
         m = mask_measurement(depth_m, mask, min_valid_px)
         if m is not None:
             return m
+    if depth_mode not in DEPTH_MODES:
+        raise ValueError(f'depth_mode must be one of {DEPTH_MODES}, got {depth_mode!r}')
+    rows, cols = depth_m.shape
+    if clip_box:
+        box = clip_box_to_image(box, depth_m.shape)
+        if box is None:
+            return None
     x1, y1, x2, y2 = box
     w, h = x2 - x1, y2 - y1
-    u0, u1 = int(x1 + 0.3 * w), int(math.ceil(x1 + 0.7 * w))
-    v0, v1 = int(y1 + 0.2 * h), int(math.ceil(y1 + 0.55 * h))
-    rows, cols = depth_m.shape
+    if depth_mode == 'nearest_mode':
+        u0, u1 = int(x1 + 0.2 * w), int(math.ceil(x1 + 0.8 * w))
+        v0, v1 = int(y1), int(math.ceil(y1 + HIST_ROW_FRACTION * h))
+    else:
+        u0, u1 = int(x1 + 0.3 * w), int(math.ceil(x1 + 0.7 * w))
+        v0, v1 = int(y1 + 0.2 * h), int(math.ceil(y1 + 0.55 * h))
     u0, u1 = max(0, u0), min(cols, u1)
     v0, v1 = max(0, v0), min(rows, v1)
     if u1 <= u0 or v1 <= v0:
         return None
     region = depth_m[v0:v1, u0:u1]
+    if depth_mode == 'nearest_mode':
+        ground = ground_mask[v0:v1, u0:u1] if ground_mask is not None else None
+        found = _nearest_mode_depth(region, min_valid_px, ground=ground)
+        if found is None:
+            return None
+        n_valid, sel = found
+        if sel.sum() < min_valid_px:
+            return None
+        vals = region[sel]
+        vs, us = np.nonzero(sel)
+        z = float(np.median(vals))
+        spread = float(np.percentile(vals, 84) - np.percentile(vals, 16)) / 2
+        return {'u': u0 + float(us.mean()) + 0.5, 'v': v0 + float(vs.mean()) + 0.5, 'z': z,
+                'valid_fraction': n_valid / region.size, 'inlier_fraction': sel.sum() / n_valid,
+                'spread_m': spread}
     valid = region[(region >= DEPTH_RANGE_M[0]) & (region <= DEPTH_RANGE_M[1])]
     fraction = valid.size / region.size
     if valid.size < min_valid_px or fraction < min_valid_fraction:

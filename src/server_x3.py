@@ -205,6 +205,14 @@ parser.add_argument('--traj-model', default=None, metavar='NPZ', dest='traj_mode
 parser.add_argument('--no-c3-live', action='store_true', dest='no_c3_live',
                     help='Disable the diagnostic C3 person tracker (OAK YOLO boxes + '
                          'Kalman). It never reaches the CBF; it only feeds the GUI.')
+parser.add_argument('--c3-depth-mode', choices=('window', 'nearest_mode'), default='window',
+                    dest='c3_depth_mode',
+                    help='How C3 reads a person box\'s depth: fixed torso window median '
+                         '(default) or the nearest substantial mode of the in-box depth '
+                         'histogram (opt-in; the person is in front of the wall behind).')
+parser.add_argument('--c3-no-box-clip', action='store_true', dest='c3_no_box_clip',
+                    help='Debug: window the unclipped person box (the pre-fix behaviour '
+                         'that slid the torso window onto the wall for top-clipped boxes).')
 parser.add_argument('--no-foot-diagnostic', action='store_true',
                     help='Disable read-only depth-backed foot/CBF diagnostic telemetry.')
 args = parser.parse_args()
@@ -2700,7 +2708,9 @@ def initialize_hardware():
             if args.oak_det_log:
                 Path(args.oak_det_log).mkdir(parents=True, exist_ok=True)
                 _c3_log = Path(args.oak_det_log) / f"c3-{time.strftime('%Y%m%d-%H%M%S')}.ndjson"
-            c3_live = C3Live(oak, _c3_pose, OAK_MOUNT_X, log_path=_c3_log)
+            c3_live = C3Live(oak, _c3_pose, OAK_MOUNT_X, log_path=_c3_log,
+                             depth_mode=args.c3_depth_mode,
+                             clip_box=not args.c3_no_box_clip)
             c3_live.start()
             logger.info("C3 live tracker started (diagnostic only)")
         except Exception as e:
