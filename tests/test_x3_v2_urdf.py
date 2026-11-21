@@ -124,7 +124,8 @@ def test_livox_and_laser(urdf):
 
 def test_oaks_face_out_of_their_ends(urdf):
     poses, _ = _fk(urdf)
-    measured_up = {"oak": -0.0019, "oak_rear": 0.0321}    # nose-up, rad (IMU, 2026-11-18)
+    # nose-up, rad: front from the Livox calibration (2026-11-20 lab), rear from its IMU (2026-11-18)
+    measured_up = {"oak": 0.022810, "oak_rear": 0.0321}
     for name, sign in (("oak", 1), ("oak_rear", -1)):
         T = poses[f"{name}_rgb_camera_optical_frame"]
         view = T[:3, 2]                            # optical +Z = viewing direction
@@ -137,6 +138,18 @@ def test_oaks_face_out_of_their_ends(urdf):
         assert abs(np.linalg.norm(left - right) - 0.075) < 1e-6
         # robot-left mono is on the camera's left: +y for the front camera, -y for the rear
         assert sign * (left[1] - right[1]) > 0
+
+
+def test_front_oak_matches_lidar_calibration(urdf):
+    """livox_frame -> oak_rgb_camera_optical_frame must equal the JSON's T_lidar_camera."""
+    import json
+    from scipy.spatial.transform import Rotation
+    poses, _ = _fk(urdf)
+    T = np.linalg.inv(poses["livox_frame"]) @ poses["oak_rgb_camera_optical_frame"]
+    d = json.load(open(ROOT / "config/camera_lidar_extrinsics_2026-11-20.json"))["front"]["T_lidar_camera"]
+    assert np.allclose(T[:3, 3], d[:3], atol=2e-4)
+    dR = Rotation.from_matrix(T[:3, :3]).inv() * Rotation.from_quat(d[3:])
+    assert np.degrees(dR.magnitude()) < 0.01
 
 
 def test_locked_design_v2_geometry():

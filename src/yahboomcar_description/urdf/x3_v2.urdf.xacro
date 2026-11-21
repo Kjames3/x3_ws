@@ -179,15 +179,22 @@
        pitch > 0 = nose down, measured (see oak_front_pitch). oakd_driver's
        xyz_base_m still assumes a level camera. The FRONT end (Top_bus_light)
        was confirmed 2026-11-18: the front OAK sees the open space ahead. -->
-  <xacro:macro name="oak" params="base prefix pose pit">
+  <xacro:macro name="oak" params="base prefix pose pit calib:=''">
     <xacro:property name="g" value="${pose['glass_centre']}"/>
     <xacro:property name="yaw" value="${pose['yaw']}"/>
     <link name="${base}"/>
     <joint name="${prefix}_center_joint" type="fixed">
-      <parent link="base_link"/>
+      <xacro:if value="${calib == ''}">
+        <parent link="base_link"/>
+        <origin xyz="${g[0] - oak_glass_setback * cos(pit) * cos(yaw)} ${g[1] - oak_glass_setback * cos(pit) * sin(yaw)} ${g[2] + oak_glass_setback * sin(pit) - base_z}"
+                rpy="0 ${pit} ${yaw}"/>
+      </xacro:if>
+      <xacro:unless value="${calib == ''}">
+        <!-- lidar-calibrated: RGB camera body pose in livox_frame -->
+        <parent link="livox_frame"/>
+        <origin xyz="${calib['xyz']}" rpy="${calib['rpy']}"/>
+      </xacro:unless>
       <child link="${base}"/>
-      <origin xyz="${g[0] - oak_glass_setback * cos(pit) * cos(yaw)} ${g[1] - oak_glass_setback * cos(pit) * sin(yaw)} ${g[2] + oak_glass_setback * sin(pit) - base_z}"
-              rpy="0 ${pit} ${yaw}"/>
     </joint>
     <xacro:macro name="oak_cam" params="cam y">
       <link name="${prefix}_${cam}_camera_frame"/>
@@ -213,7 +220,16 @@
       <origin xyz="0 0 0" rpy="0 0 0"/>
     </joint>
   </xacro:macro>
-  <xacro:oak base="oak-d-base-frame" prefix="oak" pose="${cad['oak_front']}" pit="${oak_front_pitch}"/>
+  <!-- FRONT: calibrated 2026-11-20 against the Livox in the lab (koide3,
+       10 stations, seeded from the provisional value). Source of truth:
+       config/camera_lidar_extrinsics_2026-11-20.json ("front"); this is its
+       T_lidar_camera with the optical rotation removed (rgb body = base frame,
+       rgb y offset 0). rpy deg: roll -3.35, pitch -1.31 (nose up), yaw -0.68.
+       The CAD/IMU pose above is kept for the rear. -->
+  <xacro:property name="oak_front_calib"
+                  value="${dict(xyz='0.3141 0.0081 -0.0585', rpy='-0.058393 -0.022812 -0.011849')}"/>
+  <xacro:oak base="oak-d-base-frame" prefix="oak" pose="${cad['oak_front']}" pit="${oak_front_pitch}"
+             calib="${oak_front_calib}"/>
   <xacro:oak base="oak_rear-d-base-frame" prefix="oak_rear" pose="${cad['oak_rear']}" pit="${oak_rear_pitch}"/>
 
 </robot>
