@@ -4376,6 +4376,9 @@ def _camera_targets():
     return targets
 
 
+OAK_FEED_FPS = 15  # GUI preview rate for the front/rear OAK feeds
+
+
 def _rear_preview(device_id, stop, latest):
     """Open the dedicated rear OAK by serial; drop old frames on a slow link."""
     import depthai as dai
@@ -4383,7 +4386,8 @@ def _rear_preview(device_id, stop, latest):
         try:
             with dai.Device(dai.DeviceInfo(device_id)) as dev, dai.Pipeline(dev) as pipeline:
                 cam = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_A)
-                stream = cam.requestOutput((480, 300), type=dai.ImgFrame.Type.BGR888p, fps=8)
+                stream = cam.requestOutput((480, 300), type=dai.ImgFrame.Type.BGR888p,
+                                           fps=OAK_FEED_FPS)
                 queue = stream.createOutputQueue(maxSize=1, blocking=False)
                 pipeline.start()
                 while not stop.wait(0.04):
@@ -4405,21 +4409,30 @@ async def oak_camera_feed_loop():
     worker = threading.Thread(target=_rear_preview, args=(rear_id, stop, rear), daemon=True)
     worker.start()
     previous = {}
+    sent_at = {}
     try:
         while not _shutting_down:
             targets = _camera_targets()
             if targets:
                 front = oak.get_stereo_frames()[0] if oak is not None else None
+                now = time.monotonic()
                 for role, image in (('front', front), ('rear', rear[0])):
                     if image is None or image is previous.get(role):
                         continue
+                    # Send each new frame, at most OAK_FEED_FPS per role (the
+                    # front mono runs at 30 fps; full rate would double WiFi load).
+                    if now - sent_at.get(role, 0.0) < 1.0 / OAK_FEED_FPS:
+                        continue
                     previous[role] = image
+                    sent_at[role] = now
                     ok, jpg = await asyncio.to_thread(cv2.imencode, '.jpg', image,
                                                       [cv2.IMWRITE_JPEG_QUALITY, 70])
                     if ok:
                         header = b'CAM1' + bytes((CAMERA_ROLES.index(role), 0))
                         websockets.broadcast(targets, header + jpg.tobytes())
-            await asyncio.sleep(0.12)
+            # Poll fast; only new frames are encoded, so this costs nothing extra.
+            # (Was a fixed 0.12 s sleep, which capped both OAK feeds at ~8 fps.)
+            await asyncio.sleep(0.02)
     finally:
         stop.set()
         await asyncio.to_thread(worker.join, 3)
