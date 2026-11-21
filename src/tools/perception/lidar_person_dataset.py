@@ -50,9 +50,23 @@ sys.path.insert(0, str(_SRC / 'yahboomcar_bringup'))
 from yahboomcar_bringup import cluster_features as cf  # noqa: E402
 from yahboomcar_bringup import person_candidates as pc  # noqa: E402
 
-# base_footprint -> livox_frame (URDF livox_joint 0.0432, 0, 0.2285 on base_link at
-# 0.0815; no rotation).  The same constant the 2026-10-30 evaluation used.
-LIVOX_XYZ = (0.0432, 0.0, 0.31)
+# base_footprint -> Livox origin, per chassis.  The old chassis (runs before the
+# 2026-11-13 rebuild): URDF livox_joint x 0.0432, height 0.31 from the floor fit.
+# x3_v2 (runs from 2026-11-13): x -0.0025, y 0.0003 from the CAD (x3_v2_cad_frames.yaml);
+# height 0.302 from the floor returns of 11-20 empty-r1, measured 2026-11-21 (the old
+# chassis' 11-09 apt-desk2-park30 gives 0.305, consistent with its 0.31).  The x3_v2
+# URDF's livox_z_floor 0.2731 disagrees by ~3 cm.
+LIVOX_XYZ_OLD = (0.0432, 0.0, 0.31)
+LIVOX_XYZ_V2 = (-0.0025, 0.0003, 0.302)
+V2_FROM = '2026-11-13'
+LIVOX_XYZ = LIVOX_XYZ_OLD    # kept for callers that import it
+
+
+def livox_xyz_for(run_dir):
+    """Pick the chassis from the run's parent folder name (person-lidar-YYYY-MM-DD)."""
+    import re
+    m = re.search(r'(\d{4}-\d{2}-\d{2})', str(pathlib.Path(run_dir).resolve().parent.name))
+    return LIVOX_XYZ_V2 if m and m.group(1) >= V2_FROM else LIVOX_XYZ_OLD
 RANGE_MAX_M = 12.0            # wider than the live 8 m, to see what lies beyond
 CAM_MATCH_M = 0.5
 LINK_GATE_M = 0.45
@@ -277,7 +291,7 @@ def iter_frames(run_dir):
     tid = {n: i for i, n in db.execute('select id, name from topics')}
     poses = Poses([parse_odom(d) for (d,) in db.execute(
         'select data from messages where topic_id=?', (tid['/odom'],))])
-    lx, ly, lz = LIVOX_XYZ
+    lx, ly, lz = livox_xyz_for(run_dir)
     for (data,) in db.execute('select data from messages where topic_id=? order by timestamp',
                               (tid['/livox/lidar'],)):
         p = decode_points(data)
