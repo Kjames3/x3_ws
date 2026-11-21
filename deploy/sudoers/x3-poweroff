@@ -1,0 +1,3 @@
+# Lets x3_server (user jetson) power the robot off from the GUI Shut down button.
+# Install: sudo install -m 0440 deploy/sudoers/x3-poweroff /etc/sudoers.d/x3-poweroff && sudo visudo -cf /etc/sudoers.d/x3-poweroff
+jetson ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff

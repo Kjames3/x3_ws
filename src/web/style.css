@@ -1658,3 +1658,34 @@ body {
 /* The panel being worked in gets the one accent on its frame. */
 .card:focus-within { border-color: color-mix(in srgb, var(--accent) 70%, transparent); }
 body { accent-color: var(--accent); }
+
+/* Shut down button + confirm popup */
+.shutdown-btn {
+    margin-left: 0.75rem;
+    padding: 0.4rem 0.8rem;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    border: 1px solid var(--bad-dark);
+    border-radius: 6px;
+    font-size: 0.8rem;
+    cursor: pointer;
+}
+.shutdown-btn:hover { color: var(--text-primary); border-color: var(--bad); }
+.shutdown-btn:disabled { opacity: 0.5; cursor: default; }
+.shutdown-dialog {
+    max-width: 22rem;
+    padding: 1.1rem 1.25rem;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 1px solid var(--bad-dark);
+    border-radius: 8px;
+}
+.shutdown-dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
+.shutdown-dialog h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+.shutdown-dialog p { margin: 0 0 1rem; font-size: 0.85rem; color: var(--text-secondary); }
+.shutdown-dialog-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
+.shutdown-dialog-actions button {
+    padding: 0.4rem 0.9rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem;
+    border: 1px solid var(--bg-tertiary); background: var(--bg-tertiary); color: var(--text-primary);
+}
+.shutdown-dialog-actions .shutdown-confirm { background: var(--bad-dark); border-color: var(--bad); color: var(--text-on-status); }

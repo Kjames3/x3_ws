@@ -2205,6 +2205,12 @@ function handleMessage(data) {
         return;
     }
 
+    if (data.type === "shutdown_result") {
+        const btn = document.getElementById('shutdown-btn');
+        if (!data.success && btn) { btn.disabled = false; btn.textContent = '⏻ Shut down'; }
+        alert(data.msg);
+        return;
+    }
     if (data.type === "launch_gazebo_result") {
         const btn = elements.launchGazeboBtn;
         if (data.success) {
@@ -3379,6 +3385,27 @@ if (elements.autoDriveBtn) elements.autoDriveBtn.addEventListener('click', autoD
 if (elements.motorToggleBtn) elements.motorToggleBtn.addEventListener('click', motorToggle);
 if (elements.gamepadMotorToggleBtn) elements.gamepadMotorToggleBtn.addEventListener('click', motorToggle);
 if (elements.demoModeBtn) elements.demoModeBtn.addEventListener('click', demoModeToggle);
+
+// Shut down: confirm in a popup, then ask the server to power the Orin off.
+(function setupShutdown() {
+    const btn = document.getElementById('shutdown-btn');
+    const dlg = document.getElementById('shutdown-dialog');
+    if (!btn || !dlg) return;
+    btn.addEventListener('click', () => {
+        if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+            alert('Not connected to the robot.');
+            return;
+        }
+        dlg.returnValue = '';
+        dlg.showModal();
+    });
+    dlg.addEventListener('close', () => {
+        if (dlg.returnValue !== 'confirm') return;
+        btn.disabled = true;
+        btn.textContent = 'Shutting down…';
+        sendMessage({ type: 'shutdown_robot' });
+    });
+})();
 
 if (elements.stopBtn) elements.stopBtn.addEventListener('click', () => {
     if (!state.connected) return;

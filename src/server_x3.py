@@ -3497,6 +3497,32 @@ async def handle_client(websocket):
                     if ros_board: ros_board.set_motor(0, 0, 0, 0)
                     _enqueue_motion(0.0, 0.0, 0.0)
 
+                elif msg_type == "shutdown_robot":
+                    # Confirmed in the GUI. Stop the wheels first, then ask systemd to
+                    # power off (stops every service cleanly, syncs disks). Needs the
+                    # NOPASSWD rule in deploy/sudoers/x3-poweroff.
+                    logger.warning("Shutdown requested from GUI by %s", websocket.remote_address)
+                    current_left_power = 0.0
+                    current_right_power = 0.0
+                    if ros_board: ros_board.set_motor(0, 0, 0, 0)
+                    _enqueue_motion(0.0, 0.0, 0.0)
+                    try:
+                        proc = await asyncio.create_subprocess_exec(
+                            "sudo", "-n", "/usr/bin/systemctl", "poweroff",
+                            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                        _out, err = await asyncio.wait_for(proc.communicate(), timeout=10)
+                        ok = proc.returncode == 0
+                        msg = ("Shutting down. Wait for the fan and LEDs to stop before "
+                               "cutting power.") if ok else (
+                            "Shutdown refused: " + (err.decode(errors="replace").strip()
+                                                    or f"exit {proc.returncode}")
+                            + ". Install deploy/sudoers/x3-poweroff on the robot.")
+                    except Exception as e:  # noqa: BLE001
+                        ok, msg = False, f"Shutdown failed: {e}"
+                    (logger.warning if ok else logger.error)(msg)
+                    await websocket.send(json.dumps(
+                        {"type": "shutdown_result", "success": ok, "msg": msg}))
+
                 elif msg_type == "toggle_detection":
                     detection_enabled = data.get("enabled", False)
                     logger.info(f"Detection: {detection_enabled}")
