@@ -106,8 +106,10 @@ def _score(clf, feats):
     return clf.predict_proba(np.asarray(feats))[:, 1]
 
 
-def eval_run(run_dir, overrides, model_path):
+def eval_run(run_dir, overrides, model_path, window=None):
     import joblib
+    if window is not None:          # (before, after) along the ray, e.g. (0.4, 0.4) ~ plain XY
+        pc.SEED_BEFORE_M, pc.SEED_AFTER_M = window
     mdl = joblib.load(model_path)
     assert list(mdl['features']) == list(cf.NAMES), 'model features != cluster_features.NAMES'
     clf = mdl['model']
@@ -221,6 +223,7 @@ def report(results, out):
     w('         on their XY box (cluster_features.crop) instead')
     w('  seed   base + NEW seeded rows, within 0.6 m of the camera XY (what a 0.55 m camera gate could use)')
     w('  new    a new seeded row was added;  d50 = median distance body -> camera XY (m)')
+    w('  add/fr seeded rows per frame; FA/fr = of those, labelled clutter scoring > 0.5 (-- = none labelled)')
     hdr = (f'  {"run":26s} {"cat":8s} {"frames":>6s} {"cam":>5s} | {"base":>5s} {">.5":>5s} | {"ray":>5s} {">.5":>5s} |'
            f' {"body":>5s} {">.5":>5s} {"box":>5s} | {"seed":>5s} {">.5":>5s} | {"new":>5s} {"d50":>4s} | {"dup":>4s} {"dup>.5":>6s} |'
            f' {"add/fr":>6s} {"FA/fr":>6s} | {"clut/fr":>7s} {"FA/fr":>6s}')
@@ -250,7 +253,7 @@ def report(results, out):
           f' {_pct(ray_f.sum(), n)} {_pct(ray_ok.sum(), n)} | {_pct(body.sum(), n)} {_pct(body_ok.sum(), n)} {_pct(body_box.sum(), n)} |'
           f' {_pct(s_f.sum(), n)} {_pct((s_f & (best > 0.5)).sum(), n)} | {_pct(new.sum(), n)} {d50:4.2f} |'
           f' {nd:4d} {int((r["dups"] > 0.5).sum()):6d} |'
-          f' {len(S) / nf:6.3f} {fa_seed / nf:6.3f} | {r["base_neg"] / nf:7.2f} {r["base_neg_fa"] / nf:6.3f}')
+          f' {len(S) / nf:6.3f} {(f"{fa_seed / nf:6.3f}" if clut.any() else "    --")} | {r["base_neg"] / nf:7.2f} {r["base_neg_fa"] / nf:6.3f}')
         t = tot.setdefault(r['cat'], np.zeros(14))
         t += [nf, n, b_f.sum(), b_ok.sum(), ray_f.sum(), ray_ok.sum(), body.sum(), body_ok.sum(),
               s_f.sum(), (s_f & (best > 0.5)).sum(), len(S), fa_seed, r['base_neg'], r['base_neg_fa']]
@@ -308,10 +311,15 @@ def main():
     ap.add_argument('--jobs', type=int, default=1)
     ap.add_argument('-o', '--out')
     ap.add_argument('--save-npz', help='per-run arrays, for digging')
+    ap.add_argument('--window', type=float, nargs=2, metavar=('BEFORE', 'AFTER'),
+                    help='override SEED_BEFORE_M / SEED_AFTER_M (0.4 0.4 ~ search at the camera XY only)')
     a = ap.parse_args()
     overrides = json.load(open(a.overrides))
+    if a.window:
+        pc.SEED_BEFORE_M, pc.SEED_AFTER_M = a.window     # for the report header
     with ProcessPoolExecutor(max_workers=a.jobs) as ex:
-        res = list(ex.map(eval_run, a.runs, [overrides] * len(a.runs), [a.model] * len(a.runs)))
+        res = list(ex.map(eval_run, a.runs, [overrides] * len(a.runs), [a.model] * len(a.runs),
+                          [tuple(a.window) if a.window else None] * len(a.runs)))
     res = [r for r in res if r is not None]
     order = {'seated': 0, 'standing': 1, 'empty': 2}
     res.sort(key=lambda r: (order[r['cat']], r['run']))

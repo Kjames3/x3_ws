@@ -5,6 +5,7 @@ Command (from the worktree; bags + model live in ~/x3_ws/artifacts):
   python3 src/tools/perception/camera_seed_eval.py \
       --model ~/x3_ws/artifacts/lidar-person-classifier-2026-11-01/model_base_1121.joblib \
       --overrides artifacts/lidar-person-classifier-2026-11-01/label_overrides.json --jobs 27 RUN...
+  (plain-XY arm: add --window 0.4 0.4)
 Runs (27): seated 11-20 seated-r1/r2/r3, 11-07 apt-seated-{chair,couch}-r1/r2 + desk-r1,
   11-08/09 apt-desk2-{park15,park07,park30,drive-r1,drive-r2}; standing 10-30 walkup-r1/r2/r3,
   cross-r1/r2, circle-r1, 11-03 busy-r1/r2, group-r1, 11-20 walk-r1/r2; empty 11-20 empty-r1,
@@ -21,12 +22,26 @@ No image-box restriction: lidar_persons.ndjson carries no boxes (c3/c3.ndjson do
 monotonic time), so this is the plain-XY version.
 
 WHY THE RAY, NOT THE XY (found while building this): on the 11-20 lab runs the C3 range
-over-reads by ~0.8 m.  EVERY C3 box in seated-r1/r2/r3 and walk-r1/r2 extends above the image
-(bbox y1 ~ -116; 100% of 995 measurements; apartment runs 0-32%, apt-seated-desk-r1 93%).
-person_measurement's torso window (20-55% of the box height) then clips to image rows 0-60,
-which show the partition behind the user (depth 2.7-3.7 m) while the rest of the box reads
-~2.4 m.  Recomputing with the box clipped to the image first moves the seated range nearer by
-0.37 / 0.48 m (median, seated-r1 / r2): about half of the 0.78 / 0.83 m body->camera offset.
+OVER-READS.  Signed offset camera range - seeded body range along the ray (median, m):
+                       <1.5 m   1.5-2.5   2.5-3.5   3.5-6   all
+  11-20 walk-r1        -0.19    +0.33     +0.39     --      +0.33  (n=27)
+  11-20 walk-r2        -0.15    +0.27     +0.21     --      +0.05  (n=43)
+  11-20 seated-r1       --       --       +0.76     +1.17   +0.77  (n=552)
+  11-20 seated-r2       --       --       +0.77     +1.20   +0.81  (n=576)
+  10-30 walkup-r1      +0.02    +0.01     +0.05     +0.11   +0.03
+  10-30 cross-r1        --      -0.01     +0.13     --      +0.00
+  11-03 busy-r2        +0.14    +0.12     +0.18     +0.08   +0.14
+  11-09 apt-desk2-drive-r1 +0.10 +0.10    +0.17     --      +0.13
+So 11-20 (the new chassis) over-reads standing walkers by ~0.2-0.4 m beyond 1.5 m (cause open:
+depth scale, mount or intrinsics), and seated users by a further ~0.5 m.  Part of the seated
+excess: EVERY C3 box in seated-r1/r2/r3 and walk-r1/r2 extends above the image (bbox y1 ~ -116;
+100% of 995 measurements; apartment runs 0-32%, apt-seated-desk-r1 93%), so person_measurement's
+torso window (20-55% of the box height) clips to image rows 0-60, which show the partition
+behind the user (2.7-3.7 m) while the rest of the box reads ~2.4 m.  Clipping the box to the
+image first moves the seated range nearer by 0.37 / 0.48 m (median, seated-r1 / r2), about half
+the offset; on walk-r2 it changes only 0.04 m.  That the on-ray body (top 1.18-1.24 m, in front
+of a 0.75 m desk surface and a 2 m partition) is the user is inferred from its height profile,
+not verified against the image.
 
 Ground truth.  Seeded candidates sit on a camera person by construction, so the auto-labeller
 would always call them people; here they are labelled only by fixed-XY overrides (no
@@ -44,34 +59,35 @@ params: SEED_LAT_M 0.35 BEFORE/AFTER 1.2/0.5 UPPER_Z 0.85 GAP 0.2 DEPTH 0.3 CORE
          on their XY box (cluster_features.crop) instead
   seed   base + NEW seeded rows, within 0.6 m of the camera XY (what a 0.55 m camera gate could use)
   new    a new seeded row was added;  d50 = median distance body -> camera XY (m)
+  add/fr seeded rows per frame; FA/fr = of those, labelled clutter scoring > 0.5 (-- = none labelled)
   run                        cat      frames   cam |  base   >.5 |   ray   >.5 |  body   >.5   box |  seed   >.5 |   new  d50 |  dup dup>.5 | add/fr  FA/fr | clut/fr  FA/fr
   apt-desk2-drive-r1         seated     1776   425 |  58.6  58.4 |  57.9  57.4 |  99.5  87.8  87.8 |  93.6  85.2 |  39.1 0.17 |  257    251 |  0.093  0.000 |    0.18  0.001
-  apt-desk2-drive-r2         seated     1779   341 |  27.9  26.7 |  26.7  26.4 |  99.4  93.5  90.9 |  97.7  93.8 |  72.4 0.17 |   92     90 |  0.139  0.000 |    0.23  0.006
-  apt-desk2-park07-r1        seated     1186     7 | 100.0 100.0 | 100.0 100.0 | 100.0 100.0 100.0 | 100.0 100.0 |   0.0 0.02 |    7      7 |  0.000  0.000 |    0.66  0.000
-  apt-desk2-park15-r1        seated     1175  1152 |  86.3  86.3 |  86.3  86.3 | 100.0 100.0  99.9 | 100.0 100.0 |  13.7 0.09 |  994    994 |  0.134  0.000 |    1.00  0.000
-  apt-desk2-park30-r1        seated     1169  1164 |  32.6  32.6 |  32.6  32.6 | 100.0 100.0  99.9 | 100.0 100.0 |  67.4 0.20 |  380    380 |  0.671  0.000 |    0.82  0.000
-  apt-seated-chair-r1        seated      870   541 |   9.8   9.8 |   9.8   9.8 | 100.0  76.0  67.5 | 100.0  76.0 |  90.2 0.18 |   53     53 |  0.561  0.000 |    1.00  0.000
-  apt-seated-chair-r2        seated      863   544 |   7.0   6.8 |   7.0   6.8 |  99.6  94.9  86.4 |  99.6  94.9 |  92.6 0.14 |   38     37 |  0.584  0.000 |    1.00  0.000
-  apt-seated-couch-r1        seated      879   541 |   9.8   9.8 |   9.8   9.8 |  99.8  97.6  98.2 |  99.8  97.6 |  90.0 0.18 |   53     53 |  0.554  0.000 |    1.99  0.000
-  apt-seated-couch-r2        seated      864   581 |   9.3   9.3 |   9.3   9.3 |  99.3  94.3  92.3 |  99.3  94.3 |  90.0 0.20 |   54     54 |  0.605  0.000 |    0.00  0.000
-  apt-seated-desk-r1         seated      870   572 |  10.7  10.7 |  10.7  10.7 | 100.0  15.0  15.9 |  97.9  14.9 |  89.2 0.18 |   62     62 |  0.586  0.000 |    0.00  0.000
-  seated-r1                  seated     1183   552 |   8.5   8.5 |  61.6  57.4 | 100.0  81.2  72.6 |  16.1  13.0 |  37.5 0.78 |  345    322 |  0.175  0.000 |    0.39  0.007
-  seated-r2                  seated     1175   576 |  11.3  11.3 |  62.3  62.3 | 100.0  90.5  82.8 |  17.5  13.9 |  31.1 0.83 |  397    397 |  0.152  0.000 |    0.11  0.000
-  seated-r3                  seated     1183    15 | 100.0 100.0 | 100.0 100.0 | 100.0 100.0 100.0 | 100.0 100.0 |   0.0 0.24 |   15     15 |  0.000  0.000 |    0.15  0.000
-  busy-r1                    standing   2978   566 |  64.0  61.3 |  63.3  56.2 |  56.5  50.9  50.9 |  66.3  62.9 |   2.7 0.18 |  305    277 |  0.005  0.000 |    3.82  0.001
-  busy-r2                    standing   2977  4251 |  80.9  78.1 |  80.3  78.7 |  98.3  96.2  96.1 |  91.1  88.4 |  12.0 0.20 | 3668   3617 |  0.169  0.000 |    4.25  0.006
-  circle-r1                  standing    591   159 |  98.7  98.1 |  96.9  96.9 |  98.7  98.7  98.7 |  98.7  98.1 |   0.0 0.13 |  157    157 |  0.000  0.000 |    4.07  0.000
-  cross-r1                   standing    566   176 |  99.4  99.4 |  98.9  98.9 |  96.6  91.5  90.9 | 100.0  99.4 |   5.1 0.10 |  161    160 |  0.016  0.000 |    7.89  0.002
-  cross-r2                   standing    593   175 |  99.4  99.4 |  98.3  98.3 |  95.4  93.7  93.7 |  99.4  99.4 |   0.0 0.09 |  167    164 |  0.000  0.000 |    7.93  0.012
-  group-r1                   standing    588  1214 |  75.0  75.0 |  74.6  74.6 |  99.3  88.7  89.8 |  99.3  96.3 |  37.7 0.13 |  748    743 |  0.638  0.000 |    7.17  0.029
-  walk-r1                    standing   1182    47 |  38.3  38.3 |  31.9  31.9 |  57.4  53.2  53.2 |  38.3  38.3 |   0.0 0.48 |   27     25 |  0.000  0.000 |    1.40  0.000
-  walk-r2                    standing   1172    51 |  84.3  80.4 |  68.6  66.7 |  84.3  82.4  82.4 |  86.3  80.4 |   2.0 0.33 |   42     42 |  0.001  0.000 |    1.16  0.000
-  walkup-r1                  standing    594   350 | 100.0 100.0 |  99.7  99.7 | 100.0 100.0 100.0 | 100.0 100.0 |   0.0 0.09 |  350    350 |  0.000  0.000 |    5.64  0.000
-  walkup-r2                  standing    595   347 | 100.0 100.0 |  99.7  99.7 | 100.0 100.0 100.0 | 100.0 100.0 |   0.0 0.08 |  347    347 |  0.000  0.000 |    4.63  0.000
-  walkup-r3                  standing    593   362 | 100.0 100.0 |  99.7  99.7 | 100.0 100.0 100.0 | 100.0 100.0 |   0.0 0.09 |  362    362 |  0.000  0.000 |    3.58  0.000
+  apt-desk2-drive-r2         seated     1779   341 |  27.9  26.7 |  26.7  26.4 |  99.4  93.5  90.9 |  97.7  93.8 |  72.4 0.17 |   92     90 |  0.139     -- |    0.23  0.006
+  apt-desk2-park07-r1        seated     1186     7 | 100.0 100.0 | 100.0 100.0 | 100.0 100.0 100.0 | 100.0 100.0 |   0.0 0.02 |    7      7 |  0.000     -- |    0.66  0.000
+  apt-desk2-park15-r1        seated     1175  1152 |  86.3  86.3 |  86.3  86.3 | 100.0 100.0  99.9 | 100.0 100.0 |  13.7 0.09 |  994    994 |  0.134     -- |    1.00  0.000
+  apt-desk2-park30-r1        seated     1169  1164 |  32.6  32.6 |  32.6  32.6 | 100.0 100.0  99.9 | 100.0 100.0 |  67.4 0.20 |  380    380 |  0.671     -- |    0.82  0.000
+  apt-seated-chair-r1        seated      870   541 |   9.8   9.8 |   9.8   9.8 | 100.0  76.0  67.5 | 100.0  76.0 |  90.2 0.18 |   53     53 |  0.561     -- |    1.00  0.000
+  apt-seated-chair-r2        seated      863   544 |   7.0   6.8 |   7.0   6.8 |  99.6  94.9  86.4 |  99.6  94.9 |  92.6 0.14 |   38     37 |  0.584     -- |    1.00  0.000
+  apt-seated-couch-r1        seated      879   541 |   9.8   9.8 |   9.8   9.8 |  99.8  97.6  98.2 |  99.8  97.6 |  90.0 0.18 |   53     53 |  0.554     -- |    1.99  0.000
+  apt-seated-couch-r2        seated      864   581 |   9.3   9.3 |   9.3   9.3 |  99.3  94.3  92.3 |  99.3  94.3 |  90.0 0.20 |   54     54 |  0.605     -- |    0.00  0.000
+  apt-seated-desk-r1         seated      870   572 |  10.7  10.7 |  10.7  10.7 | 100.0  15.0  15.9 |  97.9  14.9 |  89.2 0.18 |   62     62 |  0.586     -- |    0.00  0.000
+  seated-r1                  seated     1183   552 |   8.5   8.5 |  61.6  57.4 | 100.0  81.2  72.6 |  16.1  13.0 |  37.5 0.78 |  345    322 |  0.175     -- |    0.39  0.007
+  seated-r2                  seated     1175   576 |  11.3  11.3 |  62.3  62.3 | 100.0  90.5  82.8 |  17.5  13.9 |  31.1 0.83 |  397    397 |  0.152     -- |    0.11  0.000
+  seated-r3                  seated     1183    15 | 100.0 100.0 | 100.0 100.0 | 100.0 100.0 100.0 | 100.0 100.0 |   0.0 0.24 |   15     15 |  0.000     -- |    0.15  0.000
+  busy-r1                    standing   2978   566 |  64.0  61.3 |  63.3  56.2 |  56.5  50.9  50.9 |  66.3  62.9 |   2.7 0.18 |  305    277 |  0.005     -- |    3.82  0.001
+  busy-r2                    standing   2977  4251 |  80.9  78.1 |  80.3  78.7 |  98.3  96.2  96.1 |  91.1  88.4 |  12.0 0.20 | 3668   3617 |  0.169     -- |    4.25  0.006
+  circle-r1                  standing    591   159 |  98.7  98.1 |  96.9  96.9 |  98.7  98.7  98.7 |  98.7  98.1 |   0.0 0.13 |  157    157 |  0.000     -- |    4.07  0.000
+  cross-r1                   standing    566   176 |  99.4  99.4 |  98.9  98.9 |  96.6  91.5  90.9 | 100.0  99.4 |   5.1 0.10 |  161    160 |  0.016     -- |    7.89  0.002
+  cross-r2                   standing    593   175 |  99.4  99.4 |  98.3  98.3 |  95.4  93.7  93.7 |  99.4  99.4 |   0.0 0.09 |  167    164 |  0.000     -- |    7.93  0.012
+  group-r1                   standing    588  1214 |  75.0  75.0 |  74.6  74.6 |  99.3  88.7  89.8 |  99.3  96.3 |  37.7 0.13 |  748    743 |  0.638     -- |    7.17  0.029
+  walk-r1                    standing   1182    47 |  38.3  38.3 |  31.9  31.9 |  57.4  53.2  53.2 |  38.3  38.3 |   0.0 0.48 |   27     25 |  0.000     -- |    1.40  0.000
+  walk-r2                    standing   1172    51 |  84.3  80.4 |  68.6  66.7 |  84.3  82.4  82.4 |  86.3  80.4 |   2.0 0.33 |   42     42 |  0.001     -- |    1.16  0.000
+  walkup-r1                  standing    594   350 | 100.0 100.0 |  99.7  99.7 | 100.0 100.0 100.0 | 100.0 100.0 |   0.0 0.09 |  350    350 |  0.000     -- |    5.64  0.000
+  walkup-r2                  standing    595   347 | 100.0 100.0 |  99.7  99.7 | 100.0 100.0 100.0 | 100.0 100.0 |   0.0 0.08 |  347    347 |  0.000     -- |    4.63  0.000
+  walkup-r3                  standing    593   362 | 100.0 100.0 |  99.7  99.7 | 100.0 100.0 100.0 | 100.0 100.0 |   0.0 0.09 |  362    362 |  0.000     -- |    3.58  0.000
   apt-desk2-empty-drive-r1   empty      1784   380 |  16.6   7.6 |  16.6   7.6 |  99.7  66.3  47.4 |  98.4  65.8 |  88.2 0.19 |   44     24 |  0.188  0.007 |    0.33  0.041
-  apt-desk2-empty-park15-r1  empty      1184   188 |  89.9  89.9 |  89.9  89.9 | 100.0  97.3  97.3 | 100.0  97.3 |  10.1 0.08 |  169    169 |  0.016  0.000 |    1.11  0.005
-  empty-r1                   empty      1182     0 |    --    -- |    --    -- |    --    --    -- |    --    -- |    --  nan |    0      0 |  0.000  0.000 |    1.92  0.007
+  apt-desk2-empty-park15-r1  empty      1184   188 |  89.9  89.9 |  89.9  89.9 | 100.0  97.3  97.3 | 100.0  97.3 |  10.1 0.08 |  169    169 |  0.016     -- |    1.11  0.005
+  empty-r1                   empty      1182     0 |    --    -- |    --    -- |    --    --    -- |    --    -- |    --  nan |    0      0 |  0.000     -- |    1.92  0.007
 
   totals per category
   seated   frames  14972 cam   7011 | base  30.1 >.5  30.0 | ray  38.4 >.5  38.0 | body  99.8 >.5  86.8 | seed  85.9 >.5  75.0 | added 0.284/fr, clutter FA 0.000/fr | base clutter 0.53/fr FA 0.001/fr
@@ -127,45 +143,80 @@ Controls: fixed seat XY seeded every frame of its window (no dedup): % frames wi
   apt-desk2-empty-park15-r1  sitting    (+2.75,-2.47) t[20,40)      frames   198 body  82.8 >.5  79.8 /  79.8   roommate seated ~20-40 s
   apt-desk2-empty-park15-r1  not_person (+2.75,-2.47) t[62,end)     frames   566 body   0.0 >.5   0.0 /   0.0   roommate chair empty after he left for the bed
 
-(e) runtime (laptop, one process per run, 27 in parallel): seeded_candidates per frame with seeds median 0.42 ms p95 0.85 ms (n=13150); extract median 1.9 ms p95 5.2 ms
+(e) runtime (laptop, one process per run): seeded_candidates per frame with seeds median 0.39 ms p95 0.85 ms (n=13150); extract median 1.9 ms p95 4.9 ms
 
-FINDINGS
+PLAIN-XY ARM (--window 0.4 0.4: search only +-0.4 m round the camera range; same columns)
+  run                        cat      frames   cam |  base   >.5 |   ray   >.5 |  body   >.5   box |  seed   >.5 |   new  d50 |  dup dup>.5 | add/fr  FA/fr | clut/fr  FA/fr
+  apt-desk2-drive-r2         seated     1779   341 |  27.9  26.7 |  25.8  25.8 |  97.4  92.7  90.3 |  97.7  93.0 |  71.0 0.16 |   90     90 |  0.136  0.001 |    0.23  0.006
+  apt-desk2-park30-r1        seated     1169  1164 |  32.6  32.6 |  32.6  32.6 | 100.0 100.0  99.9 | 100.0 100.0 |  67.4 0.20 |  380    380 |  0.671     -- |    0.82  0.000
+  apt-seated-chair-r1        seated      870   541 |   9.8   9.8 |   9.8   9.8 | 100.0  76.5  68.0 | 100.0  76.5 |  90.2 0.18 |   53     53 |  0.561     -- |    1.00  0.000
+  apt-seated-desk-r1         seated      870   572 |  10.7  10.7 |  10.7  10.7 | 100.0  14.9  15.4 |  98.4  14.9 |  89.3 0.18 |   61     61 |  0.587     -- |    0.00  0.000
+  seated-r1                  seated     1183   552 |   8.5   8.5 |   2.2   2.2 |  99.5  14.5  12.3 |  99.5  14.9 |  91.3 0.25 |   45     45 |  0.426     -- |    0.39  0.007
+  seated-r2                  seated     1175   576 |  11.3  11.3 |   3.8   3.8 |  97.0  15.3  12.8 |  96.4  15.5 |  85.9 0.29 |   64     64 |  0.421     -- |    0.11  0.000
+  busy-r1                    standing   2978   566 |  64.0  61.3 |  54.4  51.1 |  54.1  49.5  49.3 |  66.1  63.1 |   2.7 0.18 |  291    267 |  0.005     -- |    3.82  0.001
+  busy-r2                    standing   2977  4251 |  80.9  78.1 |  73.7  73.0 |  94.8  91.8  91.5 |  97.6  94.5 |  19.2 0.13 | 3213   3187 |  0.274     -- |    4.25  0.006
+  group-r1                   standing    588  1214 |  75.0  75.0 |  74.4  74.4 |  98.9  96.7  96.7 |  99.7  97.5 |  24.8 0.11 |  900    900 |  0.505     -- |    7.17  0.029
+  walk-r1                    standing   1182    47 |  38.3  38.3 |  21.3  21.3 |  42.6  42.6  42.6 |  38.3  38.3 |   0.0 0.44 |   20     20 |  0.000     -- |    1.40  0.000
+  walk-r2                    standing   1172    51 |  84.3  80.4 |  64.7  62.7 |  82.4  80.4  80.4 |  86.3  80.4 |   2.0 0.33 |   41     41 |  0.001     -- |    1.16  0.000
+  apt-desk2-empty-drive-r1   empty      1784   380 |  16.6   7.6 |  16.3   7.6 |  99.7  68.9  52.6 |  99.7  68.9 |  83.2 0.18 |   63     29 |  0.177  0.009 |    0.33  0.041
+
+  totals per category
+  seated   frames  14972 cam   7011 | base  30.1 >.5  30.0 | ray  28.8 >.5  28.8 | body  99.4 >.5  75.3 | seed  99.2 >.5  75.4 | added 0.325/fr, clutter FA 0.000/fr | base clutter 0.53/fr FA 0.001/fr
+  standing frames  12429 cam   7698 | base  82.3 >.5  80.5 | ray  77.1 >.5  76.5 | body  93.0 >.5  90.6 | seed  95.6 >.5  93.3 | added 0.091/fr, clutter FA 0.000/fr | base clutter 4.11/fr FA 0.004/fr
+  empty    frames   4150 cam    568 | base  40.8 >.5  34.9 | ray  40.7 >.5  34.9 | body  99.8 >.5  78.3 | seed  99.8 >.5  78.3 | added 0.081/fr, clutter FA 0.004/fr | base clutter 1.01/fr FA 0.021/fr
+(e) runtime (laptop, one process per run): seeded_candidates per frame with seeds median 0.47 ms p95 3.92 ms (n=13150); extract median 2.1 ms p95 21.4 ms
+
+FINDINGS (ray arm unless said)
 1. Apartment seated (the extractor-merge case): fixed.  Camera persons with a candidate within
    0.6 m: chair/couch 7-10% -> 99-100%, scored > 0.5 76-97%; apt-desk2 park30 33 -> 100%,
    drive-r2 28 -> 98% (94% > 0.5).  New rows land 0.14-0.20 m (median) from the camera XY, inside
-   the tracker's 0.55 m camera gate.  Exception apt-seated-desk-r1 (seen from behind over the
+   the tracker's 0.55 m camera gate.  The plain-XY arm gives the same numbers here, so the 1.2 m
+   look-back is not needed at home.  Exception apt-seated-desk-r1 (seen from behind over the
    left shoulder): found 98%, but the classifier scores only 15% > 0.5.
 2. Lab desk (seated-r1/r2): NOT an extractor problem.  On 345/552 and 397/576 instances a BASE
    candidate already sits on the body found along the ray, 93-100% of them > 0.5; the camera XY
-   is 0.78-0.83 m behind it (finding above), so the 0.6 m metric (8.5/11.3%) and the live 0.55 m
-   camera gate both miss.  Seeding finds a body on 100% of instances (81/91% > 0.5) but only
-   adds a new row on 31-37%, and within 0.6 m of the camera XY it reaches just 16-18%.  Fix
-   the C3 range (clip the box to the image before the torso window; or take the nearest depth
-   mode) and/or associate camera <-> lidar along the bearing; seeding alone does not fix this.
+   is 0.78-0.83 m behind it (C3 over-read above), so the 0.6 m metric (8.5/11.3%) and the live
+   0.55 m camera gate both miss.  The ray arm finds that body on 100% of instances (81/91% > 0.5)
+   but within 0.6 m of the camera XY reaches only 16-18%; the plain-XY arm lands on the partition
+   at the camera XY (found 97-99%, but only 15% > 0.5).  Neither fixes it: the C3 range has to be
+   fixed (clip the box to the image before the torso window explains about half; the 11-20
+   standing over-read of 0.2-0.4 m is open), or camera <-> lidar association has to use the bearing.
 3. Clutter.  Seeded rows exist only at camera detections: +0.07 (standing), +0.28 (seated),
-   +0.09 (empty) per frame, vs base 4.1 / 0.5 / 1.0.  Labelled seeded clutter scored > 0.5:
-   0.003 per frame in the empty runs (base 0.021) - but those are 12/12 of the labelled
-   bedroom camera false positives in apt-desk2-empty-drive-r1: the lidar shape does NOT veto
-   a camera false positive on desk furniture.  empty-r1 has no camera detections at all, so
-   the lab gives no camera-FP test.  Controls: empty chairs at known positions give NO body
-   (0/746 frames, apt-desk2 roommate chair); bed/cabinet a body on 63-100% of frames but
-   0.1-31% > 0.5; the two scan-matched empty chairs (+-0.6 m uncertain) 22% / 64% > 0.5;
-   occupied seats 59-100% > 0.5 (desk-r1 11%).
+   +0.09 (empty) per frame, vs base 4.1 / 0.5 / 1.0.  The labelled number is a LOWER BOUND:
+   seeded rows labelled clutter and scored > 0.5 are 0.003/frame over the empty runs (base 0.021),
+   all of them 12/12 labelled bedroom camera false positives in apt-desk2-empty-drive-r1, so
+   the lidar shape does NOT veto a camera false positive on desk furniture.  The same run has
+   323 unlabelled seeded rows (67% > 0.5), ~300 of them from one static camera detection at
+   odom (1.5-2.0, 0.5): conf 0.87-0.90, box ~0.46 x 1.4 m at 3.3 m, speed ~0.07 m/s, a base
+   candidate there on only 3/1784 frames (merged with furniture).  Probably the user sitting in
+   the living room (the notes say the user was alone there), NOT VERIFIED.  If it is not the user,
+   seeded false alarms in that run are ~0.13/frame, about 3x its base 0.041: the user should confirm.
+   empty-r1 has no camera detections, so the lab gives no camera-FP test.  Controls: empty chairs
+   at known positions give NO body (0/746 frames, apt-desk2 roommate chair); bed/cabinet a body on
+   63-100% of frames but 0.1-31% > 0.5; the two scan-matched empty chairs (+-0.6 m uncertain)
+   22% / 64% > 0.5; occupied seats 59-100% > 0.5 (desk-r1 11%).  The FA/fr column is "--" where
+   a run has no labelled seeded clutter (it cannot be measured there, not zero).
 4. Standing/walking never drop (seeded rows only add; base rows unchanged).  Crowds gain:
-   group-r1 75 -> 99% within 0.6 m (> 0.5: 75 -> 96%), busy-r2 81 -> 91%, busy-r1 64 -> 66%.
-   Those added rows are camera-confirmed but unlabelled.
-5. Runtime (laptop, 27 processes): 0.42 ms median / 0.85 ms p95 per frame with seeds, vs
-   extract 1.9 / 5.2 ms.  Expect ~2-4x on the Orin; still small.
+   group-r1 75 -> 99% within 0.6 m (> 0.5: 75 -> 96%), busy-r2 81 -> 91%; the plain-XY arm is
+   better in crowds (busy-r2 98%, group-r1 > 0.5 97.5%, standing total 95.6 vs 92.0%) because the
+   ray's "nearest object" can be another person in front.  Added rows are camera-confirmed only.
+5. Runtime (laptop, 27 processes): 0.39 ms median / 0.85 ms p95 per frame with seeds, vs
+   extract 1.9 / 4.9 ms (earlier ray run 0.42 / 0.85; the XY-arm run 0.47 / 3.9 with extract
+   2.1 / 21 ms, so the p95s are load noise).  Expect ~2-4x on the Orin; still small next to extract.
 
 CAVEATS: model_base_1121 was trained on these runs (scores in-sample; seated rows include the
 override-labelled seated pieces).  Unlabelled seeded rows are judged only through the camera.
 seated-r3 has 15 camera instances; apt-desk2-empty-park15-r1 is not empty (user seated out of
 view, roommate 20-40 s).  Parameters were set on two seated-r1 probes and never tuned.
 
-VERDICT: Worth a live SHADOW test (publish seeded rows on a separate topic, tracker unchanged),
-mainly for seated people at home and close groups, where it turns 7-30% into ~99%
-coverage at ~0.5 ms and +0.1-0.3 candidates/frame, with no standing-person loss.  It does NOT fix the lab
-desk case on its own: there the extractor already has the user and C3's top-clipped boxes put
-the camera 0.8 m behind them, so fix the C3 range first and re-run this script.  Also check
-camera false positives on furniture in the lab before letting seeded rows birth tracks:
-the classifier passes them (12/12 in the apartment bedroom).
+VERDICT: It fixes the home seated case (7-30% -> ~99% found, 75-97% > 0.5) at ~0.5 ms and
++0.1-0.3 candidates/frame with no standing-person loss.  Clutter is small where it can be
+measured, but the lidar does not veto camera false positives (12/12 bedroom FPs > 0.5) and one
+large unlabelled cluster needs the user's word.  It does NOT fix the lab desk case: there the
+extractor already has the user and C3 puts the camera ~0.8 m behind them.  Worth a live SHADOW
+test (seeded rows on a separate topic, tracker unchanged), using the plain-XY window (0.4/0.4),
+which matches the ray at home, is better in crowds and exposes fewer far objects to camera
+FPs.  First fix the C3 range on the new chassis (top-clipped boxes; 0.2-0.4 m standing
+over-read), then re-run this script on the lab runs and check camera FPs on lab furniture.
+The code default stays the ray window because it is the only one that finds the body when the
+camera range is wrong; switch with SEED_BEFORE_M / SEED_AFTER_M.
