@@ -340,7 +340,7 @@ local_costmap:
         # the ToF still sees survives every scan pass.  Do not raise
         # min_obstacle_height to the 0.12 used elsewhere: that discards exactly
         # the low obstacles these sensors exist for.
-        # Livox low band (livox_scan_node /livox/obstacles, odom frame): 0.05-0.45 m
+        # Livox low band (livox_scan_node /livox/obstacles, odom frame): 0.06-0.45 m
         # above the floor, the table/truss base bars and chair bases the 0.31 m
         # /scan slice misses.  The node remembers voxels the lidar can no longer
         # see up close, so mark-only with persistence 0 (re-marked after /scan clears).
@@ -408,7 +408,7 @@ global_costmap:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
         observation_sources: scan livox_low people
-        # Livox low band (livox_scan_node /livox/obstacles, odom frame): 0.05-0.45 m
+        # Livox low band (livox_scan_node /livox/obstacles, odom frame): 0.06-0.45 m
         # above the floor, the table/truss base bars and chair bases the 0.31 m
         # /scan slice misses.  The node remembers voxels the lidar can no longer
         # see up close, so mark-only with persistence 0 (re-marked after /scan clears).

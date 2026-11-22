@@ -119,7 +119,11 @@ class LivoxScanNode(Node):
         # Low-band obstacles (/livox/obstacles): everything the 0.26-0.36 m
         # slice misses below it (table/truss base bars, chair star bases) and up
         # to the robot's height.  Heights are above base_footprint (the floor).
-        self.declare_parameter('obstacle_z_min', 0.05)
+        # Lab carpet floor fit (2026-11-22, parked): floor returns peak at
+        # z -0.02..0 AND 0.02..0.05 out to 4.5 m, so 0.06 m plus a range slope
+        # for pitch error.  Bars under ~6 cm are not caught.
+        self.declare_parameter('obstacle_z_min', 0.06)
+        self.declare_parameter('obstacle_z_slope', 0.015)   # m per m beyond 2 m
         self.declare_parameter('obstacle_z_max', 0.45)
         self.declare_parameter('obstacle_range_max', 4.0)
         self.declare_parameter('obstacle_cell', 0.05)
@@ -138,6 +142,7 @@ class LivoxScanNode(Node):
         self.deskew = bool(gp('deskew'))
         self.inc = 2 * math.pi / self.beams
         self.ob_zmin, self.ob_zmax = float(gp('obstacle_z_min')), float(gp('obstacle_z_max'))
+        self.ob_zslope = float(gp('obstacle_z_slope'))
         self.ob_rmax, self.ob_cell = float(gp('obstacle_range_max')), float(gp('obstacle_cell'))
         self.self_x, self.self_y = float(gp('self_x')), float(gp('self_y'))
         self.ob_memory = {}
@@ -381,7 +386,8 @@ class LivoxScanNode(Node):
             xyz[:, 0], xyz[:, 1] = c * xyz[:, 0] - s * xyz[:, 1], s * xyz[:, 0] + c * xyz[:, 1]
         xyz = xyz @ self.cloud_R.T + self.cloud_t
         r = np.hypot(xyz[:, 0], xyz[:, 1])
-        keep = ((xyz[:, 2] > self.ob_zmin) & (xyz[:, 2] < self.ob_zmax) & (r < self.ob_rmax)
+        zmin = self.ob_zmin + self.ob_zslope * np.maximum(r - 2.0, 0.0)
+        keep = ((xyz[:, 2] > zmin) & (xyz[:, 2] < self.ob_zmax) & (r < self.ob_rmax)
                 & ~((np.abs(xyz[:, 0]) < self.self_x) & (np.abs(xyz[:, 1]) < self.self_y)))
         cur = _first_per_cell(xyz[keep], self.ob_cell)
         c, sn = math.cos(fa), math.sin(fa)
