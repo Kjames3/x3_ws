@@ -2762,6 +2762,16 @@ def initialize_hardware():
             logger.error(f"OAK-D Lite: init failed: {e}")
             oak = None
 
+        # Low floor obstacles (power strips, cords, low bars) from front-OAK depth
+        # -> /oak/obstacles (odom), a mark-only costmap source. X3_OAK_FLOOR_OBSTACLES=0 disables.
+        if oak is not None and ros_bridge is not None and os.environ.get('X3_OAK_FLOOR_OBSTACLES', '1') != '0':
+            try:
+                from oak_floor_obstacles import OakFloorObstacles
+                OakFloorObstacles(oak, ros_bridge).start()
+                logger.info("OAK floor obstacles: publishing /oak/obstacles")
+            except Exception as e:
+                logger.error(f"OAK floor obstacles: init failed: {e}")
+
         # DepthAI opens the device exclusively, so nothing outside this process can
         # see the OAK streams. --oak-ros-publish republishes them as sensor_msgs so
         # they can be bagged (record_bag.sh) or viewed in RViz/Foxglove.
@@ -6131,7 +6141,8 @@ async def main():
                 logger.warning("Loop %s still running 3 s after SIGTERM; cancelling. Parked at:%s",
                                t.get_name(), stack)
                 t.cancel()
-            await asyncio.wait(pending, timeout=2.0)
+            if pending:
+                await asyncio.wait(pending, timeout=2.0)
         logger.info("Loops stopped; closing client connections")
     logger.info("WebSocket server closed")
 
