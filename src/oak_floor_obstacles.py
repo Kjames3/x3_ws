@@ -126,7 +126,9 @@ class OakFloorObstacles:
         R_ob, t_ob = self._tf('odom', 'base_footprint')    # base -> odom
         p_odom = pts @ R_oc.T + t_oc
         p_base = (p_odom - t_ob) @ R_ob                      # odom -> base
-        h = p_base[:, 2]
+        h = self.floor_relative_height(p_base)
+        if h is None:
+            return
         self._floor_h.append(h[np.abs(h) < 0.06])
         keep = ((h > self.z_min) & (h < self.z_max)
                 & ~((np.abs(p_base[:, 0]) < self.self_x) & (np.abs(p_base[:, 1]) < self.self_y)))
@@ -162,8 +164,39 @@ class OakFloorObstacles:
             self._floor_h = []
             if len(fh):
                 p = np.percentile(fh, [1, 50, 99])
-                logger.info('oak floor obstacles: %d voxels; floor h p1/p50/p99 %.3f/%.3f/%.3f m',
-                            len(self.mem.vox), *p)
+                logger.info('oak floor obstacles: %d voxels; floor h p1/p50/p99 %.3f/%.3f/%.3f m; '
+                            'plane a,b,c %s', len(self.mem.vox), *p,
+                            tuple(round(v, 3) for v in self.stats.get('floor', ())))
+
+    def floor_relative_height(self, p_base):
+        """Height above a floor plane fitted in this frame (base_footprint coords).
+
+        The URDF height put the carpet at +5.7 cm (2026-11-22, B1F4 depth is
+        uncorrected and reads long), so trust the frame's own floor instead:
+        least-squares z = a*x + b*y + c on points within 0.12 m of the URDF floor,
+        twice, trimming to the lower residuals.  None if the floor is not seen
+        (fewer than 300 candidate points) or the fit is implausible.
+        """
+        h0 = p_base[:, 2]
+        m = np.abs(h0) < 0.12
+        if m.sum() < 300:
+            return None
+        P = p_base[m]
+        A = np.column_stack((P[:, 0], P[:, 1], np.ones(len(P))))
+        z = P[:, 2]
+        coef = np.linalg.lstsq(A, z, rcond=None)[0]
+        for _ in range(2):
+            r = z - A @ coef
+            keep = np.abs(r) < max(0.015, 2.5 * np.median(np.abs(r)))
+            if keep.sum() < 200:
+                return None
+            coef = np.linalg.lstsq(A[keep], z[keep], rcond=None)[0]
+        a, b, c = coef
+        # Plausible: within ~8 deg and 0.10 m of the URDF floor.
+        if math.hypot(a, b) > 0.14 or abs(c) > 0.10:
+            return None
+        self.stats['floor'] = (float(a), float(b), float(c))
+        return (h0 - (a * p_base[:, 0] + b * p_base[:, 1] + c)) / math.sqrt(1 + a * a + b * b)
 
     def publish(self, points):
         msg = self._PC2()
