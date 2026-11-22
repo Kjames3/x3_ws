@@ -5,6 +5,15 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-21 — Data-plane stall came back after server restarts (watchdog caught it)
+- **Problem:** the Surroundings view was empty on the laptop.
+- **Work done:** read the watchdog log. Then restarted x3_server and, 15 s later, foxglove_bridge.
+- **Results:**
+  - The watchdog logged an ERROR after **both** left-camera deploy restarts (21:39:53, 21:41:56). In both, /scan and /odom delivered data for about a minute (345–485 scans), then stopped. Earlier stalls never delivered anything, so this is a new pattern.
+  - After the restart, no stall in 90 s.
+  - The detector works. Auto-recovery and a GUI banner are now more urgent, since a plain server restart can trigger the stall.
+  - Bringup was running with `floor:=lab_carpet` in the apartment (strafe scale and ToF baseline).
+
 ## 2026-11-21 — Left camera feed in the server and GUI
 - **Problem:** the new left camera (Innomaker U20CAM-9281M) was plugged in but unused, and its image is rotated 90°.
 - **Potential solution:** capture it in the existing role-tagged camera feed loop as the `left` role (the GUI already understands it) and rotate each frame 90°.
