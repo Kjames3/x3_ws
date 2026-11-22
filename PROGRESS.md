@@ -16,7 +16,8 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 - **Results:**
   - Checked in a browser against the robot at desktop and phone sizes; 889 tests pass (failures are the pre-existing ones).
   - The first deploy compared `Log.WARN` (bytes in rclpy) with an int, which raised in the rclpy spin thread and stopped all ROS callbacks for about a minute; fixed in 5312e47 and the callback is now guarded.
-  - **Not tested live:** the failure reasons need a real Nav2 failure (goal in a wall, person blocking the path).
+  - Live test 2026-11-22 (apartment): goal clicked inside a wall -> the GUI showed "Planner found no path to the goal" (server log: infeasible / no path). The "stopped making progress" case is not yet seen live.
+  - Seen in the same run: the robot could not drive through the 35 in (0.89 m) doorway into a room. Likely the CBF still sized for the old chassis; left for a separate thread (resize to the x3_v2 footprint and tune).
 
 ## 2026-11-22 — Navigation tab: hide dead 3D controls, SLAM health, localization badge
 - **Problem:** with the tilt mount removed, 3D Scan / 3D Mapping / Save 3D Map do nothing; nothing showed whether SLAM was mapping or whether AMCL was localized (the A/B test drove on an unconverged AMCL).
