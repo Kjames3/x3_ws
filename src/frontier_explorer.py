@@ -40,6 +40,20 @@ POLL_S = 0.2
 MAX_MAP_AGE_S = 5.0  # SLAM Toolbox is configured to publish every 0.5 s.
 MAX_ATTEMPTS = 3
 RETRY_COOLDOWN_S = 15.0
+# Stuck = Nav2 keeps commanding motion but the scan-matched map pose does not move
+# (wheels caught on a cord/base, or spinning on it -- wheel odometry would still
+# "move", so the map pose is used).  Recovery backs out along the reverse of the
+# commanded direction through the CBF, then marks a keep-out disc ahead of the
+# stuck spot so the replanned route goes around it.
+STUCK_WINDOW_S = 4.0
+STUCK_MOVE_M = 0.04
+STUCK_TURN_RAD = 0.15
+STUCK_MIN_CMD_V = 0.05
+STUCK_MIN_CMD_W = 0.25
+BACKOUT_SPEED = 0.12
+BACKOUT_S = 2.5          # ~0.3 m
+KEEPOUT_AHEAD_M = 0.42   # footprint front 0.32 + 0.10
+KEEPOUT_RADIUS_M = 0.15
 
 
 @dataclass(frozen=True)
@@ -195,6 +209,13 @@ class FrontierExplorer:
         self._worker = None
         self._grid = None
         self._grid_key = None
+        # Optional hooks (server_x3 sets them): drive_fn(vx, vy, wz) feeds the
+        # CBF-filtered motion queue; get_nav_cmd() -> (vx, vy, wz, age_s) of the
+        # last /cmd_vel; add_keepout(x, y, radius) in the map frame.
+        self.drive_fn = None
+        self.get_nav_cmd = None
+        self.add_keepout = None
+        self.stuck_count = 0
 
     def start(self) -> bool:
         with self._lock:
@@ -231,6 +252,7 @@ class FrontierExplorer:
                 "frontiers_visited": self._frontiers_visited,
                 "frontier_reason": self._reason,
                 "current_goal": list(self._current_goal) if self._current_goal else None,
+                "stuck_count": self.stuck_count,
             }
 
     def _set_state(self, state, goal=None, reason=None):
@@ -360,7 +382,9 @@ class FrontierExplorer:
                         failures.remove(failure)
                     with self._lock:
                         self._frontiers_visited += 1
-                elif result in ("ABORTED", "REJECTED", "ERROR", "ACCEPT_TIMEOUT", "TIMEOUT"):
+                elif result in ("ABORTED", "REJECTED", "ERROR", "ACCEPT_TIMEOUT", "TIMEOUT", "STUCK"):
+                    if result == "STUCK":
+                        await self._recover_from_stuck()
                     attempts = 1
                     if failure is not None:
                         failures.remove(failure)
@@ -383,6 +407,7 @@ class FrontierExplorer:
     async def _wait_for_nav2(self, goal_id):
         start = last_progress = time.monotonic()
         best_distance = math.inf
+        history = []          # (t, x, y, yaw, moving_cmd, (vx, vy))
         while True:
             status = self._nav2.get_status(goal_id)
             if status.get("outcome") is not None:
@@ -407,6 +432,9 @@ class FrontierExplorer:
                 if distance <= best_distance - PROGRESS_STEP_M:
                     best_distance = distance
                     last_progress = now
+            if self._is_stuck(history, now, pose):
+                self._cancel_goal()
+                return "STUCK"
             if state == "PLANNING" and now - start >= ACCEPT_TIMEOUT_S:
                 self._cancel_goal()
                 return "ACCEPT_TIMEOUT"
@@ -414,6 +442,56 @@ class FrontierExplorer:
                 self._cancel_goal()
                 return "TIMEOUT"
             await asyncio.sleep(POLL_S)
+
+
+    def _is_stuck(self, history, now, pose):
+        if self.get_nav_cmd is None:
+            return False
+        cmd = self.get_nav_cmd()
+        vx, vy, wz, age = cmd if cmd is not None else (0.0, 0.0, 0.0, math.inf)
+        moving = age < 0.5 and (math.hypot(vx, vy) >= STUCK_MIN_CMD_V or abs(wz) >= STUCK_MIN_CMD_W)
+        history.append((now, pose[0], pose[1], pose[2], moving, (vx, vy)))
+        while history and now - history[0][0] > STUCK_WINDOW_S:
+            history.pop(0)
+        if not history or now - history[0][0] < STUCK_WINDOW_S - 0.5:
+            return False
+        if not all(h[4] for h in history):
+            return False
+        t0, x0, y0, a0 = history[0][:4]
+        moved = math.hypot(pose[0] - x0, pose[1] - y0)
+        turned = abs(math.atan2(math.sin(pose[2] - a0), math.cos(pose[2] - a0)))
+        if moved >= STUCK_MOVE_M or turned >= STUCK_TURN_RAD:
+            return False
+        self._stuck_info = (pose, [h[5] for h in history])
+        return True
+
+    async def _recover_from_stuck(self):
+        """Back out opposite the commanded direction, then mark a keep-out disc."""
+        pose, cmds = self._stuck_info
+        vx = float(np.mean([c[0] for c in cmds]))
+        vy = float(np.mean([c[1] for c in cmds]))
+        n = math.hypot(vx, vy)
+        ux, uy = (vx / n, vy / n) if n > 1e-3 else (1.0, 0.0)   # body frame
+        self.stuck_count += 1
+        logger.warning("FrontierExplorer: STUCK at (%.2f, %.2f) cmd dir (%.2f, %.2f); backing out",
+                       pose[0], pose[1], ux, uy)
+        # Wait for the Nav2 cancel to settle so its zeros do not fight the back-out.
+        for _ in range(15):
+            if not self._nav2.is_busy():
+                break
+            await asyncio.sleep(0.1)
+        if self.drive_fn is not None:
+            end = time.monotonic() + BACKOUT_S
+            while time.monotonic() < end:
+                self.drive_fn(-ux * BACKOUT_SPEED, -uy * BACKOUT_SPEED, 0.0)
+                await asyncio.sleep(0.05)
+            self.drive_fn(0.0, 0.0, 0.0)
+        if self.add_keepout is not None:
+            c, s = math.cos(pose[2]), math.sin(pose[2])
+            kx = pose[0] + KEEPOUT_AHEAD_M * (c * ux - s * uy)
+            ky = pose[1] + KEEPOUT_AHEAD_M * (s * ux + c * uy)
+            self.add_keepout(kx, ky, KEEPOUT_RADIUS_M)
+            logger.info("FrontierExplorer: keep-out disc at (%.2f, %.2f) r=%.2f", kx, ky, KEEPOUT_RADIUS_M)
 
 
 def _matches(goal, other):

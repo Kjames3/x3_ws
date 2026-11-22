@@ -323,7 +323,7 @@ local_costmap:
         enabled: True
         # tof_*: dual VL53L5CX arrays (Teensy -> server_x3) covering the low band
         # in front of the wheels that the 0.34 m scan plane passes over.
-        observation_sources: scan livox_low oak_low tof_upper tof_lower people
+        observation_sources: scan livox_low oak_low keepout tof_upper tof_lower people
         scan:
           topic: /scan
           max_obstacle_height: 2.0
@@ -354,9 +354,21 @@ local_costmap:
           obstacle_min_range: 0.0
           obstacle_max_range: 4.5
           observation_persistence: 0.0
-        # Front-OAK floor obstacles (server_x3 oak_floor_obstacles, odom): 0.012-0.45 m
+        # Front-OAK floor obstacles (server_x3 oak_floor_obstacles, odom): 0.03-0.45 m
         # within 1.6 m of the camera, e.g. power strips under the Livox band.
         # Remembered until back in view and empty, so mark-only, persistence 0.
+        # Auto-Explore keep-out discs (server_x3 /explore/keepout, map frame): dropped
+        # ahead of a spot where the robot got stuck, cleared when Auto-Explore starts.
+        keepout:
+          topic: /explore/keepout
+          data_type: "PointCloud2"
+          marking: True
+          clearing: False
+          min_obstacle_height: -1.0
+          max_obstacle_height: 2.0
+          obstacle_min_range: 0.0
+          obstacle_max_range: 50.0
+          observation_persistence: 0.0
         oak_low:
           topic: /oak/obstacles
           data_type: "PointCloud2"
@@ -420,7 +432,7 @@ global_costmap:
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
-        observation_sources: scan livox_low oak_low people
+        observation_sources: scan livox_low oak_low keepout people
         # Livox low band (livox_scan_node /livox/obstacles, odom frame): 0.06-0.45 m
         # above the floor, the table/truss base bars and chair bases the 0.31 m
         # /scan slice misses.  The node remembers voxels the lidar can no longer
@@ -435,9 +447,21 @@ global_costmap:
           obstacle_min_range: 0.0
           obstacle_max_range: 5.0
           observation_persistence: 0.0
-        # Front-OAK floor obstacles (server_x3 oak_floor_obstacles, odom): 0.012-0.45 m
+        # Front-OAK floor obstacles (server_x3 oak_floor_obstacles, odom): 0.03-0.45 m
         # within 1.6 m of the camera, e.g. power strips under the Livox band.
         # Remembered until back in view and empty, so mark-only, persistence 0.
+        # Auto-Explore keep-out discs (server_x3 /explore/keepout, map frame): dropped
+        # ahead of a spot where the robot got stuck, cleared when Auto-Explore starts.
+        keepout:
+          topic: /explore/keepout
+          data_type: "PointCloud2"
+          marking: True
+          clearing: False
+          min_obstacle_height: -1.0
+          max_obstacle_height: 2.0
+          obstacle_min_range: 0.0
+          obstacle_max_range: 50.0
+          observation_persistence: 0.0
         oak_low:
           topic: /oak/obstacles
           data_type: "PointCloud2"

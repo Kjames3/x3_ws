@@ -71,7 +71,7 @@ class FloorObstacleMemory:
 
 class OakFloorObstacles:
     def __init__(self, oak, bridge, camera_frame='oak_rgb_camera_optical_frame',
-                 z_min=0.012, z_max=0.45, range_max=1.6, hz=5.0,
+                 z_min=0.03, z_max=0.45, range_max=1.6, hz=5.0,
                  self_x=0.37, self_y=0.34):
         self.oak, self.bridge, self.frame = oak, bridge, camera_frame
         self.z_min, self.z_max, self.range_max = z_min, z_max, range_max
@@ -138,8 +138,9 @@ class OakFloorObstacles:
             except OSError:
                 pass
         # Lab carpet vs fitted plane (2026-11-22): max 5 mm out to 1.35 m past the
-        # bumper; an orange extension cord 0.5 m out read 13-31 mm.  12 mm near,
-        # +1 cm per metre of camera depth beyond 1 m.
+        # bumper; an orange extension cord 0.5 m out read 13-31 mm.  At 12 mm the cord
+        # was lethal and stalled Auto-Explore; the user is fine driving over cords and
+        # wants power strips avoided, so 3 cm (+1 cm per metre of depth beyond 1 m).
         zmin = self.z_min + 0.01 * np.maximum(pts[:, 2] - 1.0, 0.0)
         keep = ((h > zmin) & (h < self.z_max)
                 & ~((np.abs(p_base[:, 0]) < self.self_x) & (np.abs(p_base[:, 1]) < self.self_y)))

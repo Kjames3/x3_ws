@@ -222,3 +222,44 @@ def test_stop_status_waits_for_owned_action_terminal_result():
     explorer.stop()
     assert explorer.status()["frontier_state"] == "STOPPING"
     assert explorer.status()["frontier_state"] == "STOPPED"
+
+
+def test_stuck_backs_out_opposite_command_and_marks_keepout_ahead(monkeypatch):
+    """Commanded forward, map pose frozen -> STUCK, reverse drive, keep-out ahead."""
+    monkeypatch.setattr(frontier, "STUCK_WINDOW_S", 0.6)
+    monkeypatch.setattr(frontier, "POLL_S", 0.05)
+    monkeypatch.setattr(frontier, "BACKOUT_S", 0.2)
+    monkeypatch.setattr(frontier, "MAX_ATTEMPTS", 1)
+    monkeypatch.setattr(frontier, "RETRY_COOLDOWN_S", 0.0)
+    bridge = Bridge()
+    nav = Nav(iter(lambda: {"state": "NAVIGATING", "dist": 2.0}, None))
+    explorer = frontier.FrontierExplorer(nav, bridge)
+    drives, keepouts = [], []
+    explorer.drive_fn = lambda vx, vy, wz: drives.append((vx, vy, wz))
+    explorer.get_nav_cmd = lambda: (0.2, 0.0, 0.0, 0.05)
+    explorer.add_keepout = lambda x, y, r: keepouts.append((x, y, r))
+
+    async def run():
+        assert explorer.start()
+        await asyncio.wait_for(explorer._task, 5.0)
+
+    asyncio.run(run())
+    assert explorer.stuck_count == 1
+    assert nav.canceled == [1]
+    assert drives and drives[0][0] < 0 and drives[0][1] == 0 and drives[-1] == (0.0, 0.0, 0.0)
+    (kx, ky, r), = keepouts
+    assert kx == pytest.approx(bridge.pose[0] + frontier.KEEPOUT_AHEAD_M)
+    assert ky == pytest.approx(bridge.pose[1])
+    assert explorer.status()["frontier_state"] == frontier.STATE_BLOCKED
+
+
+def test_not_stuck_while_moving_or_without_command():
+    explorer = frontier.FrontierExplorer(Nav([]), Bridge())
+    explorer.get_nav_cmd = lambda: (0.0, 0.0, 0.0, 0.05)      # Nav2 holding still
+    hist = []
+    for i in range(60):
+        assert not explorer._is_stuck(hist, i * 0.1, (0.0, 0.0, 0.0))
+    explorer.get_nav_cmd = lambda: (0.2, 0.0, 0.0, 0.05)      # commanded and moving
+    hist = []
+    for i in range(60):
+        assert not explorer._is_stuck(hist, i * 0.1, (i * 0.02, 0.0, 0.0))

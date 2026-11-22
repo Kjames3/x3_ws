@@ -1071,6 +1071,12 @@ class ROS2Bridge:
                        durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self._move_lock = threading.Lock()   # move() runs from the heartbeat AND the gate
         self._people_pub = self._node.create_publisher(PointCloud2, '/people/obstacles', 5)
+        # Auto-Explore keep-out discs (map frame), republished at 2 Hz for the
+        # mark-only `keepout` costmap source.  Cleared when exploration starts.
+        self._nav_cmd = None
+        self._keepout = []
+        self._keepout_pub = self._node.create_publisher(PointCloud2, '/explore/keepout', 5)
+        self._node.create_timer(0.5, self._publish_keepout)
         if LIDAR_PERSONS_ENABLED:
             self._node.create_subscription(PointCloud2, '/livox/person_candidates',
                                            self._person_candidates_cb, qos_profile_sensor_data)
@@ -1724,6 +1730,9 @@ class ROS2Bridge:
     def _gate_cmd_vel_cb(self, msg):
         """A command arrived on /cmd_vel: filter it and publish it to the driver."""
         self._gate_last_cmd = time.monotonic()      # the heartbeat yields while this is fresh
+        # Auto-Explore's stuck detector compares this with the map pose.
+        self._nav_cmd = (float(msg.linear.x), float(msg.linear.y), float(msg.angular.z),
+                         self._gate_last_cmd)
         try:
             with self._move_lock:
                 route = _gate_route(not _motion_inhibited(), _is_standalone_test_running())
@@ -1907,6 +1916,36 @@ class ROS2Bridge:
         msg.is_dense = True
         msg.data = np.ascontiguousarray(points, dtype='<f4').tobytes()
         self._people_pub.publish(msg)
+
+    def get_nav_cmd(self):
+        """(vx, vy, wz, age_s) of the last /cmd_vel reaching the gate, or None."""
+        c = self._nav_cmd
+        return None if c is None else (c[0], c[1], c[2], time.monotonic() - c[3])
+
+    def add_keepout(self, x, y, radius):
+        """Fill a map-frame disc with 5 cm-spaced points for the costmap."""
+        g = np.arange(-radius, radius + 1e-6, 0.05)
+        gx, gy = np.meshgrid(g, g)
+        m = np.hypot(gx, gy) <= radius + 1e-6
+        pts = np.column_stack((gx[m] + x, gy[m] + y, np.full(m.sum(), 0.10)))
+        self._keepout.append(pts.astype(np.float32))
+
+    def clear_keepout(self):
+        self._keepout = []
+
+    def _publish_keepout(self):
+        pts = np.concatenate(self._keepout) if self._keepout else np.zeros((0, 3), np.float32)
+        msg = self._PointCloud2()
+        msg.header.frame_id = 'map'
+        msg.header.stamp = self._node.get_clock().now().to_msg()
+        msg.height, msg.width = 1, len(pts)
+        msg.fields = [self._PointField(name=n, offset=i * 4,
+                                       datatype=self._PointField.FLOAT32, count=1)
+                      for i, n in enumerate(('x', 'y', 'z'))]
+        msg.is_bigendian, msg.is_dense = False, True
+        msg.point_step, msg.row_step = 12, 12 * len(pts)
+        msg.data = np.ascontiguousarray(pts, dtype='<f4').tobytes()
+        self._keepout_pub.publish(msg)
 
     def publish_tof_cloud(self, name, points, kind='points'):
         """(N,3) float32 sensor-frame points -> /tof/<name>/<kind>.
@@ -2654,6 +2693,9 @@ def initialize_hardware():
         # camera intentionally left unset — falls through to AstraCamera init below
         nav2_client = Nav2Client(bridge._node)
         frontier_explorer = FrontierExplorer(nav2_client, bridge)
+        frontier_explorer.drive_fn = _enqueue_motion
+        frontier_explorer.get_nav_cmd = bridge.get_nav_cmd
+        frontier_explorer.add_keepout = bridge.add_keepout
         logger.info("Nav2Client + FrontierExplorer initialized (ros2 mode)")
 
         # Opt-in only (--auto-nav2-map). This used to fire unconditionally on a
@@ -3720,6 +3762,8 @@ def _start_frontier_exploration():
         return False, "Frontier exploration requires ROS2 or simulation mode"
     if nav2_client is not None and nav2_client.is_busy():
         return False, "Wait for the current navigation goal before starting Auto-Explore"
+    if ros_bridge is not None and hasattr(ros_bridge, 'clear_keepout'):
+        ros_bridge.clear_keepout()
     if frontier_explorer.start():
         return True, "Frontier exploration started"
     return False, "Auto-Explore is already running or Nav2 is busy"
