@@ -9,7 +9,7 @@
     <script src="vendor/three/three.min.js"></script>
     <script src="vendor/three/OrbitControls.js"></script>
 
-    <link rel="stylesheet" href="style.css?v=9">
+    <link rel="stylesheet" href="style.css?v=11">
     <link rel="stylesheet" href="dashboard.css?v=8">
     <link rel="stylesheet" href="mobile.css?v=2">
 </head>
@@ -690,10 +690,23 @@
                     <!-- 2D canvas: overlays (path, robot arrow, goal, lidar dots) + click target -->
                     <canvas id="nav-map-canvas" class="nav-canvas"
                             style="position:relative; background:transparent;"></canvas>
+                    <div class="nav-view-controls" aria-label="Map view">
+                        <button type="button" id="nav-view-zoom-in" title="Zoom in (or scroll)">+</button>
+                        <button type="button" id="nav-view-zoom-out" title="Zoom out">−</button>
+                        <button type="button" id="nav-view-fit" title="Show the whole map">Fit</button>
+                        <button type="button" id="nav-view-follow" title="Keep the robot centred">Follow</button>
+                    </div>
                     <div id="nav-hint" class="nav-hint">Connect in --ros2 or --sim mode to enable navigation</div>
                 </div>
 
-<div class="navigation-tools">
+<div class="navigation-tools" id="navigation-tools" data-mode="navigate">
+                <!-- Navigate / Map mode: only the controls for the current job are shown.
+                     Sections are hidden with CSS, so every id stays in the DOM. -->
+                <div class="nav-mode-toggle" role="tablist">
+                    <button type="button" class="nav-mode-btn active" data-nav-mode-btn="navigate" role="tab">Navigate</button>
+                    <button type="button" class="nav-mode-btn" data-nav-mode-btn="map" role="tab">Map</button>
+                </div>
+                <div class="nav-mode-section" data-nav-mode="navigate">
                 <!-- Control button row -->
                 <div class="nav-controls" style="margin-top: 0.6rem;">
                     <button id="launch-nav2-btn" class="btn-nav"> Launch Nav2</button>
@@ -722,7 +735,12 @@
                 <div class="nav-stats" style="margin-top: 0.4rem;">
                     <span>Dist remaining: <b id="nav-dist-remaining">—</b> m</span>
                     <span>Goal: <b id="nav-goal-display">—</b></span>
+                    <span>Elapsed: <b id="nav-elapsed">—</b></span>
+                    <span>ETA: <b id="nav-eta">—</b></span>
+                    <span>Speed: <b id="nav-speed">—</b> m/s</span>
+                    <span>Recoveries: <b id="nav-recoveries">—</b></span>
                 </div>
+                <div id="nav-fail-reason" class="nav-fail-reason" style="display:none"></div>
 
                 <!-- Legend -->
                 <div style="display:flex; gap:1rem; margin-top:0.4rem; font-size:0.7rem; color:var(--text-muted);">
@@ -732,6 +750,8 @@
                     <span style="color:#f59e0b;"> Initial Pose</span>
                 </div>
 
+                </div><!-- /navigate -->
+                <div class="nav-mode-section" data-nav-mode="map">
                 <!-- Mapping section divider -->
                 <div class="section-divider" style="margin: 0.75rem 0 0.4rem; border-top: 1px solid var(--border-color); padding-top: 0.5rem;">
                     Mapping (SLAM Toolbox)
@@ -774,6 +794,7 @@
                     </span>
                 </div>
                 <div id="frontier-status-text" class="nav-hint" style="margin-top: 0.2rem;"></div>
+                </div><!-- /map -->
 </div>
             </div>
         </div>
@@ -894,7 +915,7 @@
             </div>
         </form>
     </dialog>
-    <script src="main.js?v=nav-health-2"></script>
+    <script src="main.js?v=nav-view-2"></script>
     <script src="dashboard.js?v=2"></script>
     <script src="log-console.js?v=2"></script>
     <script src="vendor/three/GLTFLoader.js"></script>

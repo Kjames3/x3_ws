@@ -5,6 +5,58 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-22 — Navigation map: zoom, pan, follow, goal heading, scale bar
+- **Problem:** the nav map was fixed at whole-map scale, goals always had heading 0, and nothing showed distance.
+- **Potential solution:** a view layer (zoom + pan) on top of the existing fitted map transforms, and RViz-style press-drag for heading.
+- **Work done** (975164a, 862acff; GUI only, no restart):
+  - `canvasPxToWorld` / `worldToCanvasPx` now include the view, so every overlay and click follows zoom and pan; the map background is drawn under the view transform, overlays stay a fixed on-screen size.
+  - Wheel or pinch zoom about the cursor (1-30x), right/middle-drag or two-finger pan, + / − / Fit / Follow buttons on the map (Follow keeps the robot centred and turns off on manual pan).
+  - Left press-drag sends the goal, or the initial pose in Set Initial Pose mode, with the drag direction as `theta` (map frame); a plain click still sends 0. A heading arrow is drawn for the goal and while dragging. Scale bar bottom-left (0.1-50 m).
+  - Fixed: `setPointerCapture` could throw and abort the press handler.
+- **Results:** checked in a browser against the robot with RealLab3 loaded (sends stubbed, no goal reached Nav2): drag right -> 0°, drag up -> 90°, click -> 0°; the world point under the cursor stays fixed while zooming; screen/world round trip exact; right-drag pan and zoom compose correctly. **Not tested:** a real touch device (pinch) and a dragged goal executed by Nav2.
+
+## 2026-11-22 — Navigation tab: goal progress, failure reasons, Navigate / Map modes
+- **Problem:** the Nav tab showed only distance remaining, so a stopped robot gave no reason; Nav2, SLAM and Auto-Explore controls sat in one long column.
+- **Potential solution:** surface the NavigateToPose feedback, infer the abort reason from Nav2's own log lines (Humble's result has no error code), and split the tab into two modes.
+- **Work done** (0741a11, 5312e47, d849766):
+  - `nav2_client.py`: elapsed time, ETA and recovery count from the feedback; a `/rosout` listener collects WARN/ERROR lines from Nav2 nodes during a goal and `classify_nav_failure()` maps them to a reason (no progress, no path, goal or robot in an obstacle, controller failed, TF). Test: `tests/test_nav_failure_reason.py`.
+  - Speed from `/odom` in `nav_health`; a stats row and a red failure line in the GUI.
+  - Navigate / Map toggle (CSS-only hiding, every id kept), remembered; starting SLAM or launching Nav2 switches mode.
+  - Fixed the Nav2 status badge, which was never coloured (`'nav-badge' + state` had no space).
+- **Results:**
+  - Checked in a browser against the robot at desktop and phone sizes; 889 tests pass (failures are the pre-existing ones).
+  - The first deploy compared `Log.WARN` (bytes in rclpy) with an int, which raised in the rclpy spin thread and stopped all ROS callbacks for about a minute; fixed in 5312e47 and the callback is now guarded.
+  - Live test 2026-11-22 (apartment): goal clicked inside a wall -> the GUI showed "Planner found no path to the goal" (server log: infeasible / no path). The "stopped making progress" case is not yet seen live.
+  - Seen in the same run: the robot could not drive through the 35 in (0.89 m) doorway into a room. Likely the CBF still sized for the old chassis; left for a separate thread (resize to the x3_v2 footprint and tune).
+
+## 2026-11-22 — Navigation tab: hide dead 3D controls, SLAM health, localization badge
+- **Problem:** with the tilt mount removed, 3D Scan / 3D Mapping / Save 3D Map do nothing; nothing showed whether SLAM was mapping or whether AMCL was localized (the A/B test drove on an unconverged AMCL).
+- **Work done** (ec6433c, 0335d8c):
+  - `hello` carries `tilt_available` (`/dev/openrb150`); without it the tilt-only controls are hidden.
+  - `readout_slow` carries `nav_health`: `/scan` rate, `/map` count and age, `/amcl_pose` covariance.
+  - GUI: a SLAM line (green mapping / amber starting or idle map / red no scans or no map after 15 s) and a LOCALIZED / CONVERGING / LOST / NOT LOCALIZED badge (0.15 m and 8°, 0.5 m and 25°) shown only while Nav2 is launched.
+- **Results:** deployed; fields verified over the WebSocket (`/scan` 10.3 Hz, no tilt). Two old notes were stale: the `set_amcl_map` (Load map) handler exists again, and SLAM does get `/scan` from the Livox node.
+
+## 2026-11-22 — GUI Shut down button, and the poweroff stall in x3_server
+- **Problem:** no way to power the Orin off safely from the GUI; once added, the first GUI poweroffs never finished (fan and LEDs stayed on).
+- **Potential solution:** a confirmed button that runs `systemctl poweroff`; persistent logs to see where shutdown stops.
+- **Work done:**
+  - Header button with a confirm dialog (01edea8, dialog-order fix 690a3dd); server stops the wheels, then `sudo -n systemctl poweroff`, allowed by `deploy/sudoers/x3-poweroff` (installed on the robot).
+  - Made the AGX journal persistent (`/etc/systemd/journald.conf.d/persistent.conf`, `SyncIntervalSec=1s`); it was RAM-only, so every power cut erased the evidence.
+  - The logs showed x3_server ignoring SIGTERM during poweroff (camera thread still running 86 s later; a plain stop took 4 s). Added a 12 s exit watchdog with a thread dump (0dbff25), then a 3 s cancel that logs where each straggling loop is parked (f28c4fc). That named `log_push_loop`, blocked forever sending to a browser after Tailscale had stopped; its send now has a 2 s timeout (2129ac7). A websocket close timeout (89423f1) was a wrong first guess and is harmless.
+- **Results:** a GUI poweroff now completes in about 5-7 s (fan and LEDs off). The final send-timeout fix is deployed but has not been through another real poweroff.
+
+## 2026-11-21 — Surroundings 3D: 2.5 cm near-field option
+- **Problem:** the Surroundings view's 5 cm voxels are coarse up close (request from the calibration thread).
+- **Potential solution:** 2.5 cm cells within 3 m, 5 cm beyond, at no more than 2x the current bandwidth.
+- **Work done** (e56736e): `livox_scan_node.display_voxels()` publishes the mixed cloud with a 12000-point cap; the GUI adds a "Near (2.5 cm…)" option (5 cm stays the default), the stabilising memory keeps near cells only in that mode, and the buffers were raised.
+- **Results:** measured on live data: before 6000 points / 352 KB/s (always capped); uncapped mixed ~15k points (2.5x), so the cap is 12000: ~700 KB/s (2.0x), ~15 ms per frame. Deployed (colcon build + restart); `/surroundings/points` verified at 12000 points, 4.9 Hz.
+
+## 2026-11-21 — GUI camera grid, restyle, OAK feed frame rate
+- **Problem:** camera feeds scrolled and lost aspect ratio; colours were hard-coded; front/rear feeds ran at ~8 fps.
+- **Work done:** a camera grid that fits the panel with offline cameras as chips and a Hide-offline toggle, a near-black restyle with one accent (#d9773f) and status colours as tokens (e514d56); OAK feed throttle fixed (574056f, c742e81).
+- **Results:** profiling showed the AGX ~90% idle and the laptop browser at 165 fps; the fps cap was server-side. Feeds now 15 / 15 / 17 fps, ~1.34 MB/s total.
+
 ## 2026-11-22 — Synthetic seated people and furniture for the lidar person classifier (step 0 of the Isaac Sim plan)
 - **Problem:** the lidar person classifier fails on seated people merged with desks and chairs, close range and crowds. `notes/plans/2026-11-21-isaac-sim-lidar-people.md` asks whether synthetic seated and furniture content helps before anyone spends 4 days on an Isaac Sim spike (branch `t3/synthetic-seated-furniture`, nothing on main).
 - **Potential solution:** extend `synthetic_people.py` (ellipsoid bodies cast onto the real Livox rays of recorded frames) with seated poses, furniture and close-range placements, then retrain with it and score on the real runs only.

@@ -102,6 +102,9 @@ const state = {
         path: [], // [[x, y], ...] in metres
         distRemaining: null,
         mapMode: 'navigate', // 'navigate' | 'set_pose'
+        // View on top of the fitted map: zoom about the canvas centre, then pan (canvas px).
+        view: { zoom: 1, panX: 0, panY: 0, follow: false },
+        drag: null, // in-progress goal/pose heading drag {wx, wy, sx, sy, ex, ey}
         mapMeta: null, // {resolution, origin:[x,y], originYaw, width, height}
         mapImage: null, // HTMLImageElement of the loaded map PNG (legacy JSON path)
         mapBitmap: null, // ImageBitmap from binary MAPU frame (Step 3)
@@ -547,7 +550,7 @@ function initNavPanel() {
         elements.navMapWebGLCanvas.height = size;
     }
 
-    canvas.addEventListener('click', handleNavMapClick);
+    setupNavMapInteraction(canvas);
 
     if (elements.launchNav2Btn) {
         elements.launchNav2Btn.addEventListener('click', () => {
@@ -603,16 +606,16 @@ function updateNavHint() {
     if (state.nav.status === 'UNAVAILABLE') {
         hint.textContent = 'Connect in --ros2 or --sim mode to enable navigation';
     } else if (state.nav.mapMode === 'set_pose') {
-        hint.textContent = 'Click on map to set initial pose for AMCL';
+        hint.textContent = 'Click the robot\'s position (drag to set its heading) for AMCL';
     } else if (state.nav.mapImage) {
-        hint.textContent = 'Click on map to set navigation goal | Shift-click = pose only';
+        hint.textContent = 'Click = goal, drag = goal + heading · scroll = zoom · right-drag = pan';
     } else {
         hint.textContent = 'Load a map, then click to set a navigation goal';
     }
 }
 
 /** Convert a canvas pixel (cx, cy) to ROS map-frame world coordinates (metres). */
-function canvasPxToWorld(cx, cy) {
+function baseCanvasPxToWorld(cx, cy) {
     const meta = state.nav.mapMeta;
     const canvas = elements.navMapCanvas;
     if (!meta || !canvas) return null;
@@ -632,7 +635,7 @@ function canvasPxToWorld(cx, cy) {
 }
 
 /** Convert ROS map-frame world coordinates (metres) to canvas pixels. */
-function worldToCanvasPx(wx, wy) {
+function baseWorldToCanvasPx(wx, wy) {
     const meta = state.nav.mapMeta;
     const canvas = elements.navMapCanvas;
     if (!meta || !canvas) return null;
@@ -652,33 +655,181 @@ function worldToCanvasPx(wx, wy) {
     };
 }
 
-function handleNavMapClick(e) {
-    if (state.nav.status === 'UNAVAILABLE') return;
+// ── Map view (zoom / pan / follow) ──────────────────────────────────────
+// The base transforms fit the whole map to the canvas; the view maps those
+// "base" pixels to screen pixels: s = (b - C) * zoom + C + pan.
+const NAV_ZOOM_MIN = 1, NAV_ZOOM_MAX = 30;
+function navViewMatrix() {
+    const canvas = elements.navMapCanvas, v = state.nav.view;
+    const cx = canvas.width / 2, cy = canvas.height / 2;
+    return { a: v.zoom, e: cx * (1 - v.zoom) + v.panX, f: cy * (1 - v.zoom) + v.panY };
+}
+function canvasPxToWorld(sx, sy) {
+    if (!elements.navMapCanvas) return null;
+    const m = navViewMatrix();
+    return baseCanvasPxToWorld((sx - m.e) / m.a, (sy - m.f) / m.a);
+}
+function worldToCanvasPx(wx, wy) {
+    const b = baseWorldToCanvasPx(wx, wy);
+    if (!b) return null;
+    const m = navViewMatrix();
+    return { x: b.x * m.a + m.e, y: b.y * m.a + m.f };
+}
+/** Zoom by `factor` keeping screen point (sx, sy) fixed. */
+function navZoomAt(sx, sy, factor) {
+    const v = state.nav.view, canvas = elements.navMapCanvas;
+    const z = Math.min(NAV_ZOOM_MAX, Math.max(NAV_ZOOM_MIN, v.zoom * factor));
+    const k = z / v.zoom;
+    if (k === 1) return;
+    const cx = canvas.width / 2, cy = canvas.height / 2;
+    // keep (s - C - pan) scaled by k around the cursor
+    v.panX = (sx - cx) - (sx - cx - v.panX) * k;
+    v.panY = (sy - cy) - (sy - cy - v.panY) * k;
+    v.zoom = z;
+    if (z === 1 && !v.follow) { v.panX = 0; v.panY = 0; }
+    drawNavMap();
+}
+function navFitView() {
+    Object.assign(state.nav.view, { zoom: 1, panX: 0, panY: 0, follow: false });
+    updateNavViewButtons();
+    drawNavMap();
+}
+function navApplyFollow() {
+    const v = state.nav.view, rp = state.latestData.robotPose;
+    if (!v.follow || !rp || !state.nav.mapMeta) return;
+    const b = baseWorldToCanvasPx(rp.x / 100.0, rp.y / 100.0);
+    if (!b) return;
+    const canvas = elements.navMapCanvas;
+    const cx = canvas.width / 2, cy = canvas.height / 2;
+    v.panX = (cx - b.x) * v.zoom;
+    v.panY = (cy - b.y) * v.zoom;
+}
+function updateNavViewButtons() {
+    const f = document.getElementById('nav-view-follow');
+    if (f) f.classList.toggle('active', state.nav.view.follow);
+}
+function navEventPx(e) {
     const canvas = elements.navMapCanvas;
     const rect = canvas.getBoundingClientRect();
-    const cx = (e.clientX - rect.left) * (canvas.width / rect.width);
-    const cy = (e.clientY - rect.top) * (canvas.height / rect.height);
+    return { x: (e.clientX - rect.left) * (canvas.width / rect.width),
+             y: (e.clientY - rect.top) * (canvas.height / rect.height) };
+}
+/** Pixels per metre on screen (uniform map scale assumed). */
+function navPxPerMetre() {
+    const meta = state.nav.mapMeta, canvas = elements.navMapCanvas;
+    if (!meta || !canvas) return null;
+    return canvas.width / (meta.width * meta.resolution) * state.nav.view.zoom;
+}
 
-    if (!state.nav.mapMeta) {
-        if (elements.navHint) elements.navHint.textContent = 'Load a map first to set goals';
-        return;
-    }
+// Pointer handling: left press+drag on the map = goal (or initial pose) with
+// the drag direction as heading (a plain click keeps heading 0, as before);
+// right/middle drag or two fingers = pan; wheel or pinch = zoom.
+function setupNavMapInteraction(canvas) {
+    const ptrs = new Map();   // pointerId -> {x, y}
+    let pan = null;           // {x, y} last position while panning
+    let pinch = null;         // {d, mx, my} last pinch distance + midpoint
+    const DRAG_MIN_PX = 12;
 
-    const world = canvasPxToWorld(cx, cy);
-    if (!world) return;
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    canvas.addEventListener('wheel', (e) => {
+        if (!state.nav.mapMeta) return;
+        e.preventDefault();
+        const p = navEventPx(e);
+        navZoomAt(p.x, p.y, Math.exp(-e.deltaY * 0.0015));
+    }, { passive: false });
 
+    canvas.addEventListener('pointerdown', (e) => {
+        const p = navEventPx(e);
+        ptrs.set(e.pointerId, p);
+        try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* synthetic/stale pointer */ }
+        if (ptrs.size === 2) {           // second finger: switch to pinch/pan
+            state.nav.drag = null;
+            const [a, b] = [...ptrs.values()];
+            pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+            return;
+        }
+        if (e.button === 1 || e.button === 2) { pan = p; return; }
+        if (e.button !== 0) return;
+        if (state.nav.status === 'UNAVAILABLE') return;
+        if (!state.nav.mapMeta) {
+            if (elements.navHint) elements.navHint.textContent = 'Load a map first to set goals';
+            return;
+        }
+        const w = canvasPxToWorld(p.x, p.y);
+        if (w) state.nav.drag = { wx: w.x, wy: w.y, sx: p.x, sy: p.y, ex: p.x, ey: p.y };
+    });
+
+    canvas.addEventListener('pointermove', (e) => {
+        if (!ptrs.has(e.pointerId)) return;
+        const p = navEventPx(e);
+        ptrs.set(e.pointerId, p);
+        const v = state.nav.view;
+        if (pinch && ptrs.size === 2) {
+            const [a, b] = [...ptrs.values()];
+            const d = Math.hypot(a.x - b.x, a.y - b.y), mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+            v.follow = false; updateNavViewButtons();
+            v.panX += mx - pinch.mx; v.panY += my - pinch.my;
+            if (pinch.d > 0) navZoomAt(mx, my, d / pinch.d); else drawNavMap();
+            pinch = { d, mx, my };
+            return;
+        }
+        if (pan) {
+            v.follow = false; updateNavViewButtons();
+            v.panX += p.x - pan.x; v.panY += p.y - pan.y;
+            pan = p;
+            drawNavMap();
+            return;
+        }
+        if (state.nav.drag) {
+            state.nav.drag.ex = p.x; state.nav.drag.ey = p.y;
+            drawNavMap();
+        }
+    });
+
+    const end = (e) => {
+        ptrs.delete(e.pointerId);
+        if (ptrs.size < 2) pinch = null;
+        if (pan && ptrs.size === 0) pan = null;
+        const d = state.nav.drag;
+        if (!d || e.type === 'pointercancel') { state.nav.drag = null; drawNavMap(); return; }
+        state.nav.drag = null;
+        let theta = 0;
+        if (Math.hypot(d.ex - d.sx, d.ey - d.sy) >= DRAG_MIN_PX) {
+            const w2 = canvasPxToWorld(d.ex, d.ey);
+            if (w2) theta = Math.atan2(w2.y - d.wy, w2.x - d.wx);
+        }
+        commitNavMapPoint(d.wx, d.wy, theta);
+    };
+    canvas.addEventListener('pointerup', end);
+    canvas.addEventListener('pointercancel', end);
+
+    const btn = (id, fn) => { const b = document.getElementById(id); if (b) b.addEventListener('click', fn); };
+    btn('nav-view-zoom-in', () => navZoomAt(canvas.width / 2, canvas.height / 2, 1.5));
+    btn('nav-view-zoom-out', () => navZoomAt(canvas.width / 2, canvas.height / 2, 1 / 1.5));
+    btn('nav-view-fit', navFitView);
+    btn('nav-view-follow', () => {
+        const v = state.nav.view;
+        v.follow = !v.follow;
+        if (v.follow && v.zoom < 3) v.zoom = 3;
+        updateNavViewButtons();
+        drawNavMap();
+    });
+}
+
+function commitNavMapPoint(x, y, theta) {
+    const deg = (theta * 180 / Math.PI).toFixed(0);
     if (state.nav.mapMode === 'set_pose') {
-        sendMessage({ type: 'set_initial_pose', x: world.x, y: world.y, theta: 0 });
-        console.log(`Initial pose (${world.x.toFixed(2)}, ${world.y.toFixed(2)})`);
+        sendMessage({ type: 'set_initial_pose', x, y, theta });
+        console.log(`Initial pose (${x.toFixed(2)}, ${y.toFixed(2)}, ${deg}°)`);
         state.nav.mapMode = 'navigate';
         if (elements.setPoseBtn) elements.setPoseBtn.classList.remove('active');
         updateNavHint();
     } else {
-        state.nav.goal = { x: world.x, y: world.y, theta: 0 };
-        sendMessage({ type: 'set_nav_goal', x: world.x, y: world.y, theta: 0 });
-        console.log(`Nav goal (${world.x.toFixed(2)}, ${world.y.toFixed(2)})`);
-        drawNavMap();
+        state.nav.goal = { x, y, theta };
+        sendMessage({ type: 'set_nav_goal', x, y, theta });
+        console.log(`Nav goal (${x.toFixed(2)}, ${y.toFixed(2)}, ${deg}°)`);
     }
+    drawNavMap();
 }
 
 function drawNavMap() {
@@ -688,6 +839,14 @@ function drawNavMap() {
     const W = canvas.width, H = canvas.height;
 
     ctx.clearRect(0, 0, W, H);
+    navApplyFollow();
+    const _vm = navViewMatrix();
+    ctx.save();
+    ctx.setTransform(_vm.a, 0, 0, _vm.a, _vm.e, _vm.f);
+    if (_vm.a !== 1) {   // area outside the map when zoomed/panned
+        ctx.fillStyle = '#08080a';
+        ctx.fillRect(-W, -H, W * 3, H * 3);
+    }
 
     // 1. Map background — WebGL texture (Step 4) > ImageBitmap (Step 3) > legacy img > dark grid
     const _yaw = (state.nav.mapMeta && state.nav.mapMeta.originYaw) || 0;
@@ -718,6 +877,8 @@ function drawNavMap() {
             }
         }
     }
+
+    ctx.restore();   // back to screen pixels: overlays keep a fixed on-screen size
 
     // 2. Global path (cyan polyline)
     const path = state.nav.path;
@@ -751,6 +912,38 @@ function drawNavMap() {
             ctx.beginPath();
             ctx.arc(gp.x, gp.y, r + 4, 0, Math.PI * 2);
             ctx.stroke();
+        }
+    }
+
+    // 3.2 Goal heading arrow (when set by dragging)
+    const drawHeading = (x, y, theta, color) => {
+        const len = 26;
+        // map-frame theta -> screen direction via two transformed points
+        const meta = state.nav.mapMeta;
+        if (!meta) return;
+        const g0 = worldToCanvasPx(x, y);
+        const g1 = worldToCanvasPx(x + Math.cos(theta), y + Math.sin(theta));
+        if (!g0 || !g1) return;
+        const a = Math.atan2(g1.y - g0.y, g1.x - g0.x);
+        ctx.save();
+        ctx.translate(g0.x, g0.y);
+        ctx.rotate(a);
+        ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(len, 0); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(len + 6, 0); ctx.lineTo(len - 3, -5); ctx.lineTo(len - 3, 5); ctx.closePath(); ctx.fill();
+        ctx.restore();
+    };
+    if (state.nav.goal && state.nav.goal.theta && state.nav.mapMeta) {
+        drawHeading(state.nav.goal.x, state.nav.goal.y, state.nav.goal.theta, '#ef4444');
+    }
+    const dr = state.nav.drag;
+    if (dr) {
+        const col = state.nav.mapMode === 'set_pose' ? '#f59e0b' : '#ef4444';
+        ctx.strokeStyle = col; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(dr.sx, dr.sy, 6, 0, Math.PI * 2); ctx.stroke();
+        if (Math.hypot(dr.ex - dr.sx, dr.ey - dr.sy) >= 12) {
+            const w2 = canvasPxToWorld(dr.ex, dr.ey);
+            if (w2) drawHeading(dr.wx, dr.wy, Math.atan2(w2.y - dr.wy, w2.x - dr.wx), col);
         }
     }
 
@@ -806,6 +999,22 @@ function drawNavMap() {
         }
     }
 
+    // 5. Scale bar (bottom-left)
+    const ppm = navPxPerMetre();
+    if (ppm && state.nav.mapMeta) {
+        const nice = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50];
+        const metres = nice.find((m) => m * ppm >= 50) || nice[nice.length - 1];
+        const len = metres * ppm, x0 = 12, y0 = H - 14;
+        ctx.fillStyle = 'rgba(8,8,10,0.7)';
+        ctx.fillRect(x0 - 6, y0 - 18, len + 12, 26);
+        ctx.strokeStyle = '#e8e8ea'; ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(x0, y0 - 5); ctx.lineTo(x0, y0); ctx.lineTo(x0 + len, y0); ctx.lineTo(x0 + len, y0 - 5);
+        ctx.stroke();
+        ctx.fillStyle = '#e8e8ea'; ctx.font = '11px system-ui, sans-serif';
+        ctx.fillText(metres >= 1 ? `${metres} m` : `${metres * 100} cm`, x0 + 2, y0 - 7);
+    }
+
     if (state.mapEnabled && elements.miniMapCanvas) {
         elements.miniMapCanvas.width = W;
         elements.miniMapCanvas.height = H;
@@ -843,13 +1052,24 @@ function updateNavStatus(nav) {
     const badge = elements.navStatusBadge;
     if (badge) {
         badge.textContent = state.nav.status;
-        badge.className = 'nav-badge' + state.nav.status.toLowerCase();
+        badge.className = 'nav-badge ' + state.nav.status.toLowerCase();
     }
 
     // Stats
     if (elements.navDistRemaining) {
         elements.navDistRemaining.textContent =
             state.nav.distRemaining != null ? state.nav.distRemaining.toFixed(2) : '—';
+    }
+    const fmtS = (t) => t == null ? '—' : (t >= 60 ? `${Math.floor(t / 60)}:${String(Math.round(t % 60)).padStart(2, '0')}` : `${t.toFixed(0)} s`);
+    const el = (id) => document.getElementById(id);
+    if (el('nav-elapsed')) el('nav-elapsed').textContent = fmtS(nav.elapsed_s);
+    if (el('nav-eta')) el('nav-eta').textContent = fmtS(nav.eta_s);
+    if (el('nav-recoveries')) el('nav-recoveries').textContent = nav.recoveries != null ? String(nav.recoveries) : '—';
+    const fail = el('nav-fail-reason');
+    if (fail) {
+        const show = state.nav.status === 'FAILED' && nav.fail_reason;
+        fail.textContent = show ? `Goal failed: ${nav.fail_reason}` : '';
+        fail.style.display = show ? '' : 'none';
     }
     if (elements.navGoalDisplay) {
         elements.navGoalDisplay.textContent = state.nav.goal
@@ -1002,6 +1222,33 @@ function updateScan3dUI() {
 // scans or producing no map, and an AMCL localization badge from the pose
 // covariance (good / converging / lost).
 const SLAM_FIRST_MAP_GRACE_S = 15;
+// Navigate / Map mode for the Navigation tab. Remembered across reloads;
+// starting SLAM switches to Map, launching Nav2 or sending a goal to Navigate.
+const NAV_MODE_KEY = 'x3.nav.mode';
+function setNavMode(mode, remember = true) {
+    const tools = document.getElementById('navigation-tools');
+    if (!tools || (mode !== 'navigate' && mode !== 'map')) return;
+    tools.dataset.mode = mode;
+    tools.querySelectorAll('[data-nav-mode-btn]').forEach((b) =>
+        b.classList.toggle('active', b.dataset.navModeBtn === mode));
+    if (remember) { try { localStorage.setItem(NAV_MODE_KEY, mode); } catch (_) {} }
+}
+(function setupNavModes() {
+    const tools = document.getElementById('navigation-tools');
+    if (!tools) return;
+    tools.querySelectorAll('[data-nav-mode-btn]').forEach((b) =>
+        b.addEventListener('click', () => setNavMode(b.dataset.navModeBtn)));
+    let saved = null;
+    try { saved = localStorage.getItem(NAV_MODE_KEY); } catch (_) {}
+    setNavMode(saved || 'navigate', false);
+    const on = (id, mode) => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('click', () => setNavMode(mode));
+    };
+    on('start-slam-btn', 'map');
+    on('launch-nav2-btn', 'navigate');
+})();
+
 function updateNavHealth(h, slamActive, navPhase) {
     const line = document.getElementById('slam-health');
     const badge = document.getElementById('nav-loc-badge');
@@ -1041,6 +1288,8 @@ function updateNavHealth(h, slamActive, navPhase) {
             line.style.display = '';
         }
     }
+    const sp = document.getElementById('nav-speed');
+    if (sp) sp.textContent = h.speed != null ? h.speed.toFixed(2) : '—';
     if (badge) {
         // nav_phase is IDLE even when Nav2 was never launched; use the launch flag.
         const navUp = !!state.nav.nav2Running && navPhase !== 'UNAVAILABLE';
@@ -1068,6 +1317,11 @@ function updateNavHealth(h, slamActive, navPhase) {
 function updateSlamStatus(active) {
     const wasActive = state.slamActive;
     state.slamActive = active;
+    // Opening the tab while SLAM is already running: show the mapping controls.
+    if (active && !wasActive && !state.nav._navModeAutoDone) {
+        state.nav._navModeAutoDone = true;
+        setNavMode('map', false);
+    }
 
     // On SLAM activation, reset the frame counter so the first-frame deferral
     // in handleMapuFrame suppresses the unsettled initial map, and request an
