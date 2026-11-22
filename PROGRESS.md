@@ -5,6 +5,16 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-22 — Nav2 launch from the GUI sometimes loaded no nodes
+- **Problem:** twice in one evening "Launch Nav2" left `nav2_container` running with no AMCL, map server, planner or controller, and no error anywhere (the server sent Nav2's output to /dev/null). The GUI still looked localized from the previous session.
+- **Potential solution:** the launch logs in `~/.ros/log/<stamp>/launch.log` showed the bad launches stuck waiting on `/nav2_container/_container/load_node` (no response, ever), while good ones loaded 11 nodes in seconds: the composition service lost a request or reply during discovery over the FastDDS discovery server. Run Nav2 without composition.
+- **Work done:**
+  - `x3_nav2.launch.py`: `use_composition` argument, default **False**, passed to nav2_bringup (11 separate processes, no load_node service).
+  - `nav2_client.py`: Nav2 output goes to `~/.ros/log/x3_nav2_launch.log` (overwritten each launch). Nav2 runs in its own process group; stop sends SIGINT to the group, then SIGKILL after 10 s, so no node outlives a stop and doubles up with the next launch.
+  - `server_x3.py`: the GUI's stop_nav2 runs in an executor, so a slow shutdown no longer blocks the event loop (and the /cmd_vel heartbeat).
+- **Results:** 4 launch/stop cycles through the server's WebSocket on the robot: AMCL and bt_navigator active within 2 s each time, 11 Nav2 processes, 0 left after each stop. Not yet seen over many sessions; the failure was intermittent.
+- Also: the last doorway bag (`doorway_20261122_022333`) crashed with "database is locked" because the bag was read while still recording; reindexed, it ends before the successful run. Never open a bag that is still being written.
+
 ## 2026-11-22 — Doorway, part 2: no deadband with closed-loop wheels; map doorway widened
 - **Problem:** after the footprint/margin change the robot got through the 0.88 m doorway, but crawled at 0.02–0.05 m/s for ~15 s, and the next run stalled at the threshold ("Starting point in lethal space"), backed up and spun before passing.
 - **Potential solution:** replay the bags through the CBF to find what cut the speed; compare the saved map's doorway with the lidar's.

@@ -65,6 +65,15 @@ def generate_launch_description():
         'slam', default_value='false',
         description='Run slam_toolbox for live mapping instead of AMCL')
 
+    # use_composition False: with the FastDDS discovery server, the composed
+    # bringup sometimes never got an answer from
+    # /nav2_container/_container/load_node, leaving an empty container (no AMCL,
+    # planner or controller) with no error (2026-11-22, twice in one evening).
+    # Separate processes have no load_node service to race on.
+    declare_composition = DeclareLaunchArgument(
+        'use_composition', default_value='False',
+        description='Run Nav2 in one component container (True) or as separate processes')
+
     # ── Nav2 bringup (AMCL mode, slam=false) ───────────────────────────────
     # nav2_bringup's bringup_launch.py handles full lifecycle management.
     # It reads slam:=false/true internally to decide whether to start AMCL
@@ -78,6 +87,7 @@ def generate_launch_description():
             'use_sim_time': use_sim_time,
             'params_file':  params_file,
             'slam':         slam,
+            'use_composition': LaunchConfiguration('use_composition'),
         }.items(),
     )
 
@@ -89,6 +99,7 @@ def generate_launch_description():
         declare_map,
         declare_params,
         declare_slam,
+        declare_composition,
 
         nav2_bringup,
     ])

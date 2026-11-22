@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 import os
+import signal
 import subprocess
 import threading
 import time
@@ -249,16 +250,30 @@ class Nav2Client:
         if map_path:
             cmd.append(f'map:={map_path}')
 
-        logger.info(f"[Nav2Client] Launching Nav2: {' '.join(cmd)}")
+        # Keep Nav2's console output: with DEVNULL a launch that loaded no
+        # nodes left nothing to read (2026-11-22). Overwritten each launch.
+        log_path = os.path.expanduser('~/.ros/log/x3_nav2_launch.log')
+        logger.info(f"[Nav2Client] Launching Nav2: {' '.join(cmd)} (output: {log_path})")
+        try:
+            os.makedirs(os.path.dirname(log_path), exist_ok=True)
+            log_file = open(log_path, 'w')
+        except OSError:
+            log_file = subprocess.DEVNULL
         try:
             proc = subprocess.Popen(
                 cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                # Own process group, so stop_nav2 can reach every Nav2 node
+                # (separate processes since use_composition False).
+                start_new_session=True,
             )
         except Exception as exc:
             logger.error(f"[Nav2Client] Failed to launch Nav2: {exc}")
             return False
+        finally:
+            if log_file is not subprocess.DEVNULL:
+                log_file.close()     # the child keeps its own copy
 
         with self._lock:
             self._nav2_proc = proc
@@ -361,11 +376,22 @@ class Nav2Client:
             self._nav2_proc = None
 
         if proc is not None and proc.poll() is None:
-            proc.terminate()
+            # SIGINT is ros2 launch's clean shutdown; it passes it to every node.
+            # If that stalls, kill the whole group so no node outlives it and
+            # doubles up with the next launch (two AMCLs, two planners).
             try:
-                proc.wait(timeout=5.0)
+                os.killpg(proc.pid, signal.SIGINT)
+            except ProcessLookupError:
+                pass
+            try:
+                proc.wait(timeout=10.0)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                logger.warning("[Nav2Client] Nav2 did not stop in 10 s; killing its process group")
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                proc.wait(timeout=5.0)
             logger.info("[Nav2Client] Nav2 subprocess stopped")
 
         with self._lock:

@@ -3821,7 +3821,10 @@ async def handle_client(websocket):
 
                 elif msg_type == "stop_nav2":
                     if nav2_client:
-                        nav2_client.stop_nav2()
+                        # Off the event loop: a clean Nav2 shutdown takes seconds
+                        # (up to 15 s before the process group is killed).
+                        await asyncio.get_running_loop().run_in_executor(
+                            None, nav2_client.stop_nav2)
 
                 elif msg_type == "set_nav_goal":
                     if lidar_3d_scan_enabled:
