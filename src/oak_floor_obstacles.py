@@ -131,6 +131,12 @@ class OakFloorObstacles:
         if h is None:
             return
         self._floor_h.append(h[np.abs(h) < 0.06])
+        if time.monotonic() - getattr(self, '_dbg_t', 0) > 10:
+            self._dbg_t = time.monotonic()
+            try:   # one frame for offline threshold checks
+                np.savez('/tmp/oak_floor_debug.npz', p_base=p_base, h=h)
+            except OSError:
+                pass
         keep = ((h > self.z_min) & (h < self.z_max)
                 & ~((np.abs(p_base[:, 0]) < self.self_x) & (np.abs(p_base[:, 1]) < self.self_y)))
         # Need 2+ returns per 4 cm cell, to reject single-pixel stereo speckle.
