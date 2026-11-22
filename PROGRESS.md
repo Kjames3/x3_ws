@@ -5,6 +5,16 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-22 — Navigation map: zoom, pan, follow, goal heading, scale bar
+- **Problem:** the nav map was fixed at whole-map scale, goals always had heading 0, and nothing showed distance.
+- **Potential solution:** a view layer (zoom + pan) on top of the existing fitted map transforms, and RViz-style press-drag for heading.
+- **Work done** (975164a, 862acff; GUI only, no restart):
+  - `canvasPxToWorld` / `worldToCanvasPx` now include the view, so every overlay and click follows zoom and pan; the map background is drawn under the view transform, overlays stay a fixed on-screen size.
+  - Wheel or pinch zoom about the cursor (1-30x), right/middle-drag or two-finger pan, + / − / Fit / Follow buttons on the map (Follow keeps the robot centred and turns off on manual pan).
+  - Left press-drag sends the goal, or the initial pose in Set Initial Pose mode, with the drag direction as `theta` (map frame); a plain click still sends 0. A heading arrow is drawn for the goal and while dragging. Scale bar bottom-left (0.1-50 m).
+  - Fixed: `setPointerCapture` could throw and abort the press handler.
+- **Results:** checked in a browser against the robot with RealLab3 loaded (sends stubbed, no goal reached Nav2): drag right -> 0°, drag up -> 90°, click -> 0°; the world point under the cursor stays fixed while zooming; screen/world round trip exact; right-drag pan and zoom compose correctly. **Not tested:** a real touch device (pinch) and a dragged goal executed by Nav2.
+
 ## 2026-11-22 — Navigation tab: goal progress, failure reasons, Navigate / Map modes
 - **Problem:** the Nav tab showed only distance remaining, so a stopped robot gave no reason; Nav2, SLAM and Auto-Explore controls sat in one long column.
 - **Potential solution:** surface the NavigateToPose feedback, infer the abort reason from Nav2's own log lines (Humble's result has no error code), and split the tab into two modes.
