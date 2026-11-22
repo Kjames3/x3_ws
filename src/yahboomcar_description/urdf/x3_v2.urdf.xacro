@@ -173,6 +173,28 @@
     <origin xyz="0 0 0" rpy="${-pi / 2} 0 ${-pi / 2}"/>
   </joint>
 
+  <!-- ================= Innomaker U20CAM-9281M (left) ================== -->
+  <!-- Added 2026-11-21. OV9281 behind a removable M12 lens, mounted upside
+       down (x3_server and the calibration tools rotate frames 180 deg; this
+       frame is the UPRIGHT image). Solved against the Livox by edge alignment
+       over 8 apartment stations (koide3 returned NaN); mean edge distance
+       7.1 px. Source of truth: config/camera_lidar_extrinsics_2026-11-20.json
+       ("left"). Faces the robot's left (yaw +89.7 deg), nose up 10 deg.
+       Fisheye intrinsics: config/left_u20cam_intrinsics.json. PROVISIONAL:
+       redo both after the planned 2.1 mm lens swap. -->
+  <link name="left_cam_link"/>
+  <joint name="left_cam_joint" type="fixed">
+    <parent link="livox_frame"/>
+    <child link="left_cam_link"/>
+    <origin xyz="0.0054 0.0566 -0.0769" rpy="0.0118 -0.1753 1.5664"/>
+  </joint>
+  <link name="left_cam_optical_frame"/>
+  <joint name="left_cam_optical_joint" type="fixed">
+    <parent link="left_cam_link"/>
+    <child link="left_cam_optical_frame"/>
+    <origin xyz="0 0 0" rpy="${-pi / 2} 0 ${-pi / 2}"/>
+  </joint>
+
   <!-- =============================== OAKs ============================== -->
   <!-- One OAK Pro W frame set (depthai_ros naming). Pose from the CAD glass:
        body centre = glass centre minus the setback along the view direction.

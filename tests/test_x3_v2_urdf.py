@@ -202,3 +202,17 @@ def test_arducam_matches_the_calibration_json(urdf):
     assert math.degrees(d.magnitude()) < 0.05
     # faces the robot's right: optical z mostly along -y of base
     assert (poses["arducam_optical_frame"][:3, 2] @ np.array([0, -1, 0])) > 0.95
+
+
+def test_left_cam_matches_the_calibration_json(urdf):
+    """left_cam_optical_frame in livox_frame == the 2026-11-21 solve (within 1 mm / 0.05 deg)."""
+    import json
+    from scipy.spatial.transform import Rotation
+    poses, _ = _fk(urdf)
+    T = np.linalg.inv(poses["livox_frame"]) @ poses["left_cam_optical_frame"]
+    v = json.loads((ROOT / "config" / "camera_lidar_extrinsics_2026-11-20.json").read_text())["left"]["T_lidar_camera"]
+    assert np.allclose(T[:3, 3], v[:3], atol=1e-3)
+    d = Rotation.from_matrix(T[:3, :3]).inv() * Rotation.from_quat(v[3:])
+    assert math.degrees(d.magnitude()) < 0.05
+    # faces the robot's left: optical z mostly along +y of base
+    assert (poses["left_cam_optical_frame"][:3, 2] @ np.array([0, 1, 0])) > 0.95
