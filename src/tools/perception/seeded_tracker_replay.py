@@ -21,4 +21,4 @@ for run in sys.argv[1:]:
             if f['camera']:
                 cam+=1; conf+=bool(ok)
                 a=f['camera'][0]; near+=any(math.hypot(r['odom_x']-a['odom_x'],r['odom_y']-a['odom_y'])<0.6 for r in ok)
-        print(run.split('/')[-1],'seeded' if use else 'base  ','camera frames',cam,'confirmed track %.1f%%'%(100*conf/max(cam,1)),'on the person %.1f%%'%(100*near/max(cam,1)),'ids',len(ids),'births',T.stats['births'],'held %.1fs'%T.stats['lidar_held_s'], 'any-track frames', sum(1 for _ in [0]))
+        print(run.split('/')[-1],'seeded' if use else 'base  ','camera frames',cam,'confirmed track %.1f%%'%(100*conf/max(cam,1)),'on the person %.1f%%'%(100*near/max(cam,1)),'ids',len(ids),'births',T.stats['births'],'held %.1fs'%T.stats['lidar_held_s'])
