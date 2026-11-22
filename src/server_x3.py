@@ -5730,10 +5730,26 @@ async def main():
     # the async loops exit, gather() returns, and the finally-block cleanup() runs —
     # sending a motor stop and cleanly killing the ROS2 bringup. Without this the loops
     # spin forever and systemd escalates to SIGKILL (no graceful cleanup).
+    def _exit_watchdog(grace_s=12.0):
+        # During a system poweroff the graceful cleanup never finished (camera thread
+        # still logging 86 s after SIGTERM), which held the whole shutdown on
+        # x3_server's 90 s stop timeout. Give cleanup a grace period, then log where
+        # every thread is stuck and exit hard so the poweroff can continue.
+        time.sleep(grace_s)
+        logger.error("Cleanup still running %.0f s after SIGTERM; dumping threads and exiting", grace_s)
+        try:
+            import faulthandler
+            faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+            sys.stderr.flush()
+        except Exception:  # noqa: BLE001
+            pass
+        os._exit(0)
+
     def _on_shutdown_signal():
         global _shutting_down
         if not _shutting_down:
             logger.info("Shutdown signal received — stopping loops for graceful cleanup")
+            threading.Thread(target=_exit_watchdog, name="exit-watchdog", daemon=True).start()
         _shutting_down = True
     _loop = asyncio.get_running_loop()
     for _s in (signal.SIGINT, signal.SIGTERM):
