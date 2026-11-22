@@ -4443,10 +4443,10 @@ def _rear_preview(device_id, stop, latest):
 
 
 # Left camera: Innomaker U20CAM-9281M (OV9281 mono, 0c45:636d, serial SN0001),
-# added 2026-11-21. Remounted landscape the same day, so no rotation is needed.
+# added 2026-11-21. Remounted landscape the same day; raw frames are upside down.
 # X3_LEFT_CAM overrides the device ("none" disables it).
 LEFT_CAM_GLOB = '/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB_2.0_Camera_SN0001-video-index0'
-LEFT_CAM_ROTATE = None   # cv2.ROTATE_* if the mount changes again
+LEFT_CAM_ROTATE = cv2.ROTATE_180   # landscape mount is upside down
 
 
 def _left_capture(stop, latest):

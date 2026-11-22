@@ -19,7 +19,7 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 - **Potential solution:** capture it in the existing role-tagged camera feed loop as the `left` role (the GUI already understands it) and rotate each frame 90°.
 - **Work done:** `_left_capture()` in `server_x3.py` (2e3da35, deployed). It opens the camera by its by-id path at 640x400, rotates the frame, and reopens the camera if it drops. `X3_LEFT_CAM=none` turns it off.
 - **Results:**
-  - On the robot websocket, front, left, right and rear all arrive at about 14–17 fps. The first rotation (clockwise) was upside down; the user then remounted the camera landscape, and the rotation was removed (raw frames are upright).
+  - On the robot websocket, front, left, right and rear all arrive at about 14–17 fps. The first rotation (clockwise) was upside down; the user then remounted the camera landscape, and raw frames are upside down, so they are now rotated 180°.
   - **Next:** the user adjusts the lens. Then intrinsics, a Livox extrinsic, and the URDF.
 
 ## 2026-11-21 — Clip fix deployed; left camera (Innomaker U20CAM-9281M) connected
