@@ -4891,6 +4891,7 @@ async def broadcast_loop():
                     nav_health = {
                         "scan_hz": _scan_hz,
                         "map_updates": _mc,
+                        "speed": math.hypot(ros_bridge._twist.get("vx", 0.0), ros_bridge._twist.get("vy", 0.0)),
                         "map_age_s": (_now - ros_bridge.map_rx_t) if ros_bridge.map_rx_t else None,
                         "amcl": ({"age_s": _now - _am["t"], "sxy": _am["sxy"], "syaw": _am["syaw"]}
                                  if _am else None),

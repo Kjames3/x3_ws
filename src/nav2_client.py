@@ -33,6 +33,8 @@ from geometry_msgs.msg import PoseWithCovarianceStamped, PoseStamped
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.srv import LoadMap
 from nav_msgs.msg import Path
+from rcl_interfaces.msg import Log
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,38 @@ def _yaw_to_quaternion(yaw: float):
     return (0.0, 0.0, sy, cy)
 
 
+# Humble's NavigateToPose result carries no error code, so a failed goal is just
+# "ABORTED". These are the Nav2 log lines that say why, most specific first.
+_NAV2_LOG_NODES = ("bt_navigator", "controller_server", "planner_server",
+                   "behavior_server", "smoother_server", "amcl")
+_FAILURE_PATTERNS = [
+    (("failed to make progress",), "Robot stopped making progress (blocked, or wheels slipping)"),
+    (("collision ahead",), "Recovery behaviour stopped: obstacle too close"),
+    (("start occupied", "starting point in lethal space", "start coordinates", "robot is out of bounds"),
+     "Robot is inside an obstacle on the costmap (or off the map)"),
+    (("goal occupied", "goal coordinates", "goal is in lethal", "goal is out of bounds"),
+     "Goal is inside an obstacle or outside the map"),
+    (("failed to create plan", "no valid path", "failed to plan", "plugin failed to plan", "no path"),
+     "Planner found no path to the goal"),
+    (("patience exceeded", "resulting plan has 0 poses", "controller failed", "failed to compute"),
+     "Controller could not follow the path"),
+    (("extrapolation", "lookup would require", "transform", "tf "),
+     "TF/localization problem (missing or stale transform)"),
+]
+
+
+def classify_nav_failure(lines):
+    """Pick the most specific reason from Nav2 WARN/ERROR lines (oldest first)."""
+    low = [ln.lower() for ln in lines]
+    for needles, reason in _FAILURE_PATTERNS:
+        for ln in reversed(low):
+            if any(n in ln for n in needles):
+                return reason
+    if lines:
+        return "Nav2: " + lines[-1][:160]
+    return "Nav2 aborted the goal without logging a reason"
+
+
 class Nav2Client:
     """
     Thin wrapper around the Nav2 NavigateToPose action client.
@@ -76,6 +110,13 @@ class Nav2Client:
         self._goal: Optional[dict] = None           # {x, y, theta}
         self._path: List[List[float]] = []           # [[x, y], ...]
         self._dist_remaining: Optional[float] = None
+        # Goal progress readouts (from NavigateToPose feedback) + failure reason.
+        self._goal_t0: Optional[float] = None
+        self._nav_time_s: Optional[float] = None
+        self._eta_s: Optional[float] = None
+        self._recoveries: int = 0
+        self._fail_reason: Optional[str] = None
+        self._nav2_log: List[str] = []   # WARN/ERROR lines from Nav2 nodes this goal
         self._nav2_proc: Optional[subprocess.Popen] = None
         # Map YAML currently served to AMCL (basename, GUI display only)
         self._current_map: Optional[str] = None
@@ -90,6 +131,10 @@ class Nav2Client:
 
         # ── Global plan subscriber ──────────────────────────────────────────
         node.create_subscription(Path, '/plan', self._plan_cb, 10)
+        node.create_subscription(
+            Log, '/rosout', self._rosout_cb,
+            QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.VOLATILE, history=HistoryPolicy.KEEP_LAST))
 
         # ── map_server hot-swap client (created lazily on first load_map) ───
         self._load_map_cli = None
@@ -123,6 +168,11 @@ class Nav2Client:
             self._goal = {"x": x, "y": y, "theta": theta}
             self._path = []
             self._dist_remaining = None
+            self._goal_t0 = time.monotonic()
+            self._nav_time_s = self._eta_s = None
+            self._recoveries = 0
+            self._fail_reason = None
+            self._nav2_log = []
 
         send_future = self._action_client.send_goal_async(
             goal_msg,
@@ -339,6 +389,13 @@ class Nav2Client:
                 "goal":      self._goal,
                 "path":      path,
                 "dist":      self._dist_remaining,
+                "elapsed_s": (self._nav_time_s if self._nav_time_s is not None else
+                              (time.monotonic() - self._goal_t0
+                               if self._goal_t0 is not None and self._state in (STATE_PLANNING, STATE_EXECUTING)
+                               else None)),
+                "eta_s":     self._eta_s,
+                "recoveries": self._recoveries,
+                "fail_reason": self._fail_reason,
                 "map":       self._current_map,
                 "nav2_running": (
                     self._nav2_proc is not None
@@ -355,6 +412,7 @@ class Nav2Client:
             with self._lock:
                 self._state = STATE_FAILED
                 self._goal_handle = None
+                self._fail_reason = "Nav2 rejected the goal (is it inside the map? is Nav2 active?)"
             return
 
         with self._lock:
@@ -369,6 +427,21 @@ class Nav2Client:
         fb = feedback_msg.feedback
         with self._lock:
             self._dist_remaining = fb.distance_remaining
+            self._nav_time_s = fb.navigation_time.sec + fb.navigation_time.nanosec * 1e-9
+            eta = fb.estimated_time_remaining.sec + fb.estimated_time_remaining.nanosec * 1e-9
+            self._eta_s = eta if eta > 0 else None
+            self._recoveries = int(fb.number_of_recoveries)
+
+    def _rosout_cb(self, msg) -> None:
+        if msg.level < Log.WARN or not any(n in msg.name for n in _NAV2_LOG_NODES):
+            return
+        if "control loop missed" in msg.msg.lower():
+            return  # rate warning, not a failure cause
+        with self._lock:
+            if self._goal_t0 is None:
+                return
+            self._nav2_log.append(f"{msg.name}: {msg.msg}")
+            del self._nav2_log[:-30]
 
     def _result_cb(self, future) -> None:
         result = future.result()
@@ -384,7 +457,8 @@ class Nav2Client:
                 logger.info("[Nav2Client] Goal CANCELLED")
             else:
                 self._state = STATE_FAILED
-                logger.warning(f"[Nav2Client] Goal FAILED (status={status})")
+                self._fail_reason = classify_nav_failure(self._nav2_log)
+                logger.warning(f"[Nav2Client] Goal FAILED (status={status}): {self._fail_reason}")
             self._dist_remaining = None
 
     def _cancel_done_cb(self, future) -> None:

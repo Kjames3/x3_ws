@@ -843,13 +843,24 @@ function updateNavStatus(nav) {
     const badge = elements.navStatusBadge;
     if (badge) {
         badge.textContent = state.nav.status;
-        badge.className = 'nav-badge' + state.nav.status.toLowerCase();
+        badge.className = 'nav-badge ' + state.nav.status.toLowerCase();
     }
 
     // Stats
     if (elements.navDistRemaining) {
         elements.navDistRemaining.textContent =
             state.nav.distRemaining != null ? state.nav.distRemaining.toFixed(2) : '—';
+    }
+    const fmtS = (t) => t == null ? '—' : (t >= 60 ? `${Math.floor(t / 60)}:${String(Math.round(t % 60)).padStart(2, '0')}` : `${t.toFixed(0)} s`);
+    const el = (id) => document.getElementById(id);
+    if (el('nav-elapsed')) el('nav-elapsed').textContent = fmtS(nav.elapsed_s);
+    if (el('nav-eta')) el('nav-eta').textContent = fmtS(nav.eta_s);
+    if (el('nav-recoveries')) el('nav-recoveries').textContent = nav.recoveries != null ? String(nav.recoveries) : '—';
+    const fail = el('nav-fail-reason');
+    if (fail) {
+        const show = state.nav.status === 'FAILED' && nav.fail_reason;
+        fail.textContent = show ? `Goal failed: ${nav.fail_reason}` : '';
+        fail.style.display = show ? '' : 'none';
     }
     if (elements.navGoalDisplay) {
         elements.navGoalDisplay.textContent = state.nav.goal
@@ -1002,6 +1013,33 @@ function updateScan3dUI() {
 // scans or producing no map, and an AMCL localization badge from the pose
 // covariance (good / converging / lost).
 const SLAM_FIRST_MAP_GRACE_S = 15;
+// Navigate / Map mode for the Navigation tab. Remembered across reloads;
+// starting SLAM switches to Map, launching Nav2 or sending a goal to Navigate.
+const NAV_MODE_KEY = 'x3.nav.mode';
+function setNavMode(mode, remember = true) {
+    const tools = document.getElementById('navigation-tools');
+    if (!tools || (mode !== 'navigate' && mode !== 'map')) return;
+    tools.dataset.mode = mode;
+    tools.querySelectorAll('[data-nav-mode-btn]').forEach((b) =>
+        b.classList.toggle('active', b.dataset.navModeBtn === mode));
+    if (remember) { try { localStorage.setItem(NAV_MODE_KEY, mode); } catch (_) {} }
+}
+(function setupNavModes() {
+    const tools = document.getElementById('navigation-tools');
+    if (!tools) return;
+    tools.querySelectorAll('[data-nav-mode-btn]').forEach((b) =>
+        b.addEventListener('click', () => setNavMode(b.dataset.navModeBtn)));
+    let saved = null;
+    try { saved = localStorage.getItem(NAV_MODE_KEY); } catch (_) {}
+    setNavMode(saved || 'navigate', false);
+    const on = (id, mode) => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('click', () => setNavMode(mode));
+    };
+    on('start-slam-btn', 'map');
+    on('launch-nav2-btn', 'navigate');
+})();
+
 function updateNavHealth(h, slamActive, navPhase) {
     const line = document.getElementById('slam-health');
     const badge = document.getElementById('nav-loc-badge');
@@ -1046,6 +1084,8 @@ function updateNavHealth(h, slamActive, navPhase) {
         const navUp = !!state.nav.nav2Running && navPhase !== 'UNAVAILABLE';
         if (slamActive || !navUp) { badge.style.display = 'none'; return; }
         const a = h.amcl;
+        const sp = document.getElementById('nav-speed');
+        if (sp) sp.textContent = h.speed != null ? h.speed.toFixed(2) : '—';
         let cls, text, tip;
         if (!a) {
             cls = 'lost'; text = 'NOT LOCALIZED';
@@ -1068,6 +1108,11 @@ function updateNavHealth(h, slamActive, navPhase) {
 function updateSlamStatus(active) {
     const wasActive = state.slamActive;
     state.slamActive = active;
+    // Opening the tab while SLAM is already running: show the mapping controls.
+    if (active && !wasActive && !state.nav._navModeAutoDone) {
+        state.nav._navModeAutoDone = true;
+        setNavMode('map', false);
+    }
 
     // On SLAM activation, reset the frame counter so the first-frame deferral
     // in handleMapuFrame suppresses the unsettled initial map, and request an
