@@ -38,9 +38,20 @@ With --own, synthetic people are kept > REAL_CLEAR_M from real labelled people i
 same frame, and found synthetic people are compared feature by feature with real
 camera-confirmed people (the check that the bodies look like the real thing).
 
+Seated people and furniture (2026-11-22, step 0 of notes/plans/2026-11-21-isaac-sim-lidar-people.md):
+``body`` also poses a SEATED person (chair/couch seat height, torso lean/slouch, thighs
+forward, shins down, forearms on a desk or in the lap) and ``insert(..., furniture=)``
+casts the same real rays at furniture made of oriented boxes (``raycast_boxes``): office
+and dining chairs, desks with legs / side panels / drawer pedestal / monitor, couch with
+arms, coffee table, bookcase, partition.  ``sample_furniture_scene`` places a seated or
+standing person next to or behind such furniture at 0.4-6 m, and ``sample_close_group``
+places standing/walking people at 0.4-1.5 m.  Furniture hits carry id -2 - j (piece j of the furniture list) in ``pid``.
+The training/eval driver is synthetic_seated_experiment.py.
+
 Limits: robot ego-motion during the frame is not applied to the synthetic person; no
-seated poses yet; no mixed edge points; rays that returned nothing in the real frame
-(open space beyond range) cannot hit a person (indoors almost every ray returns).
+mixed edge points; furniture is solid boxes (no shelf slats, chair-back slats, cables);
+rays that returned nothing in the real frame (open space beyond range) cannot hit a
+person (indoors almost every ray returns).
 """
 import argparse
 import math
@@ -96,7 +107,10 @@ def _segment(p0, p1, r):
 
 def body(person, t):
     """Ellipsoids (centres (K,3), rotations (K,3,3), radii (K,3)) of `person` at time t
-    (seconds from the frame middle).  World frame: floor z = 0."""
+    (seconds from the frame middle).  World frame: floor z = 0.  A person with
+    person['seated'] is posed by _seated_parts instead."""
+    if person.get('seated'):
+        return _to_world(_seated_parts(person), person, t)
     H, s, g = person['height'], person['height'] / 1.75, person['girth']
     walk = person['speed'] > 0
     ph = person['phase'] + 2 * math.pi * t / person['period']
@@ -134,11 +148,58 @@ def body(person, t):
     parts.append((np.array([0, 0, 0.865 * H]), np.eye(3), np.array([0.05, 0.05, 0.06]) * s))
     if person['backpack']:
         parts.append((np.array([-0.2 * s * g, 0, 0.7 * H]), np.eye(3), np.array([0.08, 0.15, 0.2]) * s))
+    return _to_world(parts, person, t)
+
+
+def _rot_z(yaw):
+    return np.array([[math.cos(yaw), -math.sin(yaw), 0], [math.sin(yaw), math.cos(yaw), 0], [0, 0, 1]])
+
+
+def _to_world(parts, person, t):
+    """Body-frame ellipsoids (x forward, y left, z up, origin on the floor under the hips)
+    -> world frame at time t."""
     c, R, a = (np.array(v) for v in zip(*parts))
-    yaw = person['yaw']
-    Rz = np.array([[math.cos(yaw), -math.sin(yaw), 0], [math.sin(yaw), math.cos(yaw), 0], [0, 0, 1]])
+    Rz = _rot_z(person['yaw'])
     pos = np.array([person['x'] + person['vx'] * t, person['y'] + person['vy'] * t, 0.0])
     return c @ Rz.T + pos, Rz @ R, a
+
+
+def _seated_parts(p):
+    """A seated person, body frame.  Hip centre over the seat at seat_h + 0.11 s; thighs
+    run forward (thigh_drop radians below horizontal), shins down to the floor (ankle
+    leg_dx ahead of the knee); the torso leans `lean` radians forward (negative = back)
+    and is shortened by `slouch`; forearms rest on a desk (arm_mode 'desk') or in the lap."""
+    H, s, g = p['height'], p['height'] / 1.75, p['girth']
+    hip_z = p['seat_h'] + 0.11 * s
+    lean, sw = p['lean'], p['shoulder']
+    u = np.array([math.sin(lean), 0.0, math.cos(lean)])
+    lt = 0.285 * H * p['slouch']
+    hip_c = np.array([0.0, 0.0, hip_z])
+    sh_c = hip_c + lt * u
+    parts = [(np.array([-0.03 * s, 0.0, hip_z]), np.eye(3), np.array([0.12 * g, 0.17 * g, 0.09]) * s)]
+    wid = np.array([0.0, 1.0, 0.0])
+    parts.append(((hip_c + sh_c) / 2, np.stack([wid, np.cross(u, wid), u], axis=1),
+                  np.array([0.2 * sw * g * s, 0.13 * g * s, lt / 2 + 0.05 * s])))
+    hd = np.array([math.sin(0.35 * lean), 0.0, math.cos(0.35 * lean)])
+    parts.append((sh_c + 0.055 * H * hd, np.eye(3), np.array([0.05, 0.05, 0.06]) * s))
+    parts.append((sh_c + 0.12 * H * hd + np.array([0.01 * s + p['head_fwd'], 0.0, 0.0]), np.eye(3),
+                  np.array([0.095, 0.08, 0.115]) * s))
+    for sd in (1.0, -1.0):
+        sh = sh_c + np.array([0.0, 0.215 * s * sw * sd, 0.0])
+        a1, b = p['arm_up'], (0.05 if p['arm_mode'] == 'desk' else 0.55)
+        elbow = sh + 0.18 * H * np.array([math.sin(a1), 0.0, -math.cos(a1)])
+        hand = elbow + 0.16 * H * np.array([math.cos(b), 0.0, -math.sin(b)])
+        parts.append(_segment(sh, elbow, 0.055 * s * g))
+        parts.append(_segment(elbow, hand, 0.045 * s * g))
+        parts.append((hand, np.eye(3), np.array([0.05, 0.04, 0.035]) * s))
+        hip = np.array([0.0, 0.09 * s * sd, hip_z])
+        d = p['thigh_drop']
+        knee = hip + 0.25 * H * np.array([math.cos(d), 0.0, -math.sin(d)]) + np.array([0.0, 0.04 * p['splay'] * sd, 0.0])
+        ankle = np.array([knee[0] + p['leg_dx'], knee[1], 0.07 * s + p['foot_lift']])
+        parts.append(_segment(hip, knee, 0.075 * s * g))
+        parts.append(_segment(knee, ankle, 0.055 * s * g))
+        parts.append((ankle + np.array([0.06 * s, 0.0, -0.01]), np.eye(3), np.array([0.12, 0.05, 0.04]) * s))
+    return parts
 
 
 def raycast(origin, dirs, ellipsoids):
@@ -169,9 +230,32 @@ def raycast(origin, dirs, ellipsoids):
     return best, cos
 
 
-def insert(xyz, tsec, people, rng):
+def raycast_boxes(origin, dirs, boxes):
+    """Nearest hit of unit rays against oriented boxes (centres (K,3), rotations (K,3,3),
+    half sizes (K,3)); slab test.  Returns (range, |cos incidence|), inf/0 on miss."""
+    centres, rots, halves = boxes
+    best = np.full(len(dirs), np.inf)
+    cos = np.zeros(len(dirs))
+    for c, R, h in zip(centres, rots, halves):
+        o = (origin - c) @ R
+        d = dirs @ R
+        d = np.where(np.abs(d) < 1e-12, 1e-12, d)
+        t1, t2 = (-h - o) / d, (h - o) / d
+        tn, tf = np.minimum(t1, t2), np.maximum(t1, t2)
+        t_in, t_out = tn.max(1), tf.min(1)
+        hit = (t_out >= t_in) & (t_in > 0) & (t_in < best)
+        if hit.any():
+            ax = tn.argmax(1)
+            best[hit] = t_in[hit]
+            cos[hit] = np.abs(d[hit, ax[hit]])
+    return best, cos
+
+
+def insert(xyz, tsec, people, rng, furniture=()):
     """xyz: (N,3) real points, floor frame (sensor at (0,0,SENSOR_Z)); tsec: capture time
-    of each point from the frame middle.  Returns (xyz', person index per point or -1)."""
+    of each point from the frame middle.  furniture: placed pieces (dict x, y, radius,
+    boxes) from place_furniture.  Returns (xyz', person index per point; -1 = real
+    background, -2 - j = piece j of `furniture`)."""
     origin = np.array([0.0, 0.0, SENSOR_Z])
     rel = xyz - origin
     rng_real = np.linalg.norm(rel, axis=1)
@@ -193,6 +277,16 @@ def insert(xyz, tsec, people, rng):
             t, c = raycast(origin, dirs[m], body(p, 0.5 * (edges[b] + edges[b + 1])))
             better = t < hit_r[m]
             hit_r[m[better]], hit_cos[m[better]], hit_id[m[better]] = t[better], c[better], k
+    for j, f in enumerate(furniture):
+        r = math.hypot(f['x'], f['y'])
+        half = math.pi if r < f['radius'] + 0.05 else math.asin(min(1.0, f['radius'] / r))
+        dz = np.abs((az - math.atan2(f['y'], f['x']) + math.pi) % (2 * math.pi) - math.pi)
+        m = np.flatnonzero(dz < half)
+        if not len(m):
+            continue
+        t, c = raycast_boxes(origin, dirs[m], f['boxes'])
+        better = t < hit_r[m]
+        hit_r[m[better]], hit_cos[m[better]], hit_id[m[better]] = t[better], c[better], -2 - j
     take = hit_r < rng_real
     drop = take & ((rng.random(len(xyz)) < DROP_P) | (hit_cos < GRAZE_COS))
     noise = rng.normal(0, 1, len(xyz)) * (RANGE_NOISE_M[0] + RANGE_NOISE_M[1] * hit_r.clip(0, 50))
@@ -202,6 +296,109 @@ def insert(xyz, tsec, people, rng):
     pid = np.where(take, hit_id, -1)
     keep = ~drop
     return out[keep], pid[keep]
+
+
+# ---------------------------------------------------------------- furniture
+
+def _box(cx, cy, cz, hx, hy, hz, yaw=0.0):
+    """One oriented box: centre, rotation, half sizes (local frame)."""
+    return np.array([cx, cy, cz]), _rot_z(yaw), np.array([hx, hy, hz])
+
+
+def place_furniture(local_boxes, x, y, yaw, kind=''):
+    """Boxes given in a frame whose origin is the floor point (x, y) and whose +x points
+    along `yaw`.  `radius` bounds the whole piece around (x, y) for the ray prefilter."""
+    Rz = _rot_z(yaw)
+    c = np.array([b[0] for b in local_boxes]) @ Rz.T + np.array([x, y, 0.0])
+    R = np.array([Rz @ b[1] for b in local_boxes])
+    h = np.array([b[2] for b in local_boxes])
+    radius = float(max(np.hypot(b[0][0], b[0][1]) + np.hypot(*b[2][:2]) for b in local_boxes))
+    return dict(x=x, y=y, radius=radius, boxes=(c, R, h), kind=kind)
+
+
+def office_chair(rng, seat_h):
+    """Swivel chair: seat, backrest behind the sitter, pole, five-star base, armrests."""
+    back_h = rng.uniform(0.38, 0.72)
+    b = [_box(0, 0, seat_h - 0.03, 0.23, 0.23, 0.03),
+         _box(-0.23, 0, seat_h + back_h / 2, 0.025, rng.uniform(0.19, 0.24), back_h / 2),
+         _box(0, 0, (seat_h - 0.06) / 2 + 0.04, 0.03, 0.03, (seat_h - 0.06) / 2 - 0.04)]
+    for yaw in (0.0, math.pi / 2, math.pi / 4, -math.pi / 4):
+        b.append(_box(0, 0, 0.05, 0.30, 0.025, 0.025, yaw))
+    if rng.random() < 0.5:
+        for sd in (1, -1):
+            b.append(_box(-0.02, sd * 0.26, seat_h + 0.2, 0.2, 0.02, 0.015))
+            b.append(_box(-0.02, sd * 0.26, seat_h + 0.1, 0.02, 0.02, 0.1))
+    return b
+
+
+def dining_chair(rng, seat_h):
+    """Four legs, a seat and a back whose top is ~0.9 m."""
+    top = rng.uniform(0.85, 1.0)
+    b = [_box(0, 0, seat_h - 0.02, 0.21, 0.21, 0.02),
+         _box(-0.21, 0, (seat_h + top) / 2, 0.02, 0.19, (top - seat_h) / 2)]
+    for sx in (1, -1):
+        for sy in (1, -1):
+            b.append(_box(sx * 0.19, sy * 0.19, (seat_h - 0.04) / 2, 0.02, 0.02, (seat_h - 0.04) / 2))
+    return b
+
+
+def desk(rng, x_edge, top_h):
+    """Desk whose near edge is x_edge ahead of the sitter's hips: top, legs or side
+    panels, optional modesty panel and drawer pedestal, monitor or laptop on top."""
+    w, d = rng.uniform(1.1, 1.8), rng.uniform(0.55, 0.8)
+    off = rng.uniform(-0.25, 0.25)
+    cx = x_edge + d / 2
+    b = [_box(cx, off, top_h - 0.02, d / 2, w / 2, 0.02)]
+    if rng.random() < 0.4:
+        for sd in (1, -1):
+            b.append(_box(cx, off + sd * (w / 2 - 0.03), (top_h - 0.04) / 2, d / 2 - 0.03, 0.015, (top_h - 0.04) / 2))
+    else:
+        for sx in (1, -1):
+            for sy in (1, -1):
+                b.append(_box(cx + sx * (d / 2 - 0.05), off + sy * (w / 2 - 0.05), (top_h - 0.04) / 2, 0.025, 0.025, (top_h - 0.04) / 2))
+    if rng.random() < 0.4:
+        b.append(_box(cx + d / 2 - 0.05, off, top_h - 0.22, 0.01, w / 2 - 0.06, 0.18))
+    if rng.random() < 0.4:
+        sd = rng.choice([-1, 1])
+        b.append(_box(cx, off + sd * (w / 2 - 0.22), (top_h - 0.04) / 2, d / 2 - 0.05, 0.2, (top_h - 0.04) / 2))
+    if rng.random() < 0.7:
+        mx, my = cx + d / 2 - 0.18, off + rng.uniform(-0.2, 0.2)
+        b.append(_box(mx, my, top_h + 0.07, 0.08, 0.08, 0.07))
+        b.append(_box(mx, my, top_h + 0.30, 0.02, rng.uniform(0.24, 0.34), rng.uniform(0.15, 0.2)))
+    elif rng.random() < 0.6:
+        b.append(_box(cx, off + rng.uniform(-0.2, 0.2), top_h + 0.01, 0.15, 0.2, 0.01))
+    return b, w, d
+
+
+def couch(rng):
+    """Sofa, origin under the sitter's hips, front (+x) toward the coffee table: seat
+    cushion, backrest and two arms.  Width 1.7-2.2 m, backrest top ~0.85 m."""
+    w = rng.uniform(1.7, 2.2)
+    return [_box(0.05, 0, 0.2, 0.30, w / 2, 0.2), _box(-0.34, 0, 0.425, 0.1, w / 2, 0.425),
+            _box(0.05, w / 2 - 0.1, 0.3, 0.30, 0.1, 0.3), _box(0.05, -w / 2 + 0.1, 0.3, 0.30, 0.1, 0.3)], w
+
+
+def small_table(rng, x, top_h, w=None, d=None):
+    """Four-legged table with its centre at x ahead (coffee table 0.42, side table 0.55)."""
+    w = w or rng.uniform(0.8, 1.2)
+    d = d or rng.uniform(0.45, 0.7)
+    b = [_box(x, 0, top_h - 0.02, d / 2, w / 2, 0.02)]
+    for sx in (1, -1):
+        for sy in (1, -1):
+            b.append(_box(x + sx * (d / 2 - 0.04), sy * (w / 2 - 0.04), (top_h - 0.04) / 2, 0.02, 0.02, (top_h - 0.04) / 2))
+    return b
+
+
+def bookcase(rng):
+    """Solid box, centred on its floor point: 0.25-0.4 deep, 0.6-1.2 wide, 1.0-2.0 tall."""
+    d, w, h = rng.uniform(0.25, 0.4), rng.uniform(0.6, 1.2), rng.uniform(1.0, 2.0)
+    return [_box(0, 0, h / 2, d / 2, w / 2, h / 2)], d, w
+
+
+def partition(rng):
+    """Office partition panel: 5 cm thick, 1.2-2 m wide, 1.3-1.7 m tall."""
+    w, h = rng.uniform(1.2, 2.0), rng.uniform(1.3, 1.7)
+    return [_box(0, 0, h / 2, 0.03, w / 2, h / 2)], 0.06, w
 
 
 # ---------------------------------------------------------------- scenes
@@ -247,6 +444,187 @@ def sample_group(rng, occupied, avoid, open_bearing):
     return []
 
 
+SENSOR_CLEAR_M = 0.3
+
+
+def clear_of_sensor(people, pieces, margin=SENSOR_CLEAR_M):
+    """No body part or furniture box within `margin` of the sensor (it would be inside the robot)."""
+    o = np.array([0.0, 0.0, SENSOR_Z])
+    for f in pieces:
+        c, R, h = f['boxes']
+        loc = np.einsum('kij,kj->ki', R.transpose(0, 2, 1), o - c)
+        if np.linalg.norm(loc - np.clip(loc, -h, h), axis=1).min() < margin:
+            return False
+    for p in people:
+        c, _, a = body(p, 0.0)
+        if (np.linalg.norm(c - o, axis=1) - a.max(1)).min() < margin:
+            return False
+    return True
+
+
+def sample_seated_person(rng, x, y, yaw, mode, seat_h):
+    """A seated person at the hip point (x, y) facing yaw.  mode: 'desk' (torso upright or
+    leaning in, thighs under the desk, forearms on it), 'chair' (free-standing chair) or
+    'couch' (leaning back, legs out)."""
+    p = sample_person(rng, x, y, yaw, 0.0)
+    lean = {'desk': (-0.05, 0.35), 'chair': (-0.15, 0.30), 'couch': (-0.45, 0.05)}[mode]
+    legs = {'desk': (-0.1, 0.1), 'chair': (-0.05, 0.25), 'couch': (0.0, 0.45)}[mode]
+    p.update(seated=True, seat_h=seat_h, lean=rng.uniform(*lean),
+             slouch=rng.uniform(0.8, 0.97) if mode == 'couch' else rng.uniform(0.85, 1.0),
+             arm_mode='desk' if mode == 'desk' else str(rng.choice(['lap', 'lap', 'desk'])),
+             arm_up=rng.uniform(0.1, 0.5), thigh_drop=rng.uniform(-0.1, 0.05) if mode == 'couch' else rng.uniform(0.0, 0.12),
+             leg_dx=rng.uniform(*legs), foot_lift=rng.uniform(0.0, 0.08) if mode == 'couch' else 0.0,
+             splay=rng.uniform(0.0, 1.5), head_fwd=rng.uniform(0.0, 0.06), backpack=False)
+    return p
+
+
+def _view_yaw(rng, x, y):
+    """Which way a person at (x, y) faces: away from the robot (back view, the usual desk
+    case), toward it, or anywhere."""
+    u, a = rng.random(), math.atan2(y, x)
+    if u < 0.4:
+        return a + rng.uniform(-0.6, 0.6)
+    if u < 0.6:
+        return a + math.pi + rng.uniform(-0.6, 0.6)
+    return rng.uniform(-math.pi, math.pi)
+
+
+def _world(x, y, yaw, lx, ly):
+    return x + lx * math.cos(yaw) - ly * math.sin(yaw), y + lx * math.sin(yaw) + ly * math.cos(yaw)
+
+
+def _person_range(rng):
+    """35% close (0.4-1.5 m), the rest 1.5-6 m."""
+    return rng.uniform(0.4, 1.5) if rng.random() < 0.35 else rng.uniform(1.5, 6.0)
+
+
+def sample_close_group(rng, occupied, avoid, open_bearing):
+    """1-2 standing or walking people 0.4-1.5 m from the sensor (the existing groups start at 0.8 m)."""
+    walking = rng.random() < 0.5
+    speed = rng.uniform(0.6, 1.4) if walking else 0.0
+    yaw_g = rng.uniform(-math.pi, math.pi)
+    for _ in range(40):
+        r = rng.uniform(0.4, 1.5)
+        b = open_bearing(r)
+        if b is None:
+            continue
+        pts = [(r * math.cos(b), r * math.sin(b))]
+        if rng.random() < 0.4:
+            a, d = rng.uniform(-math.pi, math.pi), rng.uniform(MIN_GAP_M, 1.0)
+            pts.append((pts[0][0] + d * math.cos(a), pts[0][1] + d * math.sin(a)))
+        if any(math.hypot(*q) < 0.4 or math.hypot(*q) > 1.8 or occupied(*q) for q in pts):
+            continue
+        if len(avoid) and any(np.hypot(avoid[:, 0] - q[0], avoid[:, 1] - q[1]).min() <= REAL_CLEAR_M for q in pts):
+            continue
+        return [sample_person(rng, q[0], q[1], yaw_g if walking else rng.uniform(-math.pi, math.pi), speed)
+                for q in pts]
+    return []
+
+
+def sample_furniture_scene(rng, kind, occupied, avoid, open_bearing, abut=False):
+    """People plus furniture at 0.4-6 m.  kind:
+      seated_desk   office/dining chair at a desk (monitor, drawers), maybe a bookcase beside or behind
+      seated_chair  free-standing chair, maybe a side table and a bookcase
+      seated_couch  sofa (+ coffee table), the sitter off-centre, maybe a second sitter
+      stand_furn    a standing/walking person beside a bookcase, partition, desk or couch, or with
+                    one between the sensor and them (occluding the legs)
+    abut: only the sitter's / person's own spot must be free of real clutter, the furniture may overlap
+    real walls and furniture (a desk against a wall, a shelf beside a real cabinet).  Everything must
+    stay >= SENSOR_CLEAR_M from the sensor.  Returns (people, furniture, meta) or None when no spot
+    was found; the furniture list alone is the empty-scene counterpart used for hard negatives."""
+    for _ in range(60):
+        r = _person_range(rng)
+        b = open_bearing(r)
+        if b is None:
+            continue
+        x, y = r * math.cos(b), r * math.sin(b)
+        yaw = _view_yaw(rng, x, y)
+        pieces, people, checks, meta = [], [], [(x, y)], dict(kind=kind, range=r)
+        if kind == 'seated_desk':
+            seat_h = rng.uniform(0.42, 0.50)
+            chair = office_chair(rng, seat_h) if rng.random() < 0.7 else dining_chair(rng, seat_h)
+            top_h, x_edge = rng.uniform(0.72, 0.76), rng.uniform(0.30, 0.48)
+            dsk, w, d = desk(rng, x_edge, top_h)
+            pieces += [place_furniture(chair, x, y, yaw, 'chair'), place_furniture(dsk, x, y, yaw, 'desk')]
+            checks += [_world(x, y, yaw, x_edge + d / 2, 0.0), _world(x, y, yaw, x_edge + d, w / 2), _world(x, y, yaw, x_edge + d, -w / 2)]
+            if rng.random() < 0.5:
+                bc, bd, bw = bookcase(rng)
+                slot = rng.choice(['left', 'right', 'behind', 'front'])
+                gap = rng.uniform(0.0, 0.4)
+                lx, ly = {'left': (x_edge + d / 2, w / 2 + bd / 2 + gap), 'right': (x_edge + d / 2, -w / 2 - bd / 2 - gap),
+                          'behind': (-0.3 - bd / 2 - gap, 0.0), 'front': (x_edge + d + bd / 2 + gap, 0.0)}[str(slot)]
+                yb = yaw + (math.pi / 2 if slot in ('left', 'right') else 0.0)     # long side parallel to the desk side
+                pieces.append(place_furniture(bc, *_world(x, y, yaw, lx, ly), yb, 'bookcase'))
+                checks.append(_world(x, y, yaw, lx, ly))
+                meta['shelf'] = str(slot)
+            people.append(sample_seated_person(rng, x, y, yaw, 'desk', seat_h))
+        elif kind == 'seated_chair':
+            seat_h = rng.uniform(0.42, 0.50)
+            chair = office_chair(rng, seat_h) if rng.random() < 0.4 else dining_chair(rng, seat_h)
+            pieces.append(place_furniture(chair, x, y, yaw, 'chair'))
+            if rng.random() < 0.4:
+                pieces.append(place_furniture(small_table(rng, rng.uniform(0.6, 0.9), rng.uniform(0.45, 0.7)), x, y, yaw, 'table'))
+                checks.append(_world(x, y, yaw, 0.75, 0.0))
+            if rng.random() < 0.3:
+                bc, bd, bw = bookcase(rng)
+                lx, ly = rng.choice([(-0.3 - bd / 2 - rng.uniform(0.05, 0.6), 0.0), (0.0, bw / 2 + 0.35 + rng.uniform(0, 0.4))])
+                pieces.append(place_furniture(bc, *_world(x, y, yaw, lx, ly), yaw, 'bookcase'))
+                checks.append(_world(x, y, yaw, lx, ly))
+            people.append(sample_seated_person(rng, x, y, yaw, 'chair', seat_h))
+        elif kind == 'seated_couch':
+            cb, w = couch(rng)
+            ly = rng.uniform(-0.5, 0.5) * (w - 0.8)
+            pieces.append(place_furniture(cb, x, y, yaw, 'couch'))      # origin = cushion centre line
+            checks += [_world(x, y, yaw, 0.0, w / 2 - 0.2), _world(x, y, yaw, 0.0, -w / 2 + 0.2)]
+            if rng.random() < 0.6:
+                pieces.append(place_furniture(small_table(rng, rng.uniform(0.75, 1.0), 0.42, d=rng.uniform(0.4, 0.6)), x, y, yaw, 'table'))
+                checks.append(_world(x, y, yaw, 0.9, 0.0))
+            hx, hy = _world(x, y, yaw, -0.08, ly)
+            people.append(sample_seated_person(rng, hx, hy, yaw, 'couch', 0.4))
+            if rng.random() < 0.25 and w > 1.9:
+                ly2 = ly + (0.75 if ly < 0 else -0.75)
+                x2, y2 = _world(x, y, yaw, -0.08, ly2)
+                people.append(sample_seated_person(rng, x2, y2, yaw + rng.normal(0, 0.15), 'couch', 0.4))
+                checks.append((x2, y2))
+        elif kind == 'stand_furn':
+            walking = rng.random() < 0.5
+            people.append(sample_person(rng, x, y, rng.uniform(-math.pi, math.pi), rng.uniform(0.6, 1.4) if walking else 0.0))
+            ft = str(rng.choice(['bookcase', 'partition', 'desk', 'couch']))
+            if ft == 'bookcase':
+                loc, fd, fw = bookcase(rng)
+            elif ft == 'partition':
+                loc, fd, fw = partition(rng)
+            elif ft == 'desk':
+                loc, fw, fd = desk(rng, 0.0, rng.uniform(0.72, 0.76))
+                loc = [(c - np.array([fd / 2, 0.0, 0.0]), R, h) for c, R, h in loc]       # centre it on its floor point
+            else:
+                loc, fw = couch(rng)
+                fd = 0.9
+            occl = r > 1.3 and rng.random() < 0.4
+            if occl:        # between the sensor and the person, across the line of sight
+                dist = r - rng.uniform(0.5, 1.1)
+                fx, fy, fyaw = dist * math.cos(b), dist * math.sin(b), b + math.pi + rng.uniform(-0.4, 0.4)
+            else:           # beside the person, its side face 0.15-0.8 m away
+                phi = rng.uniform(-math.pi, math.pi)
+                off = 0.25 + rng.uniform(0.0, 0.6) + fd / 2        # 0.25 m = the person's own half width
+                fx, fy, fyaw = x + off * math.cos(phi), y + off * math.sin(phi), phi + math.pi
+            pieces.append(place_furniture(loc, fx, fy, fyaw, ft))
+            checks += [(fx, fy), _world(fx, fy, fyaw, 0.0, fw / 2), _world(fx, fy, fyaw, 0.0, -fw / 2)]
+            meta.update(furn=ft, occluding=bool(occl), walking=walking)
+        else:
+            raise ValueError(kind)
+        if any(occupied(*q) for q in (checks[:1] if abut else checks)):
+            continue
+        if not clear_of_sensor(people, pieces):
+            continue
+        meta['abut'] = bool(abut)
+        pts = np.array([[p['x'], p['y']] for p in people])
+        if len(avoid) and any(np.hypot(avoid[:, 0] - q[0], avoid[:, 1] - q[1]).min() <= REAL_CLEAR_M for q in pts):
+            continue
+        return people, pieces, meta
+    return None
+
+
 def score(out, pid, people, extract=pc.extract):
     """Run the extractor on a frame with people inserted; per person (outcome, features,
     visible points, duplicates).  Duplicates: other candidates within DUP_M of the person
@@ -285,9 +663,10 @@ def score(out, pid, people, extract=pc.extract):
     return res
 
 
-def run_scene(args, extract=pc.extract):
-    xyz, tsec, real_people, seed = args
-    rng = np.random.default_rng(seed)
+def frame_context(xyz, rng):
+    """(occupied(x, y), open_bearing(r)) for one real background frame: where a body (or a
+    piece of furniture) can stand without sitting in real clutter or behind a wall, and a
+    bearing along which the frame sees past range r."""
     body_h = (xyz[:, 2] > 0.15) & (xyz[:, 2] < 2.2)
     from scipy.spatial import cKDTree
     tree = cKDTree(xyz[body_h, :2]) if body_h.any() else None
@@ -309,6 +688,14 @@ def run_scene(args, extract=pc.extract):
     def open_bearing(r):
         cand = az_low[r_low > r + 0.5]
         return None if not len(cand) else float(cand[rng.integers(len(cand))]) + rng.normal(0, 0.01)
+
+    return occupied, open_bearing
+
+
+def run_scene(args, extract=pc.extract):
+    xyz, tsec, real_people, seed = args
+    rng = np.random.default_rng(seed)
+    occupied, open_bearing = frame_context(xyz, rng)
 
     people = sample_group(rng, occupied, real_people, open_bearing)
     if not people:
