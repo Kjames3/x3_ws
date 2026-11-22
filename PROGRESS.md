@@ -5,6 +5,19 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-21 — Left camera lens (fisheye) calibration
+- **Problem:** the left camera needs a lens model before it can be calibrated against the lidar.
+- **Work done:**
+  - Captured 35 checkerboard views on the robot (9x6 board, 23.3 mm squares), rotated 180° to match the published image.
+  - Refit on the laptop without views whose per-view error was > 1 px. The 9 dropped views mostly had the board partly out of frame.
+  - Saved `config/left_u20cam_intrinsics.json`.
+- **Results:**
+  - Error went from 1.57 px on the robot's fit to **0.47 px** on 26 views.
+  - fx 1119.7 px, centre (687.8, 378.2); the lens covers about 69° horizontally and 42° vertically, a much narrower lens than the right Arducam's ~112°.
+  - Pinhole models fit worse (0.70 px).
+  - The image corners are thinly covered (6–8 corner points in the top-left and bottom-right cells), so the edge distortion is extrapolated. The right camera reached 0.09 px, so this fit is **provisional**.
+  - **Next:** a short top-up capture in the corners, then the lidar extrinsic.
+
 ## 2026-11-21 — ROS data-plane stall: root cause found and fixed (logind RemoveIPC)
 - **Problem:** every ROS topic went silent about 1–3 minutes after a restart, while the Livox kept sending (~2,300 packets/s on eno1).
 - **Potential solution:** find what breaks FastDDS. Its shared-memory transport carries all on-robot traffic.

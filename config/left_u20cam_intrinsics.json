@@ -1,0 +1,46 @@
+{
+  "fisheye": {
+    "K": [
+      [
+        1119.7112792707085,
+        0.0,
+        687.8211744166308
+      ],
+      [
+        0.0,
+        1118.861794813975,
+        378.24968243025637
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "D": [
+      -0.1296205086039948,
+      0.039102560190841226,
+      -0.15664438812142634,
+      0.1750481440136499
+    ],
+    "rms_px": 0.4666192097151059,
+    "width": 1280,
+    "height": 800,
+    "n_views": 26,
+    "board": "9x6 squares, 23.3 mm",
+    "date": "2026-11-21",
+    "rotated": "180 deg (upright, as x3_server publishes)",
+    "dropped_views": [
+      "view_001.png",
+      "view_002.png",
+      "view_003.png",
+      "view_005.png",
+      "view_009.png",
+      "view_010.png",
+      "view_012.png",
+      "view_018.png",
+      "view_020.png"
+    ],
+    "note": "refit on laptop 2026-11-21 without views whose per-view RMS > 1 px (partial-board / bad corner detections); robot fit with all 35 views was 1.568 px"
+  }
+}
