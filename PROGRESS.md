@@ -13,6 +13,7 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
   - `nav2_client.py`: Nav2 output goes to `~/.ros/log/x3_nav2_launch.log` (overwritten each launch). Nav2 runs in its own process group; stop sends SIGINT to the group, then SIGKILL after 10 s, so no node outlives a stop and doubles up with the next launch.
   - `server_x3.py`: the GUI's stop_nav2 runs in an executor, so a slow shutdown no longer blocks the event loop (and the /cmd_vel heartbeat).
 - **Results:** 4 launch/stop cycles through the server's WebSocket on the robot: AMCL and bt_navigator active within 2 s each time, 11 Nav2 processes, 0 left after each stop. Not yet seen over many sessions; the failure was intermittent.
+  - Open: on launch the server seeded the initial pose at (0.25, 0.29), near the doorway runs' start, while the robot had been left at the goal; check the GUI arrow after every Nav2 launch and set the pose by hand if it is wrong.
 - Also: the last doorway bag (`doorway_20261122_022333`) crashed with "database is locked" because the bag was read while still recording; reindexed, it ends before the successful run. Never open a bag that is still being written.
 
 ## 2026-11-22 — Doorway, part 2: no deadband with closed-loop wheels; map doorway widened
