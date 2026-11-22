@@ -26,8 +26,8 @@ Prompt: Enter = capture next station (s01, s02, ...), 'q' = quit. Any other
 text typed at the prompt is used as that station's name.
 
 Cameras: front/rear = OAK by device id (depthai v3, full-FOV output),
-right = Arducam OV9281 UVC (mono8, no intrinsics yet: needs fisheye
-calibration before it can be solved).
+right = Arducam OV9281 UVC, left = Innomaker OV9281 UVC (mono8, rotated
+180 deg); both need fisheye intrinsics before they can be solved.
 """
 
 import sys as _sys
@@ -60,7 +60,12 @@ LIVOX_CMD = (
 CAMERAS = {
     "front": {"kind": "oak", "id": "14442C10B1F4D2D600", "frame_id": "oak_rgb_camera_optical_frame"},
     "rear": {"kind": "oak", "id": "14442C103181D7D600", "frame_id": "oak_rear_rgb_camera_optical_frame"},
-    "right": {"kind": "uvc", "id": None, "frame_id": "arducam_optical_frame"},
+    "right": {"kind": "uvc", "id": "/dev/v4l/by-id/*Arducam*-video-index0",
+              "frame_id": "arducam_optical_frame", "rotate": 0},
+    # Innomaker U20CAM-9281M, added 2026-11-21; mounted upside down, so frames are
+    # rotated 180 deg to match the image x3_server publishes.
+    "left": {"kind": "uvc", "id": "/dev/v4l/by-id/*SN0001-video-index0",
+             "frame_id": "left_cam_optical_frame", "rotate": 180},
 }
 CLOUD_TOPIC = "/livox/lidar"
 FIRST_CLOUD_TIMEOUT = 3.0
@@ -184,9 +189,10 @@ class UvcCamera(CameraBase):
         self.D = []
 
     def _run(self):
-        paths = sorted(glob.glob("/dev/v4l/by-id/*Arducam*-video-index0"))
+        pat = CAMERAS[self.name]["id"]
+        paths = sorted(glob.glob(pat))
         if not paths:
-            raise RuntimeError("no /dev/v4l/by-id/*Arducam*-video-index0")
+            raise RuntimeError(f"no {pat}")
         self.device_id = paths[0]
         cap = cv2.VideoCapture(self.device_id, cv2.CAP_V4L2)
         try:
@@ -199,8 +205,6 @@ class UvcCamera(CameraBase):
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             except Exception:
                 pass
-            print("[right] WARNING: no intrinsics exist for the Arducam yet; CameraInfo has "
-                  "zero K. It needs fisheye (equidistant) intrinsics before solving.")
             # Reading continuously in this thread keeps the V4L buffer drained,
             # so latest() is always the newest frame.
             while not self._stop.is_set():
@@ -210,9 +214,11 @@ class UvcCamera(CameraBase):
                     continue
                 if frame.ndim == 3:
                     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                if CAMERAS[self.name].get("rotate") == 180:
+                    frame = cv2.rotate(frame, cv2.ROTATE_180)
                 if self._frame is None:
                     self.h, self.w = frame.shape[:2]
-                    print(f"[right] opened {self.device_id} at {self.w}x{self.h}")
+                    print(f"[{self.name}] opened {self.device_id} at {self.w}x{self.h}")
                     self.ok = True
                     self.ready.set()
                 self._set_frame(frame)
