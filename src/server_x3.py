@@ -5759,10 +5759,16 @@ async def main():
             pass  # platform without signal-handler support
 
     # Disable websockets deflate compression to avoid blocking main thread zlib operations (Idea 117)
-    async with websockets.serve(handle_client, "0.0.0.0", WS_PORT, compression=None):
+    # close_timeout: on exit the server waits for every browser to answer the close
+    # handshake. During a poweroff Tailscale is already down, so nobody answers; keep
+    # that wait short (the exit watchdog is the backstop).
+    async with websockets.serve(handle_client, "0.0.0.0", WS_PORT, compression=None,
+                                close_timeout=2):
         logger.info(f"Server started on ws://0.0.0.0:{WS_PORT}")
         await asyncio.gather(broadcast_loop(), oak_camera_feed_loop(), motion_loop(), oled_loop(), map_push_loop(),
                              lidar_scan_loop(), tof_loop(), log_push_loop())
+        logger.info("Loops stopped; closing client connections")
+    logger.info("WebSocket server closed")
 
 if __name__ == "__main__":
     try:
