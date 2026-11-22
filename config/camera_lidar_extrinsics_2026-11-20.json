@@ -117,5 +117,20 @@
    "note": "EEPROM distortion, K refit on iPad checkerboard 2026-11-20 (views with RMS>1px dropped)"
   },
   "note": "EEPROM fx at 1920x1440 (CAM_A requestOutput) reads ~5% high (front 1150.5 -> 1092.2, rear 1142.4 -> 1089.1). EEPROM distortion kept; K refit on an iPad checkerboard. oakd_driver uses its own 480x640 geometry (fx 681.8), verified separately on 2026-11-18 -- this does not apply to it."
+ },
+ "left": {
+  "frame": "left_cam_optical_frame",
+  "device": "Innomaker U20CAM-9281M SN0001 (image rotated 180 deg)",
+  "T_lidar_camera": [
+   0.005417258368496949,
+   0.0566041574414203,
+   -0.07687188379333423,
+   -0.6424637773627224,
+   0.005199267659313488,
+   0.0028266325162998604,
+   0.7662932027241576
+  ],
+  "status": "good (provisional lens)",
+  "note": "Solved 2026-11-21 from 8 apartment stations. koide3 NID returned NaN at the first evaluation for every seed, so this is a Python edge-alignment solve (lidar depth-discontinuity points vs Canny distance transform, coarse grid + Nelder-Mead) from a mirrored-right seed [0, 0.04, -0.07, 10 deg up]. Moved 0.7 deg / 1.9 cm from the seed; mean edge distance 8.7 -> 7.1 px. Overlays: table legs, wagon, door frame line up. Intrinsics: config/left_u20cam_intrinsics.json (0.43 px). Redo after the planned 2.1 mm lens swap."
  }
 }

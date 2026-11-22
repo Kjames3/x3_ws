@@ -5,6 +5,20 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-21 — Left camera ↔ Livox extrinsic
+- **Problem:** the left camera needs its pose relative to the Livox before lidar points can be matched to people it sees.
+- **Potential solution:** the same 8-station capture as the other cameras, solved with koide3.
+- **Work done:**
+  - Captured 8 stations (`calib_capture.py --cameras left`, rotated 180°) and rectified them with the new intrinsics; door edges come out straight.
+  - The first seed had the image upside down. With the corrected seed, koide3 still returned NaN on the first step every time, even though the data looked clean.
+  - Instead, solved with a Python edge alignment: lidar depth-edge points against camera edges, starting from a seed mirrored from the right camera.
+- **Results:**
+  - T_lidar_camera = (0.005, 0.057, -0.077) m, about 0.7° from the seed.
+  - Mean edge distance 8.7 → 7.1 px; the table legs, wagon and door frame overlay correctly.
+  - Saved as `left` in `config/camera_lidar_extrinsics_2026-11-20.json`.
+  - **Not in the URDF yet**: a 2.1 mm M12 lens (~110° HFOV, matching the right camera) is planned, after which the lens calibration and extrinsic will be redone.
+  - The koide3 NaN cause is still open.
+
 ## 2026-11-21 — Left camera lens (fisheye) calibration
 - **Problem:** the left camera needs a lens model before it can be calibrated against the lidar.
 - **Work done:**
