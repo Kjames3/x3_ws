@@ -69,6 +69,18 @@ PEAK_RING_M = 0.6        # isolation: unassigned upper points within this of a p
 PEAK_CORE_M = 0.3        # compact: a piece's upper points lie within this of its peak ...
 PEAK_CORE_FRAC = 0.85    # ... at least this share of them (a cut-up wall spreads to ASSIGN_R_M)
 
+# Camera-seeded candidates (opt-in, extract(..., seeds=...)); see seeded_candidates.
+SEED_LAT_M = 0.35        # half-width of the corridor round the camera's line of sight
+SEED_BEFORE_M = 1.2      # search this much nearer than the camera's range ...
+SEED_AFTER_M = 0.5       # ... and this much beyond it
+SEED_Z_M = (0.1, 2.0)    # body points between these heights
+SEED_UPPER_Z_M = 0.85    # upper body: above desk / table tops (~0.72-0.77 m in the lab)
+SEED_GAP_M = 0.2         # upper points this far apart along the ray are different objects
+SEED_MIN_UPPER = 8       # upper points the body needs
+SEED_DEPTH_M = 0.3       # keep points within this of the body's range along the ray
+SEED_CORE_M = 0.3        # ... and within this (XY) of its upper-body centre
+SEED_DEDUP_M = 0.5       # no seeded candidate within this of an ordinary one
+
 # Order of the float32 fields of /livox/person_candidates (PointCloud2, frame odom).
 FIELDS = ('x', 'y', 'x_lo', 'x_hi', 'y_lo', 'y_hi', 'z_lo', 'z_hi', 'n')
 
@@ -247,9 +259,98 @@ def _peak_split(xs, ys, zs, origin, max_span, min_span, min_points, min_height):
     return out if len(out) >= 2 else []
 
 
+def seeded_candidates(x, y, z, seeds, origin=(0.0, 0.0), existing=None, min_points=MIN_POINTS,
+                      min_height=MIN_HEIGHT_M, min_span=MIN_SPAN_M, max_span=MAX_SPAN_M,
+                      return_points=False):
+    """Candidates cut out of the cloud where a camera says a person is (opt-in).
+
+    A person seated at a desk is one connected component with the desk, chair and wall,
+    which extract rejects as too wide; the camera still sees them.  For each seed (the
+    camera person's XY, same frame as x/y) the body is looked for along the camera's LINE
+    OF SIGHT from origin, not at the seed itself: on the 2026-11-20 lab desk runs the
+    camera's range lands 0.5-1 m beyond a seated user, on the desk partition behind them
+    (its bearing is fine).  Within SEED_LAT_M of the ray, from SEED_BEFORE_M nearer to
+    SEED_AFTER_M beyond the seed, the points above desk height (SEED_UPPER_Z_M) are cut
+    into objects along the ray (gaps > SEED_GAP_M), and the NEAREST one with
+    SEED_MIN_UPPER points is the body: nothing opaque stands between the camera and a
+    person it sees at shoulder height, and the wall or shelf behind is further.  The
+    candidate is every point (SEED_Z_M heights) within SEED_CORE_M of that object's
+    centre and SEED_DEPTH_M of its range along the ray, so the desk and wall behind are
+    dropped, and it must pass extract's size tests.
+
+    existing: candidates already found (extract rows); a seeded one within SEED_DEDUP_M
+    of any of them is dropped.  Returns an (N, 9) float32 array (FIELDS).  With
+    return_points, also (point indices of each row, per-seed status): status is
+    'ok' (row k), 'dup' (suppressed by existing row k) or 'none' (no body), as
+    (status, k) tuples, k = -1 when there is none."""
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    z = np.asarray(z, dtype=np.float64)
+    seeds = np.asarray(seeds, dtype=np.float64).reshape(-1, 2)
+    ex = np.zeros((0, 2)) if existing is None or not len(existing) else np.asarray(existing)[:, :2]
+    rows, idx, status = [], [], []
+    zok = np.flatnonzero((z > SEED_Z_M[0]) & (z < SEED_Z_M[1]) & np.isfinite(x) & np.isfinite(y))
+    for sx, sy in seeds:
+        rc = float(np.hypot(sx - origin[0], sy - origin[1]))
+        if rc < 1e-6 or not len(zok):
+            status.append(('none', -1))
+            continue
+        ux, uy = (sx - origin[0]) / rc, (sy - origin[1]) / rc
+        dx, dy = x[zok] - origin[0], y[zok] - origin[1]
+        s = dx * ux + dy * uy
+        lat = -dx * uy + dy * ux
+        cor = (np.abs(lat) < SEED_LAT_M) & (s > rc - SEED_BEFORE_M) & (s < rc + SEED_AFTER_M)
+        up = cor & (z[zok] > SEED_UPPER_Z_M)
+        su = np.sort(s[up])
+        body = None
+        if len(su) >= SEED_MIN_UPPER:
+            cuts = np.flatnonzero(np.diff(su) > SEED_GAP_M) + 1
+            for a, b in zip(np.r_[0, cuts], np.r_[cuts, len(su)]):
+                if b - a >= SEED_MIN_UPPER:
+                    body = (su[a], su[b - 1])
+                    break
+        if body is None:
+            status.append(('none', -1))
+            continue
+        bm = up & (s >= body[0]) & (s <= body[1])
+        bi = zok[bm]
+        cx, cy = np.median(x[bi]), np.median(y[bi])
+        rb = float(np.median(s[bm]))
+        keep = ((np.hypot(x[zok] - cx, y[zok] - cy) < SEED_CORE_M)
+                & (np.abs(s - rb) < SEED_DEPTH_M))
+        pi = zok[keep]
+        if len(pi) < min_points:
+            status.append(('none', -1))
+            continue
+        px, py, pz = x[pi], y[pi], z[pi]
+        span = max(px.max() - px.min(), py.max() - py.min())
+        if span < min_span or span > max_span or pz.max() - pz.min() < min_height:
+            status.append(('none', -1))
+            continue
+        row = (np.median(px), np.median(py), px.min(), px.max(), py.min(), py.max(),
+               pz.min(), pz.max(), len(pi))
+        if len(ex):
+            d = np.hypot(ex[:, 0] - row[0], ex[:, 1] - row[1])
+            if d.min() < SEED_DEDUP_M:
+                status.append(('dup', int(d.argmin())))
+                continue
+        # two seeds on one body (a person seen twice) give one candidate
+        if rows:
+            d = np.hypot(np.array([r[0] for r in rows]) - row[0], np.array([r[1] for r in rows]) - row[1])
+            if d.min() < SEED_DEDUP_M:
+                status.append(('ok', int(d.argmin())))
+                continue
+        status.append(('ok', len(rows)))
+        rows.append(row)
+        idx.append(pi)
+    out = (np.asarray(rows, dtype=np.float32).reshape(-1, len(FIELDS)))
+    return (out, idx, status) if return_points else out
+
+
 def extract(x, y, z, origin=(0.0, 0.0), cell=CELL_M, z_min=Z_MIN_M, z_max=Z_MAX_M,
             range_max=RANGE_MAX_M, min_points=MIN_POINTS, min_height=MIN_HEIGHT_M,
-            max_span=MAX_SPAN_M, min_span=MIN_SPAN_M, peaks=False, extra_split_z=None):
+            max_span=MAX_SPAN_M, min_span=MIN_SPAN_M, peaks=False, extra_split_z=None,
+            seeds=None):
     """x, y, z: point coordinates (any planar frame, z = height above the floor).
     origin: the robot's XY in that frame, for the range limit.
     peaks: also split components of several people by head/shoulder peaks
@@ -262,7 +363,16 @@ def extract(x, y, z, origin=(0.0, 0.0), cell=CELL_M, z_min=Z_MIN_M, z_max=Z_MAX_
     extra pieces people: lab non-person clusters scored person 1.02 -> 1.55 per frame
     (labelled-negative FP 0-1% -> 9-16%), while seated people scored person barely
     moved.  Left OFF; it needs seated training examples cut by this pass first.
+    seeds: (K, 2) XY of camera people (same frame as x/y); appends seeded_candidates
+    rows not within SEED_DEDUP_M of an ordinary candidate.  Off by default (offline
+    evaluation 2026-11-21: artifacts/lidar-person-classifier-2026-11-01/camera_seed_1121.txt).
     Returns an (N, 9) float32 array, columns FIELDS: median XY, XY/Z bounds, count."""
+    if seeds is not None and len(seeds):
+        base = extract(x, y, z, origin, cell, z_min, z_max, range_max, min_points, min_height,
+                       max_span, min_span, peaks, extra_split_z)
+        more = seeded_candidates(x, y, z, seeds, origin, existing=base, min_points=min_points,
+                                 min_height=min_height, min_span=min_span, max_span=max_span)
+        return np.vstack([base, more]) if len(more) else base
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
     z = np.asarray(z, dtype=np.float64)
