@@ -349,3 +349,35 @@ def test_close_chair_back_beside_a_bench_is_not_a_candidate():
     pts = _cut_by_fov(np.vstack([chair, _bench(rng, 0.0)[:, [1, 0, 2]] + [1.1, 0, 0], stray]))
     c = pc.extract(pts[:, 0], pts[:, 1], pts[:, 2])
     assert not [r for r in c if math.hypot(r[0], r[1]) < 1.0]
+
+
+def test_merge_seeded_adds_fresh_rows_and_dedups():
+    from lidar_person_tracker import merge_seeded
+    names = ['x', 'y', 'x_lo', 'x_hi', 'y_lo', 'y_hi', 'z_lo', 'z_hi', 'n']
+    base = [dict(zip(names, [1.0, 0.0, .8, 1.2, -.2, .2, 0, 1.7, 80]))]
+    rows = [[1.2, 0.1, 1, 1.4, 0, .3, .3, 1.9, 150],     # within 0.5 m of base: dropped
+            [3.0, 2.0, 2.8, 3.2, 1.8, 2.2, .4, 1.9, 150]]  # new
+    out = merge_seeded(base, rows, names, 10.0, 10.05)
+    assert len(out) == 2 and out[1]['x'] == 3.0 and out[0] is base[0]
+    assert merge_seeded(base, rows, names, 10.0, 10.3) == base     # stale
+    assert merge_seeded(base, None, names, None, 10.0) == base
+    assert len(base) == 1                                          # input untouched
+
+
+def test_seeded_track_ends_when_the_camera_leaves():
+    """A seeded-only body (the couch) gives no track once the seeds stop."""
+    from lidar_person_tracker import merge_seeded, LIDAR_GAP_S
+    names = ['x', 'y', 'x_lo', 'x_hi', 'y_lo', 'y_hi', 'z_lo', 'z_hi', 'n']
+    row = [2.0, 1.0, 1.8, 2.2, .8, 1.2, .4, 1.9, 150]
+    tr = LidarPersonTracker()
+    t = 100.0
+    for k in range(10):
+        cam = [{'id': 7, 'odom_x': 2.0, 'odom_y': 1.0, 'odom_vx': 0.0, 'odom_vy': 0.0,
+                'state_stamp_s': t, 'obs_age_s': 0.0, 'measured': True}]
+        r = tr.update(t, merge_seeded([], [row], names, t, t), cam)
+        t += 0.1
+    assert r and r[0]['confirmed']
+    for k in range(int(LIDAR_GAP_S / 0.1) + 2):
+        r = tr.update(t, merge_seeded([], None, names, None, t), [])
+        t += 0.1
+    assert r == []

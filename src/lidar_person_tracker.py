@@ -243,6 +243,31 @@ class LidarPersonTracker:
         }
 
 
+SEEDED_DEDUP_M = 0.5     # a seeded row this close to an ordinary candidate is dropped
+SEEDED_MAX_AGE_S = 0.15  # seeded rows from a frame older than this are not used
+
+
+def merge_seeded(candidates, seeded_rows, names, seeded_stamp, now):
+    """Ordinary candidates plus camera-seeded rows (/livox/person_candidates_seeded).
+
+    Seeded rows only exist where C3 sees a person, and births still need a camera
+    detection on the cluster, so this adds no person the camera did not report.  The
+    classifier is deliberately not consulted: on the 2026-11-22 couch runs it could not
+    tell a seated person from the empty couch (seeded_zcap_check.py).  Rows from a frame
+    more than SEEDED_MAX_AGE_S away, or within SEEDED_DEDUP_M of an ordinary candidate,
+    are skipped.  Returns a new list."""
+    out = list(candidates)
+    if seeded_rows is None or seeded_stamp is None or abs(now - seeded_stamp) > SEEDED_MAX_AGE_S:
+        return out
+    for r in seeded_rows:
+        c = dict(zip(names, map(float, r)))
+        if not _finite(c.get('x'), c.get('y')):
+            continue
+        if all(math.hypot(c['x'] - o['x'], c['y'] - o['y']) >= SEEDED_DEDUP_M for o in candidates):
+            out.append(c)
+    return out
+
+
 def to_local(results, pose):
     """Add robot-frame fields (fwd, left, vx, vy; velocity is the person's own, in base
     axes) given pose {'x','y','theta'} in odom.  Returns new dicts."""

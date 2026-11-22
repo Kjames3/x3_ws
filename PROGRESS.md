@@ -5,6 +5,23 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-22 — Seeded candidates into the tracker (item 1), behind X3_SEEDED_TRACKER
+
+**Problem:** seated people on the couch got a lidar track in only ~3% of camera frames. The classifier cannot confirm seeded couch clusters (see the height-cap entry), so they can't be gated on shape.
+
+**Potential solution:** feed the camera-seeded rows into `LidarPersonTracker` as extra candidates. The tracker already requires a camera detection on a cluster to start a track, so nothing new can appear without the camera.
+
+**Work done:**
+- `merge_seeded()` in `src/lidar_person_tracker.py`: adds seeded rows from the frame (≤ 0.15 s old), dropping any within 0.5 m of an ordinary candidate. The input list is not modified.
+- `server_x3.py`: `X3_SEEDED_TRACKER=1` turns it on (off by default). The startup log says `[seeded] ... FEED` or `shadow`.
+- Tests: merge/dedup/stale, and a seeded-only track ends once the camera stops (the lidar gap of 0.4 s). 23 pass.
+- `src/tools/perception/seeded_tracker_replay.py` replays a recorded `lidar_persons.ndjson` both ways.
+
+**Results (replay):**
+- Couch seated, 838 camera frames: confirmed track on the person **2.9% → 98.7%**, 3 track ids (births) in 90 s.
+- Empty couch: 0 tracks either way.
+- Not yet tested live. Camera false positives would now turn into tracks, so check the lab empty runs before turning on the CBF feed.
+
 ## 2026-11-22 — Height cap on seeded couch clusters (item 2): does not help
 
 **Problem:** the classifier accepted only 0.6% of seeded couch clusters, and those clusters reach ~1.97 m. Is the couch back or wall behind the person the reason?

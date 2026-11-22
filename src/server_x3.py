@@ -106,7 +106,7 @@ from frontier_explorer import FrontierExplorer
 from velocity_estimator import VelocityEstimator
 from velocity_timing import PoseHistory, ros_stamp_ns
 from person_memory import PersonMemory
-from lidar_person_tracker import (LidarPersonTracker, to_local as lidar_persons_local,
+from lidar_person_tracker import (LidarPersonTracker, merge_seeded, to_local as lidar_persons_local,
                                   cbf_estimates as lidar_cbf_estimates)
 from people_buffer import people_cloud, cap_velocity as people_cap_velocity
 from pathlib import Path
@@ -423,6 +423,9 @@ _person_memory_logged = (0, 0)
 # on/off A/B runs in one session without restarting Nav2 (/tmp: gone after a reboot).
 LIDAR_PERSONS_ENABLED = os.environ.get('X3_LIDAR_PERSONS', '1') != '0'
 LIDAR_PERSONS_CBF = LIDAR_PERSONS_ENABLED and os.environ.get('X3_LIDAR_PERSONS_CBF', '0') == '1'
+# X3_SEEDED_TRACKER=1 feeds the camera-seeded candidates (/livox/person_candidates_seeded)
+# into the tracker as well (off by default; 2026-11-22 couch runs, PROGRESS.md).
+SEEDED_TRACKER = LIDAR_PERSONS_ENABLED and os.environ.get('X3_SEEDED_TRACKER', '0') == '1'
 LIDAR_PERSONS_CBF_FILE = '/tmp/x3_lidar_persons_cbf'
 _lidar_cbf = {'t': -1.0, 'on': LIDAR_PERSONS_CBF, 'fed': 0, 'ticks': 0, 'logged': 0.0}
 
@@ -1062,7 +1065,9 @@ class ROS2Bridge:
             # Camera-seeded candidates (shadow mode, 2026-11-22): C3 people go to
             # livox_scan_node as seeds; it cuts a body out along each camera ray and
             # publishes the extra rows on their own topic. They are recorded and
-            # counted here, NOT given to the tracker yet.
+            # counted here, and given to the tracker only with X3_SEEDED_TRACKER=1.
+            logger.info("[seeded] camera-seeded candidates %s the lidar person tracker",
+                        "FEED" if SEEDED_TRACKER else "do not feed (shadow)")
             self._seed_pub = self._node.create_publisher(PointCloud2, '/c3/person_seeds', 5)
             self._node.create_subscription(PointCloud2, '/livox/person_candidates_seeded',
                                            self._seeded_candidates_cb, qos_profile_sensor_data)
@@ -1367,6 +1372,9 @@ class ROS2Bridge:
             now = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
             camera, c3_stats = c3_live.get_tracks() if c3_live is not None else ([], None)
             packet_age = c3_stats.get('packet_age_s', 0.0) if c3_stats else float('inf')
+            if SEEDED_TRACKER and self._seeded.get('rows') is not None:
+                st = self._seeded
+                cands = merge_seeded(cands, st['rows'], st['fields'], st['stamp'], now)
             with _lidar_persons_lock:
                 results = _lidar_persons.update(now, cands, camera, packet_age)
                 stats = dict(_lidar_persons.stats)
