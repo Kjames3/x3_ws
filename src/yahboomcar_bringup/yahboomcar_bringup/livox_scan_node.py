@@ -116,6 +116,18 @@ class LivoxScanNode(Node):
         self.declare_parameter('beams', 720)
         self.declare_parameter('merge_frames', 2)
         self.declare_parameter('deskew', True)
+        # Low-band obstacles (/livox/obstacles): everything the 0.26-0.36 m
+        # slice misses below it (table/truss base bars, chair star bases) and up
+        # to the robot's height.  Heights are above base_footprint (the floor).
+        self.declare_parameter('obstacle_z_min', 0.05)
+        self.declare_parameter('obstacle_z_max', 0.45)
+        self.declare_parameter('obstacle_range_max', 4.0)
+        self.declare_parameter('obstacle_cell', 0.05)
+        # Chassis box (Design_v2 extent +-0.32 x +-0.293) plus margin: no self-returns.
+        self.declare_parameter('obstacle_memory_s', 20.0)
+        self.declare_parameter('min_elevation_deg', 7.0)   # spec 7.5; 7 forgets later
+        self.declare_parameter('self_x', 0.37)
+        self.declare_parameter('self_y', 0.34)
 
         gp = lambda n: self.get_parameter(n).value
         self.src_frame, self.scan_frame = gp('source_frame'), gp('scan_frame')
@@ -125,6 +137,13 @@ class LivoxScanNode(Node):
         self.merge = max(1, int(gp('merge_frames')))
         self.deskew = bool(gp('deskew'))
         self.inc = 2 * math.pi / self.beams
+        self.ob_zmin, self.ob_zmax = float(gp('obstacle_z_min')), float(gp('obstacle_z_max'))
+        self.ob_rmax, self.ob_cell = float(gp('obstacle_range_max')), float(gp('obstacle_cell'))
+        self.self_x, self.self_y = float(gp('self_x')), float(gp('self_y'))
+        self.ob_memory = {}
+        self.ob_memory_s = float(gp('obstacle_memory_s'))
+        self.min_elev_tan = math.tan(math.radians(float(gp('min_elevation_deg'))))
+        self.ob_pub = self.create_publisher(PointCloud2, '/livox/obstacles', qos_profile_sensor_data)
 
         self.tf_buf = Buffer()
         self.tf_listener = TransformListener(self.tf_buf, self)
@@ -283,6 +302,10 @@ class LivoxScanNode(Node):
         except Exception as e:
             # A visualization failure must never stop the safety scan publisher.
             self.get_logger().warn(f'surroundings display skipped: {e}', throttle_duration_sec=5.0)
+        try:
+            self.publish_low_obstacles(pts, data)
+        except Exception as e:
+            self.get_logger().warn(f'low obstacles skipped: {e}', throttle_duration_sec=5.0)
         x = pts['x'].astype(np.float64)
         y = pts['y'].astype(np.float64)
         z = pts['z'].astype(np.float64)
@@ -329,6 +352,69 @@ class LivoxScanNode(Node):
         except Exception as e:
             # Runs after /scan is out, and must never stop the next one.
             self.get_logger().warn(f'person candidates skipped: {e}', throttle_duration_sec=5.0)
+
+    def publish_low_obstacles(self, pts, data):
+        """Points obstacle_z_min..obstacle_z_max above the floor -> /livox/obstacles (odom).
+
+        The lidar's lowest ray is -7.5 deg, so an object h tall drops out of view
+        inside ~(sensor_z - h) / tan(7.5 deg) (a 5 cm bar at ~2 m), and /scan
+        raytracing would then clear it from the costmap.  So voxels are REMEMBERED
+        in odom and only forgotten when their spot is back in view and empty,
+        when they are older than obstacle_memory_s, or farther than range_max + 1.
+        Use as a mark-only costmap source with observation_persistence 0.
+        """
+        if self.cloud_R is None or self.ob_pub.get_subscription_count() == 0:
+            return
+        sec, nsec = struct.unpack_from('<iI', data, 4)
+        t_end = int(pts['t'].max())
+        end = sec + nsec * 1e-9 + t_end * 1e-9
+        pose = self.pose_at(np.array([end]))
+        if pose is None:
+            return
+        fx, fy, fa = (float(v[0]) for v in pose)
+        xyz = np.column_stack((pts['x'], pts['y'], pts['z'])).astype(np.float64)
+        ok = np.isfinite(xyz).all(axis=1) & ((xyz[:, 0] != 0) | (xyz[:, 1] != 0))
+        xyz, toff = xyz[ok], pts['t'][ok]
+        if self.deskew and abs(self.gyro_z) > 1e-3:
+            a = -self.gyro_z * (t_end - toff.astype(np.int64)) * 1e-9
+            c, s = np.cos(a), np.sin(a)
+            xyz[:, 0], xyz[:, 1] = c * xyz[:, 0] - s * xyz[:, 1], s * xyz[:, 0] + c * xyz[:, 1]
+        xyz = xyz @ self.cloud_R.T + self.cloud_t
+        r = np.hypot(xyz[:, 0], xyz[:, 1])
+        keep = ((xyz[:, 2] > self.ob_zmin) & (xyz[:, 2] < self.ob_zmax) & (r < self.ob_rmax)
+                & ~((np.abs(xyz[:, 0]) < self.self_x) & (np.abs(xyz[:, 1]) < self.self_y)))
+        cur = _first_per_cell(xyz[keep], self.ob_cell)
+        c, sn = math.cos(fa), math.sin(fa)
+        wx = c * cur[:, 0] - sn * cur[:, 1] + fx
+        wy = sn * cur[:, 0] + c * cur[:, 1] + fy
+        cell = self.ob_cell
+        seen = set()
+        for x, y, z in zip(wx, wy, cur[:, 2]):
+            k = (int(math.floor(x / cell)), int(math.floor(y / cell)), int(math.floor(z / cell)))
+            seen.add(k)
+            self.ob_memory[k] = (x, y, z, end)
+        # Forget what is visible-and-empty, stale, or far away.
+        sz = float(self.cloud_t[2])
+        for k, (x, y, z, t) in list(self.ob_memory.items()):
+            if k in seen:
+                continue
+            dx, dy = x - fx, y - fy
+            d = math.hypot(dx, dy)
+            visible = (d >= (sz - z) / self.min_elev_tan + 0.15) and d < self.ob_rmax
+            if visible or end - t > self.ob_memory_s or d > self.ob_rmax + 1.0:
+                del self.ob_memory[k]
+        out = np.array([v[:3] for v in self.ob_memory.values()], dtype='<f4').reshape(-1, 3)
+        msg = PointCloud2()
+        stamp_ns = round(end * 1_000_000_000)
+        msg.header.stamp.sec, msg.header.stamp.nanosec = divmod(stamp_ns, 1_000_000_000)
+        msg.header.frame_id = 'odom'
+        msg.height, msg.width = 1, len(out)
+        msg.fields = [PointField(name=name, offset=i * 4, datatype=PointField.FLOAT32, count=1)
+                      for i, name in enumerate(('x', 'y', 'z'))]
+        msg.is_bigendian, msg.is_dense = False, True
+        msg.point_step, msg.row_step = 12, len(out) * 12
+        msg.data = out.tobytes()
+        self.ob_pub.publish(msg)
 
     def on_seeds(self, msg):
         rows = np.frombuffer(bytes(msg.data), dtype='<f4').reshape(-1, 4) if msg.width else np.zeros((0, 4))
