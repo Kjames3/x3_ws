@@ -1,0 +1,297 @@
+GO / NO-GO RULE (written before the first run)
+  Content helps  <=>  on the pooled seated runs, AP(c_all) - AP(b_big) is >= +0.02, its run-bootstrap 95% CI
+                      lies above 0, and it exceeds the across-generator-seed range of AP(c_all);
+                      and nothing regresses: overall AP(c_all) - AP(a) >= -0.005 and false alarms per frame on
+                      the person-free runs rise by < 25%.
+  Fidelity gap   <=>  among synthetic seated people the extractor still finds, the median of n, width, depth,
+                      height, z_hi, top_fill and z_std differs from the real seated (label 2) candidates by
+                      more than 10% in at least two of the three range bands 0-2, 2-4, 4-6 m.
+  GO for the Isaac spike  <=>  content helps AND a fidelity gap remains (a better renderer could add something).
+  NO-GO  <=>  content does not help (the bottleneck is the extractor, the C3 labels or the data volume, not
+              the synthetic content), or content helps and there is no fidelity gap (step 0 already captured it).
+
+real: 104548 usable rows, 36 runs; synthetic: 3 generator seeds
+  seed 0: std_A 2290 rows (y1 2202, y0 0), std_B 2260 rows (y1 2174, y0 0), close 1289 rows (y1 1268, y0 0), seated_desk 2120 rows (y1 474, y0 1584), seated_chair 1350 rows (y1 601, y0 727), seated_couch 362 rows (y1 245, y0 106), stand_furn 1437 rows (y1 540, y0 851)
+  seed 1: std_A 2294 rows (y1 2206, y0 0), std_B 2283 rows (y1 2184, y0 0), close 1300 rows (y1 1275, y0 0), seated_desk 2195 rows (y1 515, y0 1631), seated_chair 1324 rows (y1 604, y0 698), seated_couch 365 rows (y1 219, y0 130), stand_furn 1520 rows (y1 580, y0 874)
+  seed 2: std_A 2299 rows (y1 2199, y0 0), std_B 2181 rows (y1 2109, y0 0), close 1319 rows (y1 1301, y0 0), seated_desk 2255 rows (y1 480, y0 1704), seated_chair 1380 rows (y1 649, y0 713), seated_couch 339 rows (y1 229, y0 98), stand_furn 1415 rows (y1 532, y0 837)
+
+Purity of candidates holding a seated person (>= 10 of their points; seed 0), bins 0-.2 .2-.4 .4-.6 .6-.8 .8-1:
+  neutral own chair [30, 9, 10, 15, 1305]   raw [358, 233, 169, 285, 324]   -> y=1 needs >= 0.6
+  done a seed 0  AP all 0.9043
+  done a seed 1  AP all 0.8918
+  done a seed 2  AP all 0.8947
+  done b seed 0  AP all 0.8790
+  done b seed 1  AP all 0.8499
+  done b seed 2  AP all 0.8766
+  done b_big seed 0  AP all 0.8533
+  done b_big seed 1  AP all 0.8441
+  done b_big seed 2  AP all 0.8520
+  done c_all seed 0  AP all 0.8323
+  done c_all seed 1  AP all 0.8246
+  done c_all seed 2  AP all 0.8362
+  done c_new seed 0  AP all 0.8524
+  done c_new seed 1  AP all 0.8653
+  done c_new seed 2  AP all 0.8730
+  done c_pos seed 0  AP all 0.8771
+  done c_pos seed 1  AP all 0.8722
+  done c_pos seed 2  AP all 0.8663
+  done c_neg seed 0  AP all 0.8396
+  done c_neg seed 1  AP all 0.8245
+  done c_neg seed 2  AP all 0.8290
+  done c_loose seed 0  AP all 0.8178
+  done c_loose seed 1  AP all 0.8172
+  done c_loose seed 2  AP all 0.8310
+  done b_w25 seed 0  AP all 0.8857
+  done b_w25 seed 1  AP all 0.8876
+  done b_w25 seed 2  AP all 0.8670
+  done c_w25 seed 0  AP all 0.8493
+  done c_w25 seed 1  AP all 0.8514
+  done c_w25 seed 2  AP all 0.8583
+  done d seed 0  AP all 0.4954
+  done d seed 1  AP all 0.5054
+  done d seed 2  AP all 0.4862
+
+== Leave-one-run-out AP on the REAL runs only (mean over generator seeds; [min..max] across seeds) ==
+arms: a real only | b real+existing synthetic (std A) | b_big same, std A+B (about half of c_all's rows: NOT volume-matched; the script legend said 'matches c', wrong) |
+      c_all real+std A+new | c_new real+new only | c_pos new positives only | c_neg new negatives only |
+      c_loose c_all with purity >= 0.35 | b_w25 / c_w25 b / c_all with every synthetic row weighted 0.25 | d synthetic only
+  a        synthetic rows used: 0
+  b        synthetic rows used: 2202, 2206, 2199
+  b_big    synthetic rows used: 4376, 4390, 4308
+  c_all    synthetic rows used: 8598, 8732, 8742
+  c_new    synthetic rows used: 6396, 6526, 6543
+  c_pos    synthetic rows used: 5330, 5399, 5390
+  c_neg    synthetic rows used: 5470, 5539, 5551
+  c_loose  synthetic rows used: 8728, 8868, 8867
+  b_w25    synthetic rows used: 2202, 2206, 2199
+  c_w25    synthetic rows used: 8598, 8732, 8742
+  d        synthetic rows used: 10772, 10916, 10851
+
+  arm     |                   all|                  0-2m|                  2-4m|                  4-6m|                 <1.5m|      seated runs (16)|        lab desk 11-20|    apt desk2 (7 runs)|  apt chair/couch/desk|  furniture-r1 + goal-|   crowd (busy, group)|close runs (apt-close,
+  a       |  0.897 [0.892..0.904]|  0.985 [0.984..0.986]|  0.851 [0.842..0.869]|  0.758 [0.757..0.761]|  0.986 [0.984..0.989]|  0.979 [0.978..0.979]|  0.925 [0.906..0.941]|  0.954 [0.950..0.960]|  0.947 [0.942..0.955]|  0.979 [0.975..0.982]|  0.721 [0.712..0.733]|  0.993 [0.992..0.994]
+  b       |  0.869 [0.850..0.879]|  0.984 [0.982..0.986]|  0.837 [0.818..0.856]|  0.716 [0.696..0.755]|  0.985 [0.983..0.987]|  0.978 [0.975..0.980]|  0.937 [0.931..0.945]|  0.955 [0.952..0.961]|  0.968 [0.967..0.969]|  0.970 [0.962..0.974]|  0.665 [0.628..0.688]|  0.990 [0.989..0.991]
+  b_big   |  0.850 [0.844..0.853]|  0.984 [0.983..0.986]|  0.807 [0.796..0.825]|  0.726 [0.700..0.753]|  0.985 [0.984..0.987]|  0.978 [0.975..0.981]|  0.936 [0.926..0.944]|  0.953 [0.952..0.954]|  0.966 [0.963..0.969]|  0.972 [0.965..0.980]|  0.637 [0.623..0.648]|  0.991 [0.991..0.992]
+  c_all   |  0.831 [0.825..0.836]|  0.957 [0.951..0.965]|  0.821 [0.809..0.834]|  0.747 [0.742..0.755]|  0.940 [0.934..0.948]|  0.970 [0.968..0.972]|  0.883 [0.854..0.918]|  0.952 [0.949..0.954]|  0.972 [0.962..0.978]|  0.874 [0.854..0.896]|  0.623 [0.607..0.639]|  0.991 [0.991..0.991]
+  c_new   |  0.864 [0.852..0.873]|  0.956 [0.950..0.961]|  0.823 [0.801..0.842]|  0.768 [0.732..0.790]|  0.934 [0.925..0.939]|  0.970 [0.969..0.972]|  0.909 [0.898..0.920]|  0.951 [0.947..0.955]|  0.971 [0.953..0.984]|  0.896 [0.887..0.909]|  0.679 [0.641..0.711]|  0.994 [0.994..0.995]
+  c_pos   |  0.872 [0.866..0.877]|  0.979 [0.977..0.981]|  0.806 [0.787..0.816]|  0.734 [0.695..0.754]|  0.980 [0.977..0.983]|  0.975 [0.973..0.979]|  0.923 [0.905..0.934]|  0.956 [0.953..0.961]|  0.982 [0.980..0.983]|  0.970 [0.963..0.974]|  0.657 [0.646..0.662]|  0.986 [0.984..0.988]
+  c_neg   |  0.831 [0.824..0.840]|  0.966 [0.964..0.967]|  0.829 [0.820..0.845]|  0.736 [0.733..0.739]|  0.955 [0.952..0.958]|  0.969 [0.966..0.973]|  0.926 [0.906..0.939]|  0.950 [0.947..0.953]|  0.962 [0.958..0.968]|  0.886 [0.869..0.919]|  0.620 [0.608..0.635]|  0.993 [0.992..0.993]
+  c_loose |  0.822 [0.817..0.831]|  0.963 [0.960..0.967]|  0.817 [0.806..0.832]|  0.738 [0.725..0.752]|  0.947 [0.945..0.951]|  0.971 [0.969..0.974]|  0.898 [0.876..0.935]|  0.952 [0.951..0.955]|  0.969 [0.958..0.978]|  0.893 [0.887..0.902]|  0.605 [0.593..0.622]|  0.991 [0.991..0.992]
+  b_w25   |  0.880 [0.867..0.888]|  0.985 [0.985..0.985]|  0.844 [0.830..0.853]|  0.732 [0.685..0.761]|  0.986 [0.986..0.987]|  0.979 [0.977..0.981]|  0.925 [0.904..0.947]|  0.955 [0.950..0.961]|  0.970 [0.965..0.975]|  0.967 [0.966..0.970]|  0.682 [0.645..0.702]|  0.991 [0.991..0.991]
+  c_w25   |  0.853 [0.849..0.858]|  0.970 [0.967..0.973]|  0.828 [0.819..0.839]|  0.754 [0.746..0.768]|  0.957 [0.952..0.961]|  0.972 [0.968..0.975]|  0.902 [0.883..0.916]|  0.957 [0.953..0.959]|  0.966 [0.961..0.969]|  0.908 [0.899..0.917]|  0.653 [0.639..0.676]|  0.992 [0.991..0.992]
+  d       |  0.496 [0.486..0.505]|  0.607 [0.602..0.615]|  0.575 [0.572..0.578]|  0.675 [0.672..0.679]|  0.760 [0.747..0.780]|  0.616 [0.598..0.633]|  0.322 [0.270..0.402]|  0.841 [0.806..0.867]|  0.655 [0.620..0.682]|  0.387 [0.359..0.439]|  0.569 [0.557..0.579]|  0.773 [0.708..0.839]
+
+  AP of the seed-averaged probabilities (what the bootstrap uses):
+  arm     |                   all|                  0-2m|                  2-4m|                  4-6m|                 <1.5m|      seated runs (16)|        lab desk 11-20|    apt desk2 (7 runs)|  apt chair/couch/desk|  furniture-r1 + goal-|   crowd (busy, group)|close runs (apt-close,
+  a       |                 0.900|                 0.986|                 0.857|                 0.761|                 0.987|                 0.980|                 0.931|                 0.954|                 0.949|                 0.979|                 0.727|                 0.993
+  b       |                 0.876|                 0.985|                 0.845|                 0.729|                 0.986|                 0.979|                 0.941|                 0.955|                 0.969|                 0.973|                 0.679|                 0.990
+  b_big   |                 0.856|                 0.986|                 0.812|                 0.736|                 0.987|                 0.979|                 0.939|                 0.953|                 0.966|                 0.975|                 0.645|                 0.992
+  c_all   |                 0.840|                 0.959|                 0.829|                 0.756|                 0.941|                 0.971|                 0.890|                 0.951|                 0.976|                 0.880|                 0.636|                 0.991
+  c_new   |                 0.872|                 0.959|                 0.835|                 0.776|                 0.937|                 0.972|                 0.914|                 0.952|                 0.977|                 0.903|                 0.695|                 0.995
+  c_pos   |                 0.880|                 0.981|                 0.818|                 0.748|                 0.982|                 0.977|                 0.924|                 0.958|                 0.983|                 0.972|                 0.672|                 0.986
+  c_neg   |                 0.837|                 0.969|                 0.836|                 0.743|                 0.959|                 0.972|                 0.932|                 0.951|                 0.965|                 0.899|                 0.626|                 0.993
+  c_loose |                 0.830|                 0.964|                 0.825|                 0.742|                 0.948|                 0.973|                 0.903|                 0.953|                 0.973|                 0.900|                 0.613|                 0.992
+  b_w25   |                 0.888|                 0.986|                 0.852|                 0.740|                 0.988|                 0.980|                 0.928|                 0.956|                 0.972|                 0.970|                 0.697|                 0.991
+  c_w25   |                 0.858|                 0.971|                 0.834|                 0.756|                 0.959|                 0.973|                 0.908|                 0.958|                 0.968|                 0.911|                 0.660|                 0.991
+  d       |                 0.512|                 0.614|                 0.598|                 0.688|                 0.766|                 0.630|                 0.321|                 0.853|                 0.672|                 0.417|                 0.577|                 0.836
+
+== Seated recall @0.5 (label-2 candidates scored >= 0.5) and precision @0.5, seed-averaged probabilities ==
+  arm     |      seated runs (16)|        lab desk 11-20|    apt desk2 (7 runs)|  apt chair/couch/desk|  furniture-r1 + goal-|   crowd (busy, group)|close runs (apt-close,
+  a       |      0.98/0.93       |      0.97/0.77       |      0.98/0.93       |      0.96/0.65       |      0.98/0.96       |       nan/0.54       |       nan/0.91       
+  b       |      0.98/0.92       |      0.97/0.80       |      0.98/0.92       |      0.96/0.60       |      0.98/0.93       |       nan/0.49       |       nan/0.91       
+  b_big   |      0.98/0.90       |      0.97/0.80       |      0.98/0.90       |      0.95/0.60       |      0.98/0.92       |       nan/0.49       |       nan/0.91       
+  c_all   |      0.90/0.91       |      0.99/0.68       |      0.98/0.92       |      0.96/0.71       |      0.25/0.82       |       nan/0.46       |       nan/0.91       
+  c_new   |      0.91/0.92       |      0.99/0.68       |      0.98/0.92       |      0.96/0.71       |      0.35/0.86       |       nan/0.48       |       nan/0.91       
+  c_pos   |      0.99/0.90       |      0.99/0.69       |      0.99/0.91       |      0.97/0.65       |      0.98/0.87       |       nan/0.43       |       nan/0.91       
+  c_neg   |      0.89/0.93       |      0.97/0.74       |      0.97/0.93       |      0.92/0.73       |      0.31/0.90       |       nan/0.50       |       nan/0.91       
+  c_loose |      0.93/0.91       |      0.99/0.68       |      0.98/0.92       |      0.96/0.71       |      0.48/0.85       |       nan/0.46       |       nan/0.91       
+  b_w25   |      0.98/0.93       |      0.97/0.75       |      0.98/0.92       |      0.95/0.66       |      0.98/0.94       |       nan/0.50       |       nan/0.91       
+  c_w25   |      0.93/0.92       |      0.98/0.70       |      0.98/0.92       |      0.96/0.69       |      0.53/0.86       |       nan/0.47       |       nan/0.91       
+  d       |      0.57/0.66       |      0.96/0.17       |      0.63/0.90       |      0.41/0.51       |      0.00/0.29       |       nan/0.37       |       nan/0.35       
+  (recall/precision; precision counts every person-labelled candidate of the subset)
+
+== False alarms per frame at 0.5 on the labelled negatives of person-free / low-person runs ==
+  arm     |                  empty-r1|                goal-on-r1|  apt-desk2-empty-drive-r1|                   walk-r1
+  a       |                    0.0008|                    0.0103|                    0.1437|                    0.0008
+  b       |                    0.0008|                    0.0086|                    0.1588|                    0.0008
+  b_big   |                    0.0076|                    0.0362|                    0.1636|                    0.0017
+  c_all   |                    0.0000|                    0.0293|                    0.1604|                    0.0008
+  c_new   |                    0.0000|                    0.0086|                    0.1524|                    0.0008
+  c_pos   |                    0.0068|                    0.0414|                    0.1740|                    0.0017
+  c_neg   |                    0.0008|                    0.0052|                    0.1429|                    0.0008
+  c_loose |                    0.0000|                    0.0379|                    0.1628|                    0.0008
+  b_w25   |                    0.0008|                    0.0086|                    0.1516|                    0.0008
+  c_w25   |                    0.0008|                    0.0103|                    0.1556|                    0.0000
+  d       |                    0.5990|                    1.8379|                    0.2338|                    0.7910
+
+== Per-run AP on the seated runs (seed-averaged probabilities) ==
+  run                                 a    b_big    c_all    c_neg    c_pos   n pos / neg   seated recall a -> c_all
+  apt-desk2-drive-r1              0.998    0.998    0.998    0.998    0.998    1918/317     0.96 -> 0.96
+  apt-desk2-drive-r2              0.929    0.921    0.966    0.973    0.915     851/411     0.95 -> 0.97
+  apt-desk2-empty-park15-r1       0.987    0.990    0.997    0.996    0.996     605/1310    0.99 -> 0.99
+  apt-desk2-park07-r1             1.000    1.000    1.000    1.000    1.000    1907/784     1.00 -> 1.00
+  apt-desk2-park15-r1             1.000    1.000    1.000    1.000    0.999    1494/1174    0.99 -> 0.99
+  apt-desk2-park30-r1             0.945    0.910    0.851    0.930    0.730     541/962     0.98 -> 0.98
+  apt-seated-chair-r1             1.000    0.978    0.992    0.979    0.994      83/870     0.96 -> 0.92
+  apt-seated-chair-r2             0.996    0.992    0.993    0.992    0.993      67/860     1.00 -> 1.00
+  apt-seated-couch-r1             0.919    0.963    0.953    0.917    0.984      75/1751    1.00 -> 1.00
+  apt-seated-couch-r2               nan      nan      nan      nan      nan      85/0       1.00 -> 0.97
+  apt-seated-desk-r1                nan      nan      nan      nan      nan      80/0       0.89 -> 0.92
+  furniture-r1                    0.989    0.989    0.847    0.848    0.989    1147/3523    1.00 -> 0.07
+  goal-on-r4                      0.992    0.981    0.979    0.981    0.989     684/1310    0.93 -> 0.59
+  seated-r1                       0.696    0.583    0.606    0.606    0.620      47/461     0.94 -> 0.98
+  seated-r2                       1.000    1.000    1.000    1.000    1.000      65/129     1.00 -> 1.00
+  seated-r3                       1.000    1.000    1.000    1.000    1.000      20/175        --
+  apt-desk2-empty-drive-r1          nan      nan      nan      nan      nan       0/597        --
+
+== Paired bootstrap over runs (2000 resamples): mean AP difference [95% CI] ==
+  seated runs (16)         b_big   - a     : -0.0005 [-0.0066, +0.0066]
+  seated runs (16)         c_all   - a     : -0.0103 [-0.0524, +0.0139]
+  seated runs (16)         c_all   - b_big : -0.0097 [-0.0515, +0.0129]
+  seated runs (16)         c_all   - b     : -0.0099 [-0.0510, +0.0113]
+  seated runs (16)         c_neg   - b_big : -0.0084 [-0.0488, +0.0140]
+  seated runs (16)         c_pos   - b_big : -0.0036 [-0.0225, +0.0048]
+  seated runs (16)         c_new   - a     : -0.0088 [-0.0466, +0.0137]
+  crowd (busy, group)      b_big   - a     : -0.0509 [-0.1284, +0.1011]
+  crowd (busy, group)      c_all   - a     : -0.0591 [-0.1391, +0.1287]
+  crowd (busy, group)      c_all   - b_big : -0.0082 [-0.0529, +0.0275]
+  crowd (busy, group)      c_all   - b     : -0.0301 [-0.0637, +0.0697]
+  crowd (busy, group)      c_neg   - b_big : -0.0172 [-0.0268, -0.0092]
+  crowd (busy, group)      c_pos   - b_big : +0.0205 [-0.0370, +0.0352]
+  crowd (busy, group)      c_new   - a     : -0.0228 [-0.0778, +0.0585]
+  close runs               b_big   - a     : -0.0015 [-0.0051, +0.0005]
+  close runs               c_all   - a     : -0.0019 [-0.0068, +0.0011]
+  close runs               c_all   - b_big : -0.0004 [-0.0017, +0.0008]
+  close runs               c_all   - b     : +0.0006 [-0.0007, +0.0027]
+  close runs               c_neg   - b_big : +0.0014 [-0.0009, +0.0045]
+  close runs               c_pos   - b_big : -0.0045 [-0.0125, +0.0005]
+  close runs               c_new   - a     : +0.0013 [-0.0004, +0.0059]
+  all real runs            b_big   - a     : -0.0364 [-0.0892, +0.0079]
+  all real runs            c_all   - a     : -0.0522 [-0.1016, -0.0039]
+  all real runs            c_all   - b_big : -0.0158 [-0.0430, +0.0081]
+  all real runs            c_all   - b     : -0.0323 [-0.0613, -0.0022]
+  all real runs            c_neg   - b_big : -0.0173 [-0.0465, +0.0047]
+  all real runs            c_pos   - b_big : +0.0182 [-0.0071, +0.0412]
+  all real runs            c_new   - a     : -0.0260 [-0.0475, -0.0039]
+
+  exploratory, single subsets (few runs each; not part of the decision rule):
+  lab desk 11-20               c_all   - a     : -0.0366 [-0.0901, +0.0000]
+  lab desk 11-20               c_all   - b_big : -0.0275 [-0.0684, +0.0228]
+  lab desk 11-20               c_pos   - a     : -0.0151 [-0.0761, +0.0116]
+  lab desk 11-20               c_neg   - a     : -0.0117 [-0.0906, +0.0178]
+  apt desk2 (7 runs)           c_all   - a     : -0.0026 [-0.0282, +0.0169]
+  apt desk2 (7 runs)           c_all   - b_big : -0.0001 [-0.0278, +0.0261]
+  apt desk2 (7 runs)           c_pos   - a     : -0.0018 [-0.0381, +0.0244]
+  apt desk2 (7 runs)           c_neg   - a     : -0.0024 [-0.0293, +0.0187]
+  apt chair/couch/desk         c_all   - a     : +0.0208 [-0.0041, +0.0523]
+  apt chair/couch/desk         c_all   - b_big : +0.0080 [-0.0005, +0.0161]
+  apt chair/couch/desk         c_pos   - a     : +0.0277 [-0.0060, +0.0644]
+  apt chair/couch/desk         c_neg   - a     : +0.0091 [-0.0155, +0.0339]
+  furniture-r1 + goal-on-r4    c_all   - a     : -0.0878 [-0.1419, -0.0133]
+  furniture-r1 + goal-on-r4    c_all   - b_big : -0.0826 [-0.1417, -0.0023]
+  furniture-r1 + goal-on-r4    c_pos   - a     : -0.0045 [-0.0070, +0.0002]
+  furniture-r1 + goal-on-r4    c_neg   - a     : -0.0775 [-0.1412, -0.0113]
+
+== Why furniture-r1 collapses: real seated candidates vs synthetic ones (median) ==
+                                                   range         n    height      z_hi     width     depth  top_fill      rows
+  real furniture-r1 label 2                         0.69   1139.00      0.71      1.00      0.41      0.24      0.94       587
+  real label 2, all runs, < 1.5 m                   1.09    656.00      1.02      1.20      0.40      0.25      0.80      3128
+  synthetic seated person (y=1), < 1.5 m            0.92    724.00      1.08      1.27      0.45      0.33      0.97       556
+  synthetic furniture only (y=0, empty), < 1.5 m      0.82    928.50      0.94      1.19      0.39      0.29      1.01       554
+  synthetic furniture beside a person (y=0), < 1.5 m      0.86   1084.00      1.06      1.28      0.41      0.25      1.06       279
+
+== Domain gap: can a classifier tell synthetic person candidates from real ones?  (3-fold CV AUC; 0.5 = cannot, 1 = trivially) ==
+  standing/walking: real y=1 vs synthetic std_A    0-2 m: AUC 0.976  (602 vs 602 rows)
+  standing/walking: real y=1 vs synthetic std_A    2-4 m: AUC 0.981  (902 vs 902 rows)
+  seated: real label 2 vs synthetic seated y=1     0-2 m: AUC 0.997  (724 vs 724 rows)
+  seated: real label 2 vs synthetic seated y=1     2-4 m: AUC 0.986  (475 vs 475 rows)
+  floor: real positives, half the runs vs the other half 0-4 m: AUC 0.418  (rows from unseen runs; 12000 rows)
+
+== Extractor on synthetic people (the same candidate extractor as the live system) ==
+found = a candidate within 0.35 m of the person; cov = some candidate box covers them (found + merged);
+bare = the same people with the furniture removed (seated people then float: it isolates what furniture costs)
+hidden (< 10 points) people are not scored: close 0%, seated_desk 9%, seated_chair 4%, seated_couch 27%, stand_furn 26%, std_A 3%
+
+  kind                  |                 0.4-1.5 m|                   1.5-3 m|                   3-4.5 m|                 4.5-6.5 m|                       all
+  close                 | 79% f  82% cov (bare  79%) n 4879| 38% f  54% cov (bare  38%) n  127|                        --|                        --| 78% f  81% cov (bare  78%) n 5006
+  seated_desk           | 70% f  70% cov (bare  92%) n  933| 51% f  54% cov (bare  79%) n 1137| 28% f  31% cov (bare  69%) n  629| 31% f  34% cov (bare  70%) n  406| 50% f  51% cov (bare  80%) n 3105
+  seated_chair          | 79% f  80% cov (bare  89%) n  960| 70% f  71% cov (bare  76%) n 1013| 49% f  50% cov (bare  64%) n  544| 45% f  46% cov (bare  61%) n  329| 66% f  67% cov (bare  76%) n 2846
+  seated_couch          | 35% f  70% cov (bare  78%) n  369| 36% f  42% cov (bare  59%) n  801| 17% f  20% cov (bare  43%) n  327|  6% f  11% cov (bare  47%) n  170| 29% f  41% cov (bare  59%) n 1667
+  stand_furn            | 73% f  75% cov (bare  97%) n  739| 71% f  73% cov (bare  96%) n  792| 80% f  83% cov (bare  97%) n  461| 81% f  84% cov (bare  95%) n  338| 75% f  77% cov (bare  96%) n 2330
+  std_A                 | 79% f  82% cov (bare  79%) n 1133| 69% f  74% cov (bare  69%) n 3655| 72% f  79% cov (bare  72%) n 2148| 74% f  81% cov (bare  74%) n 1572| 72% f  78% cov (bare  72%) n 9428
+
+  seated people only:
+  back view                 | 67% f  76% cov (bare  92%) n 1582| 57% f  60% cov (bare  78%) n 1396| 35% f  36% cov (bare  64%) n  627| 33% f  34% cov (bare  60%) n  341| 56% f  60% cov (bare  80%) n 3946
+  side view                 | 81% f  82% cov (bare  86%) n  322| 62% f  63% cov (bare  80%) n  441| 46% f  48% cov (bare  66%) n  229| 35% f  38% cov (bare  65%) n  162| 60% f  62% cov (bare  77%) n 1154
+  front view                | 60% f  63% cov (bare  74%) n  358| 45% f  49% cov (bare  63%) n 1114| 27% f  30% cov (bare  58%) n  644| 29% f  33% cov (bare  63%) n  402| 40% f  44% cov (bare  63%) n 2518
+  furniture abuts real clutter| 64% f  71% cov (bare  88%) n 1271| 51% f  54% cov (bare  70%) n 1760| 30% f  32% cov (bare  57%) n  793| 30% f  32% cov (bare  55%) n  465| 49% f  53% cov (bare  71%) n 4289
+  furniture on free floor   | 73% f  79% cov (bare  89%) n  991| 57% f  60% cov (bare  77%) n 1191| 38% f  40% cov (bare  67%) n  707| 34% f  36% cov (bare  69%) n  440| 55% f  58% cov (bare  77%) n 3329
+
+  standing/walking beside furniture (stand_furn):
+  bookcase (beside)         | 66% f  72% cov (bare  97%) n  724
+  bookcase (occluding)      | 58% f  70% cov (bare 100%) n   33
+  partition (beside)        | 59% f  59% cov (bare  97%) n  387
+  partition (occluding)     |                        --
+  desk (beside)             | 87% f  88% cov (bare  97%) n  456
+  desk (occluding)          | 70% f  71% cov (bare  95%) n  236
+  couch (beside)            | 93% f  93% cov (bare  96%) n  321
+  couch (occluding)         | 88% f  92% cov (bare  97%) n  171
+
+== Fidelity: synthetic seated people the extractor found vs real label-2 candidates ==
+    range       count |               n |           width |           depth |          height |            z_hi |        top_fill |           z_std
+  (median real label-2 / synthetic found seated, % difference)
+  0-2 m  6383/2233  |463.00/560.00 +21% |  0.42/0.45    +8% |  0.27/0.35   +32% |  1.06/1.09    +4% |  1.22/1.28    +5% |  0.61/0.87   +43% |  0.25/0.24    -5%
+  2-4 m  1958/1298  |138.00/120.00 -13% |  0.42/0.45    +8% |  0.32/0.38   +18% |  1.05/1.10    +5% |  1.24/1.28    +4% |  0.56/0.58    +4% |  0.26/0.27    +2%
+  4-6 m    30/373   | 40.50/48.00  +19% |  0.33/0.46   +38% |  0.42/0.53   +25% |  0.98/1.06    +8% |  1.26/1.24    -2% |  0.57/0.56    -2% |  0.29/0.27    -6%
+
+== Decision ==
+  seated pooled AP: c_all 0.971  b_big 0.979  delta -0.008, bootstrap -0.010 [-0.051, +0.013], c_all seed range 0.004
+  overall AP c_all - a -0.0604; FP/frame ratios c_all/a on person-free runs [2.83, 1.12]
+  content helps: False;  nothing regresses: False;  fidelity gap in 3 of 3 bands: True
+  Isaac Sim spike: NO-GO
+
+== Reading the numbers (written by hand after the run; the sections above are script output) ==
+Reproduced baseline: arm a, generator/fit seed 0, is AP 0.904 overall (same as results_base_1121.txt). The HGB fit seed alone moves it
+0.892-0.904, so differences under ~0.01 overall are noise.
+
+1. Synthetic data does not help the classifier on the real runs, existing or new.
+   all-runs AP: a 0.897 | b (existing, 2.2k rows) 0.869 | b_big (4.4k rows) 0.850 | c_all (new + existing, 8.7k rows) 0.831.
+   Down-weighting every synthetic row to 0.25 (b_w25 0.880, c_w25 0.853) and dropping the existing rows (c_new 0.864, c_pos 0.872)
+   shrink the loss but never turn it positive. The synthetic-only model (d) scores 0.50 on real runs and 0.2-1.8 false alarms
+   per frame on the person-free runs.
+2. Seated runs: no headroom to win. The real seated candidates the extractor already produces are classified at AP 0.98 and
+   recall 0.98 with real data only; adding synthetic content moves the pooled seated AP by -0.010 [-0.052, +0.014] (c_all - a)
+   and by -0.010 [-0.052, +0.013] (c_all - b_big): no effect inside the run-bootstrap noise. Exploratory subsets (not in the decision rule):
+   apt chair/couch/desk +0.021 [-0.004, +0.052], lab desk 11-20 -0.037 [-0.090, 0.000], furniture-r1 + goal-on-r4 -0.088 [-0.142, -0.013].
+3. Where it hurts: furniture-r1. Its real seated person is one 1139-point blob at 0.69 m, 0.71 m tall (z_hi 1.0 m). The synthetic
+   empty chairs/desks it is shown as negatives at < 1.5 m (median height 0.94, n 929) look more like it than the synthetic seated
+   people do (height 1.08, z_hi 1.27). Seated recall on that run goes 1.00 -> 0.07 with c_all; c_pos (positives only) leaves it
+   at 0.98 and c_neg (negatives only) reproduces the loss (0.31 over the pair of runs), so the furniture negatives cause it.
+4. Crowd runs lose with every synthetic arm (a 0.727; b 0.679, b_big 0.645, c_all 0.636; CI wide, the three runs are one lab), close
+   runs are flat (+-0.002).
+5. Fidelity gap, measured two ways. (i) A classifier separates synthetic from real person candidates at AUC 0.976-0.997
+   (0-4 m, standing and seated); two random halves of the real runs give 0.42. No single feature does it (best single-feature AUC
+   0.70, band_2 / z_hi); it is the joint shape. Real standing people carry ~40% more points than the ellipsoid bodies
+   (area 11.7 vs 9.1), wider legs (0.32 vs 0.26 m). (ii) Median-feature gaps > 10% in all three range bands (depth +18..+32%,
+   top_fill +43% at 0-2 m, n +21%, width +38% at 4-6 m, only 30 real label-2 candidates there).
+6. Extractor side (what step 0 was asked to show about merging). With furniture, the extractor yields a candidate that is within
+   0.35 m of the synthetic seated person for 50% (desk), 66% (chair), 29% (couch) of scored people; the same people with the furniture
+   removed give 80%, 76%, 59%: furniture costs 10-30 points, mostly as MISSED (no candidate covers them), not as a merge
+   with an off-centre centre (found vs "cov" differ by 1-3 points, except couch at 0.4-1.5 m where 35% found / 70% cov).
+   Standing people beside furniture: 75% found vs 96% bare; a partition beside them costs the most (59% vs 97%), a couch the least.
+   Back view at a desk, the usual real case: 56% found overall, 67% at 0.4-1.5 m (bare: 92% at 0.4-1.5 m, 80% overall).
+   Compared with what the repo measured on real runs (memory notes, different metric and runs, so indicative only): apt-desk2
+   back-view seated people 0.95-1.0 recall, apartment chair/couch ~5-10% of frames, lab desk 47 of 65 seated candidates.
+   The synthetic desk rate is well below the real desk rate and the synthetic chair/couch rate is well above the real one: the
+   extractor numbers from this generator are not calibrated to either, so they cannot yet steer extractor changes.
+7. Limits: z_hi/top_fill etc. use the 0.31 m sensor height for every background frame, the v2 chassis (11-20 lab runs) is
+   0.302 m; no robot ego-motion; furniture is solid boxes; synthetic negatives exist only for furniture (the real runs supply all
+   other negatives), so synthetic positives are never matched by synthetic negatives of the same domain except near furniture;
+   one generator design, 3 seeds; subset results rest on few runs.
+
+8. Added after the run (snippet, not in train(); same folds and seeds). Contaminated-negative check for item 3: a y=0 row needs
+   only 30% furniture points, so it may hold unlabelled real people from the background.  With the share raised to 0.8 (y=0 rows 3.3k
+   -> 3.0k): c_neg furniture-r1 seated recall 0.00 -> 0.05, c_all 0.07 -> 0.49, furniture-r1 + goal-on-r4 recall c_neg 0.31 -> 0.33,
+   c_all 0.25 -> 0.61. The collapse is not mainly contamination (c_neg is unchanged); why the furniture negatives take the sitter's
+   blob is not separated (the height/z_hi match in item 3 is the leading guess).
+9. Volume control: b_big has 4.4k synthetic rows, c_all 8.7k, c_new 6.4k, so c_all - b_big mixes content and volume. The seated delta
+   is inside the noise against a, b and b_big alike, so the rule's outcome does not depend on it.
