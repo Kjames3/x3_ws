@@ -998,6 +998,73 @@ function updateScan3dUI() {
     }
 }
 
+// Nav tab health: a SLAM line that says when SLAM is running but getting no
+// scans or producing no map, and an AMCL localization badge from the pose
+// covariance (good / converging / lost).
+const SLAM_FIRST_MAP_GRACE_S = 15;
+function updateNavHealth(h, slamActive, navPhase) {
+    const line = document.getElementById('slam-health');
+    const badge = document.getElementById('nav-loc-badge');
+    if (!h) {
+        if (line) line.style.display = 'none';
+        if (badge) badge.style.display = 'none';
+        return;
+    }
+    if (line) {
+        if (!slamActive) {
+            state.nav._slamStartT = null;
+            line.style.display = 'none';
+        } else {
+            const now = performance.now() / 1000;
+            if (state.nav._slamStartT == null) state.nav._slamStartT = now;
+            const running = now - state.nav._slamStartT;
+            const hz = h.scan_hz;
+            const age = h.map_age_s;
+            let cls = 'ok', text;
+            if (hz != null && hz < 1) {
+                cls = 'bad';
+                text = `SLAM running but receiving no lidar scans (/scan ${hz.toFixed(1)} Hz). It is not mapping.`;
+            } else if (age == null || age > running + 1) {
+                // No /map since this SLAM session started.
+                cls = running > SLAM_FIRST_MAP_GRACE_S ? 'bad' : 'warn';
+                text = running > SLAM_FIRST_MAP_GRACE_S
+                    ? `SLAM running ${running.toFixed(0)} s but has published no map yet.`
+                    : 'SLAM starting, waiting for the first map…';
+            } else if (age > 10) {
+                cls = 'warn';
+                text = `SLAM map not updated for ${age.toFixed(0)} s (scans ${hz != null ? hz.toFixed(1) : '?'} Hz). Map updates pause while the robot is still.`;
+            } else {
+                text = `SLAM mapping: scans ${hz != null ? hz.toFixed(1) : '?'} Hz, map updated ${age.toFixed(0)} s ago.`;
+            }
+            line.className = 'nav-hint slam-health ' + cls;
+            line.textContent = text;
+            line.style.display = '';
+        }
+    }
+    if (badge) {
+        // nav_phase is IDLE even when Nav2 was never launched; use the launch flag.
+        const navUp = !!state.nav.nav2Running && navPhase !== 'UNAVAILABLE';
+        if (slamActive || !navUp) { badge.style.display = 'none'; return; }
+        const a = h.amcl;
+        let cls, text, tip;
+        if (!a) {
+            cls = 'lost'; text = 'NOT LOCALIZED';
+            tip = 'No AMCL pose yet. Use Set Initial Pose or Auto Pose.';
+        } else {
+            const deg = a.syaw * 180 / Math.PI;
+            if (a.sxy < 0.15 && deg < 8) cls = 'good', text = 'LOCALIZED';
+            else if (a.sxy < 0.5 && deg < 25) cls = 'converging', text = 'CONVERGING';
+            else cls = 'lost', text = 'LOST';
+            tip = `AMCL ±${a.sxy.toFixed(2)} m, ±${deg.toFixed(0)}°; pose ${a.age_s.toFixed(0)} s old ` +
+                  '(AMCL only republishes after the robot moves).';
+        }
+        badge.className = 'nav-loc-badge ' + cls;
+        badge.textContent = text;
+        badge.title = tip;
+        badge.style.display = '';
+    }
+}
+
 function updateSlamStatus(active) {
     const wasActive = state.slamActive;
     state.slamActive = active;
@@ -2160,6 +2227,8 @@ function handleFoxgloveTextMessage(obj) {
 // =================================================================
 function handleMessage(data) {
     if (data.type === "hello") {
+        // Older servers don't send tilt_available; keep the 3D controls for them.
+        document.body.classList.toggle('no-tilt', data.tilt_available === false);
         const mode = data.mode; // "sim" | "ros2" | "direct"
         const label = elements.modeBadgeLabel;
         const badge = elements.modeBadge;
@@ -2450,6 +2519,7 @@ function handleMessage(data) {
 
         if (data.nav) updateNavStatus(data.nav);
         if (data.slam_active !== undefined) updateSlamStatus(data.slam_active);
+        if ('nav_health' in data) updateNavHealth(data.nav_health, !!data.slam_active, data.nav_phase);
         if (data.frontier) updateFrontierStatus(data.frontier);
 
         state.needsUIUpdate = true; // refresh nav-metrics / fps text

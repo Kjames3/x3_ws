@@ -1689,3 +1689,20 @@ body { accent-color: var(--accent); }
     border: 1px solid var(--bg-tertiary); background: var(--bg-tertiary); color: var(--text-primary);
 }
 .shutdown-dialog-actions .shutdown-confirm { background: var(--bad-dark); border-color: var(--bad); color: var(--text-on-status); }
+
+/* Tilt-mount-only controls (3D Scan / 3D Mapping): hidden when the server reports no tilt servo */
+body.no-tilt .tilt-only { display: none !important; }
+
+/* Navigation: localization badge + SLAM health line */
+.nav-loc-badge {
+    margin-left: auto; margin-right: 0.5rem;
+    padding: 0.15rem 0.5rem; border-radius: 3px;
+    font-size: 0.7rem; font-weight: 700; letter-spacing: 0.04em;
+    background: var(--bg-tertiary); color: var(--text-secondary);
+}
+.nav-loc-badge.good { background: var(--ok-bg, var(--bg-tertiary)); color: var(--ok); }
+.nav-loc-badge.converging { background: var(--warn-bg, var(--bg-tertiary)); color: var(--warn); }
+.nav-loc-badge.lost { background: var(--bad-bg, var(--bg-tertiary)); color: var(--bad); }
+.slam-health.ok { color: var(--ok); }
+.slam-health.warn { color: var(--warn); }
+.slam-health.bad { color: var(--bad); }
