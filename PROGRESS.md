@@ -5,6 +5,14 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-22 — Nav map robot marker: map frame and correct rotation
+- **Problem:** in the GUI, dragging a heading for Set Initial Pose seemed to do nothing, and the blue robot arrow moved wrongly compared with the real robot.
+- **Cause:** the arrow was the raw `/odom` pose drawn as if it were the map frame, so an initial pose or any AMCL correction never moved it; and it was rotated by `theta + π`, which mirrors turns (left turn showed as a right turn). The lidar dots on the map used the same hand-tuned signs. The pose and heading WERE being sent to AMCL.
+- **Work done** (bbce983, x3_server restarted):
+  - Server: `robot_pose_map` = odom pose through AMCL's map<-odom (slam_toolbox `/pose` while SLAM runs, stored separately so the ToF exempt zones never use a SLAM frame); `laser_yaw` = laser_link's yaw from /tf_static (-3.057 rad, the ~175° mount); `/amcl_pose` subscribed unconditionally (it only was when ToF exempt zones were configured).
+  - GUI: arrow and scan dots rotated with standard CCW math through the same world->screen transform as everything else; with no map pose the arrow is drawn hollow (odom, not map-corrected). Follow uses the map pose.
+- **Results:** server fields verified (`laser_yaw` -3.057 matches `tf2_echo`, map pose None until AMCL publishes). **Not yet tested live:** set an initial pose with a drag and drive/rotate the robot to confirm the arrow and dots track it.
+
 ## 2026-11-22 — Camera-seeded lidar candidates live in shadow mode
 - **Problem:** a seated person merges with the desk or chair in the lidar clusters, so no candidate exists and the tracker loses them. The camera still sees them.
 - **Potential solution:** `seeded_candidates()` (merged from `t3/camera-seeded-lidar-person`; offline: home seated 7–30% → ~99%) cuts a body out of the cloud along each camera person's line of sight.
