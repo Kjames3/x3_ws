@@ -121,7 +121,8 @@ class OakFloorObstacles:
         fx, fy, cx, cy = intr
         h_img, w_img = depth.shape[:2]
         pts = oakd_cloud.depth_to_points(depth, fx, fy, cx, cy, stride=4,
-                                         z_min=0.30, z_max=self.range_max, max_points=12000)
+                                         z_min=0.30, z_max=self.range_max - 0.25, max_points=12000)
+        # Mark only where visible() below can also clear (it trusts up to range_max - 0.1).
         R_oc, t_oc = self._tf('odom', self.frame)          # camera -> odom
         R_ob, t_ob = self._tf('odom', 'base_footprint')    # base -> odom
         p_odom = pts @ R_oc.T + t_oc
