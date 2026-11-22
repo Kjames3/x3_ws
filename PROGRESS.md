@@ -48,6 +48,21 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
   - GUI: arrow and scan dots rotated with standard CCW math through the same world->screen transform as everything else; with no map pose the arrow is drawn hollow (odom, not map-corrected). Follow uses the map pose.
 - **Results:** server fields verified (`laser_yaw` -3.057 matches `tf2_echo`, map pose None until AMCL publishes). **Not yet tested live:** set an initial pose with a drag and drive/rotate the robot to confirm the arrow and dots track it.
 
+## 2026-11-22 — Seeded candidates, couch run (home)
+
+**Problem:** the lidar extractor almost never produces a candidate for someone seated on the couch, so the tracker loses them.
+
+**Potential solution:** camera-seeded candidates (shadow mode, f2b21a9): search for a cluster along the C3 line of sight.
+
+**Work done:** recorded `seeded-couch-r1` (90 s, seated, leaning/shifting) and `seeded-couch-empty-r1` (45 s, nobody). Analysed `lidar_persons.ndjson`.
+
+**Results:**
+- Seated run: C3 saw the person in 838 of 892 frames. A lidar track existed in only **32 (4%)**. A seeded candidate filled the gap in **692 more**, so coverage would go **4% → 86%**. In 114 camera frames neither produced anything.
+- Seeded rows sit on the camera estimate: median 0.04 m, p90 0.11 m (max 1.28 m). One row per frame.
+- Empty run: C3 reported nothing, so there were 0 seeds and 0 seeded false alarms. This only shows that seeding cannot invent a person without a camera detection. It is not a test of camera false positives.
+- Caveat: the seeded clusters have median z_hi 1.97 m, too tall for a seated head. The cluster probably merges with the couch back or wall. Gate on the classifier or crop z before the tracker uses these.
+- Next: score seeded clusters with the classifier, then put tracker use behind a flag. Lab desk, walk and empty runs come later.
+
 ## 2026-11-22 — Camera-seeded lidar candidates live in shadow mode
 - **Problem:** a seated person merges with the desk or chair in the lidar clusters, so no candidate exists and the tracker loses them. The camera still sees them.
 - **Potential solution:** `seeded_candidates()` (merged from `t3/camera-seeded-lidar-person`; offline: home seated 7–30% → ~99%) cuts a body out of the cloud along each camera person's line of sight.
