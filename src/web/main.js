@@ -1042,7 +1042,8 @@ function updateNavHealth(h, slamActive, navPhase) {
         }
     }
     if (badge) {
-        const navUp = navPhase && navPhase !== 'UNAVAILABLE';
+        // nav_phase is IDLE even when Nav2 was never launched; use the launch flag.
+        const navUp = !!state.nav.nav2Running && navPhase !== 'UNAVAILABLE';
         if (slamActive || !navUp) { badge.style.display = 'none'; return; }
         const a = h.amcl;
         let cls, text, tip;
