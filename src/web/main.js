@@ -741,7 +741,7 @@ function setupNavMapInteraction(canvas) {
     canvas.addEventListener('pointerdown', (e) => {
         const p = navEventPx(e);
         ptrs.set(e.pointerId, p);
-        canvas.setPointerCapture(e.pointerId);
+        try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* synthetic/stale pointer */ }
         if (ptrs.size === 2) {           // second finger: switch to pinch/pan
             state.nav.drag = null;
             const [a, b] = [...ptrs.values()];
