@@ -5765,8 +5765,30 @@ async def main():
     async with websockets.serve(handle_client, "0.0.0.0", WS_PORT, compression=None,
                                 close_timeout=2):
         logger.info(f"Server started on ws://0.0.0.0:{WS_PORT}")
-        await asyncio.gather(broadcast_loop(), oak_camera_feed_loop(), motion_loop(), oled_loop(), map_push_loop(),
-                             lidar_scan_loop(), tof_loop(), log_push_loop())
+        loops = {name: asyncio.create_task(coro, name=name) for name, coro in (
+            ("broadcast_loop", broadcast_loop()), ("oak_camera_feed_loop", oak_camera_feed_loop()),
+            ("motion_loop", motion_loop()), ("oled_loop", oled_loop()), ("map_push_loop", map_push_loop()),
+            ("lidar_scan_loop", lidar_scan_loop()), ("tof_loop", tof_loop()), ("log_push_loop", log_push_loop()))}
+        pending = set(loops.values())
+        while pending:
+            done, pending = await asyncio.wait(pending, timeout=1.0)
+            for t in done:
+                if not t.cancelled() and t.exception() is not None:
+                    raise t.exception()
+            if _shutting_down and pending:
+                break
+        if pending:
+            # Loops get 3 s after SIGTERM to notice the flag. During a poweroff one of
+            # them sat on an await forever (network already down), so log where each
+            # straggler is parked, then cancel it.
+            _, pending = await asyncio.wait(pending, timeout=3.0)
+            for t in pending:
+                stack = "".join(f"\n    {fr.f_code.co_filename}:{fr.f_lineno} in {fr.f_code.co_name}"
+                                for fr in t.get_stack())
+                logger.warning("Loop %s still running 3 s after SIGTERM; cancelling. Parked at:%s",
+                               t.get_name(), stack)
+                t.cancel()
+            await asyncio.wait(pending, timeout=2.0)
         logger.info("Loops stopped; closing client connections")
     logger.info("WebSocket server closed")
 
