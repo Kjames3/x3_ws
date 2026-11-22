@@ -882,7 +882,17 @@
         </section>
     </div>
 
-    <script src="main.js?v=shutdown-1"></script>
+    <dialog id="shutdown-dialog" class="shutdown-dialog">
+        <form method="dialog">
+            <h3>Shut down the robot?</h3>
+            <p>The wheels stop and the Orin powers off. You'll need physical access to turn it back on.</p>
+            <div class="shutdown-dialog-actions">
+                <button value="cancel" class="shutdown-cancel" autofocus>Cancel</button>
+                <button value="confirm" class="shutdown-confirm">Shut down</button>
+            </div>
+        </form>
+    </dialog>
+    <script src="main.js?v=shutdown-2"></script>
     <script src="dashboard.js?v=2"></script>
     <script src="log-console.js?v=2"></script>
     <script src="vendor/three/GLTFLoader.js"></script>
@@ -895,16 +905,6 @@
     <script src="oak-splats.js?v=2"></script>
     <script src="scene-view.js?v=35"></script>
     <script src="mobile.js?v=1"></script>
-    <dialog id="shutdown-dialog" class="shutdown-dialog">
-        <form method="dialog">
-            <h3>Shut down the robot?</h3>
-            <p>The wheels stop and the Orin powers off. You'll need physical access to turn it back on.</p>
-            <div class="shutdown-dialog-actions">
-                <button value="cancel" class="shutdown-cancel" autofocus>Cancel</button>
-                <button value="confirm" class="shutdown-confirm">Shut down</button>
-            </div>
-        </form>
-    </dialog>
 </body>
 
 </html>
