@@ -49,7 +49,7 @@ trap 'rm -f "$flag" "$c3flag"' EXIT
 echo "recording $secs s into $out ..."
 # stdin from /dev/null: under `timeout` the recorder is a background job (see record_walk.sh).
 timeout -s INT "$secs" ros2 bag record -o "$out/bag" \
-    /livox/lidar /livox/person_candidates /odom /odom_raw /imu/data /scan /tf /tf_static \
+    /livox/lidar /livox/person_candidates /livox/person_candidates_seeded /c3/person_seeds /odom /odom_raw /imu/data /scan /tf /tf_static \
     /cmd_vel /cmd_vel_nominal /cmd_vel_safe /pedestrian_states /people/obstacles \
     /tof/upper/obstacles /tof/lower/obstacles \
     < /dev/null > "$out/record.log" 2>&1 || true

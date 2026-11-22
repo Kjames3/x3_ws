@@ -5,6 +5,21 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-22 — Camera-seeded lidar candidates live in shadow mode
+- **Problem:** a seated person merges with the desk or chair in the lidar clusters, so no candidate exists and the tracker loses them. The camera still sees them.
+- **Potential solution:** `seeded_candidates()` (merged from `t3/camera-seeded-lidar-person`; offline: home seated 7–30% → ~99%) cuts a body out of the cloud along each camera person's line of sight.
+- **Work done:**
+  - x3_server publishes C3 camera people (odom XY + velocity) on `/c3/person_seeds` at 10 Hz.
+  - `livox_scan_node` predicts the seeds to the lidar frame end (it ignores seeds more than 0.3 s old). It then runs `seeded_candidates` and publishes the extra rows on `/livox/person_candidates_seeded`. `/livox/person_candidates` is unchanged.
+  - The server records the seeded rows in `lidar_persons.ndjson` (`seeded`) and logs `[seeded-shadow]` counts every 60 s. **The tracker does not use them yet.**
+  - `record_person_lidar.sh` now bags both new topics. Test extended (seeds used when fresh, ignored when stale).
+  - Deployed (ce33a58).
+- **Results:**
+  - Live on the robot: seeds at ~9 Hz while someone is in view. In the first minute, 220 frames had a seeded body, and none of them was within 0.5 m of an existing lidar track.
+  - Clocks line up: seed stamps are within 0.07 s of the lidar frame stamps.
+  - The 4 failing test files (cbf_tof_safety, oak_depthai_v3, robot_constants, velocity_timing) also fail without this change.
+  - **Next:** recorded shadow sessions (seated at a desk, walking, empty room), then classifier scores on seeded rows, then enable.
+
 ## 2026-11-22 — Navigation map: zoom, pan, follow, goal heading, scale bar
 - **Problem:** the nav map was fixed at whole-map scale, goals always had heading 0, and nothing showed distance.
 - **Potential solution:** a view layer (zoom + pan) on top of the existing fitted map transforms, and RViz-style press-drag for heading.
