@@ -178,9 +178,10 @@ def fit_fisheye(views, pattern, square_m, size):
     raise RuntimeError("fewer than 8 usable views")
 
 
-def save_fisheye(rms, K, D, n, w, h, square_m, pattern):
+def save_fisheye(rms, K, D, n, w, h, square_m, pattern, path=None):
+    path = path or INTR_PATH
     try:
-        d = json.load(open(INTR_PATH))
+        d = json.load(open(path))
     except (OSError, ValueError):
         d = {}
     hfov = math.degrees(2 * math.atan(w / 2 / K[0, 0]))  # pinhole-equivalent, centre
@@ -189,7 +190,7 @@ def save_fisheye(rms, K, D, n, w, h, square_m, pattern):
                     "board": f"{pattern[0] + 1}x{pattern[1] + 1} squares, {square_m * 1000:.1f} mm",
                     "date": time.strftime("%Y-%m-%d")}
     os.makedirs(os.path.dirname(INTR_PATH), exist_ok=True)
-    json.dump(d, open(INTR_PATH, "w"), indent=2)
+    json.dump(d, open(path, "w"), indent=2)
     return hfov
 
 

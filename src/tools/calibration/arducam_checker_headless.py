@@ -10,6 +10,12 @@ arducam_viewer's fitter and saves config/arducam_uc844_intrinsics.json.
     python3 src/tools/calibration/arducam_checker_headless.py --squares 9x6 --square-mm 23.3
 
 x3_server must be stopped (it holds the camera).
+
+Left camera (Innomaker U20CAM-9281M, mounted upside down; calibrate the upright
+image the server publishes):
+    python3 src/tools/calibration/arducam_checker_headless.py --squares 9x6 --square-mm 23.3 \
+        --device '/dev/v4l/by-id/*SN0001-video-index0' --rotate 180 \
+        --intrinsics config/left_u20cam_intrinsics.json --out ~/calib/left_views
 """
 import sys as _sys
 from pathlib import Path as _Path
@@ -35,12 +41,17 @@ def main():
     ap.add_argument("--min-span", type=float, default=300.0,
                     help="board must span at least this many px (width of its corner grid)")
     ap.add_argument("--out", default=os.path.expanduser("~/calib/arducam_views"))
+    ap.add_argument("--device", default="/dev/v4l/by-id/*Arducam*-video-index0",
+                    help="device path or glob (default: the right Arducam)")
+    ap.add_argument("--rotate", type=int, choices=(0, 180), default=0,
+                    help="rotate frames first, to match the image the server publishes")
+    ap.add_argument("--intrinsics", default=INTR_PATH, help="output JSON")
     a = ap.parse_args()
     sq = [int(v) for v in a.squares.lower().split("x")]
     pattern = (sq[0] - 1, sq[1] - 1)
     os.makedirs(a.out, exist_ok=True)
 
-    dev = sorted(glob.glob("/dev/v4l/by-id/*Arducam*-video-index0"))[0]
+    dev = sorted(glob.glob(a.device))[0]
     cap = cv2.VideoCapture(dev, cv2.CAP_V4L2)
     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
@@ -54,6 +65,8 @@ def main():
             if not ok:
                 continue
             gray = frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            if a.rotate == 180:
+                gray = cv2.rotate(gray, cv2.ROTATE_180)
             h, w = gray.shape
             c = find_board(gray, pattern)
             now = time.time()
@@ -88,10 +101,10 @@ def main():
     cap.release()
     print(f"fitting {len(views)} views ...")
     rms, K, D, n = fit_fisheye(views, pattern, a.square_mm / 1000.0, (w, h))
-    hfov = save_fisheye(rms, K, D, n, w, h, a.square_mm / 1000.0, pattern)
+    hfov = save_fisheye(rms, K, D, n, w, h, a.square_mm / 1000.0, pattern, a.intrinsics)
     print(f"RMS {rms:.3f} px from {n} views; fx {K[0, 0]:.1f} fy {K[1, 1]:.1f} "
           f"cx {K[0, 2]:.1f} cy {K[1, 2]:.1f}; D {D.ravel()}; centre-HFOV {hfov:.1f}")
-    print("saved ->", INTR_PATH)
+    print("saved ->", a.intrinsics)
 
 
 if __name__ == "__main__":
