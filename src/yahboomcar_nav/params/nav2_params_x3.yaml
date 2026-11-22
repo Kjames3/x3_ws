@@ -386,10 +386,9 @@ global_costmap:
       use_sim_time: False
       # Same rectangle as local_costmap and the CBF (see the note there).
       footprint: "[[0.32, 0.293], [0.32, -0.293], [-0.32, -0.293], [-0.32, 0.293]]"
-      # 0.025, not the map's 0.05: at 0.05 the wall-cell and inflation rounding
-      # left a single 5 cm corridor through the 0.88 m apartment doorway and the
-      # planner lost it as soon as a live scan hit landed (2026-11-22).
-      resolution: 0.025
+      # Must match the map: the static layer resizes the global costmap to the
+      # map's resolution anyway (0.025 here still ran at 0.05, 2026-11-22).
+      resolution: 0.05
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"

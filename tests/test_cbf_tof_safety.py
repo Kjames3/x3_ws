@@ -65,7 +65,10 @@ def _lift():
 
 
 @pytest.fixture()
-def srv():
+def srv(monkeypatch):
+    # The deadband re-check only matters for the open-loop driver (speed_control
+    # off), so these tests run it with that driver's 0.14 m/s.
+    monkeypatch.setenv('X3_CMD_DEADBAND_MPS', str(28.0 / 200.0))
     return _lift()
 
 
@@ -116,9 +119,12 @@ def test_cbf_ignores_a_distant_obstacle():
 
 
 # ------------------------------------------------------------ deadband re-check
-def test_deadband_matches_the_base_driver(srv):
-    # Mcnamu_driver_X3: min_pwm 28 at 200 PWM per m/s.
+def test_deadband_matches_the_base_driver(srv, monkeypatch):
+    # Open loop (Mcnamu_driver_X3 min_pwm 28 at 200 PWM per m/s), set by the fixture.
     assert srv['CMD_DEADBAND_MPS'] == pytest.approx(0.14)
+    # Default: the bringup runs closed-loop speed control, which executes the command.
+    monkeypatch.delenv('X3_CMD_DEADBAND_MPS')
+    assert _lift()['CMD_DEADBAND_MPS'] == 0.0
 
 
 def test_creep_toward_a_tracked_box_is_stopped(bridge, srv):

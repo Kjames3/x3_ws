@@ -597,7 +597,12 @@ TOF_CBF_HOLD_S = 0.3
 # to 0.005 changes nothing on the floor.  Measured 2026-09-22: cmd 0.01-0.02
 # drove at ~0.11 m/s, and the robot hit a box the CBF was tracking.  Keep in
 # step with the driver's min_pwm / SCALE.
-CMD_DEADBAND_MPS = float(os.environ.get('X3_CMD_DEADBAND_MPS', 28.0 / 200.0))
+# That is the OPEN-LOOP driver. The bringup runs the closed-loop wheel speed
+# controller (x3_bringup.launch.py speed_control: True), which executes the
+# command itself, so the default is 0. With 0.14 the CBF's 0.14-0.19 m/s
+# bound through the 0.88 m apartment doorway became 0.00-0.05 m/s, a 15 s crawl
+# (bag doorway_20261122_020804). Set X3_CMD_DEADBAND_MPS=0.14 with speed_control off.
+CMD_DEADBAND_MPS = float(os.environ.get('X3_CMD_DEADBAND_MPS', 0.0))
 # That figure does not hold on every floor: on the apartment's wood,
 # 2026-10-11, commands of 0.01-0.04 m/s ran at 0.23-0.27 m/s (about
 # 0.22 + 1.2 * cmd).  X3_CMD_DEADBAND_MPS overrides it per site.

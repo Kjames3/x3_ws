@@ -5,6 +5,19 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-22 — Doorway, part 2: no deadband with closed-loop wheels; map doorway widened
+- **Problem:** after the footprint/margin change the robot got through the 0.88 m doorway, but crawled at 0.02–0.05 m/s for ~15 s, and the next run stalled at the threshold ("Starting point in lethal space"), backed up and spun before passing.
+- **Potential solution:** replay the bags through the CBF to find what cut the speed; compare the saved map's doorway with the lidar's.
+- **Work done:**
+  - `CMD_DEADBAND_MPS` default 0.14 -> **0.0**. The 0.14 m/s is the open-loop driver's min_pwm; the bringup runs closed-loop wheel speed control (`speed_control: True`), which executes the command. Replaying bag `doorway_20261122_020804`: the CBF's own bound through the door was 0.14–0.19 m/s, minus 0.14 = the 0.00–0.05 m/s sent. `X3_CMD_DEADBAND_MPS=0.14` restores it for the open-loop driver; the deadband tests now set it explicitly.
+  - `newApartment1.pgm`: cleared one jamb cell each side (19 cells, doorway rows y -0.93..-1.78 only). The map's opening was ~0.65–0.70 m; the lidar measures 0.80–0.86 m in it. Original kept in `artifacts/doorway-2026-11-22/newApartment1.orig.pgm`.
+  - Reverted the global costmap resolution to 0.05: the static layer resizes the global costmap to the map's resolution, so 0.025 never took effect (correction to the entry below).
+- **Results:**
+  - Deadband fix (bag `doorway_20261122_021503`): through the door at 0.15–0.26 m/s, no crawl; the stall that run was the planner (map too narrow).
+  - With the map edit (bag `doorway_20261122_022333`): goal **SUCCEEDED in 16 s**, no replanning failures or recoveries.
+  - Two attempts before that one aborted on a lidar cluster in the doorway (~1.5 m ahead, 0.2–0.4 m wide) with nobody there; it was gone a few minutes later. Cause unknown.
+  - Open: the GUI's Nav2 launch twice came up with an empty container (no AMCL/planner); the same launch by hand loaded everything. Nav2 output goes to /dev/null, so the reason is not logged.
+
 ## 2026-11-22 — Doorway: x3_v2 robot now drives through the 0.88 m apartment doorway
 - **Problem:** Nav2 could not take the robot through the 0.88 m (measured) doorway into a room.
 - **Potential solution:** find the blocker from a bag first, then shrink the clearances that the x3_v2 geometry does not need.
