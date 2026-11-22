@@ -883,6 +883,10 @@ current_right_power = 0.0
 motors_enabled = True
 
 
+# Auto-Explore keep-out discs are hints from one stuck event, not map facts.
+KEEPOUT_TTL_S = 90.0
+
+
 def _motion_inhibited():
     return not motors_enabled or (nav2_client is not None and nav2_client.is_cancelling())
 
@@ -1928,13 +1932,22 @@ class ROS2Bridge:
         gx, gy = np.meshgrid(g, g)
         m = np.hypot(gx, gy) <= radius + 1e-6
         pts = np.column_stack((gx[m] + x, gy[m] + y, np.full(m.sum(), 0.10)))
-        self._keepout.append(pts.astype(np.float32))
+        self._keepout.append((x, y, time.monotonic(), pts.astype(np.float32)))
+
+    def drop_keepout_near(self, x, y, dist):
+        """Remove discs centred within `dist` of (x, y): a disc must never trap the robot."""
+        before = len(self._keepout)
+        self._keepout = [k for k in self._keepout if math.hypot(k[0] - x, k[1] - y) > dist]
+        return before - len(self._keepout)
 
     def clear_keepout(self):
         self._keepout = []
 
     def _publish_keepout(self):
-        pts = np.concatenate(self._keepout) if self._keepout else np.zeros((0, 3), np.float32)
+        now = time.monotonic()
+        self._keepout = [k for k in self._keepout if now - k[2] < KEEPOUT_TTL_S]
+        pts = (np.concatenate([k[3] for k in self._keepout]) if self._keepout
+               else np.zeros((0, 3), np.float32))
         msg = self._PointCloud2()
         msg.header.frame_id = 'map'
         msg.header.stamp = self._node.get_clock().now().to_msg()
@@ -2696,6 +2709,7 @@ def initialize_hardware():
         frontier_explorer.drive_fn = _enqueue_motion
         frontier_explorer.get_nav_cmd = bridge.get_nav_cmd
         frontier_explorer.add_keepout = bridge.add_keepout
+        frontier_explorer.drop_keepout_near = bridge.drop_keepout_near
         logger.info("Nav2Client + FrontierExplorer initialized (ros2 mode)")
 
         # Opt-in only (--auto-nav2-map). This used to fire unconditionally on a

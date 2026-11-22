@@ -215,6 +215,7 @@ class FrontierExplorer:
         self.drive_fn = None
         self.get_nav_cmd = None
         self.add_keepout = None
+        self.drop_keepout_near = None
         self.stuck_count = 0
 
     def start(self) -> bool:
@@ -385,6 +386,13 @@ class FrontierExplorer:
                 elif result in ("ABORTED", "REJECTED", "ERROR", "ACCEPT_TIMEOUT", "TIMEOUT", "STUCK"):
                     if result == "STUCK":
                         await self._recover_from_stuck()
+                    elif self.drop_keepout_near is not None:
+                        # 2026-11-22: a disc 0.42 m ahead of a stuck spot sat inside the
+                        # robot's 0.44 m turning radius when it came back there; every
+                        # goal then aborted "obstacle too close".  Free the robot.
+                        _, here = self._snapshot_and_pose()
+                        if here is not None and self.drop_keepout_near(here[0], here[1], 0.6):
+                            logger.info("FrontierExplorer: dropped keep-out near the robot after %s", result)
                     attempts = 1
                     if failure is not None:
                         failures.remove(failure)
