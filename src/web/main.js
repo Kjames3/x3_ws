@@ -695,7 +695,7 @@ function navFitView() {
     drawNavMap();
 }
 function navApplyFollow() {
-    const v = state.nav.view, rp = state.latestData.robotPose;
+    const v = state.nav.view, rp = state.latestData.robotPoseMap || state.latestData.robotPose;
     if (!v.follow || !rp || !state.nav.mapMeta) return;
     const b = baseWorldToCanvasPx(rp.x / 100.0, rp.y / 100.0);
     if (!b) return;
@@ -947,54 +947,59 @@ function drawNavMap() {
         }
     }
 
-    // 3.5 Live lidar scan overlay (robot frame world frame canvas pixels)
+    // Robot pose on the map: the map-frame pose (odom through AMCL's / SLAM's
+    // map<-odom) when the server has one, else raw odom (drawn hollow: it is
+    // NOT corrected to the map). Angles are standard ROS: CCW, radians.
+    const rpMap = state.latestData.robotPoseMap;
+    const rpUse = rpMap || state.latestData.robotPose;
+    const poseIsMap = !!rpMap;
+
+    // 3.5 Live lidar scan overlay (laser frame -> base -> map). Only the
+    // Foxglove /scan path has a known frame; laser_link is yawed ~175° on the robot.
     const scanPts = state.latestData.lidarPoints;
-    const rpose = state.latestData.robotPose;
-    if (state.lidarEnabled && scanPts && scanPts.length >= 2 && rpose && state.nav.mapMeta) {
-        const rx = rpose.x / 100.0; // cm metres
-        const ry = rpose.y / 100.0;
-        const cosT = Math.cos(rpose.theta);
-        const sinT = Math.sin(rpose.theta);
-        // CW-positive theta + server lidar frame (+x=fwd, +y=right):
-        // wx = rx + lx*cosT - ly*sinT
-        // wy = ry - lx*sinT - ly*cosT
+    if (state.lidarEnabled && scanPts && scanPts.length >= 2 && rpUse && state.nav.mapMeta
+            && state.latestData.lidarFrame === 'laser_link' && state.nav.laserYaw != null) {
+        const rx = rpUse.x / 100.0, ry = rpUse.y / 100.0;
+        const lyaw = state.nav.laserYaw;
+        const cl = Math.cos(lyaw), sl = Math.sin(lyaw);
+        const ct = Math.cos(rpUse.theta), st = Math.sin(rpUse.theta);
         ctx.fillStyle = 'rgba(226, 25, 25, 0.9)';
         ctx.beginPath();
         for (let i = 0; i + 1 < scanPts.length; i += 2) {
-            const lx = scanPts[i];
-            const ly = scanPts[i + 1];
-            const cp = worldToCanvasPx(
-                rx + lx * cosT - ly * sinT,
-                ry - lx * sinT - ly * cosT
-            );
+            const lx = scanPts[i], ly = -scanPts[i + 1];        // undo the y negation
+            const bx = cl * lx - sl * ly, by = sl * lx + cl * ly; // laser -> base
+            const cp = worldToCanvasPx(rx + ct * bx - st * by, ry + st * bx + ct * by);
             if (cp) {
-                ctx.moveTo(cp.x + 3, cp.y);
-                ctx.arc(cp.x, cp.y, 3, 0, Math.PI * 2);
+                ctx.moveTo(cp.x + 2.5, cp.y);
+                ctx.arc(cp.x, cp.y, 2.5, 0, Math.PI * 2);
             }
         }
         ctx.fill();
     }
 
-    // 4. Robot pose (cyan arrow)
-    const rp = state.latestData.robotPose;
-    if (rp && state.nav.mapMeta) {
-        // Pose arrives in cm (from get_pose_cm) — convert to metres for map coords
-        const wx = rp.x / 100.0;
-        const wy = rp.y / 100.0;
-        const rcanvas = worldToCanvasPx(wx, wy);
-        if (rcanvas) {
-            const theta = rp.theta;
+    // 4. Robot pose arrow
+    if (rpUse && state.nav.mapMeta) {
+        const wx = rpUse.x / 100.0, wy = rpUse.y / 100.0;
+        const c0 = worldToCanvasPx(wx, wy);
+        const c1 = worldToCanvasPx(wx + Math.cos(rpUse.theta), wy + Math.sin(rpUse.theta));
+        if (c0 && c1) {
+            const a = Math.atan2(c1.y - c0.y, c1.x - c0.x);
             const len = 14;
             ctx.save();
-            ctx.translate(rcanvas.x, rcanvas.y);
-            ctx.rotate(theta + Math.PI); // +π: Yahboom CW-positive yaw, arrow tip points forward
-            ctx.fillStyle = '#1c27a5ff';
+            ctx.translate(c0.x, c0.y);
+            ctx.rotate(a);
             ctx.beginPath();
             ctx.moveTo(len, 0);
             ctx.lineTo(-len * 0.5, -len * 0.5);
             ctx.lineTo(-len * 0.5, len * 0.5);
             ctx.closePath();
-            ctx.fill();
+            if (poseIsMap) {
+                ctx.fillStyle = '#2563eb';
+                ctx.fill();
+                ctx.strokeStyle = '#e8e8ea'; ctx.lineWidth = 1; ctx.stroke();
+            } else {
+                ctx.strokeStyle = '#2563eb'; ctx.lineWidth = 2; ctx.stroke();
+            }
             ctx.restore();
         }
     }
@@ -1288,6 +1293,7 @@ function updateNavHealth(h, slamActive, navPhase) {
             line.style.display = '';
         }
     }
+    if (h.laser_yaw != null) state.nav.laserYaw = h.laser_yaw;
     const sp = document.getElementById('nav-speed');
     if (sp) sp.textContent = h.speed != null ? h.speed.toFixed(2) : '—';
     if (badge) {
@@ -1835,6 +1841,7 @@ function handleBinaryFrame(buf) {
     if (tag === 'LIDR') {
         const pts = new Float32Array(buf, 4);
         state.latestData.lidarPoints = pts;
+        state.latestData.lidarFrame = 'server';
         state.needsLidarUpdate = true;
 
         // Obstacle proximity rumble disabled
@@ -2224,6 +2231,7 @@ function handleMapuFrame(buf) {
 function handleFoxgloveScan(msg) {
     const pts = foxgloveScanToXY(msg);
     state.latestData.lidarPoints = pts;
+    state.latestData.lidarFrame = 'laser_link';  // x fwd, y NEGATED (see foxgloveScanToXY)
     state.needsLidarUpdate = true;
 
     // Obstacle proximity rumble disabled
@@ -2662,6 +2670,7 @@ function handleMessage(data) {
         state.latestData.readoutAt = performance.now();
         state.needsUIUpdate = true;
         state.latestData.robotPose = data.robot_pose;
+        if ('robot_pose_map' in data) state.latestData.robotPoseMap = data.robot_pose_map;
         state.latestData.targetPose = data.target_pose;
         state.latestData.trajectory = data.trajectory; // 3D Trajectory
 

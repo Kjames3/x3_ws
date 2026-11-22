@@ -1016,6 +1016,7 @@ class ROS2Bridge:
         self.map_count = 0
         self.map_rx_t = None          # monotonic time of the last /map
         self.amcl = None              # {"t", "sxy", "syaw"} from the last /amcl_pose
+        self._slam_map_from_odom = None
         if self._tof_exempt:
             logger.info(f"ToF lower-array exempt zones for maps: {sorted(self._tof_exempt)}")
 
@@ -1071,10 +1072,16 @@ class ROS2Bridge:
                 QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT))
             self._gate_warned = 0.0
 
-        if self._tof_exempt:
+        # map<-odom: ToF exempt zones, the Nav tab's localization badge and the
+        # map-frame robot marker all need it, so subscribe unconditionally.
+        if True:
             from geometry_msgs.msg import PoseWithCovarianceStamped
             self._node.create_subscription(PoseWithCovarianceStamped, '/amcl_pose',
                                            self._amcl_pose_cb, 10)
+            # slam_toolbox's map-frame pose. Kept apart from _map_from_odom so the
+            # ToF exempt zones (AMCL map only) never use a SLAM frame.
+            self._node.create_subscription(PoseWithCovarianceStamped, '/pose',
+                                           self._slam_pose_cb, 10)
 
         # Publishers for pedestrian tracking (EE244 Project)
         from geometry_msgs.msg import PoseArray
@@ -1492,6 +1499,46 @@ class ROS2Bridge:
             self._static_tf[child] = (tf.header.frame_id.lstrip('/'), R,
                                       np.array([t.x, t.y, t.z]))
         self._tof_extrinsics.clear()   # recompute against the new tree
+
+    def _slam_pose_cb(self, msg):
+        p, q = msg.pose.pose.position, msg.pose.pose.orientation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        with self._lock:
+            o = dict(self._pose_m)
+        self._slam_map_from_odom = tof_exempt_zones.compose_map_from_odom(
+            (p.x, p.y, yaw), (o['x'], o['y'], o['theta']))
+
+    def get_map_pose_cm(self):
+        """Robot pose in the MAP frame (cm, rad CCW): odom pose through the last
+        map<-odom from /amcl_pose (or slam_toolbox /pose). None until one arrives.
+        The GUI used to draw the raw odom pose on the map, so an initial pose or
+        AMCL correction never moved the marker."""
+        slam_on = _slam_proc is not None and _slam_proc.poll() is None
+        mfo = self._slam_map_from_odom if slam_on else self._map_from_odom
+        if mfo is None:
+            return None
+        with self._lock:
+            o = dict(self._pose_m)
+        tx, ty, yaw = mfo
+        c, s = math.cos(yaw), math.sin(yaw)
+        x = tx + c * o['x'] - s * o['y']
+        y = ty + s * o['x'] + c * o['y']
+        th = math.atan2(math.sin(o['theta'] + yaw), math.cos(o['theta'] + yaw))
+        return {"x": x * 100.0, "y": y * 100.0, "theta": th}
+
+    def static_yaw(self, frame):
+        """Yaw of ``frame`` in base_footprint from /tf_static, or None."""
+        R = np.eye(3)
+        for _ in range(16):
+            if frame == 'base_footprint':
+                return math.atan2(R[1, 0], R[0, 0])
+            link = self._static_tf.get(frame)
+            if link is None:
+                return None
+            parent, Rp, _tp = link
+            R = Rp @ R
+            frame = parent
+        return None
 
     def _tof_extrinsic(self, name):
         """(R, t) mapping tof_<name>_link points into base_footprint, from the
@@ -3744,6 +3791,7 @@ async def handle_client(websocket):
                     if nav2_client:
                         if ros_bridge is not None:
                             ros_bridge.amcl = None  # don't show the last session's pose quality
+                            ros_bridge._map_from_odom = None  # last session's map<-odom is meaningless now
                         use_st = data.get("use_sim_time", SIM_MODE)
                         # Resolve to an absolute path: the launch file's map:=
                         # argument is interpreted relative to the launcher cwd.
@@ -4882,6 +4930,8 @@ async def broadcast_loop():
                 "oak_imu": oak_imu,
                 "oak_detections": oak_detections,
                 "robot_pose": pose,
+                "robot_pose_map": (ros_bridge.get_map_pose_cm()
+                                   if ros_bridge is not None and hasattr(ros_bridge, "get_map_pose_cm") else None),
                 "m1_pos": m1_enc,
                 "m2_pos": m2_enc,
                 "m3_pos": m3_enc,
@@ -4958,6 +5008,7 @@ async def broadcast_loop():
                     nav_health = {
                         "scan_hz": _scan_hz,
                         "map_updates": _mc,
+                        "laser_yaw": ros_bridge.static_yaw("laser_link"),
                         "speed": math.hypot(ros_bridge._twist.get("vx", 0.0), ros_bridge._twist.get("vy", 0.0)),
                         "map_age_s": (_now - ros_bridge.map_rx_t) if ros_bridge.map_rx_t else None,
                         "amcl": ({"age_s": _now - _am["t"], "sxy": _am["sxy"], "syaw": _am["syaw"]}
