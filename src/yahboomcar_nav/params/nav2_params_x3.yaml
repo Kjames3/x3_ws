@@ -354,7 +354,7 @@ local_costmap:
           obstacle_min_range: 0.0
           obstacle_max_range: 4.5
           observation_persistence: 0.0
-        # Front-OAK floor obstacles (server_x3 oak_floor_obstacles, odom): 0.03-0.45 m
+        # Front-OAK floor obstacles (server_x3 oak_floor_obstacles, odom): 0.012-0.45 m
         # within 1.6 m of the camera, e.g. power strips under the Livox band.
         # Remembered until back in view and empty, so mark-only, persistence 0.
         oak_low:
@@ -435,7 +435,7 @@ global_costmap:
           obstacle_min_range: 0.0
           obstacle_max_range: 5.0
           observation_persistence: 0.0
-        # Front-OAK floor obstacles (server_x3 oak_floor_obstacles, odom): 0.03-0.45 m
+        # Front-OAK floor obstacles (server_x3 oak_floor_obstacles, odom): 0.012-0.45 m
         # within 1.6 m of the camera, e.g. power strips under the Livox band.
         # Remembered until back in view and empty, so mark-only, persistence 0.
         oak_low:
