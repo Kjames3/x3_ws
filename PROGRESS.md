@@ -5,6 +5,18 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-22 — Auto-Explore stuck recovery; OAK floor threshold back to 3 cm
+
+**Problem.** In the first lab run, 8 of 17 Auto-Explore goals ended in 30 s no-progress TIMEOUTs. With the 12 mm OAK threshold an extension cord became lethal, so the robot stalled at it and then drove over it anyway. The user is fine driving over cords; power strips should be avoided.
+
+**Potential solution.** Put the OAK threshold back to 3 cm. Detect "commanded but not moving" early, back out, and keep the planner off that spot for a while.
+
+**Work done.** OAK floor threshold 3 cm, +1 cm per metre beyond 1 m (0f47601). Stuck = Nav2 commanding at least 0.05 m/s or 0.25 rad/s for 4 s while the SLAM map pose moves less than 4 cm and turns less than 0.15 rad. Recovery cancels the goal, backs out about 0.3 m opposite the commanded direction through the CBF motion queue, and drops a 0.15 m disc 0.42 m ahead on `/explore/keepout` (map frame, new mark-only costmap source). The frontier counts as a failed try. First live run: the disc trapped the robot. It came back to the stuck spot, and the disc was inside its 0.44 m turning radius, so every goal aborted "obstacle too close". Fix (67f166d): discs expire after 90 s and are dropped within 0.6 m of the robot after any failed goal. 2 new explorer tests; 13 pass.
+
+**Results.** The cord 0.5 m out peaked at 3.1 cm, at the threshold. Bare carpet stayed under 1 cm. First run: one STUCK fired with back-out and disc, then 4 ABORTED (the trap above). After the fix: the first 6 goals all succeeded, with no TIMEOUT or STUCK, on a fresh SLAM map after the restart. The power strip has not been placed in front of the camera yet, so avoidance of it is untested.
+
+**Lab check.** Put the power strip 0.5–1 m ahead and confirm it is marked. Watch the next STUCK event to confirm the back-out moves the robot backward.
+
 ## 2026-11-22 — Front-OAK floor obstacles (power strips, extension cords)
 
 **Problem.** A power strip and an orange extension cord sit below the Livox low band (0.06 m) and are only lidar-visible from ~2 m, so Auto-Explore could drive into them.
