@@ -5,6 +5,18 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-22 — Front-OAK floor obstacles (power strips, extension cords)
+
+**Problem.** A power strip and an orange extension cord sit below the Livox low band (0.06 m) and are only lidar-visible from ~2 m, so Auto-Explore could drive into them.
+
+**Potential solution.** Use front-OAK stereo depth within ~1.35 m of the bumper, measure height above a floor plane fitted in each frame, and remember marks in odom like the Livox band.
+
+**Work done.** `src/oak_floor_obstacles.py`, started by server_x3, publishes `/oak/obstacles` (odom, 4 cm voxels, at least 2 returns per cell). It is the mark-only `oak_low` source in both costmaps (088889a, 8f7878f, 9ccdeac, 16d045e). With the URDF floor height the lab carpet read +5.7 cm: the fitted plane sits 7.3 cm above the URDF floor, likely because B1F4 depth is uncorrected. The plane fit is flat to ±5 mm. The threshold is 12 mm plus 1 cm per metre of depth beyond 1 m. Marks are made only where the camera can also clear them. Before that fix, people standing at 1.6 m stayed marked for 30 s. Also fixed: `ValueError` from an empty `asyncio.wait` on every x3_server shutdown.
+
+**Results.** 1 m past the bumper, the cord read no higher than carpet (2–4 mm; depth steps there are about 5 cm). 0.5 m past the bumper it read 13–31 mm. It was marked, and the local costmap had cost 100 at 0.80–0.95 m. Auto-Explore then ran to completion: 9 goals succeeded and 8 timed out, with no aborts. Map saved as `RealLab4_explore_2026-11-22`, with posegraph. The robot's path was not logged, so I can't confirm here whether it went near the cord.
+
+**Lab check.** Send one goal just past the cord and watch it route around. Find what causes the TIMEOUT stalls. Depth only covers ±15 cm to each side near the bumper. A colour detector for cables is the next step if thin cords are still missed.
+
 ## 2026-11-22 — Livox low band into the costmaps; laptop_viz on the AGX
 
 **Problem.** In the new lab, Auto-Explore hit table and truss bases and caught on cables. Nav2 and the CBF see only `/scan`, a 0.26–0.36 m slice of the Livox cloud, and the ToF arrays are off the chassis. Separately, `laptop_viz.sh` found no topics on the AGX.
