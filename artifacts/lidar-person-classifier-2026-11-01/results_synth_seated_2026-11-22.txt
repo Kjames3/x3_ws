@@ -52,7 +52,7 @@ Purity of candidates holding a seated person (>= 10 of their points; seed 0), bi
   done d seed 2  AP all 0.4862
 
 == Leave-one-run-out AP on the REAL runs only (mean over generator seeds; [min..max] across seeds) ==
-arms: a real only | b real+existing synthetic (std A) | b_big same, std A+B (row count matches c) |
+arms: a real only | b real+existing synthetic (std A) | b_big same, std A+B (about half of c_all's rows: NOT volume-matched; the script legend said 'matches c', wrong) |
       c_all real+std A+new | c_new real+new only | c_pos new positives only | c_neg new negatives only |
       c_loose c_all with purity >= 0.35 | b_w25 / c_w25 b / c_all with every synthetic row weighted 0.25 | d synthetic only
   a        synthetic rows used: 0
@@ -287,3 +287,11 @@ Reproduced baseline: arm a, generator/fit seed 0, is AP 0.904 overall (same as r
    0.302 m; no robot ego-motion; furniture is solid boxes; synthetic negatives exist only for furniture (the real runs supply all
    other negatives), so synthetic positives are never matched by synthetic negatives of the same domain except near furniture;
    one generator design, 3 seeds; subset results rest on few runs.
+
+8. Added after the run (snippet, not in train(); same folds and seeds). Contaminated-negative check for item 3: a y=0 row needs
+   only 30% furniture points, so it may hold unlabelled real people from the background.  With the share raised to 0.8 (y=0 rows 3.3k
+   -> 3.0k): c_neg furniture-r1 seated recall 0.00 -> 0.05, c_all 0.07 -> 0.49, furniture-r1 + goal-on-r4 recall c_neg 0.31 -> 0.33,
+   c_all 0.25 -> 0.61. The collapse is not mainly contamination (c_neg is unchanged); why the furniture negatives take the sitter's
+   blob is not separated (the height/z_hi match in item 3 is the leading guess).
+9. Volume control: b_big has 4.4k synthetic rows, c_all 8.7k, c_new 6.4k, so c_all - b_big mixes content and volume. The seated delta
+   is inside the noise against a, b and b_big alike, so the rule's outcome does not depend on it.

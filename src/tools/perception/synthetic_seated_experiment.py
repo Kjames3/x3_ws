@@ -59,8 +59,8 @@ NEW_KINDS = ('close', 'seated_desk', 'seated_chair', 'seated_couch', 'stand_furn
 EXCLUDE_RUNS = {'trial', 'trial-lab', 'trial-lab2', 'apt-desk2-trial', 'apt-smoke-r1', 'bias-check-r1'}
 
 # Scenes per generator seed: (kind, count, P(abut)).  std_A / std_B are two independent halves of the
-# EXISTING generator (standing/walking groups, 0.8-12 m); b uses A, b_big uses A+B so its row count
-# matches c's, which is A plus the new kinds.
+# EXISTING generator (standing/walking groups, 0.8-12 m); b uses A, b_big uses A+B (4.4k rows, about half of
+# c_all's 8.7k, so c_all - b_big is not volume-controlled), c_all is A plus the new kinds.
 SCENES = (('std_A', 3000, 0.0), ('std_B', 3000, 0.0), ('close', 1500, 0.0),
           ('seated_desk', 2000, 0.4), ('seated_chair', 1000, 0.4), ('seated_couch', 1000, 0.4),
           ('stand_furn', 1500, 0.4))
@@ -493,7 +493,7 @@ def train(a):
     Mavg = {arm: metrics(own, avg[arm]) for arm in ARMS}
 
     print('\n== Leave-one-run-out AP on the REAL runs only (mean over generator seeds; [min..max] across seeds) ==')
-    print('arms: a real only | b real+existing synthetic (std A) | b_big same, std A+B (row count matches c) |')
+    print('arms: a real only | b real+existing synthetic (std A) | b_big same, std A+B (about half of c_all\'s rows: NOT volume-matched) |')
     print('      c_all real+std A+new | c_new real+new only | c_pos new positives only | c_neg new negatives only |')
     print('      c_loose c_all with purity >= 0.35 | b_w25 / c_w25 b / c_all with every synthetic row weighted 0.25 | d synthetic only')
     for arm in ARMS:
