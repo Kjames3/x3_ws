@@ -5,6 +5,7 @@
 #   bash scripts/laptop_viz.sh <JETSON_IP> [DOMAIN_ID]
 #
 # Example:
+#   bash scripts/laptop_viz.sh orin          # AGX robot (discovery-server mode, auto)
 #   bash scripts/laptop_viz.sh 10.13.244.35
 #   bash scripts/laptop_viz.sh 10.13.244.35 42
 #
@@ -26,7 +27,17 @@ JETSON_IP=""
 DOMAIN_ID=42
 EXTRA_ARGS=()
 VIEW=""
+# Discovery mode: auto | ds | simple.  The AGX robot runs the FastDDS discovery
+# server (fastdds_discovery.service, port 11811) and every robot node is a
+# client of it, so Simple discovery with unicast peers finds nothing there.
+# The old Orin Nano was switched to Simple discovery (jetson_simple_discovery.sh).
+# `auto` picks ds when TCP 11811 answers on the robot.
+DISCOVERY_MODE="auto"
 for arg in "$@"; do
+    case "$arg" in
+        --ds|--discovery-server) DISCOVERY_MODE="ds"; continue ;;
+        --simple)                DISCOVERY_MODE="simple"; continue ;;
+    esac
     if _is_ip "$arg"; then
         JETSON_IP="$arg"
     elif [[ "$arg" =~ ^[0-9]+$ ]]; then
@@ -58,6 +69,7 @@ if [ -z "$JETSON_IP" ]; then
     echo "Usage: bash scripts/laptop_viz.sh <JETSON_IP> [DOMAIN_ID] [extra_launch_arguments]"
     echo "  JETSON_IP  IP of the Jetson — run 'hostname -I' on Jetson to find it"
     echo "  DOMAIN_ID  ROS domain (default: 42)"
+    echo "  --ds | --simple   force discovery mode (default: auto, ds if robot:11811 answers)"
     echo ""
     echo "Example: bash scripts/laptop_viz.sh 10.13.244.35"
     echo "Example: bash scripts/laptop_viz.sh 10.13.244.35 42"
@@ -76,6 +88,43 @@ fi
 
 export ROS_DOMAIN_ID="$DOMAIN_ID"
 export ROS_LOCALHOST_ONLY=0
+
+if [ "$DISCOVERY_MODE" = "auto" ]; then
+    if timeout 3 bash -c "exec 3<>/dev/tcp/$JETSON_IP/11811" 2>/dev/null; then
+        DISCOVERY_MODE="ds"
+    else
+        DISCOVERY_MODE="simple"
+    fi
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WS_ROOT="$(dirname "$SCRIPT_DIR")"
+
+# _topics: list the robot's topics in either mode.  A plain discovery-server
+# client only learns about topics it has endpoints on, so listing needs a
+# short-lived SUPER client.  RViz itself stays a plain client: the 2026 AGX
+# test showed plain-client data flows (odom/scan/tf/map/robot_description)
+# while the super-client data path is the one that was broken in 2026-05.
+_topics() {
+    if [ "$DISCOVERY_MODE" = "ds" ]; then
+        ROS_SUPER_CLIENT=TRUE timeout 20 ros2 topic list --no-daemon --spin-time 4 2>/dev/null
+    else
+        ros2 topic list 2>/dev/null
+    fi
+}
+
+if [ "$DISCOVERY_MODE" = "ds" ]; then
+    export ROS_DISCOVERY_SERVER="${JETSON_IP}:11811"
+    unset ROS_SUPER_CLIENT FASTRTPS_DEFAULT_PROFILES_FILE FASTDDS_DEFAULT_PROFILES_FILE
+    source /opt/ros/humble/setup.bash
+    source "$WS_ROOT/install/setup.bash"
+    echo "[laptop_viz] ROS_DOMAIN_ID=$DOMAIN_ID"
+    echo "[laptop_viz] Discovery: client of the robot's discovery server $ROS_DISCOVERY_SERVER"
+    # The daemon would be a plain client and list almost nothing; stop it so
+    # stale state from the other mode cannot confuse anything.
+    ros2 daemon stop >/dev/null 2>&1 || true
+else
+
 # Default ROS2 Simple discovery — NOT the FastDDS discovery server.
 # The discovery server's EDP forwarding between clients is broken in this setup
 # (topics become visible but publishers never learn the subscriber exists, so
@@ -84,9 +133,6 @@ export ROS_LOCALHOST_ONLY=0
 # but unicast UDP between the laptop and Jetson works — verified.
 unset ROS_DISCOVERY_SERVER
 unset ROS_SUPER_CLIENT
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WS_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # ── Generate a FastDDS profile with unicast initial peers ────────────────────
 # Multicast can't reach the Jetson across subnets, so we tell our participant to
@@ -161,6 +207,7 @@ echo ""
 # any Jetson topics.
 ros2 daemon stop 2>/dev/null || true
 ros2 daemon start 2>/dev/null
+fi  # discovery mode
 
 # ── Verify the Jetson is reachable before doing anything ─────────────────────
 # Discovery now rides on unicast UDP, which can't be probed as easily as a TCP
@@ -181,8 +228,9 @@ echo "[laptop_viz] Jetson reachable."
 # data will actually flow.  Poll until /scan appears or 30s elapses.
 echo "[laptop_viz] Waiting for Jetson topics (up to 30s)..."
 FOUND=0
-for _ in $(seq 1 30); do
-    if ros2 topic list 2>/dev/null | grep -q "/scan"; then
+TRIES=30; [ "$DISCOVERY_MODE" = "ds" ] && TRIES=3
+for _ in $(seq 1 $TRIES); do
+    if _topics | grep -q "/scan"; then
         FOUND=1
         break
     fi
@@ -200,7 +248,7 @@ if [ "$FOUND" -eq 0 ]; then
     echo "[laptop_viz] Launching RViz anyway..."
 else
     echo "[laptop_viz] Topics found:"
-    ros2 topic list 2>/dev/null | grep -E "/scan|/odom|/camera|/map|/robot_description|/tf" | sed 's/^/  /'
+    _topics | grep -E "/scan|/odom|/camera|/map|/robot_description|/tf" | sed 's/^/  /'
 fi
 echo ""
 
@@ -234,7 +282,7 @@ fi
 #     "Message Filter dropping message: frame 'odom' ... queue is full"
 # with the map lagging seconds behind.  Catch that here rather than let it look
 # like a network fault.
-if [ "$VIEW" != "3d" ] && ros2 topic list 2>/dev/null | grep -qx "/octomap_binary"; then
+if [ "$VIEW" != "3d" ] && _topics | grep -qx "/octomap_binary"; then
     echo ""
     echo "[laptop_viz] ================================ WARNING ================================"
     echo "[laptop_viz] 3D mapping is RUNNING on the robot, but view '${VIEW:-full}' uses a"
@@ -242,7 +290,7 @@ if [ "$VIEW" != "3d" ] && ros2 topic list 2>/dev/null | grep -qx "/octomap_binar
     echo "[laptop_viz] Unless SLAM/AMCL is localized there is no map->odom, so RViz will drop"
     echo "[laptop_viz] every octomap message with \"queue is full\" and the map will lag badly."
     echo "[laptop_viz]"
-    echo "[laptop_viz]   Use:  bash scripts/laptop_viz.sh $1 3d"
+    echo "[laptop_viz]   Use:  bash scripts/laptop_viz.sh $JETSON_IP 3d"
     echo "[laptop_viz] =========================================================================="
     echo ""
 fi
@@ -253,7 +301,7 @@ if [ "$VIEW" = "3d" ]; then
     echo "    ros2 launch yahboomcar_nav x3_octomap.launch.py"
     echo "  and the octomap topics require ros-humble-octomap-server installed there."
     for t in /pointcloud_raw /octomap_binary; do
-        if ros2 topic list 2>/dev/null | grep -qx "$t"; then
+        if _topics | grep -qx "$t"; then
             echo "    [ok]      $t"
         else
             echo "    [MISSING] $t"
