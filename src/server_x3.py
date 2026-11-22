@@ -4416,14 +4416,54 @@ def _rear_preview(device_id, stop, latest):
         stop.wait(3)
 
 
-async def oak_camera_feed_loop():
-    rear_id = os.environ.get('X3_REAR_OAK_ID')
-    if not rear_id or SIM_MODE:
+# Left camera: Innomaker U20CAM-9281M (OV9281 mono, 0c45:636d, serial SN0001),
+# added 2026-11-21. Mounted sideways, so frames are rotated 90 deg clockwise
+# to make them upright. X3_LEFT_CAM overrides the device ("none" disables it).
+LEFT_CAM_GLOB = '/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB_2.0_Camera_SN0001-video-index0'
+LEFT_CAM_ROTATE = cv2.ROTATE_90_CLOCKWISE
+
+
+def _left_capture(stop, latest):
+    """Grab the left camera at 640x400 (full field of view, binned) and keep the latest upright frame."""
+    dev = os.environ.get('X3_LEFT_CAM', LEFT_CAM_GLOB)
+    if dev.lower() == 'none':
         return
+    while not stop.is_set():
+        if not os.path.exists(dev):
+            stop.wait(3)
+            continue
+        cap = cv2.VideoCapture(dev, cv2.CAP_V4L2)
+        try:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 400)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            logger.info("Left camera opened: %s", dev)
+            while not stop.is_set():
+                ok, frame = cap.read()
+                if not ok:
+                    logger.warning("Left camera: read failed, reopening")
+                    break
+                latest[0] = cv2.rotate(frame, LEFT_CAM_ROTATE)
+        except Exception as exc:
+            logger.warning("Left camera unavailable: %s", exc)
+        finally:
+            cap.release()
+        latest[0] = None
+        stop.wait(3)
+
+
+async def oak_camera_feed_loop():
+    if SIM_MODE:
+        return
+    rear_id = os.environ.get('X3_REAR_OAK_ID')
     rear = [None]
+    left = [None]
     stop = threading.Event()
-    worker = threading.Thread(target=_rear_preview, args=(rear_id, stop, rear), daemon=True)
-    worker.start()
+    workers = [threading.Thread(target=_left_capture, args=(stop, left), daemon=True)]
+    if rear_id:
+        workers.append(threading.Thread(target=_rear_preview, args=(rear_id, stop, rear), daemon=True))
+    for w in workers:
+        w.start()
     previous = {}
     sent_at = {}
     try:
@@ -4432,7 +4472,7 @@ async def oak_camera_feed_loop():
             if targets:
                 front = oak.get_stereo_frames()[0] if oak is not None else None
                 now = time.monotonic()
-                for role, image in (('front', front), ('rear', rear[0])):
+                for role, image in (('front', front), ('rear', rear[0]), ('left', left[0])):
                     if image is None or image is previous.get(role):
                         continue
                     # Send each new frame, at most OAK_FEED_FPS per role (the
@@ -4453,7 +4493,8 @@ async def oak_camera_feed_loop():
             await asyncio.sleep(0.02)
     finally:
         stop.set()
-        await asyncio.to_thread(worker.join, 3)
+        for w in workers:
+            await asyncio.to_thread(w.join, 3)
 
 
 _ros_data_state = None   # last DataWatchdog.check(); sent in the readout as "ros_data"
