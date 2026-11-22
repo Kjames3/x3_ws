@@ -5,6 +5,21 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-22 — Classifier scores on the seeded couch clusters
+
+**Problem:** seeded candidates covered 86% of the seated frames, but their clusters reach about 1.97 m high. Does the classifier see a person in them?
+
+**Potential solution:** score them with model_base_1121.joblib, using the offline evaluator `camera_seed_eval.py`.
+
+**Work done:** replayed both couch bags through the evaluator (`--jobs 2`). Added `seeded-couch-empty-r1` to EMPTY_RUNS. Output is in `artifacts/person-lidar-2026-11-22/seeded_couch_eval.txt`.
+
+**Results:**
+- Seated run (818 camera-person frames): the base extractor matched you in 2.0% of frames. Seeded search found a body on the camera ray in 100%, adding a new row in 97.6% (median 0.05 m from the camera XY).
+- **The classifier scored only 0.6% of the 798 seeded rows above 0.5 (0.4% on box features).** So it rejects seated-on-couch clusters almost always.
+- Empty run: 0 seeds, 0 false alarms; the base extractor made 0 false alarms too.
+- Runtime: seeded search 0.27 ms per frame.
+- **Conclusion:** the camera finds the person and the lidar finds a body there, but the classifier does not confirm it. The model was trained mostly on standing people and desk sitters, so a body merged with the couch back does not look like a person. Options: (1) trust camera + seeded body without the classifier (a camera-gated track); (2) retrain with seeded couch rows as positives; (3) crop the cluster at a seated height before featuring.
+
 ## 2026-11-22 — Nav2 launch from the GUI sometimes loaded no nodes
 - **Problem:** twice in one evening "Launch Nav2" left `nav2_container` running with no AMCL, map server, planner or controller, and no error anywhere (the server sent Nav2's output to /dev/null). The GUI still looked localized from the previous session.
 - **Potential solution:** the launch logs in `~/.ros/log/<stamp>/launch.log` showed the bad launches stuck waiting on `/nav2_container/_container/load_node` (no response, ever), while good ones loaded 11 nodes in seconds: the composition service lost a request or reply during discovery over the FastDDS discovery server. Run Nav2 without composition.

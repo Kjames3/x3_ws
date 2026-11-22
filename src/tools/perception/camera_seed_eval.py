@@ -57,7 +57,7 @@ from yahboomcar_bringup import cluster_features as cf  # noqa: E402
 from yahboomcar_bringup import person_candidates as pc  # noqa: E402
 
 MATCH_M = 0.6
-EMPTY_RUNS = {'empty-r1'}       # 11-20 lab: nobody in front of the robot (person stayed behind it)
+EMPTY_RUNS = {'empty-r1', 'seeded-couch-empty-r1'}       # 11-20 lab: nobody in front of the robot (person stayed behind it)
 CONTROL_MAX_R = 0.6
 
 
