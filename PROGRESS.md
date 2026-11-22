@@ -16,7 +16,7 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
   - T_lidar_camera = (0.005, 0.057, -0.077) m, about 0.7° from the seed.
   - Mean edge distance 8.7 → 7.1 px; the table legs, wagon and door frame overlay correctly.
   - Saved as `left` in `config/camera_lidar_extrinsics_2026-11-20.json`.
-  - **Not in the URDF yet**: a 2.1 mm M12 lens (~110° HFOV, matching the right camera) is planned, after which the lens calibration and extrinsic will be redone.
+  - Added to the URDF the same evening (92343aa, deployed): `left_cam_link` and `left_cam_optical_frame` hang off `livox_frame`, and the live TF matches the JSON. A 2.1 mm M12 lens (~110° HFOV, matching the right camera) is planned, after which the lens calibration and extrinsic will be redone.
   - The koide3 NaN cause is still open.
 
 ## 2026-11-21 — Left camera lens (fisheye) calibration
