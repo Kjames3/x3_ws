@@ -2,14 +2,14 @@
   "fisheye": {
     "K": [
       [
-        1119.7112792707085,
+        1119.8147310633908,
         0.0,
-        687.8211744166308
+        687.7867247303296
       ],
       [
         0.0,
-        1118.861794813975,
-        378.24968243025637
+        1119.005052302666,
+        378.1940942463927
       ],
       [
         0.0,
@@ -18,29 +18,35 @@
       ]
     ],
     "D": [
-      -0.1296205086039948,
-      0.039102560190841226,
-      -0.15664438812142634,
-      0.1750481440136499
+      -0.1301313382744819,
+      0.035611920613743915,
+      -0.1365515321435471,
+      0.14971892847720542
     ],
-    "rms_px": 0.4666192097151059,
+    "rms_px": 0.4258185577678484,
     "width": 1280,
     "height": 800,
-    "n_views": 26,
+    "n_views": 36,
     "board": "9x6 squares, 23.3 mm",
     "date": "2026-11-21",
     "rotated": "180 deg (upright, as x3_server publishes)",
+    "views": "~/calib/left_views (35) + ~/calib/left_views_topup (15) on the robot",
     "dropped_views": [
-      "view_001.png",
-      "view_002.png",
-      "view_003.png",
-      "view_005.png",
-      "view_009.png",
-      "view_010.png",
-      "view_012.png",
-      "view_018.png",
-      "view_020.png"
+      "views/view_001.png",
+      "views/view_002.png",
+      "views/view_003.png",
+      "views/view_005.png",
+      "views/view_009.png",
+      "views/view_010.png",
+      "views/view_012.png",
+      "views/view_018.png",
+      "views/view_020.png",
+      "topup/view_001.png",
+      "topup/view_006.png",
+      "topup/view_008.png",
+      "topup/view_009.png",
+      "topup/view_011.png"
     ],
-    "note": "refit on laptop 2026-11-21 without views whose per-view RMS > 1 px (partial-board / bad corner detections); robot fit with all 35 views was 1.568 px"
+    "note": "refit on laptop without views whose per-view RMS > 1 px (partial board / bad corners). Robot fits: 1.568 px (35 views), 2.000 px (15 top-up views)."
   }
 }

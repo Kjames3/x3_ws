@@ -16,7 +16,7 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
   - fx 1119.7 px, centre (687.8, 378.2); the lens covers about 69° horizontally and 42° vertically, a much narrower lens than the right Arducam's ~112°.
   - Pinhole models fit worse (0.70 px).
   - The image corners are thinly covered (6–8 corner points in the top-left and bottom-right cells), so the edge distortion is extrapolated. The right camera reached 0.09 px, so this fit is **provisional**.
-  - **Next:** a short top-up capture in the corners, then the lidar extrinsic.
+  - **Top-up (same day):** 15 more views with the board near the corners (robot fit 2.0 px). Merged refit: **0.43 px on 36 of 50 views**, fx 1119.8 / fy 1119.0, centre (687.8, 378.2). The parameters barely moved, so the fit is stable. Top-left coverage 6 → 31 points, bottom-right still thin (11). Good enough for the lidar extrinsic.
 
 ## 2026-11-21 — ROS data-plane stall: root cause found and fixed (logind RemoveIPC)
 - **Problem:** every ROS topic went silent about 1–3 minutes after a restart, while the Livox kept sending (~2,300 packets/s on eno1).
