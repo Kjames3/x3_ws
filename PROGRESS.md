@@ -5,6 +5,18 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-22 — Livox low band into the costmaps; laptop_viz on the AGX
+
+**Problem.** In the new lab, Auto-Explore hit table and truss bases and caught on cables. Nav2 and the CBF see only `/scan`, a 0.26–0.36 m slice of the Livox cloud, and the ToF arrays are off the chassis. Separately, `laptop_viz.sh` found no topics on the AGX.
+
+**Potential solution.** Publish the cloud's 0.06–0.45 m band as a costmap source and remember it inside the lidar's blind radius. Make `laptop_viz.sh` join the AGX discovery server.
+
+**Work done.** `livox_scan_node` publishes `/livox/obstacles` in `odom`. It remembers 5 cm voxels until their spot is back in view (-7° lowest ray) and empty, for at most 20 s, so `/scan` raytracing can't erase a bar the lidar no longer sees. It is a mark-only `livox_low` source in the local and global costmaps (e200e9b, bf0df38). The floor cutoff is 0.06 m plus 1.5 cm/m beyond 2 m: parked on lab carpet, floor returns peaked at -0.02–0 and 0.02–0.05 m out to 4.5 m. `laptop_viz.sh` probes robot:11811 and becomes a discovery-server client (03a59dc). Plan for cables: `notes/plans/low_obstacle_and_cable_detection.md`.
+
+**Results.** Parked in the lab, `/livox/obstacles` held about 1,450 points: walls, cabinets, and chair and truss bases, with no floor speckle. Nav2 was not running, so the costmap and driving are untested. The CBF does not use this source yet. From the laptop over Tailscale, `/odom`, `/scan`, `/tf`, `/map` and `/robot_description` arrived. `/livox/lidar` did not.
+
+**Lab check.** Run Auto-Explore near the truss and the chair bases. Watch the local costmap in `laptop_viz.sh orin nav` and confirm low bars stay marked as the robot closes in.
+
 ## 2026-11-22 — Auto-Explore stop handling, frontier selection and simulation
 
 **Problem.** The operator could stop the wheels while Nav2 retained a goal. The explorer could mark a failed approach as visited or aim at a centroid across a wall. Mapping and saved-map localization could also launch simultaneously from the GUI.
