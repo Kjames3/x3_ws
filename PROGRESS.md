@@ -5,6 +5,20 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-21 — ROS data-plane stall: root cause found and fixed (logind RemoveIPC)
+- **Problem:** every ROS topic went silent about 1–3 minutes after a restart, while the Livox kept sending (~2,300 packets/s on eno1).
+- **Potential solution:** find what breaks FastDDS. Its shared-memory transport carries all on-robot traffic.
+- **Work done:**
+  - Saw that the `/dev/shm/fastrtps_*` files were gone during the stall, with the processes still running.
+  - Reproduced it: 50 files before an SSH session ended, 0 after.
+  - systemd-logind's default `RemoveIPC=yes` deletes a user's shared memory when that user's last login session closes. The services run as `jetson`, and every SSH command opens and closes a `jetson` session.
+  - Fix on the robot: `loginctl enable-linger jetson` (takes effect immediately) plus `/etc/systemd/logind.conf.d/10-x3-keep-ipc.conf` with `RemoveIPC=no` (persists; copy kept in `deploy/logind/`).
+- **Results:**
+  - After the fix, the files survived two SSH sessions closing and the watchdog stayed quiet.
+  - This explains the "~1 in 3 startups" pattern: the stall happened whenever someone's SSH session to the robot ended after the services had started.
+  - Restarting the services only worked because it recreated the files.
+  - The watchdog stays as a guard.
+
 ## 2026-11-21 — Data-plane stall came back after server restarts (watchdog caught it)
 - **Problem:** the Surroundings view was empty on the laptop.
 - **Work done:** read the watchdog log. Then restarted x3_server and, 15 s later, foxglove_bridge.
