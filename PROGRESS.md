@@ -5,6 +5,17 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-22 — Doorway: x3_v2 robot now drives through the 0.88 m apartment doorway
+- **Problem:** Nav2 could not take the robot through the 0.88 m (measured) doorway into a room.
+- **Potential solution:** find the blocker from a bag first, then shrink the clearances that the x3_v2 geometry does not need.
+- **Work done:**
+  - Bag 1 (`~/bags/doorway/doorway_20261122_014046` on the robot) was useless for the door: AMCL started at the map origin (no pose set, auto-pose ambiguous), so the robot drove its plan in the wrong frame. A second attempt found the Nav2 container empty (relaunched 8 s after stop, no nodes loaded; the server sends Nav2 output to /dev/null).
+  - Bag 2 (`doorway_20261122_015832`): the CBF passed Nav2's commands unchanged; the **global planner** lost the path ~0.5 m from the door (`GridBased: no valid path found`, then a spin recovery). The saved map's opening is ~0.75 m (5 cm wall cells), and inscribed inflation at 0.30 m left a one-cell corridor that a live scan hit closed.
+  - Changes: global costmap resolution 0.05 -> 0.025; footprint half-width 0.30 -> 0.293 (measured wheel faces) in both costmaps and the CBF default; CBF margin 0.10 -> 0.05 (`X3_CBF_MARGIN_M` still overrides).
+- **Results:**
+  - Bag 3 (`doorway_20261122_020804`): goal **SUCCEEDED**, robot through the centre of the doorway without touching it (user-observed), ended 0.2 m from the goal.
+  - Still slow: through the doorway the CBF cut Nav2's 0.26 m/s to 0.02–0.05 m/s for ~15 s, with three "CBF infeasible" stops (nearest obstacle 0.54 m), and the planner still logged 6 "no valid path" replans. Possible next steps: a larger CBF gamma near static walls, or widening the map's doorway cells.
+  - The pre-existing failure `test_cbf_tof_safety::test_pose_follows_fused_odom_not_raw` is unrelated (fails without this change too).
 ## 2026-11-22 — Nav map robot marker: map frame and correct rotation
 - **Problem:** in the GUI, dragging a heading for Set Initial Pose seemed to do nothing, and the blue robot arrow moved wrongly compared with the real robot.
 - **Cause:** the arrow was the raw `/odom` pose drawn as if it were the map frame, so an initial pose or any AMCL correction never moved it; and it was rotated by `theta + π`, which mirrors turns (left turn showed as a right turn). The lidar dots on the map used the same hand-tuned signs. The pose and heading WERE being sent to AMCL.

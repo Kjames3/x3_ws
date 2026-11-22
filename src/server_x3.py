@@ -624,7 +624,10 @@ CBF_SAFE_DISTANCE_M = float(os.environ.get('X3_CBF_SAFE_DISTANCE_M', 0.30))
 # 0.30) from the wheel
 # centroid; see yahboomcar_description/config/x3_v2_cad_frames.yaml. The wide
 # 2026-11-13 frame was '0.41,0.41,0.37,0.37'; the old X3 '0.16,0.13,0.11,0.11'.
-_fp = os.environ.get('X3_CBF_FOOTPRINT', '0.32,0.32,0.30,0.30').strip().lower()
+# 2026-11-22: sides 0.293 (the measured wheel faces, no longer rounded up to
+# 0.30) so the robot fits an 0.88 m doorway (apartment, doorway bag
+# ~/bags/doorway/doorway_20261122_015832 on the robot).
+_fp = os.environ.get('X3_CBF_FOOTPRINT', '0.32,0.32,0.293,0.293').strip().lower()
 CBF_FOOTPRINT = None if _fp == 'circle' else tuple(float(v) for v in _fp.split(','))
 # Yaw error of the lidar mount, added to every lidar bearing before it becomes
 # a CBF obstacle. Measured 2026-10-11 with src/tools/calibration/lidar_yaw_calib.py: +4.85 deg
@@ -643,8 +646,10 @@ LIDAR_X_M = float(os.environ.get('X3_LIDAR_X_M', -0.0025))
 # While this file exists the CBF is bypassed for manual driving (calibration
 # runs). Remove it to re-arm; nothing else changes.
 CBF_OFF_FILE = os.environ.get('X3_CBF_OFF_FILE', '/tmp/x3_cbf_off')
-# Clearance kept round that outline.
-CBF_MARGIN_M = float(os.environ.get('X3_CBF_MARGIN_M', 0.10))
+# Clearance kept round that outline. 0.05 (was 0.10): at 0.10 the CBF needed
+# 0.79 m of clear width, leaving +-4.5 cm of centring in the 0.88 m apartment
+# doorway (2026-11-22).
+CBF_MARGIN_M = float(os.environ.get('X3_CBF_MARGIN_M', 0.05))
 # A walking person reaches the CBF as one point at the torso's depth, with
 # legs and feet ahead of it, so it is kept clear by a body radius too, and it
 # has its own gamma: the retreat starts at (closing speed / gamma) from the

@@ -304,12 +304,12 @@ local_costmap:
       # The chassis as the same rectangle the CBF uses (server_x3.py CBF_FOOTPRINT,
       # metres from the base origin: front 0.32, rear 0.32, left 0.30, right 0.30).
       # X3 v2 locked geometry (Design_v2, 2026-11-18): CAD extent x +-0.320,
-      # y +-0.293 (rounded up to 0.30) from the wheel centroid, which base_footprint sits on
+      # y +-0.293 (no longer rounded up to 0.30, 2026-11-22) from the wheel centroid, which base_footprint sits on
       # (yahboomcar_description/config/x3_v2_cad_frames.yaml). The wide
       # 2026-11-13 frame was 0.41/0.37. The old X3 was [[0.16, 0.11], [0.16, -0.11], [-0.13, -0.11],
       # [-0.13, 0.11]]; a circle there let MPPI pass 0.15 m from a box while the front
       # corners sat 0.19 m out (box test 2026-10-22), hence a polygon.
-      footprint: "[[0.32, 0.30], [0.32, -0.30], [-0.32, -0.30], [-0.32, 0.30]]"
+      footprint: "[[0.32, 0.293], [0.32, -0.293], [-0.32, -0.293], [-0.32, 0.293]]"
       plugins: ["obstacle_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
@@ -385,8 +385,11 @@ global_costmap:
       robot_base_frame: base_footprint
       use_sim_time: False
       # Same rectangle as local_costmap and the CBF (see the note there).
-      footprint: "[[0.32, 0.30], [0.32, -0.30], [-0.32, -0.30], [-0.32, 0.30]]"
-      resolution: 0.05
+      footprint: "[[0.32, 0.293], [0.32, -0.293], [-0.32, -0.293], [-0.32, 0.293]]"
+      # 0.025, not the map's 0.05: at 0.05 the wall-cell and inflation rounding
+      # left a single 5 cm corridor through the 0.88 m apartment doorway and the
+      # planner lost it as soon as a live scan hit landed (2026-11-22).
+      resolution: 0.025
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
