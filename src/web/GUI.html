@@ -9,7 +9,7 @@
     <script src="vendor/three/three.min.js"></script>
     <script src="vendor/three/OrbitControls.js"></script>
 
-    <link rel="stylesheet" href="style.css?v=10">
+    <link rel="stylesheet" href="style.css?v=11">
     <link rel="stylesheet" href="dashboard.css?v=8">
     <link rel="stylesheet" href="mobile.css?v=2">
 </head>
@@ -690,6 +690,12 @@
                     <!-- 2D canvas: overlays (path, robot arrow, goal, lidar dots) + click target -->
                     <canvas id="nav-map-canvas" class="nav-canvas"
                             style="position:relative; background:transparent;"></canvas>
+                    <div class="nav-view-controls" aria-label="Map view">
+                        <button type="button" id="nav-view-zoom-in" title="Zoom in (or scroll)">+</button>
+                        <button type="button" id="nav-view-zoom-out" title="Zoom out">−</button>
+                        <button type="button" id="nav-view-fit" title="Show the whole map">Fit</button>
+                        <button type="button" id="nav-view-follow" title="Keep the robot centred">Follow</button>
+                    </div>
                     <div id="nav-hint" class="nav-hint">Connect in --ros2 or --sim mode to enable navigation</div>
                 </div>
 
@@ -909,7 +915,7 @@
             </div>
         </form>
     </dialog>
-    <script src="main.js?v=nav-modes-2"></script>
+    <script src="main.js?v=nav-view-1"></script>
     <script src="dashboard.js?v=2"></script>
     <script src="log-console.js?v=2"></script>
     <script src="vendor/three/GLTFLoader.js"></script>
