@@ -433,7 +433,14 @@ class Nav2Client:
             self._recoveries = int(fb.number_of_recoveries)
 
     def _rosout_cb(self, msg) -> None:
-        if msg.level < Log.WARN or not any(n in msg.name for n in _NAV2_LOG_NODES):
+        try:
+            self._rosout_handle(msg)
+        except Exception:  # noqa: BLE001 — never let a log callback kill the spin thread
+            logger.debug('rosout callback failed', exc_info=True)
+
+    def _rosout_handle(self, msg) -> None:
+        # rcl_interfaces/Log level constants are bytes in rclpy (WARN = b'\x1e'); compare as ints.
+        if msg.level < 30 or not any(n in msg.name for n in _NAV2_LOG_NODES):
             return
         if "control loop missed" in msg.msg.lower():
             return  # rate warning, not a failure cause
