@@ -5,6 +5,17 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-22 — Simulation for lidar person training: step 0 started, REAL-1 prepared for Isaac Sim
+- **Problem:** the person classifier lacks seated, furniture-adjacent, close-range and crowd examples.
+- **Potential solution:**
+  - Step 0: add seated people and furniture to the existing synthetic generator, rendered on real Livox rays, and retrain.
+  - Step 1, if step 0 shows realism is the gap: an Isaac Sim 5.1 trial on REAL-1.
+- **Work done:**
+  - Step 0 delegated to a background agent on branch `t3/synthetic-seated-furniture`.
+  - On REAL-1, with shash's verbal permission: logged out his session (his 6-day-old `thesis_robot` detection nodes were holding ~3 GB of the GPU) and added `kinova` to the docker group.
+  - Started pulling `nvcr.io/nvidia/isaac-sim:5.1.0`; no NGC login was needed.
+- **Results:** pending. On REAL-1 the GPU is free (RTX 4080 16 GB, driver 580.178) and Docker has the NVIDIA runtime.
+
 ## 2026-11-21 — Left camera ↔ Livox extrinsic
 - **Problem:** the left camera needs its pose relative to the Livox before lidar points can be matched to people it sees.
 - **Potential solution:** the same 8-station capture as the other cameras, solved with koide3.
