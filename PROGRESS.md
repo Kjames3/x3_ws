@@ -5,6 +5,14 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-21 — Left camera feed in the server and GUI
+- **Problem:** the new left camera (Innomaker U20CAM-9281M) was plugged in but unused, and its image is rotated 90°.
+- **Potential solution:** capture it in the existing role-tagged camera feed loop as the `left` role (the GUI already understands it) and rotate each frame 90° clockwise.
+- **Work done:** `_left_capture()` in `server_x3.py` (2e3da35, deployed). It opens the camera by its by-id path at 640x400, rotates the frame, and reopens the camera if it drops. `X3_LEFT_CAM=none` turns it off.
+- **Results:**
+  - On the robot websocket, front, left, right and rear all arrive at about 14–17 fps. The left frame is upright: the outlet's ground hole is at the bottom.
+  - **Next:** the user adjusts the lens. Then intrinsics, a Livox extrinsic, and the URDF.
+
 ## 2026-11-21 — Clip fix deployed; left camera (Innomaker U20CAM-9281M) connected
 - **Problem:** the C3 box-clip fix was merged but not on the robot. A new left camera was plugged in.
 - **Work done:** robot pulled to 95b2c49 and x3_server restarted. Identified the new camera and grabbed test frames.
