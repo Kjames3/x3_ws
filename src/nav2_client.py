@@ -24,13 +24,15 @@ import subprocess
 import threading
 import time
 import logging
+from dataclasses import dataclass, field
+from functools import partial
 from typing import List, Optional
 
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from action_msgs.msg import GoalStatus
-from geometry_msgs.msg import PoseWithCovarianceStamped, PoseStamped
+from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.srv import LoadMap
 from nav_msgs.msg import Path
@@ -91,6 +93,22 @@ def classify_nav_failure(lines):
     return "Nav2 aborted the goal without logging a reason"
 
 
+@dataclass
+class _Goal:
+    coordinates: dict
+    started_at: float = field(default_factory=time.monotonic)
+    state: str = STATE_PLANNING
+    handle: object | None = None
+    cancel_pending: bool = False
+    outcome: str | None = None
+    fail_reason: str | None = None
+    dist: float | None = None
+    elapsed_s: float | None = None
+    eta_s: float | None = None
+    recoveries: int = 0
+    logs: list[str] = field(default_factory=list)
+
+
 class Nav2Client:
     """
     Thin wrapper around the Nav2 NavigateToPose action client.
@@ -107,20 +125,16 @@ class Nav2Client:
 
         # ── State ───────────────────────────────────────────────────────────
         self._state: str = STATE_IDLE
-        self._goal_handle = None
-        self._goal: Optional[dict] = None           # {x, y, theta}
-        self._path: List[List[float]] = []           # [[x, y], ...]
-        self._dist_remaining: Optional[float] = None
-        # Goal progress readouts (from NavigateToPose feedback) + failure reason.
-        self._goal_t0: Optional[float] = None
-        self._nav_time_s: Optional[float] = None
-        self._eta_s: Optional[float] = None
-        self._recoveries: int = 0
-        self._fail_reason: Optional[str] = None
-        self._nav2_log: List[str] = []   # WARN/ERROR lines from Nav2 nodes this goal
+        self._next_goal_id = 0
+        self._current_goal_id: int | None = None
+        self._goals: dict[int, _Goal] = {}
+        self._active_goals: set[int] = set()
+        self._stopping = False
+        self._path: List[List[float]] = []
         self._nav2_proc: Optional[subprocess.Popen] = None
         # Map YAML currently served to AMCL (basename, GUI display only)
         self._current_map: Optional[str] = None
+        self._external_slam = False
 
         # ── Action client ───────────────────────────────────────────────────
         self._action_client = ActionClient(
@@ -144,14 +158,8 @@ class Nav2Client:
 
     # ── Public API ──────────────────────────────────────────────────────────
 
-    def navigate_to(self, x: float, y: float, theta: float = 0.0) -> None:
-        """Send a NavigateToPose goal (x, y in metres, theta in radians)."""
-        if not self._action_client.wait_for_server(timeout_sec=3.0):
-            logger.warning("[Nav2Client] navigate_to_pose action server not available")
-            with self._lock:
-                self._state = STATE_UNAVAILABLE
-            return
-
+    def navigate_to(self, x: float, y: float, theta: float = 0.0) -> int | None:
+        """Submit a map-frame goal and return its ID, or None if refused."""
         goal_msg = NavigateToPose.Goal()
         goal_msg.pose.header.frame_id = "map"
         goal_msg.pose.header.stamp = self._node.get_clock().now().to_msg()
@@ -165,38 +173,73 @@ class Nav2Client:
         goal_msg.pose.pose.orientation.w = qw
 
         with self._lock:
-            self._state = STATE_PLANNING
-            self._goal = {"x": x, "y": y, "theta": theta}
+            if self._is_cancelling():
+                return None
+            if not self._action_client.server_is_ready():
+                logger.warning("[Nav2Client] navigate_to_pose action server not available")
+                if not self._active_goals:
+                    self._state = STATE_UNAVAILABLE
+                    self._current_goal_id = None
+                    self._path = []
+                return None
+
+            self._next_goal_id += 1
+            goal_id = self._next_goal_id
+            try:
+                send_future = self._action_client.send_goal_async(
+                    goal_msg, feedback_callback=lambda msg: self._feedback_cb(goal_id, msg))
+            except Exception:
+                logger.exception("[Nav2Client] Could not send goal")
+                if not self._active_goals:
+                    self._state = STATE_UNAVAILABLE
+                    self._current_goal_id = None
+                    self._path = []
+                return None
+
+            previous_id = self._current_goal_id
+            if previous_id in self._active_goals:
+                self._goals[previous_id].state = STATE_CANCELLING
+            self._current_goal_id = goal_id
+            self._goals[goal_id] = _Goal({"x": x, "y": y, "theta": theta})
+            self._active_goals.add(goal_id)
             self._path = []
-            self._dist_remaining = None
-            self._goal_t0 = time.monotonic()
-            self._nav_time_s = self._eta_s = None
-            self._recoveries = 0
-            self._fail_reason = None
-            self._nav2_log = []
+            # Keep a bounded terminal history for consumers polling by ID.
+            for old_id in list(self._goals):
+                if old_id <= goal_id - 32 and old_id not in self._active_goals:
+                    del self._goals[old_id]
 
-        send_future = self._action_client.send_goal_async(
-            goal_msg,
-            feedback_callback=self._feedback_cb,
-        )
-        send_future.add_done_callback(self._goal_response_cb)
+        if previous_id is not None:
+            self.cancel(previous_id)
+        send_future.add_done_callback(partial(self._goal_response_cb, goal_id))
         logger.info(f"[Nav2Client] Goal sent → ({x:.2f}, {y:.2f}, θ={math.degrees(theta):.1f}°)")
+        return goal_id
 
-    def cancel(self) -> None:
-        """Cancel the currently active navigation goal."""
+    def cancel(self, goal_id: int | None = None) -> None:
+        """Request cancellation of one goal, or all outstanding goals."""
         with self._lock:
-            handle = self._goal_handle
-            if handle is None:
-                self._state = STATE_IDLE
-                return
-            self._state = STATE_CANCELLING
+            ids = list(self._active_goals) if goal_id is None else [goal_id]
+            requests = []
+            for current_id in ids:
+                if current_id not in self._active_goals:
+                    continue
+                goal = self._goals[current_id]
+                goal.state = STATE_CANCELLING
+                if current_id == self._current_goal_id:
+                    self._path = []
+                if goal.handle is not None and not goal.cancel_pending:
+                    goal.cancel_pending = True
+                    requests.append((current_id, goal.handle))
 
-        cancel_future = handle.cancel_goal_async()
-        cancel_future.add_done_callback(self._cancel_done_cb)
-        logger.info("[Nav2Client] Cancel requested")
+        for current_id, handle in requests:
+            try:
+                future = handle.cancel_goal_async()
+                future.add_done_callback(partial(self._cancel_done_cb, current_id, handle))
+            except Exception as exc:
+                self._cancel_failed(current_id, f"Nav2 cancel request failed: {exc}")
 
     def set_initial_pose(self, x: float, y: float, theta: float = 0.0) -> None:
         """Publish an initial pose estimate to /initialpose (used by AMCL)."""
+        self.cancel()
         msg = PoseWithCovarianceStamped()
         msg.header.frame_id = "map"
         msg.header.stamp = self._node.get_clock().now().to_msg()
@@ -222,6 +265,7 @@ class Nav2Client:
         use_sim_time: bool = False,
         map_path: Optional[str] = None,
         slam: bool = False,
+        external_slam: bool = False,
     ) -> bool:
         """
         Spawn x3_nav2.launch.py as a subprocess.
@@ -229,7 +273,7 @@ class Nav2Client:
         Returns True if the process was started, False if already running.
         """
         with self._lock:
-            if self._nav2_proc is not None and self._nav2_proc.poll() is None:
+            if self._stopping or (self._nav2_proc is not None and self._nav2_proc.poll() is None):
                 logger.warning("[Nav2Client] Nav2 already running")
                 return False
 
@@ -249,6 +293,8 @@ class Nav2Client:
         ]
         if map_path:
             cmd.append(f'map:={map_path}')
+        if external_slam:
+            cmd.append('external_slam:=true')
 
         # Keep Nav2's console output: with DEVNULL a launch that loaded no
         # nodes left nothing to read (2026-11-22). Overwritten each launch.
@@ -278,8 +324,10 @@ class Nav2Client:
         with self._lock:
             self._nav2_proc = proc
             self._state = STATE_IDLE
-            self._current_map = (os.path.basename(map_path) if map_path
-                                 else (None if slam else 'yahboomcar.yaml'))
+            self._external_slam = external_slam
+            self._current_map = (None if slam or external_slam
+                                 else os.path.basename(map_path) if map_path
+                                 else 'yahboomcar.yaml')
 
         return True
 
@@ -292,17 +340,24 @@ class Nav2Client:
         stops updating while the robot is still allowed to drive.
         """
         with self._lock:
-            return self._state in (STATE_PLANNING, STATE_EXECUTING,
-                                   STATE_CANCELLING)
+            return bool(self._active_goals) or self._stopping
 
     def is_driving(self) -> bool:
-        """True while Nav2 itself is publishing /cmd_vel for a goal.
-
-        Narrower than is_busy(): CANCELLING is excluded, because the server's
-        own zero heartbeat must resume the moment a cancel is requested.
-        """
+        """True while the current goal is planning or executing."""
         with self._lock:
-            return self._state in (STATE_PLANNING, STATE_EXECUTING)
+            goal = self._goals.get(self._current_goal_id)
+            return goal is not None and goal.state in (STATE_PLANNING, STATE_EXECUTING)
+
+    def is_cancelling(self) -> bool:
+        """True while any goal is awaiting cancellation or Nav2 is stopping."""
+        with self._lock:
+            return self._is_cancelling()
+
+    def _is_cancelling(self) -> bool:
+        """Check the cancellation barrier with the lock already held."""
+        return self._stopping or any(
+            self._goals[g].state == STATE_CANCELLING for g in self._active_goals
+        )
 
     def load_map(self, map_path: str, timeout: float = 10.0) -> tuple[bool, str]:
         """
@@ -372,137 +427,210 @@ class Nav2Client:
     def stop_nav2(self) -> None:
         """Terminate the Nav2 subprocess if running."""
         with self._lock:
+            if self._stopping:
+                return
             proc = self._nav2_proc
-            self._nav2_proc = None
+            self._stopping = proc is not None
 
-        if proc is not None and proc.poll() is None:
-            # SIGINT is ros2 launch's clean shutdown; it passes it to every node.
-            # If that stalls, kill the whole group so no node outlives it and
-            # doubles up with the next launch (two AMCLs, two planners).
-            try:
-                os.killpg(proc.pid, signal.SIGINT)
-            except ProcessLookupError:
-                pass
-            try:
-                proc.wait(timeout=10.0)
-            except subprocess.TimeoutExpired:
-                logger.warning("[Nav2Client] Nav2 did not stop in 10 s; killing its process group")
+        self.cancel()
+        if proc is None:
+            return
+
+        try:
+            if proc.poll() is None:
                 try:
-                    os.killpg(proc.pid, signal.SIGKILL)
+                    os.killpg(proc.pid, signal.SIGINT)
                 except ProcessLookupError:
                     pass
-                proc.wait(timeout=5.0)
-            logger.info("[Nav2Client] Nav2 subprocess stopped")
+                try:
+                    proc.wait(timeout=10.0)
+                except subprocess.TimeoutExpired:
+                    logger.warning("[Nav2Client] Nav2 did not stop in 10 s; killing its process group")
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    proc.wait(timeout=5.0)
+                logger.info("[Nav2Client] Nav2 subprocess stopped")
+        finally:
+            with self._lock:
+                self._stopping = False
+                if proc.poll() is not None:
+                    self._nav2_proc = None
+                    for goal_id in list(self._active_goals):
+                        self._finish_goal(goal_id, STATE_IDLE, "CANCELED")
+                    self._state = STATE_IDLE
+                    self._current_goal_id = None
+                    self._path = []
+                    self._current_map = None
+                    self._external_slam = False
 
+    def get_status(self, goal_id: int | None = None) -> dict:
+        """Return a JSON-safe status, optionally for a specific goal ID."""
         with self._lock:
-            self._state = STATE_IDLE
-            self._goal = None
-            self._path = []
-            self._dist_remaining = None
-            self._goal_handle = None
-            self._current_map = None
-
-    def get_status(self) -> dict:
-        """Return a snapshot dict safe to serialise to JSON."""
-        with self._lock:
-            path = self._path
-            # Subsample to ≤ _MAX_PATH_PTS points for the broadcast
+            current = goal_id is None or goal_id == self._current_goal_id
+            goal = self._goals.get(self._current_goal_id if goal_id is None else goal_id)
+            path = self._path if current else []
             if len(path) > _MAX_PATH_PTS:
-                step = len(path) // _MAX_PATH_PTS
+                step = math.ceil(len(path) / _MAX_PATH_PTS)
                 path = path[::step]
+            elapsed_s = goal.elapsed_s if goal else None
+            if elapsed_s is None and goal and goal.state in (STATE_PLANNING, STATE_EXECUTING):
+                elapsed_s = time.monotonic() - goal.started_at
             return {
-                "state":     self._state,
-                "goal":      self._goal,
-                "path":      path,
-                "dist":      self._dist_remaining,
-                "elapsed_s": (self._nav_time_s if self._nav_time_s is not None else
-                              (time.monotonic() - self._goal_t0
-                               if self._goal_t0 is not None and self._state in (STATE_PLANNING, STATE_EXECUTING)
-                               else None)),
-                "eta_s":     self._eta_s,
-                "recoveries": self._recoveries,
-                "fail_reason": self._fail_reason,
-                "map":       self._current_map,
-                "nav2_running": (
-                    self._nav2_proc is not None
-                    and self._nav2_proc.poll() is None
-                ),
+                "state": goal.state if goal else (self._state if current else STATE_IDLE),
+                "goal": goal.coordinates if goal and goal.state != STATE_IDLE else None,
+                "path": path,
+                "dist": goal.dist if goal else None,
+                "elapsed_s": elapsed_s,
+                "eta_s": goal.eta_s if goal else None,
+                "recoveries": goal.recoveries if goal else 0,
+                "fail_reason": goal.fail_reason if goal else None,
+                "outcome": goal.outcome if goal else None,
+                "map": self._current_map,
+                "external_slam": self._external_slam,
+                "nav2_running": self._nav2_proc is not None and self._nav2_proc.poll() is None,
             }
 
-    # ── Internal callbacks ──────────────────────────────────────────────────
-
-    def _goal_response_cb(self, future) -> None:
-        handle = future.result()
-        if not handle.accepted:
-            logger.warning("[Nav2Client] Goal rejected by Nav2")
-            with self._lock:
-                self._state = STATE_FAILED
-                self._goal_handle = None
-                self._fail_reason = "Nav2 rejected the goal (is it inside the map? is Nav2 active?)"
+    def _goal_response_cb(self, goal_id, future) -> None:
+        try:
+            handle = future.result()
+        except Exception as exc:
+            self._mark_uncertain(goal_id, f"Nav2 goal acceptance unknown: {exc}")
             return
 
         with self._lock:
-            self._goal_handle = handle
-            self._state = STATE_EXECUTING
+            if not handle.accepted:
+                if goal_id in self._active_goals:
+                    self._finish_goal(
+                        goal_id, STATE_FAILED, "REJECTED",
+                        "Nav2 rejected the goal (is it inside the map? is Nav2 active?)",
+                    )
+                return
 
-        result_future = handle.get_result_async()
-        result_future.add_done_callback(self._result_cb)
-        logger.info("[Nav2Client] Goal accepted, executing")
+            active = goal_id in self._active_goals
+            if active:
+                goal = self._goals[goal_id]
+                goal.handle = handle
+                cancel = goal.state == STATE_CANCELLING or goal_id != self._current_goal_id
+                if not cancel:
+                    goal.state = STATE_EXECUTING
 
-    def _feedback_cb(self, feedback_msg) -> None:
+        if not active:
+            # An owned Nav2 process may have stopped before its late response.
+            try:
+                handle.cancel_goal_async()
+            except Exception:
+                logger.exception("[Nav2Client] Could not cancel late Nav2 acceptance")
+            return
+
+        try:
+            result_future = handle.get_result_async()
+            result_future.add_done_callback(partial(self._result_cb, goal_id))
+        except Exception as exc:
+            self._mark_uncertain(goal_id, f"Nav2 goal result unavailable: {exc}")
+            return
+        if cancel:
+            self.cancel(goal_id)
+
+    def _feedback_cb(self, goal_id, feedback_msg) -> None:
         fb = feedback_msg.feedback
         with self._lock:
-            self._dist_remaining = fb.distance_remaining
-            self._nav_time_s = fb.navigation_time.sec + fb.navigation_time.nanosec * 1e-9
+            if goal_id != self._current_goal_id or goal_id not in self._active_goals:
+                return
+            goal = self._goals[goal_id]
+            if goal.state == STATE_CANCELLING:
+                return
+            goal.dist = fb.distance_remaining
+            goal.elapsed_s = fb.navigation_time.sec + fb.navigation_time.nanosec * 1e-9
             eta = fb.estimated_time_remaining.sec + fb.estimated_time_remaining.nanosec * 1e-9
-            self._eta_s = eta if eta > 0 else None
-            self._recoveries = int(fb.number_of_recoveries)
+            goal.eta_s = eta if eta > 0 else None
+            goal.recoveries = int(fb.number_of_recoveries)
 
     def _rosout_cb(self, msg) -> None:
         try:
             self._rosout_handle(msg)
-        except Exception:  # noqa: BLE001 — never let a log callback kill the spin thread
+        except Exception:
             logger.debug('rosout callback failed', exc_info=True)
 
     def _rosout_handle(self, msg) -> None:
-        # rcl_interfaces/Log level constants are bytes in rclpy (WARN = b'\x1e'); compare as ints.
         if msg.level < 30 or not any(n in msg.name for n in _NAV2_LOG_NODES):
             return
         if "control loop missed" in msg.msg.lower():
-            return  # rate warning, not a failure cause
+            return
         with self._lock:
-            if self._goal_t0 is None:
+            if self._current_goal_id in self._active_goals:
+                goal = self._goals[self._current_goal_id]
+                goal.logs.append(f"{msg.name}: {msg.msg}")
+                del goal.logs[:-30]
+
+    def _finish_goal(self, goal_id, state, outcome, reason=None) -> None:
+        """Record a terminal result with the lock held."""
+        self._active_goals.remove(goal_id)
+        goal = self._goals[goal_id]
+        goal.state = state
+        goal.outcome = outcome
+        goal.fail_reason = reason
+        goal.handle = None
+        goal.dist = None
+        logger.info("[Nav2Client] Goal %s %s%s", goal_id, outcome, f": {reason}" if reason else "")
+
+    def _mark_uncertain(self, goal_id, reason) -> None:
+        with self._lock:
+            if goal_id not in self._active_goals:
                 return
-            self._nav2_log.append(f"{msg.name}: {msg.msg}")
-            del self._nav2_log[:-30]
+            goal = self._goals[goal_id]
+            goal.outcome = "ERROR"
+            goal.fail_reason = reason
+        logger.warning("[Nav2Client] Goal %s: %s", goal_id, reason)
+        # Keep ownership until the action or its owned process is terminal.
+        self.cancel(goal_id)
 
-    def _result_cb(self, future) -> None:
-        result = future.result()
-        status = result.status
+    def _result_cb(self, goal_id, future) -> None:
+        try:
+            status = future.result().status
+        except Exception as exc:
+            self._mark_uncertain(goal_id, f"Nav2 goal result unknown: {exc}")
+            return
+        if status not in (GoalStatus.STATUS_SUCCEEDED, GoalStatus.STATUS_CANCELED,
+                          GoalStatus.STATUS_ABORTED):
+            self._mark_uncertain(goal_id, f"Nav2 returned a nonterminal goal status ({status})")
+            return
+
         with self._lock:
-            self._goal_handle = None
+            if goal_id not in self._active_goals:
+                return
             if status == GoalStatus.STATUS_SUCCEEDED:
-                self._state = STATE_SUCCEEDED
-                logger.info("[Nav2Client] Goal SUCCEEDED")
+                self._finish_goal(goal_id, STATE_SUCCEEDED, "SUCCEEDED")
             elif status == GoalStatus.STATUS_CANCELED:
-                self._state = STATE_IDLE
-                self._goal = None
-                logger.info("[Nav2Client] Goal CANCELLED")
+                self._finish_goal(goal_id, STATE_IDLE, "CANCELED")
             else:
-                self._state = STATE_FAILED
-                self._fail_reason = classify_nav_failure(self._nav2_log)
-                logger.warning(f"[Nav2Client] Goal FAILED (status={status}): {self._fail_reason}")
-            self._dist_remaining = None
+                reason = classify_nav_failure(self._goals[goal_id].logs)
+                self._finish_goal(goal_id, STATE_FAILED, "ABORTED", reason)
 
-    def _cancel_done_cb(self, future) -> None:
+    def _cancel_done_cb(self, goal_id, handle, future) -> None:
+        try:
+            response = future.result()
+            if any(info.goal_id == handle.goal_id for info in response.goals_canceling):
+                return  # The action's result confirms terminal state.
+            reason = f"Nav2 did not accept cancellation (code {response.return_code})"
+        except Exception as exc:
+            reason = f"Nav2 cancel response failed: {exc}"
+        self._cancel_failed(goal_id, reason)
+
+    def _cancel_failed(self, goal_id, reason) -> None:
         with self._lock:
-            self._state = STATE_IDLE
-            self._goal = None
-            self._goal_handle = None
-        logger.info("[Nav2Client] Cancel confirmed")
+            if goal_id not in self._active_goals:
+                return
+            goal = self._goals[goal_id]
+            goal.cancel_pending = False
+            goal.fail_reason = reason
+        logger.warning("[Nav2Client] Goal %s: %s", goal_id, reason)
 
     def _plan_cb(self, msg: Path) -> None:
         """Store the global plan as a list of [x, y] pairs."""
         pts = [[p.pose.position.x, p.pose.position.y] for p in msg.poses]
         with self._lock:
-            self._path = pts
+            goal = self._goals.get(self._current_goal_id)
+            if goal and goal.state in (STATE_PLANNING, STATE_EXECUTING):
+                self._path = pts

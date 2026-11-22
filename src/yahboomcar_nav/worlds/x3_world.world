@@ -117,5 +117,29 @@
       </link>
     </model>
 
+    <!-- A bounded room gives SLAM returns around the starting footprint. -->
+    <model name="lab_walls">
+      <static>true</static>
+      <link name="east">
+        <pose>4 0 0.5 0 0 0</pose>
+        <collision name="collision"><geometry><box><size>0.1 8 1</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.1 8 1</size></box></geometry></visual>
+      </link>
+      <link name="west">
+        <pose>-4 0 0.5 0 0 0</pose>
+        <collision name="collision"><geometry><box><size>0.1 8 1</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.1 8 1</size></box></geometry></visual>
+      </link>
+      <link name="north">
+        <pose>0 4 0.5 0 0 0</pose>
+        <collision name="collision"><geometry><box><size>8 0.1 1</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>8 0.1 1</size></box></geometry></visual>
+      </link>
+      <link name="south">
+        <pose>0 -4 0.5 0 0 0</pose>
+        <collision name="collision"><geometry><box><size>8 0.1 1</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>8 0.1 1</size></box></geometry></visual>
+      </link>
+    </model>
   </world>
 </sdf>

@@ -15,7 +15,7 @@ Topics published after bridge:
   /imu/data    — sensor_msgs/Imu        (from /imu_raw via ros_gz_bridge)
 
 Topics subscribed:
-  /cmd_vel     — geometry_msgs/Twist    (bridged to VelocityControl plugin)
+  /cmd_vel_safe — geometry_msgs/Twist   (filtered output bridged to VelocityControl)
 
 Run standalone:
   ros2 launch yahboomcar_nav x3_gazebo.launch.py
@@ -122,12 +122,13 @@ def generate_launch_description():
     # Format: "IGN_TOPIC@ROS_MSG_TYPE[ign_msg_type"  ([ = Ignition→ROS)
     #         "IGN_TOPIC@ROS_MSG_TYPE]ign_msg_type"  (] = ROS→Ignition)
     #
-    # VelocityControl in Fortress listens on /model/<name>/cmd_vel by default.
-    # If the robot doesn't respond to /cmd_vel, check 'ign topic -l' and update
-    # the first entry to '/model/yahboomcar_x3/cmd_vel@...' with a remapping.
+    # The Gazebo model listens on /cmd_vel. Remap only the ROS endpoint
+    # so the simulated base follows the same velocity gate as the driver.
     bridge_params = [
         # cmd_vel: ROS → Ignition (drives VelocityControl plugin)
         '/cmd_vel@geometry_msgs/msg/Twist]ignition.msgs.Twist',
+        '/clock@rosgraph_msgs/msg/Clock[ignition.msgs.Clock',
+        '/model/yahboomcar_x3/pose@tf2_msgs/msg/TFMessage[ignition.msgs.Pose_V',
         # LiDAR: Ignition → ROS
         '/lidar@sensor_msgs/msg/LaserScan[ignition.msgs.LaserScan',
         # IMU: Ignition → ROS  (remapped /imu_raw → /imu/data below)
@@ -147,6 +148,8 @@ def generate_launch_description():
         output='screen',
         arguments=bridge_params,
         remappings=[
+            ('/cmd_vel', '/cmd_vel_safe' if os.environ.get('X3_CMD_VEL_GATE', '1') != '0' else '/cmd_vel'),
+            ('/model/yahboomcar_x3/pose', '/tf'),
             ('/imu_raw', '/imu/data'),
             ('/model/yahboomcar_x3/odometry', '/odom'),
             ('/lidar', '/scan'),

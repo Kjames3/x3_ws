@@ -46,6 +46,7 @@
        The <topic> tag sets the Ignition Transport topic name.               -->
   <gazebo reference="laser_link">
     <sensor name="laser" type="gpu_lidar">
+      <ignition_frame_id>laser_link</ignition_frame_id>
       <always_on>true</always_on>
       <visualize>false</visualize>
       <update_rate>8</update_rate>

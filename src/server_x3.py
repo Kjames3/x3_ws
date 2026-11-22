@@ -322,11 +322,13 @@ oak_ros_pub = None  # OakRosPublisher — republishes /oak/* topics (--oak-ros-p
 model = None
 oled = None
 nav2_client = None    # Nav2Client instance (ROS2/sim modes only)
-frontier_explorer = None  # FrontierExplorer instance (ROS2 mode only)
+frontier_explorer = None  # FrontierExplorer instance (ROS2/sim modes)
 _gazebo_proc    = None   # subprocess handle when --sim auto-launches Gazebo
 _ros2_stack_proc = None  # subprocess handle for x3_bringup (launched by default in ROS2 mode)
 _mediamtx_proc = None    # subprocess handle for mediamtx (WebRTC camera, --webrtc-camera)
 _slam_proc      = None   # subprocess handle when SLAM Toolbox is running
+_slam_stopping = False
+_nav_launch_lock = threading.RLock()
 _octomap_proc   = None   # subprocess handle for 3D SLAM (octomap_server)
 _shutting_down  = False  # set on SIGINT/SIGTERM/cleanup so motion_loop stops publishing
                          # to /cmd_vel before rclpy is torn down (avoids a publish-on-dead-
@@ -880,6 +882,11 @@ current_right_power = 0.0
 
 motors_enabled = True
 
+
+def _motion_inhibited():
+    return not motors_enabled or (nav2_client is not None and nav2_client.is_cancelling())
+
+
 # FPS tracking
 _cam_frame_count = 0
 _yolo_frame_count = 0
@@ -952,7 +959,12 @@ class ROS2Bridge:
         from sensor_msgs.msg import JointState
 
         rclpy.init(args=None)
-        self._node = Node('x3_ws_bridge')
+        from rclpy.parameter import Parameter
+        from tf2_ros import Buffer, TransformListener
+        self._node = Node('x3_ws_bridge',
+                          parameter_overrides=[Parameter('use_sim_time', value=SIM_MODE)])
+        self._explore_tf = Buffer(node=self._node)
+        self._explore_tf_listener = TransformListener(self._explore_tf, self._node)
         self._lock = threading.Lock()
         self._latest_frame = None          # cv2 BGR ndarray from Gazebo RGB camera
         self._latest_depth = None          # cv2 BGR ndarray from Gazebo depth camera
@@ -1129,7 +1141,8 @@ class ROS2Bridge:
         self._spin_thread = threading.Thread(
             target=rclpy.spin, args=(self._node,), daemon=True)
         self._spin_thread.start()
-        logger.info("ROS2Bridge: spinning — subscribed /camera/image_raw /odom /voltage /map /scan, publishing /cmd_vel")
+        logger.info("ROS2Bridge: spinning — subscribed /camera/image_raw /odom /voltage /map /scan, publishing %s",
+                    CMD_VEL_OUT_TOPIC)
 
     def set_base_node_floor(self, floor):
         """Set base_node's strafe scale for `floor` live (it accepts runtime
@@ -1341,22 +1354,33 @@ class ROS2Bridge:
 
     def _map_cb(self, msg):
         """Store the latest OccupancyGrid from SLAM Toolbox (/map topic)."""
-        import math as _math
         q = msg.info.origin.orientation
-        origin_yaw = _math.atan2(2.0 * (q.w * q.z + q.x * q.y),
-                                  1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        origin_yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                                1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        data = np.array(msg.data, dtype=np.int8)
+        data.setflags(write=False)
+        geometry = {
+            "frame_id": msg.header.frame_id,
+            "width": msg.info.width,
+            "height": msg.info.height,
+            "resolution": msg.info.resolution,
+            "origin_x": msg.info.origin.position.x,
+            "origin_y": msg.info.origin.position.y,
+            "origin_yaw": origin_yaw,
+        }
         with self._lock:
-            self._occupancy_grid = {
-                "data":       np.array(msg.data, dtype=np.int8),
-                "width":      msg.info.width,
-                "height":     msg.info.height,
-                "resolution": msg.info.resolution,
-                "origin_x":   msg.info.origin.position.x,
-                "origin_y":   msg.info.origin.position.y,
-                "origin_yaw": origin_yaw,
-            }
             self.map_count += 1
             self.map_rx_t = time.monotonic()
+            previous = self._occupancy_grid
+            # SLAM can republish an identical map. Refresh its age without
+            # invalidating the explorer's clearance and reachability cache.
+            if (previous is not None and all(previous[k] == v for k, v in geometry.items())
+                    and np.array_equal(previous["data"], data)):
+                previous["received_monotonic"] = self.map_rx_t
+                return
+            self._occupancy_grid = dict(geometry, data=data, sequence=self.map_count,
+                                        received_monotonic=self.map_rx_t)
+
     def get_occupancy_grid(self) -> dict | None:
         """Return the latest occupancy grid info dict, or None if not yet received."""
         with self._lock:
@@ -1526,12 +1550,33 @@ class ROS2Bridge:
         self._slam_map_from_odom = tof_exempt_zones.compose_map_from_odom(
             (p.x, p.y, yaw), (o['x'], o['y'], o['theta']))
 
+    def get_exploration_pose(self, frame_id):
+        """Return a recent TF pose in the occupancy grid's Nav2 global frame."""
+        from rclpy.time import Time
+        from tf2_ros import TransformException
+
+        if frame_id != "map":
+            return None
+        try:
+            tf = self._explore_tf.lookup_transform(frame_id, "base_footprint", Time())
+        except TransformException:
+            return None
+        stamp = Time.from_msg(tf.header.stamp).nanoseconds
+        age = (self._node.get_clock().now().nanoseconds - stamp) / 1e9
+        # SLAM Toolbox may postdate map->odom by its transform tolerance.
+        if stamp <= 0 or not -0.5 <= age <= 1.0:
+            return None
+        t, q = tf.transform.translation, tf.transform.rotation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        return (t.x, t.y, yaw) if all(map(math.isfinite, (t.x, t.y, yaw))) else None
+
     def get_map_pose_cm(self):
         """Robot pose in the MAP frame (cm, rad CCW): odom pose through the last
         map<-odom from /amcl_pose (or slam_toolbox /pose). None until one arrives.
         The GUI used to draw the raw odom pose on the map, so an initial pose or
         AMCL correction never moved the marker."""
-        slam_on = _slam_proc is not None and _slam_proc.poll() is None
+        slam_on = _slam_running()
         mfo = self._slam_map_from_odom if slam_on else self._map_from_odom
         if mfo is None:
             return None
@@ -1680,13 +1725,14 @@ class ROS2Bridge:
         """A command arrived on /cmd_vel: filter it and publish it to the driver."""
         self._gate_last_cmd = time.monotonic()      # the heartbeat yields while this is fresh
         try:
-            route = _gate_route(motors_enabled, _is_standalone_test_running())
-            if route == 'zero':
-                self._cmd_vel_pub.publish(type(msg)())
-            elif route == 'raw':
-                self._cmd_vel_pub.publish(msg)
-            else:
-                self.move(float(msg.linear.x), float(msg.linear.y), float(msg.angular.z))
+            with self._move_lock:
+                route = _gate_route(not _motion_inhibited(), _is_standalone_test_running())
+                if route == 'zero':
+                    self._cmd_vel_pub.publish(type(msg)())
+                elif route == 'raw':
+                    self._cmd_vel_pub.publish(msg)
+                else:
+                    self._move_impl(float(msg.linear.x), float(msg.linear.y), float(msg.angular.z))
         except Exception as e:
             # Fail safe: if filtering breaks, stop the base rather than let it drive on.
             try:
@@ -1700,7 +1746,8 @@ class ROS2Bridge:
 
     def move(self, vx: float, vy: float, omega: float):
         with self._move_lock:
-            self._move_impl(vx, vy, omega)
+            if not _motion_inhibited():
+                self._move_impl(vx, vy, omega)
 
     def _move_impl(self, vx: float, vy: float, omega: float):
         omega_req = omega        # the CBF may shrink omega; publish what was asked
@@ -1883,7 +1930,7 @@ class ROS2Bridge:
         self._tof_pubs[(name, kind)].publish(msg)
 
     def stop(self):
-        """A REAL stop: a zero Twist straight to /cmd_vel, bypassing the CBF.
+        """Publish a zero Twist to the driver, bypassing the CBF.
 
         This used to be `self.move(0, 0, 0)`, which routed the stop through the
         CBF's proactive repulsion and could therefore produce MOTION -- which is
@@ -1892,7 +1939,8 @@ class ROS2Bridge:
         """
         try:
             from geometry_msgs.msg import Twist
-            self._cmd_vel_pub.publish(Twist())
+            with self._move_lock:
+                self._cmd_vel_pub.publish(Twist())
         except Exception as e:
             logger.warning("stop(): direct zero-Twist publish failed: %s", e)
 
@@ -2227,13 +2275,15 @@ def _launch_ros2_stack():
     return proc
 
 
+def _slam_running() -> bool:
+    proc = _slam_proc
+    return proc is not None and proc.poll() is None
+
+
 def _launch_slam(use_sim_time: bool = False):
     """Start SLAM Toolbox as a background subprocess.
 
-    For simulation (use_sim_time=True): launches x3_slam_sim.launch.py
-      — only slam_toolbox_node, no hardware drivers (Gazebo provides topics).
-    For physical (use_sim_time=False): launches x3_slam.launch.py
-      — full stack (Mcnamu_driver, base_node, IMU filter, EKF, YDLidar, slam_toolbox).
+    Launches only slam_toolbox in simulation and on the physical robot.
 
     Uses the same clean-environment pattern as _launch_gazebo() to avoid
     conda/miniconda Python version conflicts.
@@ -2269,17 +2319,17 @@ def _launch_slam(use_sim_time: bool = False):
     cmd = (
         f'source /opt/ros/humble/setup.bash && '
         f'source {install_setup} && '
-        f'ros2 launch yahboomcar_nav {launch_file}'
+        f'exec ros2 launch yahboomcar_nav {launch_file}'
     )
     log_path = '/tmp/slam_launch.log'
-    log_file = open(log_path, 'w')
-    proc = subprocess.Popen(
-        ['bash', '-c', cmd],
-        stdout=log_file,
-        stderr=log_file,
-        preexec_fn=os.setsid,
-        env=child_env,
-    )
+    with open(log_path, 'w') as log_file:
+        proc = subprocess.Popen(
+            ['bash', '-c', cmd],
+            stdout=log_file,
+            stderr=log_file,
+            start_new_session=True,
+            env=child_env,
+        )
     logger.info(f"SLAM Toolbox launched (pid {proc.pid}, sim={use_sim_time}) — log: {log_path}")
     return proc
 
@@ -3040,6 +3090,8 @@ def _enqueue_motion(vx: float, vy: float, omega: float, instant: bool = False):
     # of the tilt interlock (see _tilt_nav_conflict).  Zeros are stops, so they
     # must not count or releasing the joystick would keep the sweep locked out.
     if vx or vy or omega:
+        if not motors_enabled:
+            return
         _last_teleop_motion_t = time.monotonic()
     if motion_queue is None:
         return
@@ -3203,8 +3255,7 @@ def _auto_site_nav2(bridge, nav2_client) -> None:
         return
     logger.info("[auto-site] site=%s -> launching Nav2 + AMCL on %s",
                 result.site, result.map_path)
-    if not nav2_client.launch_nav2(use_sim_time=False,
-                                   map_path=result.map_path, slam=False):
+    if not _launch_nav2_stack(nav2_client, False, result.map_path):
         return
     if not result.pose.accepted:
         logger.warning("[auto-site] pose inside %s is ambiguous; set it by hand",
@@ -3377,7 +3428,7 @@ def _prepare_test_localization(progress) -> tuple[bool, str]:
 
     status = nav2_client.get_status()
     nav2_up = nav2_client._nav2_proc is not None and nav2_client._nav2_proc.poll() is None
-    if nav2_up and status.get("map") is None:
+    if _slam_running() or (nav2_up and status.get("map") is None):
         return False, "SLAM is running; stop it first (AMCL cannot run alongside it)"
     if nav2_up and status.get("map") != map_name:
         progress(f"Nav2 is on {status.get('map')}, restarting it on {map_name}...")
@@ -3386,7 +3437,7 @@ def _prepare_test_localization(progress) -> tuple[bool, str]:
         nav2_up = False
     if not nav2_up:
         progress(f"site '{site.site}': starting Nav2 + AMCL on {map_name}...")
-        if not nav2_client.launch_nav2(use_sim_time=False, map_path=map_path, slam=False):
+        if not _launch_nav2_stack(nav2_client, False, map_path):
             # False also means "already running": a cancelled, re-pressed test can
             # race its own earlier worker here.  Only a dead process is a failure.
             proc = nav2_client._nav2_proc
@@ -3427,13 +3478,90 @@ def _prepare_test_localization(progress) -> tuple[bool, str]:
                    f"then press the button again.")
 
 
-def _launch_nav2_seeded(use_sim_time: bool, map_path: str | None, slam: bool) -> bool:
+def _launch_nav2_stack(client, use_sim_time: bool, map_path: str | None,
+                       external_slam: bool = False) -> bool:
+    """Keep server-managed localization and standalone SLAM mutually exclusive."""
+    with _nav_launch_lock:
+        if _slam_stopping or _slam_running() != external_slam:
+            return False
+        return client.launch_nav2(use_sim_time=use_sim_time, map_path=map_path,
+                                  external_slam=external_slam)
+
+
+def _launch_nav2_seeded(use_sim_time: bool, map_path: str | None, external_slam: bool) -> bool:
     """nav2_client.launch_nav2, then seed AMCL from the scan (saved map, real robot)."""
-    ok = nav2_client.launch_nav2(use_sim_time=use_sim_time, map_path=map_path, slam=slam)
-    if ok and map_path and not slam and not use_sim_time:
+    ok = _launch_nav2_stack(nav2_client, use_sim_time, map_path, external_slam=external_slam)
+    if ok and map_path and not external_slam and not use_sim_time:
         threading.Thread(target=_auto_seed_after_launch, args=(map_path,),
                          name='auto_pose_seed', daemon=True).start()
     return ok
+
+
+def _start_gui_slam(use_sim_time: bool) -> tuple[bool, str]:
+    global _slam_proc
+    with _nav_launch_lock:
+        if _slam_stopping:
+            return False, "SLAM Toolbox is stopping"
+        if _slam_running():
+            return True, "SLAM already running"
+        if nav2_client is not None and nav2_client.get_status()["nav2_running"]:
+            return False, "Stop Nav2 before starting SLAM"
+        try:
+            _slam_proc = _launch_slam(use_sim_time=use_sim_time)
+        except OSError as exc:
+            logger.exception("SLAM Toolbox launch failed")
+            return False, f"SLAM launch failed: {exc}"
+        if ros_bridge is not None:
+            ros_bridge._slam_map_from_odom = None
+        return True, "SLAM Toolbox launching..."
+
+
+def _launch_gui_nav2(use_sim_time: bool, map_name: str, slam_requested: bool) -> tuple[bool, str]:
+    with _nav_launch_lock:
+        mapping = _slam_running() or slam_requested
+        if mapping:
+            ok, message = _start_gui_slam(use_sim_time)
+            if not ok:
+                return False, message
+        map_path = None if mapping else _resolve_map_path(map_name)
+        if not _launch_nav2_seeded(use_sim_time, map_path, mapping):
+            return False, "Nav2 already running or failed"
+        if ros_bridge is not None:
+            ros_bridge.amcl = None
+            ros_bridge._map_from_odom = None
+        return True, "Nav2 launching..."
+
+
+def _stop_gui_slam() -> None:
+    global _slam_proc, _slam_stopping
+    with _nav_launch_lock:
+        if _slam_stopping or not _slam_running():
+            return
+        _slam_stopping = True
+        proc = _slam_proc
+    try:
+        if nav2_client is not None and nav2_client.get_status()["external_slam"]:
+            nav2_client.stop_nav2()
+        try:
+            os.killpg(proc.pid, signal.SIGINT)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait(timeout=5)
+        logger.info("SLAM Toolbox stopped")
+    except Exception:
+        logger.exception("Failed to stop SLAM")
+    finally:
+        with _nav_launch_lock:
+            if proc.poll() is not None:
+                _slam_proc = None
+            _slam_stopping = False
 
 
 _test_prep = None   # {'kind': 'ab'|'p2p', 'mode': str|None, 'task': asyncio.Task} while localizing
@@ -3524,6 +3652,69 @@ def _cancel_test_prep(kind: str) -> None:
         _test_prep = None    # _run sees this when its worker returns and stops there
 
 
+def _stop_manual_motion():
+    global current_left_power, current_right_power
+    current_left_power = current_right_power = 0.0
+    if motion_queue is not None:
+        while not motion_queue.empty():
+            motion_queue.get_nowait()
+    _enqueue_motion(0.0, 0.0, 0.0, instant=True)
+
+
+def _publish_motion_stop():
+    if ros_bridge is not None:
+        ros_bridge.stop()
+    elif ros_board is not None:
+        ros_board.set_motor(0, 0, 0, 0)
+
+
+def _stop_all_motion():
+    """Latch the driver off before stopping each source of motion."""
+    global motors_enabled, is_auto_driving
+    motors_enabled = False
+    is_auto_driving = False
+    _stop_manual_motion()
+    _publish_motion_stop()
+    if frontier_explorer is not None:
+        frontier_explorer.stop()
+    if nav2_client is not None:
+        nav2_client.cancel()
+    for kind, proc in (('p2p', _p2p_proc), ('ab', _ab_test_proc)):
+        _cancel_test_prep(kind)
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                pass
+
+
+def _resume_motion():
+    """Keep the inhibit latched while a cancelled producer can still move."""
+    global motors_enabled
+    if motors_enabled:
+        return True
+    if (nav2_client is not None and (nav2_client.is_cancelling() or nav2_client.is_busy())) or any(
+            proc is not None and proc.poll() is None for proc in (_p2p_proc, _ab_test_proc)):
+        return False
+    _stop_manual_motion()
+    motors_enabled = True
+    return True
+
+
+def _start_frontier_exploration():
+    if not motors_enabled:
+        return False, "Enable Movement before starting Auto-Explore"
+    if lidar_3d_scan_enabled:
+        return False, "Turn off the 3D tilt scan before starting Auto-Explore"
+    if frontier_explorer is None:
+        return False, "Frontier exploration requires ROS2 or simulation mode"
+    if nav2_client is not None and nav2_client.is_busy():
+        return False, "Wait for the current navigation goal before starting Auto-Explore"
+    if frontier_explorer.start():
+        return True, "Frontier exploration started"
+    return False, "Auto-Explore is already running or Nav2 is busy"
+
+
 async def handle_client(websocket):
     global detection_enabled, depth_enabled, stereo_enabled, lidar_enabled, is_auto_driving
     global current_left_power, current_right_power
@@ -3544,6 +3735,7 @@ async def handle_client(websocket):
     _mode = "sim" if SIM_MODE else "ros2"
     await websocket.send(json.dumps({
         "type": "hello",
+        "motors_enabled": motors_enabled,
         "mode": _mode,
         "active_velocity_model": active_velocity_model_name,
         "webrtc_camera": WEBRTC_CAMERA,   # GUI shows a WebRTC <video> instead of base64 frames
@@ -3592,6 +3784,8 @@ async def handle_client(websocket):
                     }))
 
                 elif msg_type == "set_power":
+                    if not motors_enabled:
+                        continue
                     # Tank-drive sliders / gamepad axes
                     motor = data.get("motor")
                     power = float(data.get("power", 0.0))
@@ -3602,6 +3796,8 @@ async def handle_client(websocket):
                     _enqueue_tank(current_left_power, current_right_power)
 
                 elif msg_type == "set_move":
+                    if not motors_enabled:
+                        continue
                     # Holonomic move: vx, vy, omega (direct)
                     vx    = float(data.get("vx", 0.0))
                     vy    = float(data.get("vy", 0.0))
@@ -3627,20 +3823,20 @@ async def handle_client(websocket):
                         _enqueue_motion(*_dir_map[direction])
 
                 elif msg_type == "stop":
-                    current_left_power = 0.0
-                    current_right_power = 0.0
-                    if ros_board: ros_board.set_motor(0, 0, 0, 0)
-                    _enqueue_motion(0.0, 0.0, 0.0)
+                    _stop_all_motion()
+                    await _broadcast_json({
+                        "type": "movement_state", "enabled": False, "success": True,
+                    })
+
+                elif msg_type == "stop_manual":
+                    _stop_manual_motion()
 
                 elif msg_type == "shutdown_robot":
                     # Confirmed in the GUI. Stop the wheels first, then ask systemd to
                     # power off (stops every service cleanly, syncs disks). Needs the
                     # NOPASSWD rule in deploy/sudoers/x3-poweroff.
                     logger.warning("Shutdown requested from GUI by %s", websocket.remote_address)
-                    current_left_power = 0.0
-                    current_right_power = 0.0
-                    if ros_board: ros_board.set_motor(0, 0, 0, 0)
-                    _enqueue_motion(0.0, 0.0, 0.0)
+                    _stop_all_motion()
                     try:
                         proc = await asyncio.create_subprocess_exec(
                             "sudo", "-n", "/usr/bin/systemctl", "poweroff",
@@ -3663,8 +3859,20 @@ async def handle_client(websocket):
                     logger.info(f"Detection: {detection_enabled}")
 
                 elif msg_type == "toggle_motors":
-                    motors_enabled = data.get("enabled", True)
-                    logger.info(f"Motors: {'enabled' if motors_enabled else 'disabled'}")
+                    if data.get("enabled") is True:
+                        ok = _resume_motion()
+                    else:
+                        _stop_all_motion()
+                        ok = True
+                    if ok:
+                        await _broadcast_json({
+                            "type": "movement_state", "enabled": motors_enabled, "success": True,
+                        })
+                    else:
+                        await websocket.send(json.dumps({
+                            "type": "movement_state", "enabled": False, "success": False,
+                            "message": "Movement is disabled while motion stops. Try again.",
+                        }))
 
                 elif msg_type == "launch_gazebo":
                     if SIM_MODE:
@@ -3788,8 +3996,9 @@ async def handle_client(websocket):
                     await _broadcast_sweep_config(note)
 
                 elif msg_type == "start_auto_drive":
-                    is_auto_driving = True
-                    logger.info("Auto-drive started")
+                    if motors_enabled:
+                        is_auto_driving = True
+                        logger.info("Auto-drive started")
 
                 elif msg_type == "set_nav_yield":
                     global NAV_YIELD_HEARTBEAT
@@ -3807,19 +4016,14 @@ async def handle_client(websocket):
                 # ── Nav2 messages ──────────────────────────────────────────
                 elif msg_type == "launch_nav2":
                     if nav2_client:
-                        if ros_bridge is not None:
-                            ros_bridge.amcl = None  # don't show the last session's pose quality
-                            ros_bridge._map_from_odom = None  # last session's map<-odom is meaningless now
-                        use_st = data.get("use_sim_time", SIM_MODE)
-                        # Resolve to an absolute path: the launch file's map:=
-                        # argument is interpreted relative to the launcher cwd.
-                        map_f  = _resolve_map_path(data.get("map") or "")
-                        slam   = data.get("slam", False)
-                        ok = _launch_nav2_seeded(use_st, map_f, slam)
+                        ok, message = _launch_gui_nav2(
+                            data.get("use_sim_time", SIM_MODE), data.get("map") or "",
+                            data.get("slam") is True,
+                        )
                         await websocket.send(json.dumps({
                             "type": "nav2_launch_result",
                             "success": ok,
-                            "msg": "Nav2 launching..." if ok else "Nav2 already running or failed",
+                            "msg": message,
                         }))
                     else:
                         await websocket.send(json.dumps({
@@ -3829,13 +4033,20 @@ async def handle_client(websocket):
 
                 elif msg_type == "stop_nav2":
                     if nav2_client:
+                        if frontier_explorer is not None:
+                            frontier_explorer.stop()
                         # Off the event loop: a clean Nav2 shutdown takes seconds
                         # (up to 15 s before the process group is killed).
                         await asyncio.get_running_loop().run_in_executor(
                             None, nav2_client.stop_nav2)
 
                 elif msg_type == "set_nav_goal":
-                    if lidar_3d_scan_enabled:
+                    if not motors_enabled:
+                        await websocket.send(json.dumps({
+                            "type": "nav_goal_refused",
+                            "reason": "Enable Movement before sending a navigation goal",
+                        }))
+                    elif lidar_3d_scan_enabled:
                         # The other half of the interlock.  Without this you can
                         # click a goal mid-sweep and Nav2 plans against frozen
                         # costmaps.
@@ -3848,15 +4059,22 @@ async def handle_client(websocket):
                             "reason": "3D tilt scan in progress",
                         }))
                     elif nav2_client:
-                        nav2_client.navigate_to(
+                        goal_id = nav2_client.navigate_to(
                             float(data.get("x", 0.0)),
                             float(data.get("y", 0.0)),
                             float(data.get("theta", 0.0)),
                         )
+                        if goal_id is None:
+                            await websocket.send(json.dumps({
+                                "type": "nav_goal_refused",
+                                "reason": "Nav2 is unavailable or a goal is still being cancelled",
+                            }))
                     else:
                         logger.warning("set_nav_goal ignored: no Nav2Client")
 
                 elif msg_type == "cancel_nav":
+                    if frontier_explorer is not None and frontier_explorer.is_exploring():
+                        frontier_explorer.stop()
                     if nav2_client:
                         nav2_client.cancel()
 
@@ -3921,90 +4139,31 @@ async def handle_client(websocket):
                             {"type": "map_data", "error": "Map not found"}))
 
                 # ── Frontier exploration messages ───────────────────────────
-                elif msg_type == "start_frontier_explore":
-                    if frontier_explorer and ROS2_MODE:
-                        ok = frontier_explorer.start()
-                        await websocket.send(json.dumps({
-                            "type": "frontier_explore_result",
-                            "success": ok,
-                            "msg": "Frontier exploration started" if ok else "Already exploring",
-                        }))
+                elif msg_type in ("start_frontier_explore", "stop_frontier_explore",
+                                  "toggle_frontier"):
+                    enabling = (msg_type == "start_frontier_explore" or
+                                (msg_type == "toggle_frontier" and data.get("enabled") is True))
+                    if enabling:
+                        ok, message = _start_frontier_exploration()
                     else:
-                        await websocket.send(json.dumps({
-                            "type": "frontier_explore_result",
-                            "success": False,
-                            "msg": "Frontier exploration requires ROS2 mode with Nav2 running",
-                        }))
-
-                elif msg_type == "stop_frontier_explore":
-                    if frontier_explorer:
-                        frontier_explorer.stop()
-                        await websocket.send(json.dumps({
-                            "type": "frontier_explore_result",
-                            "success": True,
-                            "msg": "Frontier exploration stopped",
-                        }))
-
-                # ── SLAM messages ───────────────────────────────────────────
-                elif msg_type == "toggle_frontier":
-                    enabled = data.get("enabled", False)
-                    if enabled:
-                        nav_running = (nav2_client and
-                                       nav2_client.get_status().get("nav2_running", False))
-                        if not nav_running:
-                            await websocket.send(json.dumps({
-                                "type": "frontier_explore_result",
-                                "success": False,
-                                "msg": "Nav2 must be running before starting Auto-Explore. Launch Nav2 first.",
-                            }))
-                        elif frontier_explorer and ROS2_MODE:
-                            ok = frontier_explorer.start()
-                            await websocket.send(json.dumps({
-                                "type": "frontier_explore_result",
-                                "success": ok,
-                                "msg": "Frontier exploration started" if ok else "Already exploring",
-                            }))
-                        else:
-                            await websocket.send(json.dumps({
-                                "type": "frontier_explore_result",
-                                "success": False,
-                                "msg": "Frontier exploration requires ROS2 mode",
-                            }))
-                    else:
-                        if frontier_explorer:
+                        if frontier_explorer is not None:
                             frontier_explorer.stop()
-                            await websocket.send(json.dumps({
-                                "type": "frontier_explore_result",
-                                "success": True,
-                                "msg": "Frontier exploration stopped",
-                            }))
+                        ok, message = True, "Auto-Explore stop requested"
+                    await websocket.send(json.dumps({
+                        "type": "frontier_explore_result", "success": ok, "msg": message,
+                    }))
 
+                # ── SLAM messages ──────────────────────────────────────────
                 elif msg_type == "start_slam":
-                    global _slam_proc
-                    if _slam_proc is None or _slam_proc.poll() is not None:
-                        _slam_proc = _launch_slam(use_sim_time=SIM_MODE)
-                        logger.info("SLAM Toolbox launched")
-                        await websocket.send(json.dumps({
-                            "type": "slam_started",
-                            "success": True,
-                            "msg": "SLAM Toolbox launching...",
-                        }))
-                    else:
-                        logger.info("SLAM already running")
-                        await websocket.send(json.dumps({
-                            "type": "slam_started",
-                            "success": True,
-                            "msg": "SLAM already running",
-                        }))
+                    ok, message = _start_gui_slam(SIM_MODE)
+                    await websocket.send(json.dumps({
+                        "type": "slam_started", "success": ok, "msg": message,
+                    }))
 
                 elif msg_type == "stop_slam":
-                    if _slam_proc is not None and _slam_proc.poll() is None:
-                        try:
-                            os.killpg(os.getpgid(_slam_proc.pid), signal.SIGTERM)
-                            logger.info("SLAM Toolbox stopped")
-                        except Exception as exc:
-                            logger.warning(f"Failed to stop SLAM: {exc}")
-                        _slam_proc = None
+                    if frontier_explorer is not None:
+                        frontier_explorer.stop()
+                    await asyncio.to_thread(_stop_gui_slam)
 
                 elif msg_type == "start_3d_slam":
                     global _octomap_proc
@@ -4167,6 +4326,12 @@ async def handle_client(websocket):
                             }))
 
                 elif msg_type == "start_p2p_test":
+                    if not motors_enabled:
+                        await websocket.send(json.dumps({
+                            "type": "p2p_test_status", "status": "failed",
+                            "message": "Enable Movement before starting a drive test",
+                        }))
+                        continue
                     if (_p2p_proc is None or _p2p_proc.poll() is not None) and _test_prep is None:
                         _start_localized_test('p2p')
                     else:
@@ -4195,6 +4360,12 @@ async def handle_client(websocket):
                     }))
 
                 elif msg_type == "start_ab_test":
+                    if not motors_enabled:
+                        await websocket.send(json.dumps({
+                            "type": "ab_test_status", "status": "failed",
+                            "message": "Enable Movement before starting a drive test",
+                        }))
+                        continue
                     mode = data.get("mode", "reactive")  # "reactive" | "predictive"
                     if mode not in ("reactive", "predictive"):
                         mode = "reactive"
@@ -4966,6 +5137,7 @@ async def broadcast_loop():
                 "detection_enabled": detection_enabled,
                 "ros_data": _ros_data_state,
                 "is_auto_driving": is_auto_driving,
+                "motors_enabled": motors_enabled,
                 "cbf": getattr(ros_bridge, 'cbf_info', None) if ros_bridge is not None else None,
                 "detections": last_detections,
                 "detections_frame": last_detections_frame,
@@ -5040,7 +5212,7 @@ async def broadcast_loop():
                     "nav_health": nav_health,
                     "nav_phase": nav_status["state"],
                     "nav": nav_status,
-                    "slam_active": _slam_proc is not None and _slam_proc.poll() is None,
+                    "slam_active": _slam_running(),
                     "slam_3d_active": _octomap_proc is not None and _octomap_proc.poll() is None,
                     "frontier": frontier_explorer.status() if frontier_explorer else None,
                     "active_model_name": active_model_name,
@@ -5192,22 +5364,14 @@ async def motion_loop():
             time.monotonic() - getattr(drive, '_gate_last_cmd', float('-inf')),
             _target_vx == _target_vy == _target_omega == 0.0
             and _ramp_vx == _ramp_vy == _ramp_omega == 0.0)
-        if drive and not test_running and not nav_owns_cmd_vel and not _shutting_down:
+        if drive and not _shutting_down:
             try:
-                if motors_enabled:
+                if _motion_inhibited():
+                    _target_vx = _target_vy = _target_omega = 0.0
+                    _ramp_vx = _ramp_vy = _ramp_omega = 0.0
+                    _publish_motion_stop()
+                elif not test_running and not nav_owns_cmd_vel:
                     drive.move(_ramp_vx, _ramp_vy, _ramp_omega)
-                else:
-                    if hasattr(drive, '_cmd_vel_pub'):
-                        from geometry_msgs.msg import Twist
-                        msg = Twist()
-                        msg.linear.x = 0.0
-                        msg.linear.y = 0.0
-                        msg.angular.z = 0.0
-                        drive._cmd_vel_pub.publish(msg)
-                    elif hasattr(drive, 'ros_board'):
-                        drive.ros_board.set_motor(0, 0, 0, 0)
-                    else:
-                        drive.stop()
             except Exception as e:
                 # During shutdown the rclpy context may already be torn down;
                 # publishing then raises RCLError. Never let that propagate — an
@@ -5365,7 +5529,7 @@ async def map_push_loop():
         await asyncio.sleep(1.0)
         if not connected_clients or ros_bridge is None:
             continue
-        if _slam_proc is None or _slam_proc.poll() is not None:
+        if not _slam_running():
             continue
         grid = ros_bridge.get_occupancy_grid()
         if grid is None:

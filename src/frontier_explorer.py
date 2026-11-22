@@ -1,383 +1,420 @@
-"""
-frontier_explorer.py
-Autonomous frontier-based exploration for the Yahboom X3 robot.
-
-Overview
---------
-Frontier exploration repeatedly finds the boundary between known free space
-and unknown space on the SLAM occupancy grid, picks the nearest frontier
-cluster as the next goal, and sends it to Nav2 via Nav2Client.  The robot
-autonomously covers the environment until no frontiers remain.
-
-Integration requirements
-------------------------
-- ROS2 mode must be active (SLAM Toolbox publishing /map, Nav2 running).
-- Nav2Client must be initialised and Nav2 must be launched before calling start().
-- ROS2Bridge must expose get_occupancy_grid() and get_pose_m() (added alongside
-  this file).
-
-Usage (from server_x3.py)
---------------------------
-    explorer = FrontierExplorer(nav2_client, ros2_bridge)
-    explorer.start()   # begins background asyncio task
-    explorer.stop()    # cancels current goal and halts exploration
-    explorer.status()  # dict for telemetry broadcast
-
-Algorithm
----------
-1. Fetch latest OccupancyGrid from ROS2Bridge.
-2. Detect frontier cells: free cells (0) with at least one unknown neighbour (-1).
-3. Label connected frontier clusters with scipy.ndimage (or fallback BFS).
-4. For each cluster compute centroid in map coordinates.
-5. Select the nearest centroid to the robot's current pose.
-6. Send it as a Nav2 goal; wait for SUCCEEDED or FAILED.
-7. On SUCCEEDED: repeat from step 1.
-   On FAILED:    skip this frontier, try the next nearest.
-8. When no frontiers remain: transition to COMPLETE.
-"""
+"""Explore SLAM frontiers using reachable, clearance-filtered Nav2 goals."""
 
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import logging
 import math
 import threading
 import time
-from typing import Optional
 
 import numpy as np
+from scipy import ndimage
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import dijkstra
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Explorer states (mirrored in GUI telemetry)
-# ---------------------------------------------------------------------------
-STATE_IDLE       = "IDLE"
-STATE_EXPLORING  = "EXPLORING"    # actively navigating to a frontier
-STATE_SELECTING  = "SELECTING"    # computing next frontier goal
-STATE_COMPLETE   = "COMPLETE"     # no frontiers remain
-STATE_STOPPED    = "STOPPED"      # user-cancelled
+STATE_IDLE = "IDLE"
+STATE_EXPLORING = "EXPLORING"
+STATE_SELECTING = "SELECTING"
+STATE_COMPLETE = "COMPLETE"
+STATE_STOPPED = "STOPPED"
+STATE_BLOCKED = "BLOCKED"
 
-# How long (s) to wait for Nav2 to accept / execute a goal before giving up
-GOAL_TIMEOUT     = 30.0
-# Minimum frontier cluster size (cells) — smaller clusters are noise
 MIN_CLUSTER_SIZE = 10
-# Distance (m) within which a frontier centroid is considered "reached" and skipped
-REACHED_THRESHOLD = 0.3
+# Current Nav2 footprint half extents are 0.32 m by 0.293 m. Use near-inscribed
+# clearance for connectivity and circumscribed clearance for the turning goal.
+PATH_CLEARANCE_M = 0.30
+GOAL_CLEARANCE_M = 0.45
+MAX_STANDOFF_M = 0.90
+# Leave room for Nav2's 0.25 m position tolerance and within-cell pose quantization.
+MIN_GOAL_TRAVEL_M = 0.35
+GAIN_RADIUS_M = 1.0
+FRONTIER_MATCH_M = 0.30
+ACCEPT_TIMEOUT_S = 10.0
+NO_PROGRESS_TIMEOUT_S = 30.0
+PROGRESS_STEP_M = 0.10
+POLL_S = 0.2
+MAX_MAP_AGE_S = 5.0  # SLAM Toolbox is configured to publish every 0.5 s.
+MAX_ATTEMPTS = 3
+RETRY_COOLDOWN_S = 15.0
+
+
+@dataclass(frozen=True)
+class FrontierGoal:
+    x: float
+    y: float
+    heading: float
+    anchor: tuple[float, float]
+    gain: float
+    path_cost: float
+
+    @property
+    def score(self):
+        return self.path_cost / math.sqrt(self.gain)
+
+
+class _FrontierGrid:
+    """Map-revision preprocessing and path distances from the latest start cell."""
+
+    def __init__(self, snapshot):
+        self._resolution = snapshot["resolution"]
+        self._origin = snapshot["origin_x"], snapshot["origin_y"]
+        yaw = snapshot["origin_yaw"]
+        self._cos, self._sin = math.cos(yaw), math.sin(yaw)
+        grid = np.asarray(snapshot["data"], dtype=np.int8).reshape(
+            snapshot["height"], snapshot["width"]
+        )
+        free, unknown = grid == 0, grid == -1
+        cross = ndimage.generate_binary_structure(2, 1)
+        labels, count = ndimage.label(free & ndimage.binary_dilation(unknown, cross))
+        minimum = np.bincount(labels.ravel(), minlength=count + 1) >= MIN_CLUSTER_SIZE
+        minimum[0] = False
+        frontiers = minimum[labels]
+        self.count = int(minimum.sum())
+        self._start = None
+        self._goals = []
+        if not self.count:
+            return
+
+        self._centers = np.zeros((count + 1, 2))
+        eligible = np.flatnonzero(minimum)
+        self._centers[eligible] = ndimage.center_of_mass(frontiers, labels, eligible)
+
+        # Pad with occupied cells so the distance transform includes map edges.
+        # Subtract half a cell diagonal to account for the extent of blocked cells.
+        clearance = ndimage.distance_transform_edt(np.pad(free, 1))[1:-1, 1:-1]
+        clearance = (clearance - math.sqrt(0.5)) * self._resolution
+        passable = free & (clearance >= PATH_CLEARANCE_M)
+
+        distance, nearest = ndimage.distance_transform_edt(~frontiers, return_indices=True)
+        distance *= self._resolution
+        owners = labels[tuple(nearest)]
+        gain = unknown & (distance <= GAIN_RADIUS_M)
+        self._gain = np.bincount(owners[gain], minlength=count + 1) * self._resolution**2
+
+        candidates = (passable & (clearance >= GOAL_CLEARANCE_M)
+                      & (distance <= MAX_STANDOFF_M))
+        rows, cols = np.where(candidates)
+        anchor_rows, anchor_cols = nearest[:, candidates]
+        # Avoid associating an approach with a frontier on the far side of a wall.
+        # Check the grid cells crossed on the line from the approach to its edge.
+        visible = np.ones(rows.size, dtype=bool)
+        steps = max(1, math.ceil(2 * MAX_STANDOFF_M / self._resolution))
+        for fraction in np.linspace(0.0, 1.0, steps + 1)[1:-1]:
+            line_rows = np.rint(rows + fraction * (anchor_rows - rows)).astype(int)
+            line_cols = np.rint(cols + fraction * (anchor_cols - cols)).astype(int)
+            visible &= free[line_rows, line_cols]
+        self._candidate_rows, self._candidate_cols = rows[visible], cols[visible]
+        self._candidate_owner = owners[candidates][visible]
+        self._anchor_rows, self._anchor_cols = anchor_rows[visible], anchor_cols[visible]
+        self._standoff = distance[candidates][visible]
+
+        # Cardinal links between adjacent cells prevent diagonal corner cutting.
+        # Construct a compact sparse graph over only the passable part of the map.
+        self._ids = np.full(grid.shape, -1, dtype=np.int32)
+        size = int(passable.sum())
+        self._ids[passable] = np.arange(size, dtype=np.int32)
+        horizontal = passable[:, :-1] & passable[:, 1:]
+        vertical = passable[:-1, :] & passable[1:, :]
+        rows = np.r_[self._ids[:, :-1][horizontal], self._ids[:-1, :][vertical]]
+        cols = np.r_[self._ids[:, 1:][horizontal], self._ids[1:, :][vertical]]
+        weights = np.full(rows.size, self._resolution)
+        self._graph = coo_matrix((weights, (rows, cols)), shape=(size, size)).tocsr()
+
+    def world_to_cell(self, x, y):
+        dx, dy = x - self._origin[0], y - self._origin[1]
+        col = math.floor((self._cos * dx + self._sin * dy) / self._resolution)
+        row = math.floor((-self._sin * dx + self._cos * dy) / self._resolution)
+        return row, col
+
+    def _cell_to_world(self, row, col):
+        x, y = (col + 0.5) * self._resolution, (row + 0.5) * self._resolution
+        return (self._origin[0] + self._cos * x - self._sin * y,
+                self._origin[1] + self._sin * x + self._cos * y)
+
+    def goals(self, pose):
+        """Return ranked approaches, or None when the start cell is unusable."""
+        if not self.count:
+            return []
+        start = self.world_to_cell(*pose[:2])
+        if start == self._start:
+            return self._goals
+        self._start = start
+        row, col = start
+        if not (0 <= row < self._ids.shape[0] and 0 <= col < self._ids.shape[1]):
+            self._goals = None
+            return None
+        start_id = self._ids[row, col]
+        if start_id < 0:
+            self._goals = None
+            return None
+
+        distances = dijkstra(self._graph, directed=False, indices=start_id)
+        path_cost = distances[self._ids[self._candidate_rows, self._candidate_cols]]
+        travel = self._resolution * np.hypot(self._candidate_rows - row, self._candidate_cols - col)
+        reachable = np.flatnonzero(
+            np.isfinite(path_cost) & (self._gain[self._candidate_owner] > 0)
+            & (travel >= MIN_GOAL_TRAVEL_M)
+        )
+        # Pick a reachable stand-off point for each frontier by path cost plus
+        # residual distance to the boundary, then rank frontiers by gain and cost.
+        standoff = self._standoff[reachable]
+        ranked = reachable[np.lexsort((standoff, path_cost[reachable] + standoff))]
+        _, first = np.unique(self._candidate_owner[ranked], return_index=True)
+        goals = []
+        for i in ranked[first]:
+            x, y = self._cell_to_world(self._candidate_rows[i], self._candidate_cols[i])
+            edge_x, edge_y = self._cell_to_world(self._anchor_rows[i], self._anchor_cols[i])
+            heading = math.atan2(edge_y - y, edge_x - x)
+            owner = self._candidate_owner[i]
+            center = self._cell_to_world(*self._centers[owner])
+            cost = float(path_cost[i])
+            goals.append(FrontierGoal(x, y, heading, center, float(self._gain[owner]), cost))
+        self._goals = sorted(goals, key=lambda goal: goal.score)
+        return self._goals
 
 
 class FrontierExplorer:
-    """
-    Autonomous frontier exploration controller.
-
-    Parameters
-    ----------
-    nav2_client : Nav2Client
-        The server's Nav2Client instance (must already be initialised).
-    bridge : ROS2Bridge
-        The server's ROS2Bridge (provides occupancy grid + robot pose).
-    """
+    """Async exploration supervisor with goal ownership and transient retries."""
 
     def __init__(self, nav2_client, bridge):
-        self._nav2   = nav2_client
+        self._nav2 = nav2_client
         self._bridge = bridge
-
-        self._state  = STATE_IDLE
-        self._lock   = threading.Lock()
-
-        # Exploration bookkeeping
-        self._visited_frontiers: list[tuple[float, float]] = []
-        self._current_goal: Optional[tuple[float, float]] = None
-        self._goal_start_time: float = 0.0
-        self._frontiers_found: int = 0
-        self._frontiers_visited: int = 0
-
-        # asyncio task handle (set by start())
-        self._task: Optional[asyncio.Task] = None
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+        self._state = STATE_IDLE
+        self._lock = threading.Lock()
+        self._current_goal = None
+        self._reason = None
+        self._goal_id = None
+        self._cancelled_goal_id = None
+        self._frontiers_found = 0
+        self._frontiers_visited = 0
+        self._task = None
+        self._worker = None
+        self._grid = None
+        self._grid_key = None
 
     def start(self) -> bool:
-        """Begin exploration.  Returns False if already running."""
         with self._lock:
             if self._state in (STATE_EXPLORING, STATE_SELECTING):
-                logger.warning("FrontierExplorer: already running")
                 return False
             self._state = STATE_SELECTING
-            self._visited_frontiers.clear()
-            self._frontiers_found   = 0
+            self._reason = None
+            self._frontiers_found = 0
             self._frontiers_visited = 0
 
-        self._task = asyncio.get_event_loop().create_task(self._explore_loop())
+        self._task = asyncio.get_running_loop().create_task(self._explore_loop())
         logger.info("FrontierExplorer: started")
         return True
 
     def is_exploring(self) -> bool:
-        """True while selecting a frontier or driving to one.
-
-        Used by the tilting-lidar interlock in server_x3.py: between goals the
-        explorer leaves Nav2 IDLE, so checking Nav2Client.is_busy() alone would
-        let a tilt sweep start in the gap and blind the very next goal.
-        """
         with self._lock:
             return self._state in (STATE_EXPLORING, STATE_SELECTING)
 
     def stop(self) -> None:
-        """Stop exploration and cancel any active Nav2 goal."""
-        with self._lock:
-            self._state = STATE_STOPPED
-
+        self._set_state(STATE_STOPPED)
         if self._task and not self._task.done():
             self._task.cancel()
-
-        try:
-            self._nav2.cancel()
-        except Exception:
-            pass
-
+        self._cancel_goal()
         logger.info("FrontierExplorer: stopped")
 
     def status(self) -> dict:
-        """Return a dict suitable for the telemetry broadcast."""
         with self._lock:
             return {
-                "frontier_state":     self._state,
-                "frontiers_found":    self._frontiers_found,
-                "frontiers_visited":  self._frontiers_visited,
-                "current_goal":       list(self._current_goal) if self._current_goal else None,
+                "frontier_state": ("STOPPING" if self._state == STATE_STOPPED
+                                   and self._cancelled_goal_id is not None
+                                   and self._nav2.get_status(self._cancelled_goal_id)["state"] == "CANCELLING"
+                                   else self._state),
+                "frontiers_found": self._frontiers_found,
+                "frontiers_visited": self._frontiers_visited,
+                "frontier_reason": self._reason,
+                "current_goal": list(self._current_goal) if self._current_goal else None,
             }
 
-    # ------------------------------------------------------------------
-    # Core exploration loop (runs as an asyncio Task)
-    # ------------------------------------------------------------------
+    def _set_state(self, state, goal=None, reason=None):
+        with self._lock:
+            self._state = state
+            self._reason = reason
+            self._current_goal = (goal.x, goal.y) if goal else None
 
-    async def _explore_loop(self) -> None:
+    def _cancel_goal(self):
+        if self._goal_id is not None:
+            self._cancelled_goal_id = self._goal_id
+            self._nav2.cancel(self._goal_id)
+            self._goal_id = None
+
+    def _snapshot_and_pose(self, now=None):
+        snapshot = self._bridge.get_occupancy_grid()
+        # Nav2Client dispatches goals in map. Require the same frame for the grid.
+        if snapshot is None or snapshot["frame_id"] != "map":
+            return None, None
+        if now is None:
+            now = time.monotonic()
+        if not 0.0 <= now - snapshot["received_monotonic"] <= MAX_MAP_AGE_S:
+            return None, None
+        return snapshot, self._bridge.get_exploration_pose(snapshot["frame_id"])
+
+    @staticmethod
+    def _snapshot_key(snapshot):
+        return snapshot["frame_id"], snapshot["sequence"]
+
+    async def _select_goals(self, snapshot, pose):
+        # A cancellation may leave a running thread. Wait for it before sharing
+        # cached grid state with another worker.
+        if self._worker is not None:
+            await asyncio.shield(self._worker)
+        key = self._snapshot_key(snapshot)
+        grid = self._grid if key == self._grid_key else None
+
+        def select():
+            current = grid if grid is not None else _FrontierGrid(snapshot)
+            return current, current.goals(pose)
+
+        self._worker = asyncio.create_task(asyncio.to_thread(select))
+        self._grid, goals = await asyncio.shield(self._worker)
+        self._worker = None
+        self._grid_key = key
+        return goals
+
+    async def _explore_loop(self):
+        visited = []
+        failures = []
         try:
             while True:
-                with self._lock:
-                    if self._state == STATE_STOPPED:
-                        return
-
-                # 1. Get latest grid and robot pose
-                grid_info = self._bridge.get_occupancy_grid()
-                pose_m    = self._bridge.get_pose_m()
-
-                if grid_info is None:
-                    logger.debug("FrontierExplorer: waiting for /map...")
-                    await asyncio.sleep(1.0)
+                snapshot, pose = self._snapshot_and_pose()
+                if pose is None:
+                    self._set_state(STATE_SELECTING, reason=(
+                        "Waiting for a fresh map-frame occupancy grid" if snapshot is None
+                        else "Waiting for fresh map-frame localization"
+                    ))
+                    await asyncio.sleep(0.5)
                     continue
 
-                # 2. Detect frontiers
-                frontiers = _find_frontier_centroids(
-                    grid_info["data"],
-                    grid_info["width"],
-                    grid_info["height"],
-                    grid_info["resolution"],
-                    grid_info["origin_x"],
-                    grid_info["origin_y"],
-                )
+                goals = await self._select_goals(snapshot, pose)
+                latest, fresh_pose = self._snapshot_and_pose()
+                if (fresh_pose is None
+                        or self._snapshot_key(latest) != self._grid_key
+                        or self._grid.world_to_cell(*fresh_pose[:2]) != self._grid.world_to_cell(*pose[:2])):
+                    await asyncio.sleep(POLL_S)
+                    continue
 
                 with self._lock:
-                    self._frontiers_found = len(frontiers)
+                    self._frontiers_found = self._grid.count
+                if goals is None:
+                    self._set_state(STATE_SELECTING, reason="Robot pose is outside the traversable map")
+                    await asyncio.sleep(0.5)
+                    continue
 
-                if not frontiers:
-                    logger.info("FrontierExplorer: no frontiers remain — exploration complete")
-                    with self._lock:
-                        self._state    = STATE_COMPLETE
-                        self._current_goal = None
-                    return
-
-                # 3. Filter already-visited frontiers
-                rx, ry = pose_m["x"], pose_m["y"]
-                unvisited = [
-                    f for f in frontiers
-                    if not _near_any(f, self._visited_frontiers, REACHED_THRESHOLD)
+                remaining = [
+                    goal for goal in goals
+                    if not any(_matches(goal, success) and goal.gain <= success.gain for success in visited)
                 ]
-
-                if not unvisited:
-                    logger.info("FrontierExplorer: all reachable frontiers visited")
-                    with self._lock:
-                        self._state    = STATE_COMPLETE
-                        self._current_goal = None
+                if not remaining:
+                    if len(goals) < self._grid.count:
+                        self._set_state(STATE_BLOCKED, reason="Frontiers remain without reachable approaches")
+                    else:
+                        self._set_state(STATE_COMPLETE)
                     return
 
-                # 4. Select nearest unvisited frontier centroid
-                goal = min(unvisited, key=lambda f: math.hypot(f[0] - rx, f[1] - ry))
+                now = time.monotonic()
+                eligible = []
+                for goal in remaining:
+                    failure = next((f for f in failures if _matches(goal, f[0])), None)
+                    if failure is None or failure[1] < MAX_ATTEMPTS:
+                        eligible.append((goal, failure))
+                if not eligible:
+                    self._set_state(STATE_BLOCKED, reason="Frontiers remain after navigation retries")
+                    return
 
-                with self._lock:
-                    self._state        = STATE_EXPLORING
-                    self._current_goal = goal
-
-                logger.info(f"FrontierExplorer: navigating to frontier ({goal[0]:.2f}, {goal[1]:.2f})")
-                self._goal_start_time = time.monotonic()
-
-                # 5. Send Nav2 goal — face the frontier direction
-                heading = math.atan2(goal[1] - ry, goal[0] - rx)
-                self._nav2.navigate_to(goal[0], goal[1], heading)
-
-                # 6. Wait for goal to finish
-                result = await self._wait_for_nav2()
-
-                # If Nav2 was unavailable the robot never moved — don't mark this
-                # frontier as visited or we'll exhaust all frontiers without exploring.
-                if result == "UNAVAILABLE":
-                    logger.warning("FrontierExplorer: Nav2 unavailable, pausing 5 s then retrying")
-                    with self._lock:
-                        self._state = STATE_SELECTING
-                        self._current_goal = None
-                    await asyncio.sleep(5.0)
+                selected = next(((goal, failure) for goal, failure in eligible
+                                 if failure is None or failure[2] <= now), None)
+                if selected is None or self._nav2.is_busy():
+                    self._set_state(STATE_SELECTING, reason=(
+                        "Waiting to retry frontier goals" if selected is None
+                        else "Waiting for Nav2 to finish its active goal"
+                    ))
+                    await asyncio.sleep(0.5)
                     continue
+                goal, failure = selected
 
-                self._visited_frontiers.append(goal)
-                with self._lock:
-                    self._frontiers_visited += 1
-                    self._state = STATE_SELECTING
+                goal_id = self._nav2.navigate_to(goal.x, goal.y, goal.heading)
+                if goal_id is None:
+                    self._set_state(STATE_SELECTING, reason="Waiting for Nav2 to accept goals")
+                    await asyncio.sleep(2.0)
+                    continue
+                self._goal_id = goal_id
+                self._set_state(STATE_EXPLORING, goal)
+                result = await self._wait_for_nav2(goal_id)
+                self._goal_id = None
+                pause_reason = {
+                    "MAP_STALE": "Waiting for a fresh map-frame occupancy grid",
+                    "LOCALIZATION_LOST": "Waiting for fresh map-frame localization",
+                }.get(result)
+                self._set_state(STATE_SELECTING, reason=pause_reason)
 
                 if result == "SUCCEEDED":
-                    logger.info("FrontierExplorer: goal reached, selecting next frontier")
-                elif result == "TIMEOUT":
-                    logger.warning("FrontierExplorer: goal timed out, skipping frontier")
-                else:
-                    logger.warning(f"FrontierExplorer: goal ended with '{result}', skipping frontier")
+                    visited.append(goal)
+                    if failure is not None:
+                        failures.remove(failure)
+                    with self._lock:
+                        self._frontiers_visited += 1
+                elif result in ("ABORTED", "REJECTED", "ERROR", "ACCEPT_TIMEOUT", "TIMEOUT"):
+                    attempts = 1
+                    if failure is not None:
+                        failures.remove(failure)
+                        attempts += failure[1]
+                    failures.append((goal, attempts, time.monotonic() + RETRY_COOLDOWN_S))
+                elif result == "CANCELED":
+                    self._set_state(STATE_STOPPED)
+                    return
 
-                # Brief pause to let SLAM update the map before re-scanning
-                await asyncio.sleep(0.5)
+                logger.info("FrontierExplorer: goal (%.2f, %.2f) ended with %s", goal.x, goal.y, result)
+                await asyncio.sleep(0.5 if result == "SUCCEEDED" else 2.0)
 
         except asyncio.CancelledError:
-            logger.info("FrontierExplorer: task cancelled")
-        except Exception as e:
-            logger.error(f"FrontierExplorer: unexpected error: {e}")
-            with self._lock:
-                self._state = STATE_STOPPED
+            logger.debug("FrontierExplorer: task cancelled")
+        except Exception:
+            logger.exception("FrontierExplorer: unexpected error")
+            self._cancel_goal()
+            self._set_state(STATE_STOPPED)
 
-    async def _wait_for_nav2(self) -> str:
-        """Poll Nav2Client state until the goal finishes or times out."""
-        from nav2_client import STATE_SUCCEEDED, STATE_FAILED, STATE_IDLE, STATE_UNAVAILABLE
+    async def _wait_for_nav2(self, goal_id):
+        start = last_progress = time.monotonic()
+        best_distance = math.inf
         while True:
-            elapsed = time.monotonic() - self._goal_start_time
-            if elapsed > GOAL_TIMEOUT:
-                self._nav2.cancel()
+            status = self._nav2.get_status(goal_id)
+            if status.get("outcome") is not None:
+                return status["outcome"]
+            state = status["state"]
+            if state == "IDLE":
+                return "CANCELED"
+            if state == "UNAVAILABLE":
+                return "UNAVAILABLE"
+            if state == "FAILED":
+                return "ERROR"
+
+            now = time.monotonic()
+            snapshot, pose = self._snapshot_and_pose(now)
+            if pose is None:
+                self._cancel_goal()
+                return "MAP_STALE" if snapshot is None else "LOCALIZATION_LOST"
+
+            distance = status.get("dist")
+            if (distance is not None and math.isfinite(distance)
+                    and (distance > 0.0 or distance == 0.0 and math.isfinite(best_distance))):
+                if distance <= best_distance - PROGRESS_STEP_M:
+                    best_distance = distance
+                    last_progress = now
+            if state == "PLANNING" and now - start >= ACCEPT_TIMEOUT_S:
+                self._cancel_goal()
+                return "ACCEPT_TIMEOUT"
+            if now - last_progress >= NO_PROGRESS_TIMEOUT_S:
+                self._cancel_goal()
                 return "TIMEOUT"
-
-            nav_state = self._nav2.get_status().get("state", STATE_IDLE)
-            if nav_state == STATE_SUCCEEDED:
-                return "SUCCEEDED"
-            if nav_state in (STATE_FAILED, STATE_IDLE, STATE_UNAVAILABLE):
-                return nav_state
-
-            with self._lock:
-                if self._state == STATE_STOPPED:
-                    return "STOPPED"
-
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(POLL_S)
 
 
-# ---------------------------------------------------------------------------
-# Frontier detection — pure numpy, no ROS dependency
-# ---------------------------------------------------------------------------
-
-def _find_frontier_centroids(
-    data: list[int],
-    width: int,
-    height: int,
-    resolution: float,
-    origin_x: float,
-    origin_y: float,
-) -> list[tuple[float, float]]:
-    """
-    Detect frontier centroids in world coordinates (metres).
-
-    Parameters
-    ----------
-    data       : flat OccupancyGrid data (-1=unknown, 0=free, 1-100=occupied)
-    width, height : grid dimensions in cells
-    resolution : metres per cell
-    origin_x/y : world coords of the grid's bottom-left corner
-
-    Returns
-    -------
-    List of (x, y) world-coordinate centroids, one per frontier cluster.
-    Clusters smaller than MIN_CLUSTER_SIZE cells are discarded as noise.
-    """
-    grid = np.array(data, dtype=np.int8).reshape(height, width)
-
-    # Frontier mask: free cells (0) that have at least one unknown neighbour (-1)
-    free    = (grid == 0)
-    unknown = (grid == -1)
-
-    # Dilate unknown by 1 cell (4-connected), then intersect with free
-    unknown_d = np.zeros_like(unknown)
-    unknown_d[:-1, :] |= unknown[1:, :]   # shift up
-    unknown_d[1:,  :] |= unknown[:-1, :]  # shift down
-    unknown_d[:, :-1] |= unknown[:, 1:]   # shift left
-    unknown_d[:, 1:]  |= unknown[:, :-1]  # shift right
-
-    frontier_mask = free & unknown_d
-
-    if not frontier_mask.any():
-        return []
-
-    # Label connected components
-    try:
-        from scipy.ndimage import label as scipy_label
-        labeled, n_labels = scipy_label(frontier_mask)
-    except ImportError:
-        # Fallback: simple BFS labelling when scipy is unavailable
-        labeled, n_labels = _bfs_label(frontier_mask)
-
-    centroids: list[tuple[float, float]] = []
-    for lbl in range(1, n_labels + 1):
-        cells = np.argwhere(labeled == lbl)   # shape (N, 2): rows=y, cols=x
-        if len(cells) < MIN_CLUSTER_SIZE:
-            continue
-        cy_cell = cells[:, 0].mean()   # row → y
-        cx_cell = cells[:, 1].mean()   # col → x
-        # Convert cell indices to world coordinates
-        world_x = origin_x + (cx_cell + 0.5) * resolution
-        world_y = origin_y + (cy_cell + 0.5) * resolution
-        centroids.append((world_x, world_y))
-
-    return centroids
-
-
-def _bfs_label(mask: np.ndarray):
-    """
-    Simple BFS connected-component labelling — used only when scipy is absent.
-    Returns (labeled_array, n_labels) matching scipy.ndimage.label output.
-    """
-    from collections import deque
-    labeled  = np.zeros_like(mask, dtype=np.int32)
-    n_labels = 0
-    rows, cols = np.where(mask)
-
-    for r0, c0 in zip(rows, cols):
-        if labeled[r0, c0]:
-            continue
-        n_labels += 1
-        queue = deque([(r0, c0)])
-        labeled[r0, c0] = n_labels
-        while queue:
-            r, c = queue.popleft()
-            for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                nr, nc = r + dr, c + dc
-                if 0 <= nr < mask.shape[0] and 0 <= nc < mask.shape[1]:
-                    if mask[nr, nc] and not labeled[nr, nc]:
-                        labeled[nr, nc] = n_labels
-                        queue.append((nr, nc))
-
-    return labeled, n_labels
-
-
-def _near_any(
-    point: tuple[float, float],
-    visited: list[tuple[float, float]],
-    threshold: float,
-) -> bool:
-    """Return True if point is within threshold metres of any visited location."""
-    px, py = point
-    for vx, vy in visited:
-        if math.hypot(px - vx, py - vy) < threshold:
-            return True
-    return False
+def _matches(goal, other):
+    return math.dist(goal.anchor, other.anchor) <= FRONTIER_MATCH_M

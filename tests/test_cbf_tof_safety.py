@@ -463,7 +463,8 @@ def test_pose_follows_fused_odom_not_raw():
     ns = {'time': SimpleNamespace(monotonic=lambda: clock['t'])}
     exec(compile(ast.Module(body=[cb], type_ignores=[]), str(SERVER), 'exec'), ns)
     hist = []
-    b = SimpleNamespace(_lock=threading.Lock(), _velocity_pose_history=SimpleNamespace(add=lambda *a: hist.append(a)),
+    b = SimpleNamespace(data_watchdog=SimpleNamespace(beat=lambda topic: None),
+                        _lock=threading.Lock(), _velocity_pose_history=SimpleNamespace(add=lambda *a: hist.append(a)),
                         _node=SimpleNamespace(get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=0))))
 
     def msg(x, yaw):

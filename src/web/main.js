@@ -1358,7 +1358,9 @@ const FRONTIER_STATE_COLORS = {
     SELECTING: { bg: 'var(--accent-bg)', color: 'var(--accent)' },
     EXPLORING: { bg: 'var(--ok-bg)', color: 'var(--ok-bright)' },
     COMPLETE: { bg: 'var(--ok-bg)', color: 'var(--ok-bright)' },
+    STOPPING: { bg: 'var(--bad-bg)', color: 'var(--bad-bright)' },
     STOPPED: { bg: 'var(--bad-bg)', color: 'var(--bad-bright)' },
+    BLOCKED: { bg: 'var(--bad-bg)', color: 'var(--bad-bright)' },
 };
 
 function updateFrontierStatus(frontier) {
@@ -1378,7 +1380,12 @@ function updateFrontierStatus(frontier) {
 
     // Button label
     if (frontierBtn) {
-        frontierBtn.textContent = isActive ? 'Stop Auto-Explore' : 'Start Auto-Explore';
+        if (fstate === 'STOPPING') {
+            frontierBtn.textContent = 'Stopping…';
+            frontierBtn.disabled = true;
+        } else {
+            frontierBtn.textContent = isActive ? 'Stop Auto-Explore' : 'Start Auto-Explore';
+        }
         frontierBtn.classList.toggle('btn-nav-danger', isActive);
     }
 
@@ -1392,12 +1399,14 @@ function updateFrontierStatus(frontier) {
 
     // Status hint
     if (frontierStatusText) {
-        if (fstate === 'EXPLORING' && frontier.current_goal) {
+        if (frontier.frontier_reason) {
+            frontierStatusText.textContent = frontier.frontier_reason;
+        } else if (fstate === 'EXPLORING' && frontier.current_goal) {
             const [gx, gy] = frontier.current_goal;
             frontierStatusText.textContent =
                 `Navigating to frontier (${gx.toFixed(2)}, ${gy.toFixed(2)})`;
         } else if (fstate === 'COMPLETE') {
-            frontierStatusText.textContent = 'Exploration complete — all frontiers visited';
+            frontierStatusText.textContent = 'Exploration complete';
         } else if (fstate === 'SELECTING') {
             frontierStatusText.textContent = 'Selecting next frontier…';
         } else {
@@ -2488,7 +2497,20 @@ function handleFoxgloveTextMessage(obj) {
 // Data Handling
 // =================================================================
 function handleMessage(data) {
+    if (data.type === "movement_state") {
+        state.motorsEnabled = data.enabled;
+        updateMotorToggleButton();
+        if (data.success === false) {
+            window.alert(data.message);
+        }
+        return;
+    }
+
     if (data.type === "hello") {
+        if (typeof data.motors_enabled === 'boolean') {
+            state.motorsEnabled = data.motors_enabled;
+            updateMotorToggleButton();
+        }
         // Older servers don't send tilt_available; keep the 3D controls for them.
         document.body.classList.toggle('no-tilt', data.tilt_available === false);
         const mode = data.mode; // "sim" | "ros2" | "direct"
@@ -2628,6 +2650,11 @@ function handleMessage(data) {
         return;
     }
 
+    if (data.type === "nav_goal_refused") {
+        window.alert(data.reason);
+        return;
+    }
+
     if (data.type === "frontier_explore_result") {
         const { frontierStatusText } = elements;
         if (frontierStatusText) {
@@ -2707,6 +2734,10 @@ function handleMessage(data) {
         // Sync flags
         state.detectionEnabled = data.detection_enabled;
         state.isAutoDriving = data.is_auto_driving;
+        if (typeof data.motors_enabled === 'boolean' && state.motorsEnabled !== data.motors_enabled) {
+            state.motorsEnabled = data.motors_enabled;
+            updateMotorToggleButton();
+        }
         if (data.is_demo_mode !== undefined) {
             state.isDemoMode = data.is_demo_mode;
             updateDemoBannerFromReadout(data);
@@ -3549,9 +3580,7 @@ function updateAutoDriveButton() {
 
 function motorToggle() {
     if (!state.connected) return;
-    state.motorsEnabled = !state.motorsEnabled;
-    sendMessage({ type: "toggle_motors", enabled: state.motorsEnabled });
-    updateMotorToggleButton();
+    sendMessage({ type: "toggle_motors", enabled: !state.motorsEnabled });
 }
 
 function updateMotorToggleButton() {
@@ -3743,7 +3772,6 @@ if (elements.demoModeBtn) elements.demoModeBtn.addEventListener('click', demoMod
 if (elements.stopBtn) elements.stopBtn.addEventListener('click', () => {
     if (!state.connected) return;
     sendMessage({ type: "stop" });
-    if (state.isAutoDriving) sendMessage({ type: "stop_auto_drive" });
     if (state.isDemoMode) {
         sendMessage({ type: "stop_demo" });
         state.isDemoMode = false;
@@ -4226,7 +4254,7 @@ window.addEventListener("gamepaddisconnected", (e) => {
     }
 });
 
-const buttonDebounce = { square: false, triangle: false, dUp: false, dDown: false, dLeft: false };
+const buttonDebounce = { stop: false, square: false, triangle: false, dUp: false, dDown: false, dLeft: false };
 
 // Trigger rumble on the connected gamepad if it supports vibration.
 // weakMagnitude = high-frequency motor, strongMagnitude = low-frequency motor (both 0–1).
@@ -4275,11 +4303,14 @@ function pollGamepad() {
 
     // 1. E-Stop (X / Cross / Button 0)
     if (gamepad.buttons[0].pressed) {
-        sendMessage({ type: "stop" });
-        if (state.isAutoDriving) sendMessage({ type: "stop_auto_drive" });
-        rumble(1.0, 1.0, 500);
+        if (!buttonDebounce.stop) {
+            buttonDebounce.stop = true;
+            sendMessage({ type: "stop" });
+            rumble(1.0, 1.0, 500);
+        }
         return;
     }
+    buttonDebounce.stop = false;
 
     // 2. Square (Toggle Detection)
     if (gamepad.buttons[2].pressed && !buttonDebounce.square) {
@@ -4489,7 +4520,7 @@ function updateKeyboardDrive() {
 
     // Send only if changed
     if (lp === 0 && rp === 0 && (state.lastLeftPower !== 0 || state.lastRightPower !== 0)) {
-        sendMessage({ type: "stop" });
+        sendMessage({ type: "stop_manual" });
         state.lastLeftPower = 0; state.lastRightPower = 0;
     } else if (Math.abs(lp - state.lastLeftPower) > 0.01 || Math.abs(rp - state.lastRightPower) > 0.01) {
         sendMessage({ type: "set_power", motor: "left", power: lp });

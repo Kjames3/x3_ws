@@ -5,6 +5,18 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-22 — Auto-Explore stop handling, frontier selection and simulation
+
+**Problem.** The operator could stop the wheels while Nav2 retained a goal. The explorer could mark a failed approach as visited or aim at a centroid across a wall. Mapping and saved-map localization could also launch simultaneously from the GUI.
+
+**Potential solution.** Give each navigation action an identity, inhibit motion throughout cancellation, and select reachable approach cells using a fresh map and map-frame pose.
+
+**Work done.** Global Stop latches movement off. Stop Auto-Explore cancels its owned goal. The selector scores known-free approaches by grid travel cost and estimated information gain, checks footprint clearance and visibility, and runs on a worker with a map-revision cache. The explorer retries failed goals, distinguishes unresolved frontiers and monitors progress, map age and TF freshness. GUI SLAM Mode starts one mapper with navigation-only Nav2. Gazebo now receives gated velocity and supplies a usable simulation clock, odometry TF, laser frame and bounded room.
+
+**Results.** On this workstation, 354 focused tests and the simulated Nav2 action lifecycle harness passed. A headless Fortress run used the GUI WebSocket commands, SLAM Toolbox, Nav2 and the server velocity gate. In a 90-second mapping run, known cells grew from 5,608 to 24,730. Four frontier goals succeeded. After a planner abort, the explorer selected another goal and left the visited count unchanged. Global Stop canceled the active goal and all 26 sampled driver commands during continued nonzero input were zero. A separate run verified dedicated Stop, explicit explorer restart, then global Stop. The CBF reported infeasible constraints during a close obstacle approach. A fresh mapping session started at the previous obstacle-side stopping point waited for mapped clearance around the base. Start the lab trial on open floor. Physical stopping distance, clearance and whole-room completion remain unverified.
+
+**Lab check.** Build the changed ROS packages on the Jetson and load the updated server. Select SLAM Mode, Launch Nav2, then Start Auto-Explore. With room to stop, verify Stop Auto-Explore cancels the action and Global Stop holds the base still until Enable Movement. Then observe one doorway or obstacle approach, record minimum physical clearance and map growth, and check the displayed reason for any blocked frontier. Hardware deployment is pending.
+
 ## 2026-11-22 — Seeded candidates into the tracker (item 1), behind X3_SEEDED_TRACKER
 
 **Problem:** seated people on the couch got a lidar track in only ~3% of camera frames. The classifier cannot confirm seeded couch clusters (see the height-cap entry), so they can't be gated on shape.

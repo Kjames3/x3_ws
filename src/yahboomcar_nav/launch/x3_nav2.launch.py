@@ -13,6 +13,7 @@ Launch arguments:
   params_file   [nav2_params_x3.yaml]  Full path to Nav2 parameter file.
   slam          [false]  Set true to run slam_toolbox instead of AMCL.
                          The robot will build/extend the map while navigating.
+  external_slam [false]  Use an already-running mapper and launch Nav2 only.
 
 Nav2 stack used:
   Global planner : SmacPlanner2D  (holonomic-friendly, no heading constraints)
@@ -26,14 +27,12 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
-    GroupAction,
     IncludeLaunchDescription,
     SetEnvironmentVariable,
 )
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PythonExpression
-from launch_ros.actions import Node
+from launch.substitutions import LaunchConfiguration
 
 
 def generate_launch_description():
@@ -48,6 +47,7 @@ def generate_launch_description():
     map_yaml      = LaunchConfiguration('map')
     params_file   = LaunchConfiguration('params_file')
     slam          = LaunchConfiguration('slam')
+    external_slam = LaunchConfiguration('external_slam')
 
     declare_use_sim_time = DeclareLaunchArgument(
         'use_sim_time', default_value='false',
@@ -64,6 +64,9 @@ def generate_launch_description():
     declare_slam = DeclareLaunchArgument(
         'slam', default_value='false',
         description='Run slam_toolbox for live mapping instead of AMCL')
+    declare_external_slam = DeclareLaunchArgument(
+        'external_slam', default_value='false',
+        description='Launch navigation only for an already-running mapper')
 
     # use_composition False: with the FastDDS discovery server, the composed
     # bringup sometimes never got an answer from
@@ -82,12 +85,24 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             os.path.join(nav2_pkg, 'launch', 'bringup_launch.py')
         ),
+        condition=UnlessCondition(external_slam),
         launch_arguments={
             'map':          map_yaml,
             'use_sim_time': use_sim_time,
             'params_file':  params_file,
             'slam':         slam,
             'use_composition': LaunchConfiguration('use_composition'),
+        }.items(),
+    )
+    navigation_only = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(nav2_pkg, 'launch', 'navigation_launch.py')
+        ),
+        condition=IfCondition(external_slam),
+        launch_arguments={
+            'use_sim_time': use_sim_time,
+            'params_file': params_file,
+            'use_composition': 'False',
         }.items(),
     )
 
@@ -99,7 +114,9 @@ def generate_launch_description():
         declare_map,
         declare_params,
         declare_slam,
+        declare_external_slam,
         declare_composition,
 
         nav2_bringup,
+        navigation_only,
     ])
