@@ -1079,13 +1079,13 @@ function updateNavHealth(h, slamActive, navPhase) {
             line.style.display = '';
         }
     }
+    const sp = document.getElementById('nav-speed');
+    if (sp) sp.textContent = h.speed != null ? h.speed.toFixed(2) : '—';
     if (badge) {
         // nav_phase is IDLE even when Nav2 was never launched; use the launch flag.
         const navUp = !!state.nav.nav2Running && navPhase !== 'UNAVAILABLE';
         if (slamActive || !navUp) { badge.style.display = 'none'; return; }
         const a = h.amcl;
-        const sp = document.getElementById('nav-speed');
-        if (sp) sp.textContent = h.speed != null ? h.speed.toFixed(2) : '—';
         let cls, text, tip;
         if (!a) {
             cls = 'lost'; text = 'NOT LOCALIZED';
