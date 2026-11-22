@@ -5,6 +5,27 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-22 — Height cap on seeded couch clusters (item 2): does not help
+
+**Problem:** the classifier accepted only 0.6% of seeded couch clusters, and those clusters reach ~1.97 m. Is the couch back or wall behind the person the reason?
+
+**Potential solution:** drop the points above a cap before computing features, then rescore.
+
+**Work done:** `src/tools/perception/seeded_zcap_check.py` caps at 1.1–1.6 m. As a control, it seeds the EMPTY couch run at the person's median position (1.25, -2.70) every frame.
+
+**Results** (share of clusters scoring > 0.5):
+
+| cap | occupied couch (798) | empty couch (438) |
+|---|---|---|
+| none | 0.6% | 0.0% |
+| 1.6 m | 75.3% | **96.1%** |
+| 1.4 m | 1.1% | 13.9% |
+| 1.3 / 1.2 / 1.1 m | 0.6–0.9% | 0.0% |
+
+- The point profile is almost the same with and without the person: about 20 points in every 0.2 m band from 0.4 to 2.0 m. Something tall stands right there (wall/couch back), and the seeded search finds it even when the couch is empty.
+- The 1.6 m jump is the classifier reacting to standing-person height. The empty couch scores *higher* than the occupied one, so no cap separates person from furniture.
+- **Conclusion:** at this spot, the lidar shape adds no confirmation. Retraining (item 3) would have to learn from geometry that doesn't differ either, so it is unlikely to work here. The viable route is item 1: a camera detection plus a seeded cluster becomes a track, with the lidar supplying the position. The camera must stay the gate, so camera false positives matter (lab empty runs).
+
 ## 2026-11-22 — Classifier scores on the seeded couch clusters
 
 **Problem:** seeded candidates covered 86% of the seated frames, but their clusters reach about 1.97 m high. Does the classifier see a person in them?
