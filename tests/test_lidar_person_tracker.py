@@ -232,31 +232,45 @@ def test_node_publishes_candidates_in_odom():
     from sensor_msgs.msg import PointCloud2, PointField
     path = pathlib.Path('src/yahboomcar_bringup/yahboomcar_bringup/livox_scan_node.py')
     cls = next(n for n in ast.parse(path.read_text()).body if isinstance(n, ast.ClassDef))
-    method = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == 'publish_person_candidates')
+    names = ('publish_person_candidates', 'seeds_at', '_candidate_msg')
+    methods = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in names]
     ns = dict(np=np, struct=struct, time=_time, PointCloud2=PointCloud2, PointField=PointField,
-              extract_candidates=pc.extract, CANDIDATE_FIELDS=pc.FIELDS)
-    exec(compile(ast.Module(body=[method], type_ignores=[]), 'cands', 'exec'), ns)
+              extract_candidates=pc.extract, seeded_candidates=pc.seeded_candidates,
+              CANDIDATE_FIELDS=pc.FIELDS)
+    exec(compile(ast.Module(body=methods, type_ignores=[]), 'cands', 'exec'), ns)
     rng = np.random.default_rng(4)
     person = _person(rng, 2.0, 0.0, n=200) - [0.0432, 0.0, 0.31]     # sensor frame
     pts = np.zeros(len(person), dtype=[('t', '<u4'), ('x', '<f4'), ('y', '<f4'), ('z', '<f4')])
     pts['x'], pts['y'], pts['z'] = person.T
     pts['t'] = np.linspace(0, 99_000_000, len(pts)).astype(np.uint32)
-    sent = []
+    sent, seeded = [], []
     # Robot at odom (5, 1) facing +y: the person 2 m ahead is at odom (5, 3).
     pose = lambda s: (np.full(len(s), 5.0), np.full(len(s), 1.0), np.full(len(s), math.pi / 2))
     logger = NS(info=lambda *_: None)
     obj = NS(cand_pub=NS(get_subscription_count=lambda: 1, publish=sent.append),
              cloud_R=np.eye(3), cloud_t=np.array([0.0432, 0.0, 0.31]), pose_at=pose,
              cand_ms=[], cand_n=[], cand_logged_ns=0, get_logger=lambda: logger,
-             get_clock=lambda: NS(now=lambda: NS(nanoseconds=0)))
+             get_clock=lambda: NS(now=lambda: NS(nanoseconds=0)),
+             seeds=None, seed_pub=NS(get_subscription_count=lambda: 1, publish=seeded.append),
+             _candidate_msg=ns['_candidate_msg'])
+    obj.seeds_at = lambda t: ns['seeds_at'](obj, t)
     ns['publish_person_candidates'](obj, pts, struct.pack('<I i I', 256, 100, 0))
+    assert not seeded                                   # no camera seeds: nothing seeded
     m = sent[0]
     assert m.header.frame_id == 'odom' and m.width == 1 and m.header.stamp.sec == 100
     row = dict(zip(pc.FIELDS, np.frombuffer(m.data, dtype='<f4')))
     assert row['x'] == pytest.approx(5.0, abs=0.1) and row['y'] == pytest.approx(3.0, abs=0.1)
+    # A fresh camera seed on the person: seeded rows are published on their own topic,
+    # and this one is a duplicate of the ordinary candidate, so the message is empty.
+    obj.seeds = (100.099, np.array([[5.0, 3.0, 0.0, 0.0]]))
+    ns['publish_person_candidates'](obj, pts, struct.pack('<I i I', 256, 100, 0))
+    assert len(seeded) == 1 and seeded[0].width == 0 and len(sent) == 2
+    obj.seeds = (99.0, np.array([[5.0, 3.0, 0.0, 0.0]]))    # stale seeds are ignored
+    ns['publish_person_candidates'](obj, pts, struct.pack('<I i I', 256, 100, 0))
+    assert len(seeded) == 1
     obj.pose_at = lambda s: None                        # no odom: nothing published
     ns['publish_person_candidates'](obj, pts, struct.pack('<I i I', 256, 100, 0))
-    assert len(sent) == 1
+    assert len(sent) == 3
 
 
 def test_replay_tool_scores_a_recorded_walk_up(tmp_path):

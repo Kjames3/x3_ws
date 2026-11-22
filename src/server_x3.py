@@ -1048,6 +1048,15 @@ class ROS2Bridge:
         if LIDAR_PERSONS_ENABLED:
             self._node.create_subscription(PointCloud2, '/livox/person_candidates',
                                            self._person_candidates_cb, qos_profile_sensor_data)
+            # Camera-seeded candidates (shadow mode, 2026-11-22): C3 people go to
+            # livox_scan_node as seeds; it cuts a body out along each camera ray and
+            # publishes the extra rows on their own topic. They are recorded and
+            # counted here, NOT given to the tracker yet.
+            self._seed_pub = self._node.create_publisher(PointCloud2, '/c3/person_seeds', 5)
+            self._node.create_subscription(PointCloud2, '/livox/person_candidates_seeded',
+                                           self._seeded_candidates_cb, qos_profile_sensor_data)
+        self._seeded = {'stamp': None, 'rows': None, 'fields': None,
+                        'frames': 0, 'rows_n': 0, 'gap_fill': 0, 'logged': 0.0}
         self._people_last_pub = 0.0
         self._cmd_vel_pub = self._node.create_publisher(Twist, CMD_VEL_OUT_TOPIC, 10)
         # What was ASKED of the CBF (GUI joystick, Nav2 through the gate, heartbeat), so a
@@ -1345,7 +1354,8 @@ class ROS2Bridge:
                 results = _lidar_persons.update(now, cands, camera, packet_age)
                 stats = dict(_lidar_persons.stats)
             last = _lidar_persons_logged
-            self._lidar_persons_record(last, now, names, rows, camera, packet_age, results)
+            self._lidar_persons_record(last, now, names, rows, camera, packet_age, results,
+                                       self._seeded)
             keys = ('births', 'relinked', 'hold_expired', 'lost_lidar', 'resets')
             changed = last['stats'] is None or any(stats[k] != last['stats'][k] for k in keys)
             if changed and time.monotonic() - last['t'] >= 10.0:
@@ -1357,8 +1367,51 @@ class ROS2Bridge:
         except Exception as e:
             logger.warning("lidar person tracker failed: %s", e)
 
+    def publish_c3_seeds(self):
+        """C3 camera people (odom XY + velocity, predicted to now) -> /c3/person_seeds."""
+        if c3_live is None or not hasattr(self, '_seed_pub'):
+            return
+        camera, c3_stats = c3_live.get_tracks()
+        packet_age = c3_stats.get('packet_age_s', 0.0) if c3_stats else float('inf')
+        stamp = self._node.get_clock().now().nanoseconds * 1e-9
+        anchors = LidarPersonTracker._anchors(camera, stamp, packet_age)
+        rows = np.array([[a['x'], a['y'], a['vx'], a['vy']] for a in anchors], dtype='<f4').reshape(-1, 4)
+        msg = self._PointCloud2()
+        msg.header.stamp.sec, msg.header.stamp.nanosec = divmod(int(stamp * 1e9), 1_000_000_000)
+        msg.header.frame_id = 'odom'
+        msg.height, msg.width = 1, len(rows)
+        msg.fields = [self._PointField(name=n, offset=i * 4, datatype=self._PointField.FLOAT32, count=1)
+                      for i, n in enumerate(('x', 'y', 'vx', 'vy'))]
+        msg.is_bigendian, msg.is_dense = False, True
+        msg.point_step, msg.row_step = 16, 16 * len(rows)
+        msg.data = rows.tobytes()
+        self._seed_pub.publish(msg)
+
+    def _seeded_candidates_cb(self, msg):
+        """Shadow: keep the seeded rows for the recorder and count gap fills."""
+        try:
+            names = [f.name for f in msg.fields]
+            rows = np.frombuffer(bytes(msg.data), dtype='<f4').reshape(-1, len(names))
+            st = self._seeded
+            st['stamp'] = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+            st['rows'], st['fields'] = rows, names
+            st['frames'] += 1
+            st['rows_n'] += len(rows)
+            with _lidar_persons_lock:
+                held = [(r['odom_x'], r['odom_y']) for r in _lidar_persons.results]
+            for r in rows:
+                if all(math.hypot(r[0] - hx, r[1] - hy) > 0.5 for hx, hy in held):
+                    st['gap_fill'] += 1
+            if time.monotonic() - st['logged'] >= 60.0 and st['frames']:
+                logger.info("[seeded-shadow] %d frames, %.2f seeded rows/frame, %d rows "
+                            "with no lidar track within 0.5 m", st['frames'],
+                            st['rows_n'] / st['frames'], st['gap_fill'])
+                st['logged'] = time.monotonic()
+        except Exception as e:
+            logger.warning("seeded candidates (shadow) failed: %s", e)
+
     @staticmethod
-    def _lidar_persons_record(st, now, names, rows, camera, packet_age, results):
+    def _lidar_persons_record(st, now, names, rows, camera, packet_age, results, seeded=None):
         mono = time.monotonic()
         if mono - st['rec_t'] >= 1.0:
             st['rec_t'] = mono
@@ -1378,7 +1431,10 @@ class ROS2Bridge:
             st['rec'].write(json.dumps({
                 'stamp': now, 'packet_age': packet_age if math.isfinite(packet_age) else None,
                 'fields': names, 'candidates': np.round(rows, 3).tolist(), 'camera': camera,
-                'results': results}) + '\n')
+                'results': results,
+                'seeded': (np.round(seeded['rows'], 3).tolist()
+                           if seeded and seeded['rows'] is not None
+                           and abs(seeded['stamp'] - now) < 0.05 else None)}) + '\n')
 
     def lidar_person_tracks(self):
         """Lidar-held people with robot-frame fields, plus tracker stats."""
@@ -4544,6 +4600,17 @@ async def oak_camera_feed_loop():
 _ros_data_state = None   # last DataWatchdog.check(); sent in the readout as "ros_data"
 
 
+async def c3_seed_loop():
+    """10 Hz: C3 camera people -> /c3/person_seeds for livox_scan_node (shadow mode)."""
+    while not _shutting_down:
+        if ros_bridge is not None:
+            try:
+                ros_bridge.publish_c3_seeds()
+            except Exception as e:
+                logger.warning("c3 seeds publish failed: %s", e)
+        await asyncio.sleep(0.1)
+
+
 async def ros_data_watchdog_loop():
     """1 Hz: log the ROS data-plane stall (see ros_data_watchdog.py) on transitions.
 
@@ -5763,6 +5830,7 @@ async def main():
     import loop_stall_probe
     _stall_beat = asyncio.ensure_future(loop_stall_probe.start(threading.get_ident()))
     _data_watch = asyncio.ensure_future(ros_data_watchdog_loop())
+    _seed_loop = asyncio.ensure_future(c3_seed_loop()) if LIDAR_PERSONS_ENABLED else None
 
     # Graceful shutdown: on SIGINT/SIGTERM (e.g. `systemctl restart`) set the flag so
     # the async loops exit, gather() returns, and the finally-block cleanup() runs —

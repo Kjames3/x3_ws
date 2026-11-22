@@ -41,7 +41,8 @@ from tf2_ros import Buffer, TransformListener
 
 from livox_ros_driver2.msg import CustomMsg
 
-from yahboomcar_bringup.person_candidates import FIELDS as CANDIDATE_FIELDS, extract as extract_candidates
+from yahboomcar_bringup.person_candidates import (FIELDS as CANDIDATE_FIELDS, extract as extract_candidates,
+                                                  seeded_candidates)
 
 POINT_DT = np.dtype({'names': ['t', 'x', 'y', 'z'],
                      'formats': ['<u4', '<f4', '<f4', '<f4'],
@@ -134,6 +135,13 @@ class LivoxScanNode(Node):
         self.cloud_pub = self.create_publisher(PointCloud2, "/surroundings/points", qos_profile_sensor_data)
         # Person-sized clusters for the camera-seeded lidar person tracker (server_x3).
         self.cand_pub = self.create_publisher(PointCloud2, "/livox/person_candidates", qos_profile_sensor_data)
+        # Camera-seeded candidates (shadow mode, 2026-11-22): x3_server sends C3 people
+        # (odom XY + velocity) on /c3/person_seeds; bodies cut out along each camera
+        # ray go out on their own topic, so /livox/person_candidates is unchanged.
+        self.seed_pub = self.create_publisher(PointCloud2, "/livox/person_candidates_seeded",
+                                              qos_profile_sensor_data)
+        self.seeds = None            # (stamp_s, (K, 4) x, y, vx, vy)
+        self.create_subscription(PointCloud2, "/c3/person_seeds", self.on_seeds, 5)
         self.cand_ms = []
         self.cand_n = []
         self.cand_logged_ns = 0
@@ -322,6 +330,20 @@ class LivoxScanNode(Node):
             # Runs after /scan is out, and must never stop the next one.
             self.get_logger().warn(f'person candidates skipped: {e}', throttle_duration_sec=5.0)
 
+    def on_seeds(self, msg):
+        rows = np.frombuffer(bytes(msg.data), dtype='<f4').reshape(-1, 4) if msg.width else np.zeros((0, 4))
+        self.seeds = (msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9, rows.astype(np.float64))
+
+    def seeds_at(self, t):
+        """Camera seeds predicted to t, or None when stale (> 0.3 s) or empty."""
+        if self.seeds is None:
+            return None
+        st, rows = self.seeds
+        dt = t - st
+        if not len(rows) or abs(dt) > 0.3:
+            return None
+        return rows[:, :2] + rows[:, 2:4] * max(dt, 0.0)
+
     def publish_person_candidates(self, pts, data):
         """Person-sized clusters of the full frame -> /livox/person_candidates.
 
@@ -350,7 +372,28 @@ class LivoxScanNode(Node):
         c, sn = np.cos(pa), np.sin(pa)
         wx = c * xyz[:, 0] - sn * xyz[:, 1] + px
         wy = sn * xyz[:, 0] + c * xyz[:, 1] + py
-        cands = extract_candidates(wx, wy, xyz[:, 2], origin=(float(frame[0][0]), float(frame[1][0])))
+        origin = (float(frame[0][0]), float(frame[1][0]))
+        cands = extract_candidates(wx, wy, xyz[:, 2], origin=origin)
+        seeds = self.seeds_at(end)
+        if seeds is not None and self.seed_pub.get_subscription_count() > 0:
+            more = seeded_candidates(wx, wy, xyz[:, 2], seeds, origin, existing=cands)
+            self.seed_pub.publish(self._candidate_msg(more, end))
+        self.cand_pub.publish(self._candidate_msg(cands, end))
+        self.cand_ms.append((time.perf_counter() - t0) * 1e3)
+        self.cand_n.append(len(cands))
+        now_ns = self.get_clock().now().nanoseconds
+        if now_ns - self.cand_logged_ns > 60_000_000_000:
+            self.cand_logged_ns = now_ns
+            self.get_logger().info(
+                f'person candidates: {np.mean(self.cand_n):.1f}/frame, '
+                f'{np.mean(self.cand_ms):.1f} ms avg, {np.max(self.cand_ms):.1f} ms max '
+                f'over {len(self.cand_ms)} frames')
+            self.cand_ms, self.cand_n = [], []
+
+
+    @staticmethod
+    def _candidate_msg(cands, end):
+        """CANDIDATE_FIELDS rows -> PointCloud2 in odom, stamped at the frame end."""
         msg = PointCloud2()
         stamp_ns = round(end * 1_000_000_000)
         msg.header.stamp.sec, msg.header.stamp.nanosec = divmod(stamp_ns, 1_000_000_000)
@@ -362,17 +405,7 @@ class LivoxScanNode(Node):
         msg.point_step = 4 * len(CANDIDATE_FIELDS)
         msg.row_step = msg.point_step * len(cands)
         msg.data = np.ascontiguousarray(cands, dtype='<f4').tobytes()
-        self.cand_pub.publish(msg)
-        self.cand_ms.append((time.perf_counter() - t0) * 1e3)
-        self.cand_n.append(len(cands))
-        now_ns = self.get_clock().now().nanoseconds
-        if now_ns - self.cand_logged_ns > 60_000_000_000:
-            self.cand_logged_ns = now_ns
-            self.get_logger().info(
-                f'person candidates: {np.mean(self.cand_n):.1f}/frame, '
-                f'{np.mean(self.cand_ms):.1f} ms avg, {np.max(self.cand_ms):.1f} ms max '
-                f'over {len(self.cand_ms)} frames')
-            self.cand_ms, self.cand_n = [], []
+        return msg
 
 
 def main(args=None):
