@@ -4417,10 +4417,10 @@ def _rear_preview(device_id, stop, latest):
 
 
 # Left camera: Innomaker U20CAM-9281M (OV9281 mono, 0c45:636d, serial SN0001),
-# added 2026-11-21. Mounted sideways, so frames are rotated 90 deg clockwise
-# to make them upright. X3_LEFT_CAM overrides the device ("none" disables it).
+# added 2026-11-21. Mounted sideways, so frames are rotated 90 deg
+# (counterclockwise, user-checked) to make them upright. X3_LEFT_CAM overrides the device ("none" disables it).
 LEFT_CAM_GLOB = '/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB_2.0_Camera_SN0001-video-index0'
-LEFT_CAM_ROTATE = cv2.ROTATE_90_CLOCKWISE
+LEFT_CAM_ROTATE = cv2.ROTATE_90_COUNTERCLOCKWISE
 
 
 def _left_capture(stop, latest):
