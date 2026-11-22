@@ -4390,8 +4390,10 @@ async def log_push_loop():
             if lines:
                 _log_subscribers[ws] = lines[-1]["seq"]
             try:
-                await ws.send(orjson_dumps({"type": "log_lines", "lines": lines,
-                                            "dropped": dropped}))
+                # Timeout: a send to a browser that has gone away (network down
+                # during poweroff) otherwise blocks forever and stalls shutdown.
+                await asyncio.wait_for(ws.send(orjson_dumps({"type": "log_lines", "lines": lines,
+                                                             "dropped": dropped})), timeout=2.0)
             except Exception:
                 # No logger call here: a failing send must not feed the ring
                 # it is draining.
