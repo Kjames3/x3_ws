@@ -1011,6 +1011,11 @@ class ROS2Bridge:
         # placed on the map without a full TF listener.
         self._tof_exempt = tof_exempt_zones.load_zones()
         self._map_from_odom = None
+        # Nav tab health readouts (counters read by broadcast_loop's slow lane).
+        self.scan_count = 0
+        self.map_count = 0
+        self.map_rx_t = None          # monotonic time of the last /map
+        self.amcl = None              # {"t", "sxy", "syaw"} from the last /amcl_pose
         if self._tof_exempt:
             logger.info(f"ToF lower-array exempt zones for maps: {sorted(self._tof_exempt)}")
 
@@ -1127,6 +1132,7 @@ class ROS2Bridge:
 
     def _scan_cb(self, msg):
         self.data_watchdog.beat('/scan')
+        self.scan_count += 1
         import math as _math
         obstacles = []
         # LIDAR_YAW_OFFSET_RAD: the mount's measured yaw error, added to every
@@ -1318,6 +1324,8 @@ class ROS2Bridge:
                 "origin_y":   msg.info.origin.position.y,
                 "origin_yaw": origin_yaw,
             }
+            self.map_count += 1
+            self.map_rx_t = time.monotonic()
     def get_occupancy_grid(self) -> dict | None:
         """Return the latest occupancy grid info dict, or None if not yet received."""
         with self._lock:
@@ -1383,6 +1391,10 @@ class ROS2Bridge:
 
     def _amcl_pose_cb(self, msg):
         p, q = msg.pose.pose.position, msg.pose.pose.orientation
+        c = msg.pose.covariance
+        self.amcl = {"t": time.monotonic(),
+                     "sxy": math.sqrt(max(c[0], 0.0) + max(c[7], 0.0)),
+                     "syaw": math.sqrt(max(c[35], 0.0))}
         yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
         # AMCL stamps its pose at the scan time; the odom pose now is close
         # enough at walking speed (map<-odom drifts slowly).
@@ -3415,6 +3427,8 @@ async def handle_client(websocket):
         "active_velocity_model": active_velocity_model_name,
         "webrtc_camera": WEBRTC_CAMERA,   # GUI shows a WebRTC <video> instead of base64 frames
         "build": _build_info(),
+        # No tilt servo -> the 3D Scan / 3D Mapping controls have no input cloud.
+        "tilt_available": os.path.exists("/dev/openrb150"),
     }))
     # A fresh tab must not show "step" while the mount is actually running a
     # continuous test sweep started from another tab.
@@ -3672,6 +3686,8 @@ async def handle_client(websocket):
                 # ── Nav2 messages ──────────────────────────────────────────
                 elif msg_type == "launch_nav2":
                     if nav2_client:
+                        if ros_bridge is not None:
+                            ros_bridge.amcl = None  # don't show the last session's pose quality
                         use_st = data.get("use_sim_time", SIM_MODE)
                         # Resolve to an absolute path: the launch file's map:=
                         # argument is interpreted relative to the launcher cwd.
@@ -4562,6 +4578,7 @@ async def broadcast_loop():
     loop = asyncio.get_event_loop()
     _depth_cycle = 0  # throttle depth to ~10 fps (every other 20fps cycle)
     _loop_i = 0       # drives the ~2 Hz "readout_slow" lane (every 10th cycle)
+    _health_prev = None  # (t, scan_count, map_count) for the nav health rates
     previous_readout_timing = None
 
     while True:
@@ -4860,8 +4877,27 @@ async def broadcast_loop():
                 nav_status = nav2_client.get_status() if nav2_client else {"state": "UNAVAILABLE"}
                 _ab_running = ((_ab_test_proc is not None and _ab_test_proc.poll() is None)
                                or (_test_prep is not None and _test_prep['kind'] == 'ab'))
+                nav_health = None
+                if ros_bridge is not None and hasattr(ros_bridge, "scan_count"):
+                    _now = time.monotonic()
+                    _sc, _mc = ros_bridge.scan_count, ros_bridge.map_count
+                    if _health_prev is not None and _now > _health_prev[0]:
+                        _dt = _now - _health_prev[0]
+                        _scan_hz = (_sc - _health_prev[1]) / _dt
+                    else:
+                        _scan_hz = None
+                    _health_prev = (_now, _sc, _mc)
+                    _am = ros_bridge.amcl
+                    nav_health = {
+                        "scan_hz": _scan_hz,
+                        "map_updates": _mc,
+                        "map_age_s": (_now - ros_bridge.map_rx_t) if ros_bridge.map_rx_t else None,
+                        "amcl": ({"age_s": _now - _am["t"], "sxy": _am["sxy"], "syaw": _am["syaw"]}
+                                 if _am else None),
+                    }
                 slow = {
                     "type": "readout_slow",
+                    "nav_health": nav_health,
                     "nav_phase": nav_status["state"],
                     "nav": nav_status,
                     "slam_active": _slam_proc is not None and _slam_proc.poll() is None,

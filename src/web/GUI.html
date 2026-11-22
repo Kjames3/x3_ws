@@ -9,7 +9,7 @@
     <script src="vendor/three/three.min.js"></script>
     <script src="vendor/three/OrbitControls.js"></script>
 
-    <link rel="stylesheet" href="style.css?v=8">
+    <link rel="stylesheet" href="style.css?v=9">
     <link rel="stylesheet" href="dashboard.css?v=8">
     <link rel="stylesheet" href="mobile.css?v=2">
 </head>
@@ -678,6 +678,7 @@
         <div class="card nav-card" id="nav-card" style="margin-top: 0.5rem;">
             <div class="card-header">
                 <h2>Navigation</h2>
+                <span id="nav-loc-badge" class="nav-loc-badge" style="display:none" title="AMCL localization quality, from the /amcl_pose covariance"></span>
                 <span id="nav-status-badge" class="nav-badge unavailable">UNAVAILABLE</span>
             </div>
             <div class="card-body">
@@ -738,9 +739,9 @@
                 <div class="nav-controls">
                     <button id="start-slam-btn" class="btn-nav"> Start 2D SLAM</button>
                     <button id="stop-slam-btn" class="btn-nav btn-nav-danger" style="display:none;"> Stop 2D SLAM</button>
-                    <button id="start-slam-3d-btn" class="btn-nav"> Start 3D Mapping</button>
-                    <button id="stop-slam-3d-btn" class="btn-nav btn-nav-danger" style="display:none;"> Stop 3D Mapping</button>
-                    <button id="slam-scan-3d-btn" class="btn-nav" style="margin-top: 0.4rem;"> 3D Scan: OFF</button>
+                    <button id="start-slam-3d-btn" class="tilt-only btn-nav"> Start 3D Mapping</button>
+                    <button id="stop-slam-3d-btn" class="tilt-only btn-nav btn-nav-danger" style="display:none;"> Stop 3D Mapping</button>
+                    <button id="slam-scan-3d-btn" class="tilt-only btn-nav" style="margin-top: 0.4rem;"> 3D Scan: OFF</button>
                 </div>
 
                 <div class="nav-map-row" style="margin-top: 0.4rem;">
@@ -749,11 +750,12 @@
                 </div>
                 <!-- The octree had no save path at all until 2026-08-23: every
                      3D map ever built died with the octomap_server process. -->
-                <div class="nav-map-row" style="margin-top: 0.3rem;">
+                <div class="nav-map-row tilt-only" style="margin-top: 0.3rem;">
                     <input id="map-3d-name-input" class="nav-map-input" placeholder="3D map name…">
                     <button id="save-3d-map-btn" class="btn-nav-sm"> Save 3D Map</button>
                 </div>
-                <div id="saved-3d-maps" class="nav-hint" style="margin-top: 0.25rem;"></div>
+                <div id="saved-3d-maps" class="nav-hint tilt-only" style="margin-top: 0.25rem;"></div>
+                <div id="slam-health" class="nav-hint slam-health" style="display:none"></div>
                 <div id="slam-status-text" class="nav-hint" style="margin-top: 0.3rem;"></div>
 
                 <!-- Frontier Explorer -->
@@ -892,7 +894,7 @@
             </div>
         </form>
     </dialog>
-    <script src="main.js?v=shutdown-2"></script>
+    <script src="main.js?v=nav-health-1"></script>
     <script src="dashboard.js?v=2"></script>
     <script src="log-console.js?v=2"></script>
     <script src="vendor/three/GLTFLoader.js"></script>
