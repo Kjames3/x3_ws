@@ -284,8 +284,10 @@ class AstraCamera:
         while self._running and self._cap is not None:
             ret, frame = self._cap.read()
             if ret and self._has_clients:
+                t_cap = time.monotonic()
                 with self._lock:
                     self._latest_frame = frame
+                    self._latest_t = t_cap
 
     # Search order for libOpenNI2.so
     OPENNI2_SEARCH_PATHS = [
@@ -365,6 +367,15 @@ class AstraCamera:
             return None
         with self._lock:
             return self._latest_frame.copy() if self._latest_frame is not None else None
+
+    def get_frame_stamped(self):
+        """(latest frame copy, monotonic time it was read) or None (side-person rays)."""
+        if self.sim_mode:
+            return None
+        with self._lock:
+            if self._latest_frame is None:
+                return None
+            return self._latest_frame.copy(), getattr(self, '_latest_t', 0.0)
 
     def get_depth_frame(self):
         """
