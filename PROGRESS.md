@@ -23,7 +23,8 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 - **Full re-solve, not flashed:** the board covered only the image centre (radius ≤ 391 px), and the free rational lens model drifted 30–58 px from the factory one at the edges.
 - **What was flashed:** the factory lens values fit the views at 0.19 px rms, so they were kept, along with the RGB calibration. Only the left→right extrinsics and rectification were replaced: baseline 7.49 cm, triangulated square 7.51 cm, rectified row error 0.16 px median.
 - **Live check:** on-device StereoDepth at the board matched the board's own distance to within 1.3% (ratio 1.013, ~1 m, 219 frames).
-- **Still to do:** a tape-measure test at 2–3 m.
+- **2 m check:** tape 2.0 m, board distance from a single camera 1.99 m, stereo/board ratio 1.001 (only 7 frames with the board detected).
+- **Still to do:** a 3 m check.
 
 ## 2026-11-22 — Side cameras live: seated runs, left and right
 
