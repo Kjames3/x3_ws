@@ -42,7 +42,15 @@ from tf2_ros import Buffer, TransformListener
 from livox_ros_driver2.msg import CustomMsg
 
 from yahboomcar_bringup.person_candidates import (FIELDS as CANDIDATE_FIELDS, extract as extract_candidates,
-                                                  seeded_candidates)
+                                                  seeded_candidates, ray_candidates, RAY_IN_FIELDS)
+
+# Side cameras (X3_SIDE_PERSONS in x3_server): role -> index in server_x3.CAMERA_ROLES.
+SIDE_CAMERAS = (('left', 2), ('right', 3))
+SIDE_RAY_MAX_AGE_S = 0.3
+# /livox/person_candidates_side rows: the body's CANDIDATE_FIELDS, the anchor XY (the body,
+# or the ordinary candidate it duplicates), the camera index, its per-camera person id and
+# the image age at this frame's end (s).
+SIDE_FIELDS = CANDIDATE_FIELDS + ('ax', 'ay', 'cam', 'tid', 'age')
 
 POINT_DT = np.dtype({'names': ['t', 'x', 'y', 'z'],
                      'formats': ['<u4', '<f4', '<f4', '<f4'],
@@ -166,6 +174,15 @@ class LivoxScanNode(Node):
                                               qos_profile_sensor_data)
         self.seeds = None            # (stamp_s, (K, 4) x, y, vx, vy)
         self.create_subscription(PointCloud2, "/c3/person_seeds", self.on_seeds, 5)
+        # Bearing-only side-camera rays (/side/<role>/person_rays, one topic per camera so
+        # an empty message clears that camera's people): bodies found along each ray go
+        # out on /livox/person_candidates_side, before /livox/person_candidates.
+        self.side_pub = self.create_publisher(PointCloud2, "/livox/person_candidates_side",
+                                              qos_profile_sensor_data)
+        self.side_rays = {}          # camera index -> (stamp_s, (K, 9) RAY_IN_FIELDS + tid)
+        for role, k in SIDE_CAMERAS:
+            self.create_subscription(PointCloud2, f"/side/{role}/person_rays",
+                                     lambda m, k=k: self.on_side_rays(k, m), 5)
         self.cand_ms = []
         self.cand_n = []
         self.cand_logged_ns = 0
@@ -436,6 +453,26 @@ class LivoxScanNode(Node):
             return None
         return rows[:, :2] + rows[:, 2:4] * max(dt, 0.0)
 
+    def on_side_rays(self, cam, msg):
+        n = len(RAY_IN_FIELDS) + 1
+        rows = (np.frombuffer(bytes(msg.data), dtype='<f4').reshape(-1, n) if msg.width
+                else np.zeros((0, n), dtype=np.float32))
+        self.side_rays[cam] = (msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9,
+                               rows.astype(np.float64))
+
+    def side_rays_at(self, t):
+        """(rays (R, 8), meta (R, 3) cam, tid, age) of the cameras' fresh rays, or None."""
+        rays, meta = [], []
+        for cam, (st, rows) in self.side_rays.items():
+            age = t - st
+            if not len(rows) or age > SIDE_RAY_MAX_AGE_S or age < -0.15:
+                continue
+            rays.append(rows[:, :-1])
+            meta.append(np.c_[np.full(len(rows), cam), rows[:, -1], np.full(len(rows), age)])
+        if not rays:
+            return None
+        return np.vstack(rays), np.vstack(meta)
+
     def publish_person_candidates(self, pts, data):
         """Person-sized clusters of the full frame -> /livox/person_candidates.
 
@@ -470,6 +507,12 @@ class LivoxScanNode(Node):
         if seeds is not None and self.seed_pub.get_subscription_count() > 0:
             more = seeded_candidates(wx, wy, xyz[:, 2], seeds, origin, existing=cands)
             self.seed_pub.publish(self._candidate_msg(more, end))
+        rays = self.side_rays_at(end)
+        if rays is not None and self.side_pub.get_subscription_count() > 0:
+            found = ray_candidates(wx, wy, xyz[:, 2], rays[0], existing=cands)
+            meta = rays[1][found[:, -1].astype(int)]
+            out = np.column_stack((found[:, :-1], meta)).astype(np.float32)
+            self.side_pub.publish(self._candidate_msg(out, end, SIDE_FIELDS))
         self.cand_pub.publish(self._candidate_msg(cands, end))
         self.cand_ms.append((time.perf_counter() - t0) * 1e3)
         self.cand_n.append(len(cands))
@@ -484,17 +527,18 @@ class LivoxScanNode(Node):
 
 
     @staticmethod
-    def _candidate_msg(cands, end):
-        """CANDIDATE_FIELDS rows -> PointCloud2 in odom, stamped at the frame end."""
+    def _candidate_msg(cands, end, fields=None):
+        """CANDIDATE_FIELDS (or `fields`) rows -> PointCloud2 in odom, stamped at the frame end."""
+        fields = CANDIDATE_FIELDS if fields is None else fields
         msg = PointCloud2()
         stamp_ns = round(end * 1_000_000_000)
         msg.header.stamp.sec, msg.header.stamp.nanosec = divmod(stamp_ns, 1_000_000_000)
         msg.header.frame_id = 'odom'
         msg.height, msg.width = 1, len(cands)
         msg.fields = [PointField(name=name, offset=i * 4, datatype=PointField.FLOAT32, count=1)
-                      for i, name in enumerate(CANDIDATE_FIELDS)]
+                      for i, name in enumerate(fields)]
         msg.is_bigendian, msg.is_dense = False, True
-        msg.point_step = 4 * len(CANDIDATE_FIELDS)
+        msg.point_step = 4 * len(fields)
         msg.row_step = msg.point_step * len(cands)
         msg.data = np.ascontiguousarray(cands, dtype='<f4').tobytes()
         return msg
