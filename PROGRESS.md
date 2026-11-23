@@ -5,6 +5,26 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-22 — Seeded tracker, lab desk / walk / empty runs (replay)
+
+**Problem:** does feeding seeded candidates into the tracker (X3_SEEDED_TRACKER) also help in the lab, and does it add false tracks?
+
+**Work done:** recorded `seeded-desk-r1`, `seeded-walk-r1` and `seeded-empty-r1` in shadow mode. For the empty run, the user left the room at the start. Ran `seeded_tracker_replay.py` and `camera_seed_eval.py`; seeded-empty-r1 was added to EMPTY_RUNS. Output: `artifacts/person-lidar-2026-11-22/seeded_lab_eval.txt`.
+
+**Results:**
+
+| run | camera frames | base: track on person | seeded: track on person | births (base → seeded) |
+|---|---|---|---|---|
+| desk | 868 | 0.5% (21% any track) | 3.2% (32% any track) | 9 → 27 |
+| walk | 237 | 68.4% | 71.3% | 4 → 5 |
+| empty | 13 (user leaving) | 0 | 0 | no confirmed track |
+
+- **Walk:** a small gain and no harm.
+- **Empty:** no false tracks.
+- **Desk:** the seeded search finds a body on the camera ray in 100% of instances. But in 406 of 703 it is suppressed as a duplicate of an ordinary candidate (the desk/chair cluster), and the body is a median **0.73 m** from the camera XY. That is the known camera range over-read on seated people. It is beyond the tracker's 0.55 m camera↔track gate, so the camera rarely confirms the track it found. Tracks start, lose their camera confirmation and die, which gives 27 births.
+- The classifier scores 72% of the new desk rows above 0.5 (trimmed). Unlike the couch, the desk body does look like a person.
+- **Next:** association has to use the camera ray, not the camera XY. Either snap each camera anchor to the body the seeded search found on its ray, or match camera to track by lateral offset from the ray plus a range window.
+
 ## 2026-11-22 — Auto-Explore stuck recovery; OAK floor threshold back to 3 cm
 
 **Problem.** In the first lab run, 8 of 17 Auto-Explore goals ended in 30 s no-progress TIMEOUTs. With the 12 mm OAK threshold an extension cord became lethal, so the robot stalled at it and then drove over it anyway. The user is fine driving over cords; power strips should be avoided.
