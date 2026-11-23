@@ -5,6 +5,26 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-23 — Rear OAK joins the lidar person tracker (X3_REAR_PERSONS)
+
+**Problem.** Only the front, left and right cameras fed the tracker; a person behind the robot had no camera anchor.
+
+**Potential solution.** Reuse the side-camera path: a person box on the GPU becomes a ray, and livox_scan_node finds the body along it.
+
+**Work done.**
+- `_rear_preview` adds a 1280x720 output. `side_person_loop` runs the same TensorRT yolo26n on it as role `rear`, so anchors are named `rear:<n>`.
+- `side_person_rays` gained a pinhole/rational lens path. `config/oak_rear_rgb_intrinsics.json` holds the EEPROM values with fx/fy ×0.958, which matches today's TV solve at 1080p (1094.4 vs 1094.6).
+- livox_scan_node listens on `/side/rear/person_rays`. Enabled on the robot with `X3_REAR_PERSONS=1` (f3a7ddf).
+- **First live test:** the rear found the user (279 boxes per 60 s, 16 ms per detect), but the search window ended at 1.7 m for a person at 2 m. The rear camera frame had sagged about 10° up from loose mounting screws. The user re-tightened it back to about 2°.
+- **Ray age 0.3 → 0.6 s** (c684cc0). The rear detects at about 3.3 Hz and the Livox runs at 10 Hz, so some lidar frames had no ray. A body found only through a ray then crossed the 0.4 s lidar gap and was reborn.
+
+**Results.**
+- **Crouched beside a table at 2 m:**
+  - Before the ray-age change: a track was present in 51% of frames, with 5 ids in 20 s.
+  - After: present in 94%, but still 4 ids in 30 s. The cluster is probably mixing with the furniture. Open.
+- **Standing, then walking behind → left side → front → back to rear (75 s):** a track was present in 85% of frames, and one id (L24) held 64 s through rear, left, front and rear again. Its camera ids were `rear:1/3/4/5`, `left:1/2` and front C3 `0/1`.
+- **Leftovers:** five 1–4 s duplicate tracks while L24 was lidar-held near the front. Front C3 anchors started their own track instead of joining L24. That's the next thing to fix: check for an existing track before a birth.
+
 ## 2026-11-23 — Slate AX router on the robot; GUI "HQ Stream" profile
 
 **Problem.** GUI streams were sized for the school's congested WiFi 4 (15 fps, JPEG 70, small frames, 12000-point Surroundings cloud). The new GL.iNet Slate AX now carries the laptop–robot traffic locally.
