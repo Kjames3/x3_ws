@@ -3,7 +3,7 @@
 
     python3 src/tools/perception/seeded_tracker_replay.py RUN_DIR [RUN_DIR ...]
 """
-import sys,json,math; import pathlib; sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[2]))
+import sys,json,math; import pathlib; sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[3] / "src"))
 from lidar_person_tracker import LidarPersonTracker, merge_seeded
 SF=['x','y','x_lo','x_hi','y_lo','y_hi','z_lo','z_hi','n']
 for run in sys.argv[1:]:

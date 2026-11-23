@@ -5,6 +5,27 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-22 — Camera↔track association along the camera ray (offline test)
+
+**Problem:** at the desk, the camera reads the seated person ~0.7 m too far away. That is beyond the tracker's 0.55 m camera↔track gate, so seeded tracks lose their camera confirmation and restart.
+
+**Potential solution:** move each camera anchor onto the nearest candidate along its ray (lateral < 0.35 m, from 1.2 m nearer to 0.5 m farther than the camera range) before the tracker sees it.
+
+**Work done:** `src/tools/perception/seeded_ray_replay.py` replays a run three ways: base, +seeded, and +seeded+ray. The robot origin comes from the bag. Also fixed the import path in `seeded_tracker_replay.py`.
+
+**Results** (confirmed track in camera frames; births):
+
+| run | base | +seeded | +seeded+ray |
+|---|---|---|---|
+| desk | 21.4% (9) | 32.4% (27) | **96.3% (21)** |
+| walk | 76.8% (4) | 80.2% (5) | 81.0% (5) |
+| couch | 3.6% (1) | 99.0% (3) | 99.0% (3) |
+| lab empty / couch empty | 0 confirmed | 0 | 0 |
+
+- **Desk tracks are on the person:** all lie within 0.5 m of the camera ray (median 0.36 m to the side) and a median 0.64 m nearer than the camera range, which is the over-read. The "on the ray" metric in the script uses the 0.35 m cut and reports only 39%, which undercounts.
+- The consistent ~0.36 m sideways offset suggests a small C3 bearing bias at the desk. Widen the lateral window to 0.5 m.
+- **Still open:** the desk has 21 births / 9 ids in 90 s (id churn). Nothing is live yet. Next is to put the ray association in the tracker/server behind the same flag and test it live.
+
 ## 2026-11-22 — Seeded tracker, lab desk / walk / empty runs (replay)
 
 **Problem:** does feeding seeded candidates into the tracker (X3_SEEDED_TRACKER) also help in the lab, and does it add false tracks?
