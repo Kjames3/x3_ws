@@ -5,6 +5,17 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-22 — Line-of-sight tracker: first live check at the lab desk
+
+**Problem:** confirm live that a seated desk user keeps a lidar track with X3_SEEDED_TRACKER=1.
+
+**Work done:** the user sat at their desk and watched the GUI Surroundings view; I checked the server log.
+
+**Results:**
+- The user reports the track is solid and has not dropped.
+- Log: 9 births and 8 lidar-lost endings in the first ~70 s after the 16:27 restart (people moving around, settling in). No new births or endings after 16:28:21, so a single track has held since. 0 tracker errors.
+- The CBF feed is still off. Next: longer desk/walk runs with the flag on, then consider turning on X3_LIDAR_PERSONS_CBF.
+
 ## 2026-11-22 — Line-of-sight camera association in the live tracker
 
 **Problem:** the camera over-reads seated people by ~0.7 m, so it could not confirm desk tracks (0.55 m gate).
