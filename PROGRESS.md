@@ -24,7 +24,7 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 - **What was flashed:** the factory lens values fit the views at 0.19 px rms, so they were kept, along with the RGB calibration. Only the left→right extrinsics and rectification were replaced: baseline 7.49 cm, triangulated square 7.51 cm, rectified row error 0.16 px median.
 - **Live check:** on-device StereoDepth at the board matched the board's own distance to within 1.3% (ratio 1.013, ~1 m, 219 frames).
 - **2 m check:** tape 2.0 m, board distance from a single camera 1.99 m, stereo/board ratio 1.001 (only 7 frames with the board detected).
-- **Still to do:** a 3 m check.
+- **3 m check:** tape 3.0 m, median stereo depth over the board 3.008 m, 291 frames, p10–p90 3.008–3.015 m. The mono cameras can't read the markers at 3 m, so this was measured over a fixed box on the screen.
 
 ## 2026-11-22 — Side cameras live: seated runs, left and right
 
