@@ -493,3 +493,13 @@ def test_side_anchor_is_not_snapped_along_the_robot_ray():
         out = tr.update(t, [cand(0.0, 1.0), cand(0.0, 2.0)], [], packet_age=0.0,
                         origin=(0.0, 0.0), side=[side('left:1', 0.0, 2.0, t)])
     assert len(out) == 1 and out[0]['odom_y'] == pytest.approx(2.0, abs=0.05)
+
+
+def test_two_side_anchors_on_one_body_still_confirm():
+    """Two rays ending on the same body (duplicate boxes / people in line) give one anchor."""
+    tr = LidarPersonTracker()
+    for i in range(6):
+        t = i * DT
+        out = tr.update(t, [cand(0.0, 2.0)], [], packet_age=0.0,
+                        side=[side('left:1', 0.0, 2.0, t), side('left:2', 0.02, 2.01, t)])
+    assert len(out) == 1 and out[0]['confirmed'] and out[0]['camera_id'] == 'left:1'

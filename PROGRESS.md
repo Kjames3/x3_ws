@@ -36,7 +36,18 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 | seeded-couch | 818 | 8.4% | (24 with a track) | | | 21.3% |
 | empty runs (3) | – | – | – | – | – | 3.0–21.9% |
 
-- The top and area rules took the person-free picks from 22–61% to 3–30% and kept 99.8% of the bodies that match a track.
+- The top and area rules were **fitted on these runs**. They took the person-free picks from 22–61% to 3–30% and kept 99.8% of the bodies that match a track.
+- **Held out** (not used to fit):
+
+  | run | rays | found | agree | wrong | missed | person-free picks |
+  |---|---|---|---|---|---|---|
+  | 11-20 lab walk-r1 / r2 | 47 / 51 | 94% / 92% | 100% / 83% | 0 / 6% | 0 / 11% | 40% / 41% |
+  | 11-20 lab seated-r1 / r2 | 552 / 576 | 100% | 100% | 0 | 0 | 26% |
+  | 11-20 lab empty-r1 | – | – | – | – | – | 51% |
+  | 10-30 walkup-r1 / r2, circle-r1 (old chassis, people walking up close) | 350 / 347 / 159 | 100% | 100% | 0 | 0 | 46–54% |
+
+  On-person picks hold, including close walk-ups, where the Livox FOV cuts the head. But in the lab and on the old runs, half of the person-free bearings still find something person-shaped. **The ray search is only as good as the side-camera detection that starts it.**
+- Side rows are accepted one Livox frame late (0.15 s): on the live desk run ~30% of seeded rows arrived after their candidates message. Side anchors are also deduplicated among themselves.
 - The walk run's wrong and missed rays are one parked track at ~3.95 m. The ray takes a body 0.8–1.3 m nearer, and it is not clear which is the walker.
 - Couch-seated people are mostly not found, as with the classifier.
 - Shape alone cannot reject everything: the side camera's detection (confidence 0.4, 2 sightings) and the box's range window are the rest of the protection.
@@ -45,6 +56,8 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 - colcon-build `yahboomcar_bringup` (scan node and person_candidates).
 - Check that the AGX has `yolo26n.engine`, and that the Arducam is not held by `--webrtc-camera`.
 - Run with `X3_SIDE_PERSONS=1` (plus `X3_SEEDED_TRACKER=1`) and record walks and sits on the left and right.
+- Keep `X3_LIDAR_PERSONS_CBF` off with this flag until validated: a side-born track confirms itself.
+- Untested anywhere: the detector loop, YOLO on these mono fisheye frames (TRTDetector stretches 640×400 to 640×640), the recorder and the eval tool's side mode.
 
 ## 2026-11-22 — Line-of-sight tracker, live lab runs (X3_SEEDED_TRACKER=1)
 

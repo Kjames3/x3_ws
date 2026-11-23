@@ -439,7 +439,10 @@ SIDE_PERSONS = LIDAR_PERSONS_ENABLED and os.environ.get('X3_SIDE_PERSONS', '0') 
 SIDE_PERSON_HZ = 5.0       # detections per camera per second
 SIDE_PERSON_CONF = 0.4     # person box confidence (the GUI overlay uses 0.25)
 SIDE_FRAME_MAX_AGE_S = 0.3
-SIDE_ROWS_MAX_AGE_S = 0.05  # side rows come from the same Livox frame as the candidates
+# Side rows come from the same Livox frame as the candidates, but their callback can run
+# after the candidates' one (on the 11-22 desk run ~30% of seeded rows missed a 0.05 s
+# gate), so one frame of lag is accepted, as merge_seeded does.
+SIDE_ROWS_MAX_AGE_S = 0.15
 # role -> (upright image, monotonic capture time), written by the side capture threads.
 _side_frames = {}
 LIDAR_PERSONS_CBF_FILE = '/tmp/x3_lidar_persons_cbf'
@@ -1437,7 +1440,7 @@ class ROS2Bridge:
                 f = {n: i for i, n in enumerate(sd['fields'])}
                 side = [{'id': f"{CAMERA_ROLES[int(r[f['cam']])]}:{int(r[f['tid']])}",
                          'x': float(r[f['ax']]), 'y': float(r[f['ay']]),
-                         'last_seen': now - float(r[f['age']])} for r in sd['rows']]
+                         'last_seen': sd['stamp'] - float(r[f['age']])} for r in sd['rows']]
             with _lidar_persons_lock:
                 origin = None
                 if SEEDED_TRACKER:
@@ -1594,7 +1597,8 @@ class ROS2Bridge:
                 'seeded': (np.round(seeded['rows'], 3).tolist()
                            if seeded and seeded['rows'] is not None
                            and abs(seeded['stamp'] - now) < 0.05 else None),
-                **({'side': np.round(side['rows'], 3).tolist(), 'side_fields': side['fields']}
+                **({'side': np.round(side['rows'], 3).tolist(), 'side_fields': side['fields'],
+                    'side_stamp': side['stamp']}
                    if side and side['rows'] is not None
                    and abs(side['stamp'] - now) < SIDE_ROWS_MAX_AGE_S else {})}) + '\n')
 

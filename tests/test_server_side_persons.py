@@ -4,6 +4,7 @@ The ROS2Bridge methods are pulled out of server_x3.py by AST and run on a stub, 
 needs neither ROS nor the hardware."""
 import ast
 import math
+import re
 import pathlib
 import sys
 import threading
@@ -31,7 +32,8 @@ def _bridge_ns(side_on=True):
     assert {m.name for m in methods} == set(METHODS)
     logs = []
     ns = dict(np=np, math=math, time=time, json=__import__('json'), merge_seeded=lpt.merge_seeded,
-              c3_live=None, SEEDED_TRACKER=False, SIDE_PERSONS=side_on, SIDE_ROWS_MAX_AGE_S=0.05,
+              c3_live=None, SEEDED_TRACKER=False, SIDE_PERSONS=side_on,
+              SIDE_ROWS_MAX_AGE_S=float(re.search(r'^SIDE_ROWS_MAX_AGE_S = ([0-9.]+)', src, re.M).group(1)),
               CAMERA_ROLES=('front', 'rear', 'left', 'right'),
               _lidar_persons=lpt.LidarPersonTracker(), _lidar_persons_lock=threading.Lock(),
               _lidar_persons_logged={'t': 0.0, 'stats': None, 'rec_t': 1e18, 'rec_path': None, 'rec': None},
@@ -90,8 +92,23 @@ def test_side_body_missing_from_ordinary_candidates_is_added():
     assert res[0]['odom_y'] == pytest.approx(-2.0, abs=0.05)
 
 
+def test_side_rows_one_frame_late_still_count():
+    """Live, the candidates callback can run before the side one of the same Livox frame:
+    the tracker then sees the previous frame's side rows (0.1 s old)."""
+    ns, _ = _bridge_ns()
+    b = _bridge(ns)
+    for i in range(6):
+        now = 70.0 + 0.1 * i
+        b._person_candidates_cb(_msg(pc.FIELDS, [_cand_row(0.0, 2.5)], now))
+        b._side_candidates_cb(_msg(SIDE_FIELDS, [_cand_row(0.0, 2.5) + [0.0, 2.5, 2, 4, 0.05]], now))
+    res = ns['_lidar_persons'].results
+    assert len(res) == 1 and res[0]['confirmed'] and res[0]['camera_id'] == 'left:4'
+    # last_seen is the image time (side stamp - age), not the later candidates' stamp
+    assert res[0]['camera_age_s'] == pytest.approx(0.15, abs=0.011)
+
+
 def test_flag_off_or_stale_rows_change_nothing():
-    for side_on, stamp_off in ((False, 0.0), (True, 0.2)):
+    for side_on, stamp_off in ((False, 0.0), (True, 0.3)):
         ns, _ = _bridge_ns(side_on)
         b = _bridge(ns)
         for i in range(5):

@@ -52,7 +52,9 @@ RAY_AFTER_M = 0.5
 # give a bearing; livox_scan_node finds the body on that ray (ray_candidates) and the
 # anchor is that body's XY.  No velocity, so they never pull a track's velocity.  One
 # within SIDE_DEDUP_M of a C3 anchor is dropped: two anchors on one person would be
-# rivals in _unique_pairs and neither would confirm.
+# rivals in _unique_pairs and neither would confirm.  For the same reason only the first
+# of several side anchors within SIDE_DEDUP_M of each other is kept (two boxes, or two
+# people in line whose rays both end on the nearer body).
 SIDE_DEDUP_M = 0.5
 
 
@@ -159,13 +161,14 @@ class LidarPersonTracker:
 
     @staticmethod
     def _side_anchors(side, now, c3_anchors=()):
-        """Fresh side-camera anchors (dicts id, x, y, last_seen), minus those on a C3 one."""
+        """Fresh side-camera anchors (dicts id, x, y, last_seen), minus those on a C3 one
+        or on an earlier side one."""
         out = []
         for a in side or []:
             x, y, seen = a.get('x'), a.get('y'), a.get('last_seen')
             if not _finite(x, y, seen) or now - seen > CAMERA_MAX_AGE_S or seen - now > 0.15:
                 continue
-            if any(math.hypot(x - c['x'], y - c['y']) < SIDE_DEDUP_M for c in c3_anchors):
+            if any(math.hypot(x - c['x'], y - c['y']) < SIDE_DEDUP_M for c in list(c3_anchors) + out):
                 continue
             out.append({'id': str(a.get('id')), 'x': x, 'y': y, 'last_seen': seen, 'side': True})
         return out
