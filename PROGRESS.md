@@ -5,6 +5,36 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-23 — Slate AX router on the robot; GUI "HQ Stream" profile
+
+**Problem.** GUI streams were sized for the school's congested WiFi 4 (15 fps, JPEG 70, small frames, 12000-point Surroundings cloud). The new GL.iNet Slate AX now carries the laptop–robot traffic locally.
+
+**Potential solution.** Put the Orin and the Livox on the Slate's LAN ports, then add a live switch between the old settings and a high-quality profile for the local link.
+
+**Work done.**
+- Slate LAN set to 192.168.1.1/24, DHCP .200–.250; Orin `eno1` (static .50) in LAN1, Livox (.192) in LAN2, WAN empty; Slate repeats the school WiFi. Orin network config unchanged (its internet stays on UCR-SECURE). Powered from the USB hub for now; that port is limited to 1.5 A, so a dedicated 5.1 V buck is planned.
+- Checked: Livox ping ~2 ms, `/scan` 10 Hz, `/imu/data` 200 Hz. The laptop on the Slate WiFi reaches `orin` over Tailscale *direct* via 192.168.1.50, at 322 Mb/s (SSH bulk transfer).
+- 27418c1, 171773b: `--stream-profile low|high` and a GUI **HQ Stream** toggle (server-global, synced through the readout). 'high' = 30 fps, JPEG 85, 480p primary camera, 960x600 rear OAK, 24000-point Surroundings (`livox_scan_node` `display_cap` is now a live parameter). The net-tile thresholds follow the profile. New `src/tools/viewers/stream_bench.py` measures per-camera fps, frame size and Mb/s at the client.
+
+**Results** (30 s each, laptop on Slate WiFi, same scene):
+
+| | low (old) | high |
+|---|---|---|
+| Total WebSocket | 7.7 Mb/s | 23.4 Mb/s |
+| front OAK 640x400 | 15.3 fps, 26 KB | 21.4 fps, 43 KB |
+| rear OAK | 480x300, 14.2 fps | 960x600, 24.9 fps |
+| left 640x400 | 15.6 fps | 29.1 fps |
+| right (primary) | 384x240, 16.2 fps | 768x480, 14.2 fps |
+| frame gap p95 | 105–122 ms | 76–112 ms |
+| Surroundings points | 12000 (capped) | ~15300 (uncapped scene) |
+| x3_server CPU | ~484–516% | ~520–550% |
+
+- Gains: 3x bandwidth for sharper, larger frames; left camera now at its full 30 fps; rear at 4x the pixels; Surroundings no longer truncated (~28% more points).
+- Costs: ~+0.4 cores on `x3_server`; still only 7% of the measured link capacity.
+- Not reaching 30 fps: front OAK (~21, the driver delivers ~27–28) and right (~14, limited by the primary camera loop). Still open.
+- Bugs found and fixed while testing: the first cap change after a restart was dropped (the parameter service wasn't discovered yet; it now retries for 15 s), and a 20 ms poll held 'high' to 20–24 fps.
+- Default stays `low`: on school WiFi the old limits still apply. Switching profile reopens the rear OAK (~2 s USB re-enumeration). If `livox_scan_node` restarts, the cap falls back to 12000 until the toggle is flipped again.
+
 ## 2026-11-23 — Rear OAK stereo recalibrated on the 55" TV
 
 **Problem.** The rear OAK-D Pro W (14442C103181D7D600) gave wrong stereo depth.
