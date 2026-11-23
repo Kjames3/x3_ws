@@ -5,6 +5,24 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-22 — Side-camera tracking merged and enabled on the robot
+
+**Problem:** the side-camera branch had to be merged with today's id revival and set up on the AGX.
+
+**Work done:**
+- Merged `t3/side-camera-livox-tracking` (a08485c). The conflicts in the tracker stats, the log line, the tests and PROGRESS were resolved keeping both sides. 65 tests pass (tracker + all side-camera tests).
+- Robot:
+  - colcon-built `yahboomcar_bringup`;
+  - rebuilt `yolo26n.engine` on the AGX with trtexec `--fp16` from `yolo26n.onnx`. The old engine warned "built on a different device"; it is kept as `.2026-11-20-bak`;
+  - added `X3_SIDE_PERSONS=1` to the x3_server override (with `X3_SEEDED_TRACKER=1`; the CBF feed is still off);
+  - restarted x3_server (which launches the bringup, i.e. the scan node) and foxglove_bridge.
+
+**Results:**
+- The new engine runs at 8.7 ms/frame with no device warning.
+- The log shows `[side-persons] TensorRT detector ready` and `side-camera people ON for left, right`.
+- `/side/left/person_rays` and `/side/right/person_rays` publish at ~4.8 Hz.
+- `/livox/person_candidates_side` is silent with nobody beside the robot. Live recordings with people are next.
+
 ## 2026-11-22 — Lidar person tracker: revive recently ended ids
 
 **Problem:** live walk run: 15 confirmed ids in 2 min. Most restarts came 0.2–2 s after a track ended, 0.1–1.5 m from it, often with the same C3 camera id. The C3 ids themselves also change between walks.
