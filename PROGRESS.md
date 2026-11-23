@@ -5,6 +5,26 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-22 — Lidar person tracker: revive recently ended ids
+
+**Problem:** live walk run: 15 confirmed ids in 2 min. Most restarts came 0.2–2 s after a track ended, 0.1–1.5 m from it, often with the same C3 camera id. The C3 ids themselves also change between walks.
+
+**Potential solution:** a birth within 4 s of a track ending takes over that track's id. It qualifies if it carries one of the old track's camera ids, or starts within 0.8 m of where the old track would be by now (velocity extrapolated ≤ 1 s).
+
+**Work done:** `LidarPersonTracker` keeps recently ended confirmed tracks (`self.ended`). Births call `_revivable()`, and the new `stats['revived']` counter is in the server log line. Revived tracks go through the 3-hit confirmation again. Three tests (same camera id far away → same id; new camera id nearby → same id; new camera id far away → new id); 28 pass. `seeded_ray_replay.py --no-revive` gives the baseline.
+
+**Results (replay, live config, confirmed ids):**
+
+| run | before | after |
+|---|---|---|
+| live walk | 14 | 11 |
+| live desk | 12 | 7 |
+| shadow walk | 5 | 5 |
+| empty | 0 | 0 |
+
+- Coverage is unchanged (walk 94.4%, desk 98.0%).
+- Most remaining new ids follow gaps > 4 s, with the person out of the front camera's view. Side-camera tracking (in progress on a separate branch) is the fix for those.
+
 ## 2026-11-22 — Line-of-sight tracker, live lab runs (X3_SEEDED_TRACKER=1)
 
 **Problem:** do the seeded candidates and ray association hold up live over minutes, and do they add false tracks?

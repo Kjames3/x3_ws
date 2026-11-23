@@ -1421,12 +1421,12 @@ class ROS2Bridge:
             last = _lidar_persons_logged
             self._lidar_persons_record(last, now, names, rows, camera, packet_age, results,
                                        self._seeded)
-            keys = ('births', 'relinked', 'hold_expired', 'lost_lidar', 'resets')
+            keys = ('births', 'revived', 'relinked', 'hold_expired', 'lost_lidar', 'resets')
             changed = last['stats'] is None or any(stats[k] != last['stats'][k] for k in keys)
             if changed and time.monotonic() - last['t'] >= 10.0:
-                logger.info("[lidar-persons] births %d, camera ids re-linked %d, held %.1f s, "
+                logger.info("[lidar-persons] births %d (revived ids %d), camera ids re-linked %d, held %.1f s, "
                             "ended: hold cap %d, lidar lost %d; resets %d",
-                            stats['births'], stats['relinked'], stats['lidar_held_s'],
+                            stats['births'], stats.get('revived', 0), stats['relinked'], stats['lidar_held_s'],
                             stats['hold_expired'], stats['lost_lidar'], stats['resets'])
                 last['t'], last['stats'] = time.monotonic(), stats
         except Exception as e:

@@ -9,7 +9,11 @@ import bisect, copy, json, math, pathlib, sys
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(ROOT / 'src'), str(ROOT / 'src/tools/perception'), str(ROOT / 'src/yahboomcar_bringup')]
 import lidar_person_dataset as lpd
+import lidar_person_tracker
 from lidar_person_tracker import LidarPersonTracker, merge_seeded
+if '--no-revive' in sys.argv:          # baseline: tracks never take over an ended id
+    sys.argv.remove('--no-revive')
+    lidar_person_tracker.REVIVE_S = -1.0
 SF = ['x', 'y', 'x_lo', 'x_hi', 'y_lo', 'y_hi', 'z_lo', 'z_hi', 'n']
 LAT_M, BEFORE_M, AFTER_M = 0.5, 1.2, 0.5   # scoring window; the tracker uses its own RAY_*
 

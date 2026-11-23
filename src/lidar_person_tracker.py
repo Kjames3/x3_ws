@@ -46,6 +46,13 @@ MIN_CONFIDENCE = 0.3
 # took confirmed coverage 32% -> 96% (seeded_ray_replay.py); lateral 0.5 because the desk
 # tracks sat a steady ~0.36 m to the side of the ray.
 RAY_LAT_M = 0.5
+# Revival: a birth within REVIVE_S of a track ending takes over that track's id when it
+# carries one of its camera ids, or starts within REVIVE_M of where it would be by now
+# (velocity extrapolated for at most REVIVE_PREDICT_S).  2026-11-22 lab walk: 15 ids in
+# 2 min, most rebirths 0.1-1.5 m from a track that ended 0.2-2 s earlier, same C3 id.
+REVIVE_S = 4.0
+REVIVE_M = 0.8
+REVIVE_PREDICT_S = 1.0
 RAY_BEFORE_M = 1.2
 RAY_AFTER_M = 0.5
 
@@ -120,12 +127,13 @@ class LidarPersonTracker:
     def __init__(self, hold_s=HOLD_S):
         self.hold_s = hold_s
         self.next_id = 1
-        self.stats = {'frames': 0, 'births': 0, 'relinked': 0, 'hold_expired': 0,
+        self.stats = {'frames': 0, 'births': 0, 'revived': 0, 'relinked': 0, 'hold_expired': 0,
                       'lost_lidar': 0, 'resets': 0, 'lidar_held_s': 0.0}
         self.clear()
 
     def clear(self):
         self.tracks = []
+        self.ended = []          # (end time, track) of recently ended tracks, for revival
         self.last_stamp = None
         self.results = []
 
@@ -230,9 +238,22 @@ class LidarPersonTracker:
         born = _unique_pairs(len(free_a), len(free_c),
                              lambda i, j: math.hypot(free_a[i]['x'] - free_c[j]['x'],
                                                      free_a[i]['y'] - free_c[j]['y']))
+        self.ended = [(te, t) for te, t in self.ended if now - te <= REVIVE_S]
         for i, j in born.items():
-            self.tracks.append(_Track(f'L{self.next_id}', free_c[j], free_a[i], now))
-            self.next_id += 1
+            a, c = free_a[i], free_c[j]
+            old = self._revivable(a, c, now)
+            if old is None:
+                tid = f'L{self.next_id}'
+                self.next_id += 1
+            else:
+                tid = old.id
+                self.ended = [(te, t) for te, t in self.ended if t is not old]
+                self.stats['revived'] += 1
+            t = _Track(tid, c, a, now)
+            if old is not None:
+                t.camera_ids |= old.camera_ids
+                t.born = old.born
+            self.tracks.append(t)
             self.stats['births'] += 1
 
         # 4. endings
@@ -240,8 +261,12 @@ class LidarPersonTracker:
         for t in self.tracks:
             if now - t.last_lidar > LIDAR_GAP_S:
                 self.stats['lost_lidar'] += 1
+                if t.hits >= CONFIRM_HITS:
+                    self.ended.append((now, t))
             elif now - t.last_camera > self.hold_s:
                 self.stats['hold_expired'] += 1
+                if t.hits >= CONFIRM_HITS:
+                    self.ended.append((now, t))
             else:
                 if t.hits >= CONFIRM_HITS and now - t.last_camera > CAMERA_FRESH_S:
                     t.held_s += frame_dt
@@ -250,6 +275,20 @@ class LidarPersonTracker:
         self.tracks = alive
         self.results = [self._result(t, now) for t in alive]
         return self.results
+
+    def _revivable(self, anchor, cand, now):
+        """The recently ended track a birth continues, or None.  Same camera id wins;
+        otherwise the nearest within REVIVE_M of its extrapolated position.  Tracks still
+        alive are never candidates (they are in self.tracks, not self.ended)."""
+        best = None
+        for te, t in self.ended:
+            if anchor['id'] in t.camera_ids:
+                return t
+            k = min(now - t.at, REVIVE_PREDICT_S)
+            d = math.hypot(cand['x'] - (t.x + t.vx * k), cand['y'] - (t.y + t.vy * k))
+            if d < REVIVE_M and (best is None or d < best[0]):
+                best = (d, t)
+        return None if best is None else best[1]
 
     def _result(self, t, now):
         camera_age = max(0.0, now - t.last_camera)

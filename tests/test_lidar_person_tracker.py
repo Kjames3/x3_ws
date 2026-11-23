@@ -407,3 +407,40 @@ def test_over_read_camera_confirms_track_with_origin():
     assert run(None) == []
     r = run((0.0, 0.0))
     assert r and r[0]['confirmed'] and r[0]['mode'] == 'camera + lidar'
+
+
+def _cam(t, x, y, cid=9):
+    return [{'id': cid, 'odom_x': x, 'odom_y': y, 'odom_vx': 0.0, 'odom_vy': 0.0,
+             'state_stamp_s': t, 'obs_age_s': 0.0, 'measured': True}]
+
+
+def _cl(x, y):
+    return [{'x': x, 'y': y, 'x_lo': x - .2, 'x_hi': x + .2, 'y_lo': y - .2, 'y_hi': y + .2,
+             'z_lo': .3, 'z_hi': 1.7, 'n': 120}]
+
+
+def _drop_and_return(cid_after, x_after):
+    tr = LidarPersonTracker(); t = 10.0
+    for _ in range(6):
+        r = tr.update(t, _cl(2.0, 0.0), _cam(t, 2.0, 0.0)); t += 0.1
+    first = r[0]['id']
+    for _ in range(8):                      # lidar loses them (0.8 s > LIDAR_GAP_S)
+        tr.update(t, [], []); t += 0.1
+    for _ in range(6):
+        r = tr.update(t, _cl(x_after, 0.0), _cam(t, x_after, 0.0, cid_after)); t += 0.1
+    return first, r[0]['id'], tr
+
+
+def test_rebirth_with_same_camera_id_keeps_the_id():
+    first, again, tr = _drop_and_return(9, 3.5)      # far, but the same C3 id
+    assert again == first and tr.stats['revived'] == 1
+
+
+def test_rebirth_nearby_with_new_camera_id_keeps_the_id():
+    first, again, _ = _drop_and_return(12, 2.3)
+    assert again == first
+
+
+def test_rebirth_far_with_new_camera_id_gets_a_new_id():
+    first, again, _ = _drop_and_return(12, 4.0)
+    assert again != first
