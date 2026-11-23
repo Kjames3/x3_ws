@@ -898,15 +898,29 @@
     // frame (poseDirs matches keypoints on that), vx=forward, vy=left.
     const OAK_MOUNT_X = 0.107815;   // oakd_driver.OAK_MOUNT_X, camera ahead of base
     function avatarEntries(d) {
-        if (!d.c3Stats) return d.velocityEstimates || [];   // C3 off: v3 as before
         const out = [];
-        for (const t of d.c3Tracks || []) {
-            out.push({ id: 'c3-' + t.id, x: -t.left, z: t.fwd - OAK_MOUNT_X, fwdBase: t.fwd,
-                       vx: t.vx, vy: t.vy, category: 'person',
-                       horizon: t.predict_s, measured: t.measured });
+        if (!d.c3Stats) out.push(...(d.velocityEstimates || []));   // C3 off: v3 as before
+        else {
+            for (const t of d.c3Tracks || []) {
+                out.push({ id: 'c3-' + t.id, x: -t.left, z: t.fwd - OAK_MOUNT_X, fwdBase: t.fwd,
+                           vx: t.vx, vy: t.vy, category: 'person',
+                           horizon: t.predict_s, measured: t.measured });
+            }
+            for (const e of d.velocityEstimates || []) {
+                if (e.category === 'dynamic') out.push(Object.assign({}, e, { id: 'v3-' + e.id }));
+            }
         }
-        for (const e of d.velocityEstimates || []) {
-            if (e.category === 'dynamic') out.push(Object.assign({}, e, { id: 'v3-' + e.id }));
+        // People the front camera does not see (rear/left/right cameras, or lidar-held):
+        // confirmed lidar person tracks get an avatar too, unless a front avatar already
+        // stands within 0.7 m.  Same (fwd, left) robot frame as C3.
+        const lidarFresh = d.lidarPersonsAt && performance.now() - d.lidarPersonsAt < 1000;
+        for (const t of lidarFresh ? (d.lidarPersons || []) : []) {
+            if (!t.confirmed || !isFinite(t.fwd) || !isFinite(t.left)) continue;
+            if (out.some(e => e.category === 'person' &&
+                    Math.hypot((e.fwdBase ?? e.z + OAK_MOUNT_X) - t.fwd, -e.x - t.left) < 0.7)) continue;
+            out.push({ id: 'lp-' + t.id, x: -t.left, z: t.fwd - OAK_MOUNT_X, fwdBase: t.fwd,
+                       vx: t.vx || 0, vy: t.vy || 0, category: 'person', measured: true,
+                       camera: t.camera_id });
         }
         return out;
     }
