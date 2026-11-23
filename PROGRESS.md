@@ -5,6 +5,26 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-23 — Rear OAK stereo recalibrated on the 55" TV
+
+**Problem.** The rear OAK-D Pro W (14442C103181D7D600) gave wrong stereo depth.
+
+**Potential solution.** Recalibrate it against a ChArUco board shown full-screen on the apartment TV, without the Luxonis `calibrate.py` (which needs depthai v2 and a desktop).
+
+**Work done.**
+- The board was 11x8 squares, DICT_4X4_1000, marker 0.75 of the square, square 7.5 cm (caliper).
+- Captured 40 synced left/right/RGB views with `src/tools/calibration/oak_tv_charuco_capture.py`.
+- Solved with `oak_tv_charuco_solve.py` and flashed with `oak_tv_charuco_flash.py --stereo-only`.
+- Backups of the user and factory EEPROM are in `~jetson/calib_backup/` and `artifacts/rear-oak-tv-calib-2026-11-23/`. Restore with `--restore`.
+
+**Results.**
+- **Old calibration:** triangulating the board with it made each 7.5 cm square 8.72 cm, so depth read about 16% far.
+- **Cause:** the stored left→right yaw was 0.46° off, a disparity shift of about 4.6 px.
+- **Full re-solve, not flashed:** the board covered only the image centre (radius ≤ 391 px), and the free rational lens model drifted 30–58 px from the factory one at the edges.
+- **What was flashed:** the factory lens values fit the views at 0.19 px rms, so they were kept, along with the RGB calibration. Only the left→right extrinsics and rectification were replaced: baseline 7.49 cm, triangulated square 7.51 cm, rectified row error 0.16 px median.
+- **Live check:** on-device StereoDepth at the board matched the board's own distance to within 1.3% (ratio 1.013, ~1 m, 219 frames).
+- **Still to do:** a tape-measure test at 2–3 m.
+
 ## 2026-11-22 — Side cameras live: seated runs, left and right
 
 **Problem:** first live test of X3_SIDE_PERSONS: can a seated person seen only by a side camera be tracked?
