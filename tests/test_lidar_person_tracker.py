@@ -381,3 +381,29 @@ def test_seeded_track_ends_when_the_camera_leaves():
         r = tr.update(t, merge_seeded([], None, names, None, t), [])
         t += 0.1
     assert r == []
+
+
+def test_snap_to_ray_moves_anchor_to_nearest_body_on_the_ray():
+    from lidar_person_tracker import snap_to_ray
+    a = [{'id': '1', 'x': 3.0, 'y': 0.0}]
+    c = [{'x': 2.3, 'y': 0.3}, {'x': 2.8, 'y': 0.1}, {'x': 1.0, 'y': 0.0}, {'x': 2.5, 'y': 1.0}]
+    out = snap_to_ray(a, c, (0.0, 0.0))
+    assert (out[0]['x'], out[0]['y']) == (2.3, 0.3) and a[0]['x'] == 3.0   # nearest in window; input kept
+    assert snap_to_ray(a, [{'x': 1.0, 'y': 0.0}], (0.0, 0.0))[0]['x'] == 3.0  # too near: unchanged
+
+
+def test_over_read_camera_confirms_track_with_origin():
+    """Camera 0.7 m beyond the body (desk over-read): only the ray association keeps it."""
+    def run(origin):
+        tr = LidarPersonTracker(); t = 50.0; r = []
+        cand = [{'x': 2.3, 'y': 0.0, 'x_lo': 2.1, 'x_hi': 2.5, 'y_lo': -.2, 'y_hi': .2,
+                 'z_lo': .4, 'z_hi': 1.3, 'n': 120}]
+        for _ in range(8):
+            cam = [{'id': 4, 'odom_x': 3.0, 'odom_y': 0.0, 'odom_vx': 0.0, 'odom_vy': 0.0,
+                    'state_stamp_s': t, 'obs_age_s': 0.0, 'measured': True}]
+            r = tr.update(t, cand, cam, origin=origin)
+            t += 0.1
+        return r
+    assert run(None) == []
+    r = run((0.0, 0.0))
+    assert r and r[0]['confirmed'] and r[0]['mode'] == 'camera + lidar'

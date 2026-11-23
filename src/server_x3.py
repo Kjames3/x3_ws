@@ -426,7 +426,8 @@ _person_memory_logged = (0, 0)
 LIDAR_PERSONS_ENABLED = os.environ.get('X3_LIDAR_PERSONS', '1') != '0'
 LIDAR_PERSONS_CBF = LIDAR_PERSONS_ENABLED and os.environ.get('X3_LIDAR_PERSONS_CBF', '0') == '1'
 # X3_SEEDED_TRACKER=1 feeds the camera-seeded candidates (/livox/person_candidates_seeded)
-# into the tracker as well (off by default; 2026-11-22 couch runs, PROGRESS.md).
+# into the tracker as well, and associates camera people with tracks along the camera ray
+# (lidar_person_tracker.snap_to_ray). Off by default; 2026-11-22 couch/lab runs, PROGRESS.md.
 SEEDED_TRACKER = LIDAR_PERSONS_ENABLED and os.environ.get('X3_SEEDED_TRACKER', '0') == '1'
 LIDAR_PERSONS_CBF_FILE = '/tmp/x3_lidar_persons_cbf'
 _lidar_cbf = {'t': -1.0, 'on': LIDAR_PERSONS_CBF, 'fed': 0, 'ticks': 0, 'logged': 0.0}
@@ -1410,7 +1411,12 @@ class ROS2Bridge:
                 st = self._seeded
                 cands = merge_seeded(cands, st['rows'], st['fields'], st['stamp'], now)
             with _lidar_persons_lock:
-                results = _lidar_persons.update(now, cands, camera, packet_age)
+                origin = None
+                if SEEDED_TRACKER:
+                    pose = self.get_pose_m()
+                    if pose and all(math.isfinite(pose.get(k, float('nan'))) for k in ('x', 'y')):
+                        origin = (pose['x'], pose['y'])
+                results = _lidar_persons.update(now, cands, camera, packet_age, origin=origin)
                 stats = dict(_lidar_persons.stats)
             last = _lidar_persons_logged
             self._lidar_persons_record(last, now, names, rows, camera, packet_age, results,

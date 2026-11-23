@@ -39,10 +39,43 @@ MAX_SPEED = 2.0
 CAMERA_FRESH_S = 0.4     # camera seen this recently = 'camera + lidar', else 'lidar held'
 RESET_GAP_S = 1.0        # a frame gap this long (or a stamp going back) clears everything
 MIN_CONFIDENCE = 0.3
+# Camera anchor -> the nearest candidate along its line of sight (update(origin=...)).
+# C3 reads a seated person ~0.7 m too far (2026-11-22 lab desk), beyond GATE_M, so with
+# origin given each anchor moves onto the nearest candidate within RAY_LAT_M of its ray,
+# from RAY_BEFORE_M nearer to RAY_AFTER_M beyond the camera range.  Offline (desk) this
+# took confirmed coverage 32% -> 96% (seeded_ray_replay.py); lateral 0.5 because the desk
+# tracks sat a steady ~0.36 m to the side of the ray.
+RAY_LAT_M = 0.5
+RAY_BEFORE_M = 1.2
+RAY_AFTER_M = 0.5
 
 
 def _finite(*v):
     return all(isinstance(a, (int, float)) and math.isfinite(a) for a in v)
+
+
+def snap_to_ray(anchors, candidates, origin, lat_m=RAY_LAT_M, before_m=RAY_BEFORE_M,
+                after_m=RAY_AFTER_M):
+    """Copies of anchors (dicts with x, y) moved onto the nearest candidate along the ray
+    from origin through them; anchors with no candidate in the window are unchanged."""
+    ox, oy = origin
+    out = []
+    for a in anchors:
+        a = dict(a)
+        rc = math.hypot(a['x'] - ox, a['y'] - oy)
+        if rc > 1e-6:
+            ux, uy = (a['x'] - ox) / rc, (a['y'] - oy) / rc
+            best = None
+            for c in candidates:
+                dx, dy = c['x'] - ox, c['y'] - oy
+                s, lat = dx * ux + dy * uy, -dx * uy + dy * ux
+                if abs(lat) < lat_m and rc - before_m < s < rc + after_m and (best is None or s < best[0]):
+                    best = (s, c)
+            if best is not None:
+                a['x'], a['y'] = best[1]['x'], best[1]['y']
+                a['snapped_m'] = round(rc - best[0], 3)
+        out.append(a)
+    return out
 
 
 def _unique_pairs(n_a, n_b, dist, gate=GATE_M, margin=RIVAL_MARGIN_M):
@@ -118,10 +151,11 @@ class LidarPersonTracker:
         return out
 
     # -- main entry point --------------------------------------------------------
-    def update(self, now, candidates, camera, packet_age=0.0):
+    def update(self, now, candidates, camera, packet_age=0.0, origin=None):
         """now: frame stamp (s).  candidates: dicts with the person_candidates FIELDS
         (odom).  camera: c3_live.get_tracks()[0].  packet_age: C3 stats packet_age_s.
-        Returns self.results (see _result)."""
+        origin: robot (lidar) XY in odom; given, camera anchors are snapped along their
+        ray (snap_to_ray) before association.  Returns self.results (see _result)."""
         if self.last_stamp is not None:
             dt = now - self.last_stamp
             if dt == 0:
@@ -134,6 +168,8 @@ class LidarPersonTracker:
         self.stats['frames'] += 1
         cands = list(candidates)
         anchors = self._anchors(camera, now, packet_age)
+        if origin is not None and anchors and cands:
+            anchors = snap_to_ray(anchors, cands, origin)
 
         # 1. predict, then tracks <-> clusters
         pred = []

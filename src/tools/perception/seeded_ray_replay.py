@@ -11,7 +11,7 @@ sys.path[:0] = [str(ROOT / 'src'), str(ROOT / 'src/tools/perception'), str(ROOT 
 import lidar_person_dataset as lpd
 from lidar_person_tracker import LidarPersonTracker, merge_seeded
 SF = ['x', 'y', 'x_lo', 'x_hi', 'y_lo', 'y_hi', 'z_lo', 'z_hi', 'n']
-LAT_M, BEFORE_M, AFTER_M = 0.35, 1.2, 0.5
+LAT_M, BEFORE_M, AFTER_M = 0.5, 1.2, 0.5   # scoring window; the tracker uses its own RAY_*
 
 
 def snap(camera, cands, origin):
@@ -53,9 +53,8 @@ for run in sys.argv[1:]:
                 if prev: c = merge_seeded(c, prev[0], SF, prev[1], now)
             camera = f['camera']
             o = origin(now)
-            if arm == 'seeded+ray' and camera and o:
-                camera = snap(camera, c, o)
-            R = [r for r in T.update(now, c, camera, f['packet_age']) if r['confirmed']]
+            R = [r for r in T.update(now, c, camera, f['packet_age'],
+                                     origin=o if arm == 'seeded+ray' else None) if r['confirmed']]
             ids |= {r['id'] for r in R}
             if f['camera']:
                 cam += 1; conf += bool(R)

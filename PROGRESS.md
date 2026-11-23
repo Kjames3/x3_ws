@@ -5,6 +5,30 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-22 — Line-of-sight camera association in the live tracker
+
+**Problem:** the camera over-reads seated people by ~0.7 m, so it could not confirm desk tracks (0.55 m gate).
+
+**Potential solution:** snap each camera anchor onto the nearest candidate along its ray before association (offline test: desk 32% → 96%).
+
+**Work done:**
+- `lidar_person_tracker.snap_to_ray()` (lateral 0.5 m, 1.2 m nearer to 0.5 m beyond). `update(..., origin=None)` uses it when an origin is given.
+- `server_x3.py` passes the /odom robot XY as the origin when `X3_SEEDED_TRACKER=1`. One flag now covers seeded candidates and ray association.
+- Two tests (snap window; an over-read camera confirms a track only with an origin). 25 pass. `seeded_ray_replay.py` now uses the tracker's own code.
+- Deployed with `X3_SEEDED_TRACKER=1` in the x3_server override. The CBF feed stays off.
+
+**Results (replay, confirmed track on the person's ray):**
+
+| run | base | live config |
+|---|---|---|
+| desk | 20.2% | **96.1%** |
+| walk | 76.8% | 81.9% |
+| couch | 3.6% | 98.7% |
+| both empty runs | 0 | 0 |
+
+- Births: desk 12 (was 21 at lateral 0.35, 27 seeded-only), 6 ids.
+- Live check in the lab still pending.
+
 ## 2026-11-22 — Camera↔track association along the camera ray (offline test)
 
 **Problem:** at the desk, the camera reads the seated person ~0.7 m too far away. That is beyond the tracker's 0.55 m camera↔track gate, so seeded tracks lose their camera confirmation and restart.
