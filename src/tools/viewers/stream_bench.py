@@ -15,7 +15,7 @@ async def main(a):
     async with websockets.connect(f"ws://{a.host}:8081", max_size=None) as ws:
         if a.profile:
             await ws.send(json.dumps({"type": "set_stream_profile", "profile": a.profile}))
-            await asyncio.sleep(3)   # let the rear pipeline reopen
+            await asyncio.sleep(8)   # let the rear OAK pipeline reopen (re-enumerates over USB)
         n = collections.Counter(); b = collections.Counter(); res = {}; gaps = collections.defaultdict(list)
         last = {}; total = 0; t0 = time.monotonic()
         while (now := time.monotonic()) - t0 < a.seconds:
@@ -29,7 +29,7 @@ async def main(a):
                 n[role] += 1; b[role] += len(msg)
                 if role in last: gaps[role].append(now - last[role])
                 last[role] = now
-                if role not in res:
+                if n[role] % 20 == 1:   # refresh: frames queued during the settle are stale
                     img = cv2.imdecode(np.frombuffer(msg[6:], np.uint8), cv2.IMREAD_UNCHANGED)
                     res[role] = f"{img.shape[1]}x{img.shape[0]}" if img is not None else '?'
         dt = time.monotonic() - t0

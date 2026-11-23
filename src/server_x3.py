@@ -2108,8 +2108,9 @@ class ROS2Bridge:
         msg.data = np.ascontiguousarray(points, dtype='<f4').tobytes()
         self._tof_pubs[(name, kind)].publish(msg)
 
-    def set_surroundings_cap(self, cap):
-        """Set livox_scan_node's display_cap (fire-and-forget; logs failures)."""
+    def set_surroundings_cap(self, cap, _tries=15):
+        """Set livox_scan_node's display_cap (fire-and-forget; logs failures).
+        Retries for ~15 s: right after startup the service isn't discovered yet."""
         from rcl_interfaces.srv import SetParameters
         from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
         if getattr(self, '_display_cap_cli', None) is None:
@@ -2117,7 +2118,10 @@ class ROS2Bridge:
                 SetParameters, '/livox_scan_node/set_parameters')
         cli = self._display_cap_cli
         if not cli.service_is_ready():
-            logger.warning("Surroundings cap: livox_scan_node parameter service not available")
+            if _tries > 0:
+                threading.Timer(1.0, self.set_surroundings_cap, args=(cap, _tries - 1)).start()
+            else:
+                logger.warning("Surroundings cap: livox_scan_node parameter service not available")
             return
         req = SetParameters.Request(parameters=[Parameter(
             name='display_cap',
@@ -5066,8 +5070,9 @@ async def oak_camera_feed_loop():
                         header = b'CAM1' + bytes((CAMERA_ROLES.index(role), 0))
                         websockets.broadcast(targets, header + jpg.tobytes())
             # Poll fast; only new frames are encoded, so this costs nothing extra.
-            # (Was a fixed 0.12 s sleep, which capped both OAK feeds at ~8 fps.)
-            await asyncio.sleep(0.02)
+            # (Was a fixed 0.12 s sleep, which capped both OAK feeds at ~8 fps;
+            # 0.02 s plus the encodes held 'high' to ~20-24 fps of its 30.)
+            await asyncio.sleep(0.02 if stream_profile == 'low' else 0.005)
     finally:
         stop.set()
         for w in workers:
