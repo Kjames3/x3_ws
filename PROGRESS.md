@@ -5,6 +5,14 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-23 — Surroundings view: avatars for people the front camera can't see
+
+**Problem.** Surroundings avatars came only from the front camera's C3 tracks, so a person behind or beside the robot showed only as a ring.
+
+**Work done.** `avatarEntries` (scene-view.js) now adds a default-pose avatar for every confirmed lidar person track with no front avatar within 0.7 m (5f5a0c7).
+
+**Results.** User test: the avatar followed the user all the way round the robot. Some ghost detections around the front camera while walking round it. These are probably the same front-C3 duplicate tracks noted below, but that's not checked. Left for now.
+
 ## 2026-11-23 — Rear OAK joins the lidar person tracker (X3_REAR_PERSONS)
 
 **Problem.** Only the front, left and right cameras fed the tracker; a person behind the robot had no camera anchor.
