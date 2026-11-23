@@ -160,9 +160,10 @@
         };
     }
     let lastCloud = null, lastCeiling = null, lastOptions = null, clearance = null;
-    // Sized for livox_scan_node's DISPLAY_CAP (12000) with headroom; voxel
+    // Sized for livox_scan_node's display_cap (12000 low / 24000 in the high
+    // stream profile) with headroom; voxel
     // instances hold near memory (<= SurroundingsMemory.LIMIT) plus live far cells.
-    const CLOUD_CAP = 15000, VOXEL_CAP = 28000;
+    const CLOUD_CAP = 26000, VOXEL_CAP = 28000;
     const cloudPositions = new Float32Array(CLOUD_CAP * 3);
     const cloudColors = new Float32Array(CLOUD_CAP * 3);
 

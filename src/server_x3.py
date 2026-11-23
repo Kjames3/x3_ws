@@ -172,6 +172,11 @@ parser.add_argument('--oak-ros-rate', type=_valid_oak_ros_rate, default=10.0, de
 parser.add_argument('--oak-ros-no-stereo', action='store_true', dest='oak_ros_no_stereo',
                     help='With --oak-ros-publish, skip the mono left/right images '
                          '(roughly halves the bag size; keeps depth + IMU + detections).')
+parser.add_argument('--stream-profile', choices=('low', 'high'), default='low',
+                    dest='stream_profile',
+                    help="GUI stream quality at startup; the GUI can switch it live. 'low' suits "
+                         "a shared/congested WiFi; 'high' (30 fps, larger, sharper frames, denser "
+                         "Surroundings cloud) suits a fast local link such as the Slate router.")
 parser.add_argument('--webrtc-camera', action='store_true', dest='webrtc_camera',
                     help='Serve the color camera over WebRTC (via mediamtx) instead of '
                          'base64/WebSocket. Releases the Astra so ffmpeg can capture it at '
@@ -507,6 +512,14 @@ _ab_test_mode = None       # A/B comparison test mode ("reactive" or "predictive
 
 detection_enabled = False
 depth_enabled = False
+# GUI stream profiles.  'low' is the pre-Slate behaviour, sized for congested WiFi.
+STREAM_PROFILES = {
+    'low':  {'fps': 15, 'quality': 70, 'primary_height': 240, 'rear_size': (480, 300),
+             'surroundings_cap': 12000},
+    'high': {'fps': 30, 'quality': 85, 'primary_height': 480, 'rear_size': (960, 600),
+             'surroundings_cap': 24000},
+}
+stream_profile = args.stream_profile
 stereo_enabled = False   # OAK-D left/right mono streaming to the GUI (off by default; bandwidth)
 lidar_3d_scan_enabled = False
 # Tilt sweep geometry.  +/-45 deg about level covers a 0.8 m tabletop from
@@ -2088,6 +2101,25 @@ class ROS2Bridge:
         msg.is_dense = True
         msg.data = np.ascontiguousarray(points, dtype='<f4').tobytes()
         self._tof_pubs[(name, kind)].publish(msg)
+
+    def set_surroundings_cap(self, cap):
+        """Set livox_scan_node's display_cap (fire-and-forget; logs failures)."""
+        from rcl_interfaces.srv import SetParameters
+        from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
+        if getattr(self, '_display_cap_cli', None) is None:
+            self._display_cap_cli = self._node.create_client(
+                SetParameters, '/livox_scan_node/set_parameters')
+        cli = self._display_cap_cli
+        if not cli.service_is_ready():
+            logger.warning("Surroundings cap: livox_scan_node parameter service not available")
+            return
+        req = SetParameters.Request(parameters=[Parameter(
+            name='display_cap',
+            value=ParameterValue(type=ParameterType.PARAMETER_INTEGER, integer_value=int(cap)))])
+        fut = cli.call_async(req)
+        fut.add_done_callback(lambda f: logger.info(
+            "Surroundings cap -> %d: %s", cap,
+            'ok' if f.result() and f.result().results[0].successful else f'failed {f.exception()}'))
 
     def stop(self):
         """Publish a zero Twist to the driver, bypassing the CBF.
@@ -4084,6 +4116,14 @@ async def handle_client(websocket):
                             camera._close_depth()
                     logger.info(f"Depth streaming: {depth_enabled}")
 
+                elif msg_type == "set_stream_profile":
+                    global stream_profile
+                    if data.get("profile") in STREAM_PROFILES:
+                        stream_profile = data["profile"]
+                        if ros_bridge is not None:
+                            ros_bridge.set_surroundings_cap(STREAM_PROFILES[stream_profile]['surroundings_cap'])
+                        logger.info(f"GUI stream profile: {stream_profile}")
+
                 elif msg_type == "toggle_stereo":
                     global stereo_enabled
                     stereo_enabled = data.get("enabled", False)
@@ -4908,7 +4948,10 @@ def _camera_targets():
     return targets
 
 
-OAK_FEED_FPS = 15  # GUI preview rate for the front/rear OAK feeds
+def _sp():
+    return STREAM_PROFILES[stream_profile]
+
+
 
 
 def _rear_preview(device_id, stop, latest):
@@ -4916,13 +4959,15 @@ def _rear_preview(device_id, stop, latest):
     import depthai as dai
     while not stop.is_set():
         try:
+            profile = stream_profile   # reopen when the GUI switches profile
             with dai.Device(dai.DeviceInfo(device_id)) as dev, dai.Pipeline(dev) as pipeline:
                 cam = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_A)
-                stream = cam.requestOutput((480, 300), type=dai.ImgFrame.Type.BGR888p,
-                                           fps=OAK_FEED_FPS)
+                stream = cam.requestOutput(STREAM_PROFILES[profile]['rear_size'],
+                                           type=dai.ImgFrame.Type.BGR888p,
+                                           fps=STREAM_PROFILES[profile]['fps'])
                 queue = stream.createOutputQueue(maxSize=1, blocking=False)
                 pipeline.start()
-                while not stop.wait(0.04):
+                while not stop.wait(0.02) and stream_profile == profile:
                     packet = queue.tryGet()
                     if packet is not None:
                         latest[0] = packet.getCvFrame()
@@ -4993,16 +5038,16 @@ async def oak_camera_feed_loop():
                 for role, image in (('front', front), ('rear', rear[0]), ('left', left[0])):
                     if image is None or image is previous.get(role):
                         continue
-                    # Send each new frame, at most OAK_FEED_FPS per role (the
-                    # front mono runs at 30 fps; full rate would double WiFi load).
+                    # Send each new frame, at most the profile's fps per role (the
+                    # front mono runs at 30 fps; 'low' halves that for slow WiFi).
                     # 0.8x the interval: with 20 ms polling a full-interval gate
                     # skips frames that land just short of it (measured 11.7 fps).
-                    if now - sent_at.get(role, 0.0) < 0.8 / OAK_FEED_FPS:
+                    if now - sent_at.get(role, 0.0) < 0.8 / _sp()['fps']:
                         continue
                     previous[role] = image
                     sent_at[role] = now
                     ok, jpg = await asyncio.to_thread(cv2.imencode, '.jpg', image,
-                                                      [cv2.IMWRITE_JPEG_QUALITY, 70])
+                                                      [cv2.IMWRITE_JPEG_QUALITY, _sp()['quality']])
                     if ok:
                         header = b'CAM1' + bytes((CAMERA_ROLES.index(role), 0))
                         websockets.broadcast(targets, header + jpg.tobytes())
@@ -5276,8 +5321,9 @@ async def broadcast_loop():
                     if not cam_targets:
                         return dets, b""
                     # Downscale visualization to 320x240 before compressing (Idea 106)
-                    frame_downscaled = cv2.resize(frame, (round(240 * frame.shape[1] / frame.shape[0]), 240), interpolation=cv2.INTER_AREA)
-                    _, buf = cv2.imencode('.jpg', frame_downscaled, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    h = min(_sp()['primary_height'], frame.shape[0])
+                    frame_downscaled = cv2.resize(frame, (round(h * frame.shape[1] / frame.shape[0]), h), interpolation=cv2.INTER_AREA)
+                    _, buf = cv2.imencode('.jpg', frame_downscaled, [cv2.IMWRITE_JPEG_QUALITY, _sp()['quality']])
                     return dets, bytes(buf)
                 last_detections_frame = [int(frame.shape[1]), int(frame.shape[0])]
                 last_detections, img_bytes = await loop.run_in_executor(None, _run_yolo)
@@ -5286,8 +5332,9 @@ async def broadcast_loop():
             elif frame is not None and cam_targets:
                 def _encode_frame():
                     # Downscale visualization to 320x240 before compressing (Idea 106)
-                    frame_downscaled = cv2.resize(frame, (round(240 * frame.shape[1] / frame.shape[0]), 240), interpolation=cv2.INTER_AREA)
-                    _, buf = cv2.imencode('.jpg', frame_downscaled, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    h = min(_sp()['primary_height'], frame.shape[0])
+                    frame_downscaled = cv2.resize(frame, (round(h * frame.shape[1] / frame.shape[0]), h), interpolation=cv2.INTER_AREA)
+                    _, buf = cv2.imencode('.jpg', frame_downscaled, [cv2.IMWRITE_JPEG_QUALITY, _sp()['quality']])
                     return bytes(buf)
                 img_bytes = await loop.run_in_executor(None, _encode_frame)
 
@@ -5487,6 +5534,7 @@ async def broadcast_loop():
                 "right_power": current_right_power,
                 "detection_enabled": detection_enabled,
                 "ros_data": _ros_data_state,
+                "stream_profile": stream_profile,
                 "is_auto_driving": is_auto_driving,
                 "motors_enabled": motors_enabled,
                 "cbf": getattr(ros_bridge, 'cbf_info', None) if ros_bridge is not None else None,

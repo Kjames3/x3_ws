@@ -168,6 +168,7 @@ const elements = {
     miniMapCanvas: document.getElementById('mini-map-canvas'),
     // OAK-D stereo + IMU + spatial detections
     stereoToggle: document.getElementById('stereo-toggle'),
+    hqStreamToggle: document.getElementById('hq-stream-toggle'),
     scan3dToggle: document.getElementById('scan-3d-toggle'),
     slamScan3dBtn: document.getElementById('slam-scan-3d-btn'),
     sweepModeStepBtn: document.getElementById('sweep-mode-step-btn'),
@@ -2397,7 +2398,7 @@ function parseSurroundingsCDR(buf, payloadOffset, colored = false) {
     }
     const bigEndian = r.readInt8() !== 0;
     const step = r.readUint32(), rowStep = r.readUint32(), size = r.readUint32();
-    if (frame !== (colored ? 'odom' : 'base_footprint') || height !== 1 || width > (colored ? 12000 : 15000) || step !== (colored ? 16 : 12) ||
+    if (frame !== (colored ? 'odom' : 'base_footprint') || height !== 1 || width > (colored ? 12000 : 26000) || step !== (colored ? 16 : 12) ||
         (colored && !fields.some(f => f.name === 'rgb' && f.offset === 12 && f.type === 6 && f.count === 1)) ||
         rowStep !== width * step || size !== rowStep || r.offset + size > buf.byteLength ||
         !['x', 'y', 'z'].every((name, i) => fields.some(f => f.name === name && f.offset === i * 4 && f.type === 7 && f.count === 1))) {
@@ -2794,6 +2795,10 @@ function handleMessage(data) {
         state.latestData.navPhase = data.nav_phase;
 
         if (data.fps_camera !== undefined) state.latestData.fps.cam = data.fps_camera;
+        if (data.stream_profile !== undefined && elements.hqStreamToggle) {
+            state.streamProfile = data.stream_profile;
+            elements.hqStreamToggle.classList.toggle('active', data.stream_profile === 'high');
+        }
         if (data.fps_detection !== undefined) state.latestData.fps.yolo = data.fps_detection;
         if (data.fps_oak_depth !== undefined) state.latestData.fps.oak = data.fps_oak_depth;
 
@@ -4028,6 +4033,14 @@ if (elements.stereoToggle) elements.stereoToggle.addEventListener('click', () =>
     elements.stereoToggle.classList.toggle('active', state.stereoEnabled);
     updateCameraLayout();
     sendMessage({ type: "toggle_stereo", enabled: state.stereoEnabled });
+});
+
+// Stream profile is server-global; the readout's stream_profile keeps the toggle in sync.
+if (elements.hqStreamToggle) elements.hqStreamToggle.addEventListener('click', () => {
+    if (!state.connected) return;
+    const high = !elements.hqStreamToggle.classList.contains('active');
+    elements.hqStreamToggle.classList.toggle('active', high);
+    sendMessage({ type: "set_stream_profile", profile: high ? 'high' : 'low' });
 });
 
 if (elements.scan3dToggle) elements.scan3dToggle.addEventListener('click', () => {

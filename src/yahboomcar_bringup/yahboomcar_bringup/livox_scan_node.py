@@ -112,6 +112,10 @@ class LivoxScanNode(Node):
     def __init__(self):
         super().__init__('livox_scan_node')
         self.declare_parameter('cloud_topic', '/livox/lidar')
+        # Point budget of /surroundings/points; x3_server raises it in its
+        # "high" stream profile (a fast local link, e.g. the Slate router).
+        self.display_cap = int(self.declare_parameter('display_cap', DISPLAY_CAP).value)
+        self.add_on_set_parameters_callback(self._on_params)
         self.declare_parameter('odom_topic', '/odom')
         self.declare_parameter('source_frame', 'livox_frame')
         self.declare_parameter('scan_frame', 'laser_link')
@@ -253,6 +257,15 @@ class LivoxScanNode(Node):
         self.tf_listener = None
         return True
 
+    def _on_params(self, params):
+        from rcl_interfaces.msg import SetParametersResult
+        for p in params:
+            if p.name == 'display_cap':
+                if int(p.value) < 1000:
+                    return SetParametersResult(successful=False, reason='display_cap < 1000')
+                self.display_cap = int(p.value)
+        return SetParametersResult(successful=True)
+
     def publish_surroundings(self, pts, data):
         """Bounded display-only cloud: 5 Hz, 2.5 cm voxels within 3 m and 5 cm
         beyond, <=12000 XYZ points (see display_voxels).
@@ -290,7 +303,7 @@ class LivoxScanNode(Node):
                 xyz[:, 0] = c * (wx - fx) + sn * (wy - fy)
                 xyz[:, 1] = -sn * (wx - fx) + c * (wy - fy)
         if len(xyz):
-            xyz = display_voxels(xyz)
+            xyz = display_voxels(xyz, cap=self.display_cap)
         xyz = np.asarray(xyz, dtype='<f4')
         msg = PointCloud2()
         sec, nsec = struct.unpack_from('<iI', data, 4)

@@ -281,9 +281,12 @@
             S.rateWindowStart = now;
         }
         const kbps = (S.byteRate * 8) / 1000;
-        // The documented failure was a 4 Mbps stream collapsing a congested
-        // link, so the thresholds sit either side of the 1.5 Mbps cap.
-        const level = kbps > 2500 ? 'bad' : kbps > 1500 ? 'warn' : 'ok';
+        // Thresholds follow the stream profile: 'low' was sized for congested WiFi
+        // (a 4 Mbps stream once collapsed it); 'high' assumes a fast local link
+        // (the Slate router measured 322 Mb/s robot->laptop).
+        const high = window.state && window.state.streamProfile === 'high';
+        const [warnK, badK] = high ? [60000, 120000] : [10000, 15000];
+        const level = kbps > badK ? 'bad' : kbps > warnK ? 'warn' : 'ok';
         tileState('net', level,
             kbps > 1000 ? (kbps / 1000).toFixed(2) + ' Mbps' : Math.round(kbps) + ' kbps',
             S.msgRate.toFixed(0) + ' msg/s');
