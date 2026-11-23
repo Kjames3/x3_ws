@@ -5,6 +5,25 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-22 — Side cameras live: seated runs, left and right
+
+**Problem:** first live test of X3_SIDE_PERSONS: can a seated person seen only by a side camera be tracked?
+
+**Work done:** robot parked; the user sat working at a desk on the left (`side-sit-left-r1`, 120 s), then on the right (`side-sit-right-r1`, 120 s). Analysed the recorder summary and the live tracker output (`lidar_persons.ndjson`) and checked a recorded side JPEG.
+
+**Results:**
+
+| run | rays | ray found a body | agrees with the track | live confirmed track | ids |
+|---|---|---|---|---|---|
+| left | 1172 | 98.1% | 98.1% | **100%** of 1191 frames | 1 (L1) |
+| right | 1121 | 98.0% | 98.0% | **99.0%** | 1 (L2) |
+
+- No frames had a second track.
+- Off-person bearings that found a "body": 7.2% (left) and 9.8% (right).
+- The JPEG shows the user seated at the desk, side-on.
+- The recorder's "camera coverage 0% / births 0" summary is the front-camera (C3) offline replay and does not include side anchors; nobody was in front of the robot.
+- **Next:** courtyard walks past each side, standing at taped 1/2/4 m, and an empty run for side false births.
+
 ## 2026-11-22 — Side-camera tracking merged and enabled on the robot
 
 **Problem:** the side-camera branch had to be merged with today's id revival and set up on the AGX.
