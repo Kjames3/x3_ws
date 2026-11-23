@@ -25,6 +25,60 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 - Coverage is unchanged (walk 94.4%, desk 98.0%).
 - Most remaining new ids follow gaps > 4 s, with the person out of the front camera's view. Side-camera tracking (in progress on a separate branch) is the fix for those.
 
+## 2026-11-22 — Side cameras feed the lidar person tracker (X3_SIDE_PERSONS, branch t3/side-camera-livox-tracking)
+
+**Problem:** only the front camera (C3) can start a lidar person track. Someone beside the robot, seen only by the left or right mono camera, never becomes a track.
+
+**Potential solution:** a side-camera person box gives a bearing but no range. Search the whole Livox ray for the nearest person-sized upper body, and use that body both as a candidate and as the camera anchor.
+
+**Work done:**
+- `person_candidates.ray_candidates()`: searches the ray from 0.4 to 6 m, or a window from the box, and takes the nearest body. A wrong pick becomes a wrong person, so it rejects structure itself:
+  - the object runs at most 1 m along the ray;
+  - it does not continue sideways at its depth;
+  - its top is 1.0–1.95 m (lower up close, where the Livox FOV cuts the head);
+  - n·s² ≥ 300;
+  - its top matches the head height implied by the box top, when the box top is in the image.
+- `livox_scan_node` subscribes `/side/{left,right}/person_rays` and publishes `/livox/person_candidates_side` (FIELDS + ax, ay, cam, tid, age).
+- `LidarPersonTracker.update(side=...)` takes side anchors with ids `left:<n>` / `right:<n>`. They bypass the C3 packet gate, are not snapped, do not pull velocity, and are dropped within 0.5 m of a C3 anchor (two anchors on one track would block each other's confirmation).
+- `side_person_rays.py` turns a box into a ray (fisheye K, D, extrinsics from /tf_static) with a coarse range window from the feet and a 2 m person-height bound, and keeps per-camera IoU ids, ready after 2 sightings.
+- `server_x3` with `X3_SIDE_PERSONS=1` (default off) runs a dedicated yolo26n TensorRT detector on each side camera at 5 Hz, confidence ≥ 0.4; with no engine the feature is off.
+- Recording: `side/side_rays.ndjson` plus every 5th frame as JPEG. `record_person_lidar.sh` bags the new topics.
+- `side_ray_eval.py` replays recorded side rays. On older runs it casts each C3 person as a bearing-only ray instead.
+- 35 new tests: ray search, config-file geometry, tracker side anchors, scan node, server wiring.
+
+**Results** (no bag has side-camera images yet, so this is the same lidar code on the 11-22 runs, C3 people as bearing-only rays, range discarded, no box top; reference = the live confirmed track on the ray):
+
+| run | rays | body found | agrees with track | wrong body | missed | person-free bearings that found a "body" |
+|---|---|---|---|---|---|---|
+| seededlive-desk | 2380 | 100% | 100% | 0% | 0% | 5.6% |
+| seededlive-walk | 759 | 82.5% | 77.0% | 8.9% | 14.1% | 29.6% |
+| seeded-walk | 179 | 94.4% | 96.0% | 0% | 4.0% | 9.4% |
+| seeded-couch | 818 | 8.4% | (24 with a track) | | | 21.3% |
+| empty runs (3) | – | – | – | – | – | 3.0–21.9% |
+
+- The top and area rules were **fitted on these runs**. They took the person-free picks from 22–61% to 3–30% and kept 99.8% of the bodies that match a track.
+- **Held out** (not used to fit):
+
+  | run | rays | found | agree | wrong | missed | person-free picks |
+  |---|---|---|---|---|---|---|
+  | 11-20 lab walk-r1 / r2 | 47 / 51 | 94% / 92% | 100% / 83% | 0 / 6% | 0 / 11% | 40% / 41% |
+  | 11-20 lab seated-r1 / r2 | 552 / 576 | 100% | 100% | 0 | 0 | 26% |
+  | 11-20 lab empty-r1 | – | – | – | – | – | 51% |
+  | 10-30 walkup-r1 / r2, circle-r1 (old chassis, people walking up close) | 350 / 347 / 159 | 100% | 100% | 0 | 0 | 46–54% |
+
+  On-person picks hold, including close walk-ups, where the Livox FOV cuts the head. But in the lab and on the old runs, half of the person-free bearings still find something person-shaped. **The ray search is only as good as the side-camera detection that starts it.**
+- Side rows are accepted one Livox frame late (0.15 s): on the live desk run ~30% of seeded rows arrived after their candidates message. Side anchors are also deduplicated among themselves.
+- The walk run's wrong and missed rays are one parked track at ~3.95 m. The ray takes a body 0.8–1.3 m nearer, and it is not clear which is the walker.
+- Couch-seated people are mostly not found, as with the classifier.
+- Shape alone cannot reject everything: the side camera's detection (confidence 0.4, 2 sightings) and the box's range window are the rest of the protection.
+
+**Next (robot):**
+- colcon-build `yahboomcar_bringup` (scan node and person_candidates).
+- Check that the AGX has `yolo26n.engine`, and that the Arducam is not held by `--webrtc-camera`.
+- Run with `X3_SIDE_PERSONS=1` (plus `X3_SEEDED_TRACKER=1`) and record walks and sits on the left and right.
+- Keep `X3_LIDAR_PERSONS_CBF` off with this flag until validated: a side-born track confirms itself.
+- Untested anywhere: the detector loop, YOLO on these mono fisheye frames (TRTDetector stretches 640×400 to 640×640), the recorder and the eval tool's side mode.
+
 ## 2026-11-22 — Line-of-sight tracker, live lab runs (X3_SEEDED_TRACKER=1)
 
 **Problem:** do the seeded candidates and ray association hold up live over minutes, and do they add false tracks?

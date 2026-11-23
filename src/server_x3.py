@@ -429,6 +429,22 @@ LIDAR_PERSONS_CBF = LIDAR_PERSONS_ENABLED and os.environ.get('X3_LIDAR_PERSONS_C
 # into the tracker as well, and associates camera people with tracks along the camera ray
 # (lidar_person_tracker.snap_to_ray). Off by default; 2026-11-22 couch/lab runs, PROGRESS.md.
 SEEDED_TRACKER = LIDAR_PERSONS_ENABLED and os.environ.get('X3_SEEDED_TRACKER', '0') == '1'
+# X3_SIDE_PERSONS=1: YOLO people on the left/right mono side cameras (~5 Hz each, GPU via
+# TensorRT; no engine = off) go to livox_scan_node as bearing-only rays
+# (/side/<role>/person_rays, side_person_rays.py); the bodies it finds along each ray
+# (/livox/person_candidates_side) join the tracker's candidates AND camera anchors
+# (ids 'left:<n>' / 'right:<n>'), so a person only a side camera sees can start a track.
+# Off by default; not yet tested live (2026-11-22).
+SIDE_PERSONS = LIDAR_PERSONS_ENABLED and os.environ.get('X3_SIDE_PERSONS', '0') == '1'
+SIDE_PERSON_HZ = 5.0       # detections per camera per second
+SIDE_PERSON_CONF = 0.4     # person box confidence (the GUI overlay uses 0.25)
+SIDE_FRAME_MAX_AGE_S = 0.3
+# Side rows come from the same Livox frame as the candidates, but their callback can run
+# after the candidates' one (on the 11-22 desk run ~30% of seeded rows missed a 0.05 s
+# gate), so one frame of lag is accepted, as merge_seeded does.
+SIDE_ROWS_MAX_AGE_S = 0.15
+# role -> (upright image, monotonic capture time), written by the side capture threads.
+_side_frames = {}
 LIDAR_PERSONS_CBF_FILE = '/tmp/x3_lidar_persons_cbf'
 _lidar_cbf = {'t': -1.0, 'on': LIDAR_PERSONS_CBF, 'fed': 0, 'ticks': 0, 'logged': 0.0}
 
@@ -1036,6 +1052,7 @@ class ROS2Bridge:
         # would run every high-rate /tf message through Python on this node.
         self._static_tf = {}
         self._tof_extrinsics = {}
+        self._static_chains = {}      # frame -> (R, t) in base_footprint (side cameras)
         # Raised-floor exemption for the lower ToF (src/tof_exempt_zones.py):
         # map<-odom from the last /amcl_pose, so lower-array points can be
         # placed on the map without a full TF listener.
@@ -1094,6 +1111,12 @@ class ROS2Bridge:
             self._seed_pub = self._node.create_publisher(PointCloud2, '/c3/person_seeds', 5)
             self._node.create_subscription(PointCloud2, '/livox/person_candidates_seeded',
                                            self._seeded_candidates_cb, qos_profile_sensor_data)
+            if SIDE_PERSONS:
+                self._side_ray_pubs = {r: self._node.create_publisher(
+                    PointCloud2, f'/side/{r}/person_rays', 5) for r in ('left', 'right')}
+                self._node.create_subscription(PointCloud2, '/livox/person_candidates_side',
+                                               self._side_candidates_cb, qos_profile_sensor_data)
+        self._side = {'stamp': None, 'rows': None, 'fields': None}
         self._seeded = {'stamp': None, 'rows': None, 'fields': None,
                         'frames': 0, 'rows_n': 0, 'gap_fill': 0, 'logged': 0.0}
         self._people_last_pub = 0.0
@@ -1410,24 +1433,35 @@ class ROS2Bridge:
             if SEEDED_TRACKER and self._seeded.get('rows') is not None:
                 st = self._seeded
                 cands = merge_seeded(cands, st['rows'], st['fields'], st['stamp'], now)
+            side = None
+            sd = self._side
+            if SIDE_PERSONS and sd['rows'] is not None and abs(sd['stamp'] - now) < SIDE_ROWS_MAX_AGE_S:
+                cands = merge_seeded(cands, sd['rows'], sd['fields'], sd['stamp'], now)
+                f = {n: i for i, n in enumerate(sd['fields'])}
+                side = [{'id': f"{CAMERA_ROLES[int(r[f['cam']])]}:{int(r[f['tid']])}",
+                         'x': float(r[f['ax']]), 'y': float(r[f['ay']]),
+                         'last_seen': sd['stamp'] - float(r[f['age']])} for r in sd['rows']]
             with _lidar_persons_lock:
                 origin = None
                 if SEEDED_TRACKER:
                     pose = self.get_pose_m()
                     if pose and all(math.isfinite(pose.get(k, float('nan'))) for k in ('x', 'y')):
                         origin = (pose['x'], pose['y'])
-                results = _lidar_persons.update(now, cands, camera, packet_age, origin=origin)
+                results = _lidar_persons.update(now, cands, camera, packet_age, origin=origin,
+                                                side=side)
                 stats = dict(_lidar_persons.stats)
             last = _lidar_persons_logged
             self._lidar_persons_record(last, now, names, rows, camera, packet_age, results,
-                                       self._seeded)
+                                       self._seeded, self._side if SIDE_PERSONS else None)
             keys = ('births', 'revived', 'relinked', 'hold_expired', 'lost_lidar', 'resets')
             changed = last['stats'] is None or any(stats[k] != last['stats'][k] for k in keys)
             if changed and time.monotonic() - last['t'] >= 10.0:
                 logger.info("[lidar-persons] births %d (revived ids %d), camera ids re-linked %d, held %.1f s, "
-                            "ended: hold cap %d, lidar lost %d; resets %d",
+                            "ended: hold cap %d, lidar lost %d; resets %d%s",
                             stats['births'], stats.get('revived', 0), stats['relinked'], stats['lidar_held_s'],
-                            stats['hold_expired'], stats['lost_lidar'], stats['resets'])
+                            stats['hold_expired'], stats['lost_lidar'], stats['resets'],
+                            f"; side births {stats['side_births']}, side confirms "
+                            f"{stats['side_confirms']}" if SIDE_PERSONS else "")
                 last['t'], last['stats'] = time.monotonic(), stats
         except Exception as e:
             logger.warning("lidar person tracker failed: %s", e)
@@ -1475,8 +1509,71 @@ class ROS2Bridge:
         except Exception as e:
             logger.warning("seeded candidates (shadow) failed: %s", e)
 
+    def _side_candidates_cb(self, msg):
+        """/livox/person_candidates_side: kept for the next tracker frame (same Livox frame)."""
+        try:
+            names = [f.name for f in msg.fields]
+            rows = np.frombuffer(bytes(msg.data), dtype='<f4').reshape(-1, len(names))
+            self._side = {'stamp': msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9,
+                          'rows': rows, 'fields': names}
+        except Exception as e:
+            logger.warning("side person candidates failed: %s", e)
+
+    def publish_side_rays(self, role, rows, stamp):
+        """(K, 9) side_person_rays.RAY_MSG_FIELDS rows -> /side/<role>/person_rays (odom),
+        stamped at the image capture time (ROS seconds).  An empty message clears them."""
+        from side_person_rays import RAY_MSG_FIELDS
+        rows = np.asarray(rows, dtype='<f4').reshape(-1, len(RAY_MSG_FIELDS))
+        msg = self._PointCloud2()
+        msg.header.stamp.sec, msg.header.stamp.nanosec = divmod(int(stamp * 1e9), 1_000_000_000)
+        msg.header.frame_id = 'odom'
+        msg.height, msg.width = 1, len(rows)
+        msg.fields = [self._PointField(name=n, offset=i * 4, datatype=self._PointField.FLOAT32, count=1)
+                      for i, n in enumerate(RAY_MSG_FIELDS)]
+        msg.is_bigendian, msg.is_dense = False, True
+        msg.point_step = 4 * len(RAY_MSG_FIELDS)
+        msg.row_step = msg.point_step * len(rows)
+        msg.data = rows.tobytes()
+        self._side_ray_pubs[role].publish(msg)
+
+    def static_chain(self, frame):
+        """(R, t) of `frame` in base_footprint from /tf_static, or None until the whole
+        chain has arrived.  Cached per frame."""
+        ext = self._static_chains.get(frame)
+        if ext is not None:
+            return ext
+        f, R, t = frame, np.eye(3), np.zeros(3)
+        for _ in range(16):
+            if f == 'base_footprint':
+                self._static_chains[frame] = (R, t)
+                return R, t
+            link = self._static_tf.get(f)
+            if link is None:
+                return None
+            parent, Rp, tp = link
+            R, t = Rp @ R, Rp @ t + tp
+            f = parent
+        return None
+
+    def pose_at_monotonic(self, t_cap):
+        """Robot odom pose {x, y, theta} at a monotonic capture time, or None.  Between
+        two /odom samples it interpolates; a capture newer than the last sample (by up to
+        0.1 s) takes the current pose."""
+        p = self._velocity_pose_history.at(t_cap)
+        if p is not None:
+            return p
+        now = time.monotonic()
+        if now - self._odom_stamp < 0.1 and 0.0 <= now - t_cap < 0.1:
+            return self.get_pose_m()
+        return None
+
+    def ros_time_of(self, t_cap):
+        """ROS time (s) of a monotonic instant."""
+        return self._node.get_clock().now().nanoseconds * 1e-9 - (time.monotonic() - t_cap)
+
     @staticmethod
-    def _lidar_persons_record(st, now, names, rows, camera, packet_age, results, seeded=None):
+    def _lidar_persons_record(st, now, names, rows, camera, packet_age, results, seeded=None,
+                              side=None):
         mono = time.monotonic()
         if mono - st['rec_t'] >= 1.0:
             st['rec_t'] = mono
@@ -1499,7 +1596,11 @@ class ROS2Bridge:
                 'results': results,
                 'seeded': (np.round(seeded['rows'], 3).tolist()
                            if seeded and seeded['rows'] is not None
-                           and abs(seeded['stamp'] - now) < 0.05 else None)}) + '\n')
+                           and abs(seeded['stamp'] - now) < 0.05 else None),
+                **({'side': np.round(side['rows'], 3).tolist(), 'side_fields': side['fields'],
+                    'side_stamp': side['stamp']}
+                   if side and side['rows'] is not None
+                   and abs(side['stamp'] - now) < SIDE_ROWS_MAX_AGE_S else {})}) + '\n')
 
     def lidar_person_tracks(self):
         """Lidar-held people with robot-frame fields, plus tracker stats."""
@@ -1557,6 +1658,7 @@ class ROS2Bridge:
             self._static_tf[child] = (tf.header.frame_id.lstrip('/'), R,
                                       np.array([t.x, t.y, t.z]))
         self._tof_extrinsics.clear()   # recompute against the new tree
+        self._static_chains.clear()
 
     def _slam_pose_cb(self, msg):
         p, q = msg.pose.pose.position, msg.pose.pose.orientation
@@ -4503,7 +4605,7 @@ async def handle_client(websocket):
         connected_clients.discard(websocket)
         _camera_hidden.discard(websocket)
         _log_subscribers.pop(websocket, None)
-        if camera and not connected_clients:
+        if camera and not connected_clients and not SIDE_PERSONS:
             camera._has_clients = False  # P7: no clients left — skip lock+copy in capture loop
         # Eager stop — don't wait for the watchdog timeout on disconnect
         _enqueue_motion(0.0, 0.0, 0.0)
@@ -4854,10 +4956,12 @@ def _left_capture(stop, latest):
             logger.info("Left camera opened: %s", dev)
             while not stop.is_set():
                 ok, frame = cap.read()
+                t_cap = time.monotonic()
                 if not ok:
                     logger.warning("Left camera: read failed, reopening")
                     break
                 latest[0] = frame if LEFT_CAM_ROTATE is None else cv2.rotate(frame, LEFT_CAM_ROTATE)
+                _side_frames['left'] = (latest[0], t_cap)
         except Exception as exc:
             logger.warning("Left camera unavailable: %s", exc)
         finally:
@@ -4923,6 +5027,179 @@ async def c3_seed_loop():
             except Exception as e:
                 logger.warning("c3 seeds publish failed: %s", e)
         await asyncio.sleep(0.1)
+
+
+def _load_side_detector():
+    """A dedicated yolo26n TensorRT detector for the side cameras, or None.  Not the GUI's
+    `model`: that one is hot-swapped from the GUI and each call rewrites its threshold."""
+    engine = YOLO_MODEL.replace('.pt', '.engine')
+    if not os.path.exists(engine):
+        logger.warning("[side-persons] no TensorRT engine at %s: side-camera people OFF "
+                       "(build it on this machine with trtexec, see notes)", engine)
+        return None
+    try:
+        from trt_detector import TRTDetector
+        det = TRTDetector(engine, pt_path=YOLO_MODEL, conf_thres=SIDE_PERSON_CONF)
+        logger.info("[side-persons] TensorRT detector ready (%s)", engine)
+        return det
+    except Exception as e:
+        logger.error("[side-persons] detector init failed, side-camera people OFF: %s", e)
+        return None
+
+
+def _side_detect(det, img):
+    """Person boxes [(x1, y1, x2, y2, conf)] in one side-camera frame (mono -> 3 channels)."""
+    if img.ndim == 2 or img.shape[2] == 1:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    names = det.names or {}
+    out = []
+    for r in det(img, verbose=False, conf=SIDE_PERSON_CONF):
+        for b in r.boxes:
+            c = int(b.cls[0])
+            name = names[c] if isinstance(names, (list, tuple)) and c < len(names) else (
+                names.get(c) if isinstance(names, dict) else None)
+            if name != 'person':
+                continue
+            x1, y1, x2, y2 = (float(v) for v in b.xyxy[0])
+            out.append((x1, y1, x2, y2, float(b.conf[0])))
+    return out
+
+
+class _SideRecorder:
+    """While the tracker recorder runs (record_person_lidar.sh), side-camera detections go
+    to <run>/side/side_rays.ndjson and every 5th frame per camera to <run>/side/<role>_<t>.jpg,
+    so rays can be recomputed offline (the left lens is provisional)."""
+
+    def __init__(self):
+        self.dir, self.f, self.n = None, None, {}
+
+    def update(self):
+        path = _lidar_persons_logged.get('rec_path')
+        d = os.path.join(os.path.dirname(path), 'side') if path else None
+        if d != self.dir:
+            if self.f is not None:
+                self.f.close()
+            self.f, self.dir, self.n = None, d, {}
+            if d:
+                os.makedirs(d, exist_ok=True)
+                self.f = open(os.path.join(d, 'side_rays.ndjson'), 'a', buffering=1)
+                logger.info("[side-persons] recording side detections to %s", d)
+        return self.f is not None
+
+    def write(self, rec, role, img):
+        self.f.write(json.dumps(rec) + '\n')
+        k = self.n.get(role, 0)
+        self.n[role] = k + 1
+        return os.path.join(self.dir, f"{role}_{rec['stamp']:.3f}.jpg") if k % 5 == 0 else None
+
+
+async def side_person_loop():
+    """X3_SIDE_PERSONS: left/right side-camera people -> /side/<role>/person_rays (~5 Hz each)."""
+    if not SIDE_PERSONS or SIM_MODE or ros_bridge is None or not hasattr(ros_bridge, '_side_ray_pubs'):
+        return
+    import side_person_rays as spr
+    det = await asyncio.to_thread(_load_side_detector)
+    if det is None:
+        return
+    cams = {}
+    for role in ('left', 'right'):
+        try:
+            cams[role] = spr.load_camera(role)
+        except Exception as e:
+            logger.warning("[side-persons] %s camera calibration unavailable: %s", role, e)
+    if camera is not None:
+        camera._has_clients = True     # keep the right (Arducam) capture storing frames
+    ids = {r: spr.SideTrackIds() for r in cams}
+    due = {r: 0.0 for r in cams}
+    last = {}                          # role -> (capture time, pixel sample)
+    Ks = {}
+    warned = set()
+    stats = {r: {'frames': 0, 'boxes': 0, 'rays': 0, 'ms': 0.0} for r in cams}
+    logged = time.monotonic()
+    recorder = _SideRecorder()
+    rec_check = 0.0
+
+    def warn_once(key, msg, *a):
+        if key not in warned:
+            warned.add(key)
+            logger.warning("[side-persons] " + msg, *a)
+
+    logger.info("[side-persons] side-camera people ON for %s", ', '.join(cams) or 'no camera')
+    while not _shutting_down:
+        now = time.monotonic()
+        if now - rec_check >= 1.0:
+            rec_check = now
+            recording = recorder.update()
+        for role, cam in cams.items():
+            if now < due[role]:
+                continue
+            due[role] = now + 1.0 / SIDE_PERSON_HZ
+            try:
+                if role == 'left':
+                    got = _side_frames.get('left')
+                elif camera is not None:
+                    got = camera.get_frame_stamped()
+                else:
+                    warn_once('right-none', "right camera not opened (--webrtc-camera or no "
+                              "Arducam): right side people OFF")
+                    got = None
+                if got is None:
+                    continue
+                img, t_cap = got
+                sample = img[::50, ::50]
+                prev = last.get(role)
+                if (time.monotonic() - t_cap > SIDE_FRAME_MAX_AGE_S
+                        or (prev is not None and (prev[0] == t_cap or np.array_equal(prev[1], sample)))):
+                    continue
+                last[role] = (t_cap, sample.copy())
+                ext = spr.camera_in_base(cam, ros_bridge.static_chain)
+                if ext is None:
+                    warn_once(f'{role}-tf', "%s: no /tf_static chain to base_footprint yet", role)
+                    continue
+                pose = ros_bridge.pose_at_monotonic(t_cap)
+                if pose is None:
+                    continue
+                t0 = time.perf_counter()
+                boxes = await asyncio.to_thread(_side_detect, det, img)
+                st = stats[role]
+                st['ms'] += (time.perf_counter() - t0) * 1e3
+                h, w = img.shape[:2]
+                K = Ks.get((role, w, h))
+                if K is None:
+                    K = Ks[(role, w, h)] = spr.scaled_K(cam['K'], cam['wh'], (w, h))
+                tids = ids[role].update([b[:4] for b in boxes], t_cap)
+                rows, rays_rec = [], []
+                for b, (tid, hits, ready) in zip(boxes, tids):
+                    ray = spr.detection_ray(b, (w, h), K, cam['D'], ext[0], ext[1], pose)
+                    if ray is not None:
+                        rays_rec.append(dict(ray, tid=tid, ready=ready))
+                        if ready:
+                            rows.append(spr.ray_row(ray) + [tid])
+                stamp = ros_bridge.ros_time_of(t_cap)
+                ros_bridge.publish_side_rays(role, rows, stamp)
+                st['frames'] += 1
+                st['boxes'] += len(boxes)
+                st['rays'] += len(rows)
+                if recording:
+                    jpg = recorder.write({
+                        'stamp': round(stamp, 4), 'cam': role, 'wh': [w, h],
+                        'pose': {k: round(v, 4) for k, v in pose.items()},
+                        'ext': [np.round(ext[0], 6).tolist(), np.round(ext[1], 5).tolist()],
+                        'boxes': [[round(v, 1) for v in b[:4]] + [round(b[4], 3), tid, hits]
+                                  for b, (tid, hits, _) in zip(boxes, tids)],
+                        'rays': rays_rec}, role, img)
+                    if jpg:
+                        await asyncio.to_thread(cv2.imwrite, jpg, img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            except Exception as e:
+                warn_once(f'{role}-err-{type(e).__name__}', "%s camera step failed: %s", role, e)
+        if time.monotonic() - logged >= 60.0:
+            logged = time.monotonic()
+            logger.info("[side-persons] last 60 s: %s", ', '.join(
+                f"{r} {s['frames']} frames, {s['boxes']} boxes, {s['rays']} rays, "
+                f"{s['ms'] / max(s['frames'], 1):.1f} ms/detect" for r, s in stats.items()))
+            for s in stats.values():
+                s.update(frames=0, boxes=0, rays=0, ms=0.0)
+        await asyncio.sleep(0.02)
 
 
 async def ros_data_watchdog_loop():
@@ -6142,6 +6419,7 @@ async def main():
     _stall_beat = asyncio.ensure_future(loop_stall_probe.start(threading.get_ident()))
     _data_watch = asyncio.ensure_future(ros_data_watchdog_loop())
     _seed_loop = asyncio.ensure_future(c3_seed_loop()) if LIDAR_PERSONS_ENABLED else None
+    _side_loop = asyncio.ensure_future(side_person_loop()) if SIDE_PERSONS else None
 
     # Graceful shutdown: on SIGINT/SIGTERM (e.g. `systemctl restart`) set the flag so
     # the async loops exit, gather() returns, and the finally-block cleanup() runs —

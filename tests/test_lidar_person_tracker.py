@@ -232,18 +232,20 @@ def test_node_publishes_candidates_in_odom():
     from sensor_msgs.msg import PointCloud2, PointField
     path = pathlib.Path('src/yahboomcar_bringup/yahboomcar_bringup/livox_scan_node.py')
     cls = next(n for n in ast.parse(path.read_text()).body if isinstance(n, ast.ClassDef))
-    names = ('publish_person_candidates', 'seeds_at', '_candidate_msg')
+    names = ('publish_person_candidates', 'seeds_at', '_candidate_msg', 'side_rays_at')
     methods = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in names]
     ns = dict(np=np, struct=struct, time=_time, PointCloud2=PointCloud2, PointField=PointField,
               extract_candidates=pc.extract, seeded_candidates=pc.seeded_candidates,
-              CANDIDATE_FIELDS=pc.FIELDS)
+              ray_candidates=pc.ray_candidates, CANDIDATE_FIELDS=pc.FIELDS,
+              SIDE_RAY_MAX_AGE_S=0.3)
+    ns['SIDE_FIELDS'] = pc.FIELDS + ('ax', 'ay', 'cam', 'tid', 'age')
     exec(compile(ast.Module(body=methods, type_ignores=[]), 'cands', 'exec'), ns)
     rng = np.random.default_rng(4)
     person = _person(rng, 2.0, 0.0, n=200) - [0.0432, 0.0, 0.31]     # sensor frame
     pts = np.zeros(len(person), dtype=[('t', '<u4'), ('x', '<f4'), ('y', '<f4'), ('z', '<f4')])
     pts['x'], pts['y'], pts['z'] = person.T
     pts['t'] = np.linspace(0, 99_000_000, len(pts)).astype(np.uint32)
-    sent, seeded = [], []
+    sent, seeded, side_sent = [], [], []
     # Robot at odom (5, 1) facing +y: the person 2 m ahead is at odom (5, 3).
     pose = lambda s: (np.full(len(s), 5.0), np.full(len(s), 1.0), np.full(len(s), math.pi / 2))
     logger = NS(info=lambda *_: None)
@@ -252,8 +254,10 @@ def test_node_publishes_candidates_in_odom():
              cand_ms=[], cand_n=[], cand_logged_ns=0, get_logger=lambda: logger,
              get_clock=lambda: NS(now=lambda: NS(nanoseconds=0)),
              seeds=None, seed_pub=NS(get_subscription_count=lambda: 1, publish=seeded.append),
+             side_rays={}, side_pub=NS(get_subscription_count=lambda: 1, publish=side_sent.append),
              _candidate_msg=ns['_candidate_msg'])
     obj.seeds_at = lambda t: ns['seeds_at'](obj, t)
+    obj.side_rays_at = lambda t: ns['side_rays_at'](obj, t)
     ns['publish_person_candidates'](obj, pts, struct.pack('<I i I', 256, 100, 0))
     assert not seeded                                   # no camera seeds: nothing seeded
     m = sent[0]
@@ -268,9 +272,24 @@ def test_node_publishes_candidates_in_odom():
     obj.seeds = (99.0, np.array([[5.0, 3.0, 0.0, 0.0]]))    # stale seeds are ignored
     ns['publish_person_candidates'](obj, pts, struct.pack('<I i I', 256, 100, 0))
     assert len(seeded) == 1
+    assert not side_sent                                # no side rays: nothing published
+    # A left-camera ray from beside the robot through the person (camera index 2, id 7),
+    # 0.05 s old; the body duplicates the ordinary candidate, so it anchors there.
+    ray = [5.0, 1.05, 0.21, 0.0, 1.0, 0.4, 6.0, float('nan'), 7.0]
+    obj.side_rays = {2: (100.049, np.array([ray]))}
+    ns['publish_person_candidates'](obj, pts, struct.pack('<I i I', 256, 100, 0))
+    m = side_sent[-1]
+    assert [f.name for f in m.fields] == list(ns['SIDE_FIELDS']) and m.width == 1
+    row = dict(zip(ns['SIDE_FIELDS'], np.frombuffer(m.data, dtype='<f4')))
+    assert row['ax'] == pytest.approx(5.0, abs=0.1) and row['ay'] == pytest.approx(3.0, abs=0.1)
+    assert (row['cam'], row['tid']) == (2.0, 7.0) and row['age'] == pytest.approx(0.05, abs=0.01)
+    assert len(sent) == 4 and sent[-1].width == 1       # ordinary candidates unchanged
+    obj.side_rays = {2: (99.0, np.array([ray]))}        # stale rays are ignored
+    ns['publish_person_candidates'](obj, pts, struct.pack('<I i I', 256, 100, 0))
+    assert len(side_sent) == 1
     obj.pose_at = lambda s: None                        # no odom: nothing published
     ns['publish_person_candidates'](obj, pts, struct.pack('<I i I', 256, 100, 0))
-    assert len(sent) == 3
+    assert len(sent) == 5
 
 
 def test_replay_tool_scores_a_recorded_walk_up(tmp_path):
@@ -444,3 +463,80 @@ def test_rebirth_nearby_with_new_camera_id_keeps_the_id():
 def test_rebirth_far_with_new_camera_id_gets_a_new_id():
     first, again, _ = _drop_and_return(12, 4.0)
     assert again != first
+
+
+# -- side-camera anchors (X3_SIDE_PERSONS) ---------------------------------------------
+def side(sid, x, y, seen):
+    return {'id': sid, 'x': x, 'y': y, 'last_seen': seen}
+
+
+def test_side_anchor_births_and_confirms_without_c3():
+    """A person only a side camera sees (C3 packet stale/absent) still starts a track."""
+    tr = LidarPersonTracker()
+    out = None
+    for i in range(6):
+        t = 10.0 + i * DT
+        out = tr.update(t, [cand(0.0, 2.5)], [], packet_age=float('inf'),
+                        side=[side('left:3', 0.0, 2.5, t - 0.05)])
+    assert len(out) == 1 and out[0]['confirmed'] and out[0]['camera_id'] == 'left:3'
+    assert out[0]['mode'] == 'camera + lidar'
+    assert tr.stats['side_births'] == 1 and tr.stats['side_confirms'] == 5
+    # and without side anchors nothing is born
+    tr2 = LidarPersonTracker()
+    assert run(tr2, [(10.0 + i * DT, [cand(0.0, 2.5)], []) for i in range(6)]) == []
+
+
+def test_side_anchor_does_not_pull_velocity_to_zero():
+    """A walker first seen by C3 (with velocity), then only by the side camera."""
+    tr = LidarPersonTracker()
+    out = None
+    for i in range(30):
+        t = i * DT
+        x = 1.0 + 0.8 * t
+        cm = [cam('a', x, 2.0, t, vx=0.8)] if i < 10 else []
+        sd = [side('left:1', x, 2.0, t)] if i >= 10 else None
+        out = tr.update(t, [cand(x, 2.0)], cm, packet_age=0.0, side=sd)
+    assert len(out) == 1 and out[0]['camera_id'] == 'left:1' and out[0]['camera_ids'] == 2
+    assert out[0]['odom_vx'] == pytest.approx(0.8, abs=0.15)
+
+
+def test_side_anchor_on_a_c3_person_is_dropped_not_a_rival():
+    """Both cameras see one person: the C3 anchor confirms, the side one is deduped."""
+    tr = LidarPersonTracker()
+    out = None
+    for i in range(6):
+        t = i * DT
+        out = tr.update(t, [cand(1.5, 1.5)], [cam('a', 1.5, 1.5, t)], packet_age=0.0,
+                        side=[side('left:2', 1.6, 1.45, t)])
+    assert len(out) == 1 and out[0]['confirmed'] and out[0]['camera_id'] == 'a'
+    assert tr.stats['side_confirms'] == 0 and tr.stats['side_births'] == 0
+
+
+def test_stale_side_anchor_seeds_nothing():
+    tr = LidarPersonTracker()
+    for i in range(6):
+        t = 5.0 + i * DT
+        out = tr.update(t, [cand(0.0, -2.0)], [], packet_age=0.0,
+                        side=[side('right:1', 0.0, -2.0, t - 1.0)])
+    assert out == [] and tr.stats['births'] == 0
+
+
+def test_side_anchor_is_not_snapped_along_the_robot_ray():
+    """With origin given, a side anchor stays on its own body: a nearer candidate on the
+    robot-centre line must not steal it (only C3 anchors are snapped)."""
+    tr = LidarPersonTracker()
+    for i in range(6):
+        t = i * DT
+        out = tr.update(t, [cand(0.0, 1.0), cand(0.0, 2.0)], [], packet_age=0.0,
+                        origin=(0.0, 0.0), side=[side('left:1', 0.0, 2.0, t)])
+    assert len(out) == 1 and out[0]['odom_y'] == pytest.approx(2.0, abs=0.05)
+
+
+def test_two_side_anchors_on_one_body_still_confirm():
+    """Two rays ending on the same body (duplicate boxes / people in line) give one anchor."""
+    tr = LidarPersonTracker()
+    for i in range(6):
+        t = i * DT
+        out = tr.update(t, [cand(0.0, 2.0)], [], packet_age=0.0,
+                        side=[side('left:1', 0.0, 2.0, t), side('left:2', 0.02, 2.01, t)])
+    assert len(out) == 1 and out[0]['confirmed'] and out[0]['camera_id'] == 'left:1'

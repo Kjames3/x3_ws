@@ -55,6 +55,14 @@ REVIVE_M = 0.8
 REVIVE_PREDICT_S = 1.0
 RAY_BEFORE_M = 1.2
 RAY_AFTER_M = 0.5
+# Side-camera anchors (X3_SIDE_PERSONS, update(side=...)): the left/right mono cameras
+# give a bearing; livox_scan_node finds the body on that ray (ray_candidates) and the
+# anchor is that body's XY.  No velocity, so they never pull a track's velocity.  One
+# within SIDE_DEDUP_M of a C3 anchor is dropped: two anchors on one person would be
+# rivals in _unique_pairs and neither would confirm.  For the same reason only the first
+# of several side anchors within SIDE_DEDUP_M of each other is kept (two boxes, or two
+# people in line whose rays both end on the nearer body).
+SIDE_DEDUP_M = 0.5
 
 
 def _finite(*v):
@@ -109,7 +117,7 @@ class _Track:
     def __init__(self, tid, cand, anchor, now):
         self.id = tid
         self.x, self.y = cand['x'], cand['y']
-        self.vx, self.vy = anchor['vx'], anchor['vy']
+        self.vx, self.vy = anchor.get('vx', 0.0), anchor.get('vy', 0.0)
         self.at = now
         self.hits = 1
         self.last_lidar = now
@@ -128,7 +136,8 @@ class LidarPersonTracker:
         self.hold_s = hold_s
         self.next_id = 1
         self.stats = {'frames': 0, 'births': 0, 'revived': 0, 'relinked': 0, 'hold_expired': 0,
-                      'lost_lidar': 0, 'resets': 0, 'lidar_held_s': 0.0}
+                      'lost_lidar': 0, 'resets': 0, 'lidar_held_s': 0.0,
+                      'side_births': 0, 'side_confirms': 0}
         self.clear()
 
     def clear(self):
@@ -158,12 +167,28 @@ class LidarPersonTracker:
                         'vx': vx, 'vy': vy, 'last_seen': last_seen})
         return out
 
+    @staticmethod
+    def _side_anchors(side, now, c3_anchors=()):
+        """Fresh side-camera anchors (dicts id, x, y, last_seen), minus those on a C3 one
+        or on an earlier side one."""
+        out = []
+        for a in side or []:
+            x, y, seen = a.get('x'), a.get('y'), a.get('last_seen')
+            if not _finite(x, y, seen) or now - seen > CAMERA_MAX_AGE_S or seen - now > 0.15:
+                continue
+            if any(math.hypot(x - c['x'], y - c['y']) < SIDE_DEDUP_M for c in list(c3_anchors) + out):
+                continue
+            out.append({'id': str(a.get('id')), 'x': x, 'y': y, 'last_seen': seen, 'side': True})
+        return out
+
     # -- main entry point --------------------------------------------------------
-    def update(self, now, candidates, camera, packet_age=0.0, origin=None):
+    def update(self, now, candidates, camera, packet_age=0.0, origin=None, side=None):
         """now: frame stamp (s).  candidates: dicts with the person_candidates FIELDS
         (odom).  camera: c3_live.get_tracks()[0].  packet_age: C3 stats packet_age_s.
         origin: robot (lidar) XY in odom; given, camera anchors are snapped along their
-        ray (snap_to_ray) before association.  Returns self.results (see _result)."""
+        ray (snap_to_ray) before association.  side: side-camera anchors (dicts id, x,
+        y, last_seen; ids namespaced like 'left:3'), already on a lidar body, so not
+        snapped and not gated on the C3 packet age.  Returns self.results (see _result)."""
         if self.last_stamp is not None:
             dt = now - self.last_stamp
             if dt == 0:
@@ -178,6 +203,8 @@ class LidarPersonTracker:
         anchors = self._anchors(camera, now, packet_age)
         if origin is not None and anchors and cands:
             anchors = snap_to_ray(anchors, cands, origin)
+        if side:
+            anchors = anchors + self._side_anchors(side, now, anchors)
 
         # 1. predict, then tracks <-> clusters
         pred = []
@@ -225,8 +252,11 @@ class LidarPersonTracker:
                 self.stats['relinked'] += 1
                 t.camera_ids.add(a['id'])
             t.camera_id = a['id']
-            t.vx += CAMERA_VEL_GAIN * (a['vx'] - t.vx)
-            t.vy += CAMERA_VEL_GAIN * (a['vy'] - t.vy)
+            if 'vx' in a:
+                t.vx += CAMERA_VEL_GAIN * (a['vx'] - t.vx)
+                t.vy += CAMERA_VEL_GAIN * (a['vy'] - t.vy)
+            if a.get('side'):
+                self.stats['side_confirms'] += 1
         for t in self.tracks:
             s = math.hypot(t.vx, t.vy)
             if s > MAX_SPEED:
@@ -255,6 +285,8 @@ class LidarPersonTracker:
                 t.born = old.born
             self.tracks.append(t)
             self.stats['births'] += 1
+            if free_a[i].get('side'):
+                self.stats['side_births'] += 1
 
         # 4. endings
         alive = []

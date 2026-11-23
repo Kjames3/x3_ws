@@ -13,6 +13,10 @@
 #                        and NMS (>= 0.2), the boxes kept, torso measurements, tracks
 #   c3/c3_depth.bin      the depth frame of each packet (c3_live.read_depth_log)
 #                        (both via /tmp/x3_c3_record; needs c3_live with the recorder)
+#   side/                with X3_SIDE_PERSONS=1: side_rays.ndjson (every side-camera
+#                        detection: boxes, per-camera ids, the rays, pose, extrinsic) and
+#                        every 5th frame per camera as <role>_<stamp>.jpg; the bag then
+#                        also has /side/{left,right}/person_rays + /livox/person_candidates_side
 #   server.log           the x3_server journal for the run
 # Then: python3 src/tools/perception/lidar_person_replay.py <run>/lidar_persons.ndjson
 set -euo pipefail
@@ -50,6 +54,7 @@ echo "recording $secs s into $out ..."
 # stdin from /dev/null: under `timeout` the recorder is a background job (see record_walk.sh).
 timeout -s INT "$secs" ros2 bag record -o "$out/bag" \
     /livox/lidar /livox/person_candidates /livox/person_candidates_seeded /c3/person_seeds /odom /odom_raw /imu/data /scan /tf /tf_static \
+    /side/left/person_rays /side/right/person_rays /livox/person_candidates_side \
     /cmd_vel /cmd_vel_nominal /cmd_vel_safe /pedestrian_states /people/obstacles \
     /tof/upper/obstacles /tof/lower/obstacles \
     < /dev/null > "$out/record.log" 2>&1 || true
@@ -57,6 +62,9 @@ rm -f "$flag" "$c3flag"
 sleep 1.5      # the server closes the files on its next 1 s check
 journalctl -u x3_server --since "$since" --no-pager -o short-precise > "$out/server.log" 2>/dev/null || true
 ros2 bag info "$out/bag" | grep -E "Duration|livox|odom |person_candidates" || true
+if [ -s "$out/side/side_rays.ndjson" ]; then
+    python3 src/tools/perception/side_ray_eval.py "$out" || true
+fi
 if [ -s "$out/lidar_persons.ndjson" ]; then
     python3 src/tools/perception/lidar_person_replay.py "$out/lidar_persons.ndjson"
 else

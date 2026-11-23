@@ -80,9 +80,37 @@ SEED_MIN_UPPER = 8       # upper points the body needs
 SEED_DEPTH_M = 0.3       # keep points within this of the body's range along the ray
 SEED_CORE_M = 0.3        # ... and within this (XY) of its upper-body centre
 SEED_DEDUP_M = 0.5       # no seeded candidate within this of an ordinary one
+# Bearing-only rays (ray_candidates): the side cameras give a direction, not a range.
+RAY_RANGE_M = (0.4, 6.0)  # default search along the ray; the Livox has no points above
+                          # SEED_UPPER_Z_M inside ~0.4 m
+RAY_LAT_PER_M = 0.03      # corridor half-width grows by this per metre (~1.7 deg of bearing)
+RAY_MAX_EXTENT_M = 1.0    # an object whose upper points run longer than this along the
+                          # ray is structure (a wall parallel to the line of sight)
+RAY_SIDE_M = (0.35, 0.65) # lateral band either side of the body, at its depth ...
+RAY_SIDE_DEPTH_M = 0.2    # ... (within this along the ray) ...
+RAY_SIDE_MAX_FRAC = 0.3   # ... may hold at most this share of the body's upper points: a
+                          # wall across the ray carries on sideways, a person does not
+RAY_TOP_TOL_M = 0.2       # body top vs the head height the box top implies (+ per metre:
+RAY_TOP_TOL_PER_M = 0.03  # ~1.7 deg of camera pitch error)
+RAY_TOP_FOV_MARGIN_M = 0.1  # skip that test where the head is above the Livox FOV top
+RAY_BODY_TOP_M = (1.0, 1.95)  # a body's top: seated heads ~1.1-1.25 m; furniture tops out
+                              # ~1.0 m, walls and shelves reach the 2.0 m cut.  The lower
+                              # bound drops to the FOV top (- NEAR_TOP_MARGIN_M) up close.
+RAY_MIN_AREA = 300.0      # n * s^2 (points x m^2), as PEAK_MIN_AREA
+# On the 11-22 runs (side_ray_eval.py, bearing-only C3 rays) these two keep 99.8% of the
+# bodies that match a confirmed track and drop 68% of what rays at person-free bearings
+# of the empty runs picked up.
 
 # Order of the float32 fields of /livox/person_candidates (PointCloud2, frame odom).
 FIELDS = ('x', 'y', 'x_lo', 'x_hi', 'y_lo', 'y_hi', 'z_lo', 'z_hi', 'n')
+# Rays in (ray_candidates input, one row per side-camera person, odom / floor heights):
+# camera centre ox, oy, oz; horizontal unit bearing ux, uy; search window s_lo..s_hi (m
+# along the ray, horizontal); top_tan = tan(elevation) of the box's top edge, NaN when the
+# box touches the image top.
+RAY_IN_FIELDS = ('ox', 'oy', 'oz', 'ux', 'uy', 's_lo', 's_hi', 'top_tan')
+# ray_candidates output: FIELDS of the body found, then the anchor XY (the body, or the
+# ordinary candidate it duplicates) and the index of its ray.
+RAY_OUT_FIELDS = FIELDS + ('ax', 'ay', 'ray')
 
 
 def _label(occ):
@@ -259,6 +287,27 @@ def _peak_split(xs, ys, zs, origin, max_span, min_span, min_points, min_height):
     return out if len(out) >= 2 else []
 
 
+def _cut_body(x, y, z, zok, s, bm, min_points, min_height, min_span, max_span):
+    """The body round the upper-body points bm (mask over zok): every zok point within
+    SEED_CORE_M (XY) of their centre and SEED_DEPTH_M of their median range s along the
+    ray, if that passes extract's size tests.  (row, point indices, centre range) or None."""
+    bi = zok[bm]
+    cx, cy = np.median(x[bi]), np.median(y[bi])
+    rb = float(np.median(s[bm]))
+    keep = ((np.hypot(x[zok] - cx, y[zok] - cy) < SEED_CORE_M)
+            & (np.abs(s - rb) < SEED_DEPTH_M))
+    pi = zok[keep]
+    if len(pi) < min_points:
+        return None
+    px, py, pz = x[pi], y[pi], z[pi]
+    span = max(px.max() - px.min(), py.max() - py.min())
+    if span < min_span or span > max_span or pz.max() - pz.min() < min_height:
+        return None
+    row = (np.median(px), np.median(py), px.min(), px.max(), py.min(), py.max(),
+           pz.min(), pz.max(), len(pi))
+    return row, pi, rb
+
+
 def seeded_candidates(x, y, z, seeds, origin=(0.0, 0.0), existing=None, min_points=MIN_POINTS,
                       min_height=MIN_HEIGHT_M, min_span=MIN_SPAN_M, max_span=MAX_SPAN_M,
                       return_points=False):
@@ -312,23 +361,12 @@ def seeded_candidates(x, y, z, seeds, origin=(0.0, 0.0), existing=None, min_poin
         if body is None:
             status.append(('none', -1))
             continue
-        bm = up & (s >= body[0]) & (s <= body[1])
-        bi = zok[bm]
-        cx, cy = np.median(x[bi]), np.median(y[bi])
-        rb = float(np.median(s[bm]))
-        keep = ((np.hypot(x[zok] - cx, y[zok] - cy) < SEED_CORE_M)
-                & (np.abs(s - rb) < SEED_DEPTH_M))
-        pi = zok[keep]
-        if len(pi) < min_points:
+        cut = _cut_body(x, y, z, zok, s, up & (s >= body[0]) & (s <= body[1]),
+                        min_points, min_height, min_span, max_span)
+        if cut is None:
             status.append(('none', -1))
             continue
-        px, py, pz = x[pi], y[pi], z[pi]
-        span = max(px.max() - px.min(), py.max() - py.min())
-        if span < min_span or span > max_span or pz.max() - pz.min() < min_height:
-            status.append(('none', -1))
-            continue
-        row = (np.median(px), np.median(py), px.min(), px.max(), py.min(), py.max(),
-               pz.min(), pz.max(), len(pi))
+        row, pi = cut[0], cut[1]
         if len(ex):
             d = np.hypot(ex[:, 0] - row[0], ex[:, 1] - row[1])
             if d.min() < SEED_DEDUP_M:
@@ -345,6 +383,100 @@ def seeded_candidates(x, y, z, seeds, origin=(0.0, 0.0), existing=None, min_poin
         idx.append(pi)
     out = (np.asarray(rows, dtype=np.float32).reshape(-1, len(FIELDS)))
     return (out, idx, status) if return_points else out
+
+
+def ray_candidates(x, y, z, rays, existing=None, min_points=MIN_POINTS,
+                   min_height=MIN_HEIGHT_M, min_span=MIN_SPAN_M, max_span=MAX_SPAN_M,
+                   return_status=False):
+    """Bodies found along bearing-only camera rays (the side cameras: no range).
+
+    rays: (R, 8) RAY_IN_FIELDS rows (odom XY, heights above the floor, like x/y/z).
+    Unlike seeded_candidates the anchor here is the lidar body itself, so a wrong pick
+    is a wrong person: the search has to reject structure on its own.  Along each ray,
+    within a corridor of SEED_LAT_M (+ RAY_LAT_PER_M per metre) and s_lo..s_hi, the
+    points above SEED_UPPER_Z_M are cut into objects along the ray (gaps > SEED_GAP_M)
+    and tried NEAREST first; the first that passes is the body:
+
+      * the object's upper points run at most RAY_MAX_EXTENT_M along the ray (a wall
+        parallel to the line of sight does not);
+      * the seeded cut (_cut_body: SEED_CORE_M disc, SEED_DEPTH_M slab) passes
+        extract's size tests, tops out within RAY_BODY_TOP_M (lower near the robot, where
+        the Livox FOV cuts the head off) and has RAY_MIN_AREA worth of points;
+      * the lateral bands RAY_SIDE_M either side of the body, at its depth, hold at most
+        RAY_SIDE_MAX_FRAC of its upper points (a wall across the ray continues sideways);
+      * where the box top is in the image (top_tan finite) and the head would be inside
+        the Livox's FOV at that range, the body's top is within RAY_TOP_TOL_M (+ per
+        metre) of the head height the box implies, oz + s * top_tan.  The cameras sit
+        ~0.2 m off the floor, so anything nearer than the person that the camera sees
+        past lies below that line; this rejects such an object (a chair back, a bench)
+        unless its top comes within the tolerance of the line.
+
+    existing: ordinary candidates (extract rows); a body within SEED_DEDUP_M of one is
+    anchored to that candidate's XY instead.  Returns an (N, 12) float32 array of
+    RAY_OUT_FIELDS (N <= R; rays with no body give no row).  With return_status, also one
+    status per ray: 'ok', 'dup' (anchored to an existing candidate) or 'none'."""
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    z = np.asarray(z, dtype=np.float64)
+    rays = np.asarray(rays, dtype=np.float64).reshape(-1, len(RAY_IN_FIELDS))
+    ex = np.zeros((0, 2)) if existing is None or not len(existing) else np.asarray(existing)[:, :2]
+    zok = np.flatnonzero((z > SEED_Z_M[0]) & (z < SEED_Z_M[1]) & np.isfinite(x) & np.isfinite(y))
+    rows, status = [], []
+    for k, (ox, oy, oz, ux, uy, s_lo, s_hi, top_tan) in enumerate(rays):
+        found = None
+        nrm = float(np.hypot(ux, uy))
+        if len(zok) and nrm > 1e-6 and np.isfinite([ox, oy, s_lo, s_hi]).all():
+            ux, uy = ux / nrm, uy / nrm
+            dx, dy = x[zok] - ox, y[zok] - oy
+            s = dx * ux + dy * uy
+            lat = -dx * uy + dy * ux
+            up_all = z[zok] > SEED_UPPER_Z_M
+            cor = ((np.abs(lat) < SEED_LAT_M + RAY_LAT_PER_M * np.maximum(s, 0.0))
+                   & (s > max(s_lo, 0.0)) & (s < s_hi))
+            up = cor & up_all
+            su = np.sort(s[up])
+            if len(su) >= SEED_MIN_UPPER:
+                cuts = np.flatnonzero(np.diff(su) > SEED_GAP_M) + 1
+                for a, b in zip(np.r_[0, cuts], np.r_[cuts, len(su)]):
+                    if b - a < SEED_MIN_UPPER or su[b - 1] - su[a] > RAY_MAX_EXTENT_M:
+                        continue
+                    bm = up & (s >= su[a]) & (s <= su[b - 1])
+                    cut = _cut_body(x, y, z, zok, s, bm, min_points, min_height,
+                                    min_span, max_span)
+                    if cut is None:
+                        continue
+                    row, pi, rb = cut
+                    fov_top = SENSOR_Z_M + rb * FOV_TOP_TAN - NEAR_TOP_MARGIN_M
+                    if (row[7] > RAY_BODY_TOP_M[1] or row[7] < min(RAY_BODY_TOP_M[0], fov_top)
+                            or row[8] * rb * rb < RAY_MIN_AREA):
+                        continue
+                    lb = float(np.median(lat[bm]))
+                    core_up = int(np.count_nonzero(z[pi] > SEED_UPPER_Z_M))
+                    side = (up_all & (np.abs(s - rb) < RAY_SIDE_DEPTH_M)
+                            & (np.abs(lat - lb) > RAY_SIDE_M[0]) & (np.abs(lat - lb) < RAY_SIDE_M[1]))
+                    if np.count_nonzero(side) > RAY_SIDE_MAX_FRAC * max(core_up, SEED_MIN_UPPER):
+                        continue
+                    if np.isfinite(top_tan) and np.isfinite(oz):
+                        head = oz + rb * top_tan
+                        if head < SENSOR_Z_M + rb * FOV_TOP_TAN - RAY_TOP_FOV_MARGIN_M:
+                            if abs(row[7] - head) > RAY_TOP_TOL_M + RAY_TOP_TOL_PER_M * rb:
+                                continue
+                    found = row
+                    break
+        if found is None:
+            status.append('none')
+            continue
+        ax, ay = found[0], found[1]
+        st = 'ok'
+        if len(ex):
+            d = np.hypot(ex[:, 0] - ax, ex[:, 1] - ay)
+            if d.min() < SEED_DEDUP_M:
+                ax, ay = ex[d.argmin(), 0], ex[d.argmin(), 1]
+                st = 'dup'
+        status.append(st)
+        rows.append(tuple(found) + (ax, ay, k))
+    out = np.asarray(rows, dtype=np.float32).reshape(-1, len(RAY_OUT_FIELDS))
+    return (out, status) if return_status else out
 
 
 def extract(x, y, z, origin=(0.0, 0.0), cell=CELL_M, z_min=Z_MIN_M, z_max=Z_MAX_M,
