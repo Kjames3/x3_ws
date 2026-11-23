@@ -45,7 +45,7 @@ from yahboomcar_bringup.person_candidates import (FIELDS as CANDIDATE_FIELDS, ex
                                                   seeded_candidates, ray_candidates, RAY_IN_FIELDS)
 
 # Side cameras (X3_SIDE_PERSONS in x3_server): role -> index in server_x3.CAMERA_ROLES.
-SIDE_CAMERAS = (('left', 2), ('right', 3))
+SIDE_CAMERAS = (('left', 2), ('right', 3), ('rear', 1))  # rear: X3_REAR_PERSONS
 SIDE_RAY_MAX_AGE_S = 0.3
 # /livox/person_candidates_side rows: the body's CANDIDATE_FIELDS, the anchor XY (the body,
 # or the ordinary candidate it duplicates), the camera index, its per-camera person id and

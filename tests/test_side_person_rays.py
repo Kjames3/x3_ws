@@ -133,3 +133,19 @@ def test_side_track_ids():
     assert out[0][0] == 2 and out[0][2]
     out = tr.update([(105, 100, 205, 400)], 1.0)                     # id 1 unseen 0.8 s: expired
     assert out[0][0] == 3 and not out[0][2]
+
+
+def test_rear_pinhole_camera_rays_point_backwards():
+    """The rear OAK uses the rational (non-fisheye) model and looks behind the robot."""
+    import numpy as np
+    import side_person_rays as spr
+    cam = spr.load_camera('rear')
+    assert cam['D'].shape == (14,) and cam['wh'] == (1280, 720)
+    d = spr.pixel_dirs(cam['K'], cam['D'], [(640, 360), (0, 360), (1279, 360)])
+    yaw = np.degrees(np.arctan2(d[:, 0], d[:, 2]))
+    assert abs(yaw[0]) < 2 and 40 < -yaw[1] < 55 and 40 < yaw[2] < 55
+    R_bl, t_bl = np.eye(3), np.zeros(3)
+    R, t = R_bl @ cam['R_lc'], cam['t_lc']
+    ray = spr.detection_ray((600, 200, 680, 600), (1280, 720), cam['K'], cam['D'], R, t,
+                            {'x': 0.0, 'y': 0.0, 'theta': 0.0})
+    assert ray is not None and ray['ux'] < -0.95     # centre of the image = behind (-x)

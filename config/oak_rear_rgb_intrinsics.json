@@ -1,0 +1,40 @@
+{
+ "notes": "Rear OAK-D Pro W RGB (CAM_A, 14442C103181D7D600) at 1280x720 (full 16:9 field of the 3840x2160 EEPROM entry, /3). Rational distortion (OpenCV 14-coef) from the EEPROM. fx/fy x0.958: the 2026-11-23 TV ChArUco solve gave fx 1094.6 at 1920x1080 against the EEPROM's 1142.4 (40 views, 0.34 px), matching the front unit's EEPROM fx being ~5% high. Used by side_person_rays for rear person bearings.",
+ "pinhole": {
+  "K": [
+   [
+    729.5819425455728,
+    0,
+    647.8562418619791
+   ],
+   [
+    0,
+    729.0715237630208,
+    364.2589925130208
+   ],
+   [
+    0,
+    0,
+    1
+   ]
+  ],
+  "D": [
+   11.713120460510254,
+   6.956235408782959,
+   0.0006406876491382718,
+   -0.0003644858079496771,
+   -2.6257388591766357,
+   11.707921981811523,
+   10.450398445129395,
+   -2.8145837783813477,
+   0.0,
+   0.0,
+   0.0,
+   0.0,
+   -0.0009280565427616239,
+   -0.004476451780647039
+  ],
+  "width": 1280,
+  "height": 720
+ }
+}

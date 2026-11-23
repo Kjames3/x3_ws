@@ -441,6 +441,11 @@ SEEDED_TRACKER = LIDAR_PERSONS_ENABLED and os.environ.get('X3_SEEDED_TRACKER', '
 # (ids 'left:<n>' / 'right:<n>'), so a person only a side camera sees can start a track.
 # Off by default; not yet tested live (2026-11-22).
 SIDE_PERSONS = LIDAR_PERSONS_ENABLED and os.environ.get('X3_SIDE_PERSONS', '0') == '1'
+# X3_REAR_PERSONS=1 (needs X3_SIDE_PERSONS and X3_REAR_OAK_ID): the rear OAK's RGB joins the
+# same ray path as role 'rear' (anchors 'rear:<n>'), detected on the GPU like the sides;
+# its stereo depth is not used yet (the lidar finds the body along the ray).
+REAR_PERSONS = SIDE_PERSONS and os.environ.get('X3_REAR_PERSONS', '0') == '1'
+REAR_DETECT_WH = (1280, 720)   # == config/oak_rear_rgb_intrinsics.json
 SIDE_PERSON_HZ = 5.0       # detections per camera per second
 SIDE_PERSON_CONF = 0.4     # person box confidence (the GUI overlay uses 0.25)
 SIDE_FRAME_MAX_AGE_S = 0.3
@@ -1126,7 +1131,8 @@ class ROS2Bridge:
                                            self._seeded_candidates_cb, qos_profile_sensor_data)
             if SIDE_PERSONS:
                 self._side_ray_pubs = {r: self._node.create_publisher(
-                    PointCloud2, f'/side/{r}/person_rays', 5) for r in ('left', 'right')}
+                    PointCloud2, f'/side/{r}/person_rays', 5)
+                    for r in ('left', 'right') + (('rear',) if REAR_PERSONS else ())}
                 self._node.create_subscription(PointCloud2, '/livox/person_candidates_side',
                                                self._side_candidates_cb, qos_profile_sensor_data)
         self._side = {'stamp': None, 'rows': None, 'fields': None}
@@ -4966,11 +4972,19 @@ def _rear_preview(device_id, stop, latest):
                                            type=dai.ImgFrame.Type.BGR888p,
                                            fps=STREAM_PROFILES[profile]['fps'])
                 queue = stream.createOutputQueue(maxSize=1, blocking=False)
+                det_q = None
+                if REAR_PERSONS:   # full 16:9 field for rear people (side_person_rays 'rear')
+                    det_q = cam.requestOutput(REAR_DETECT_WH, type=dai.ImgFrame.Type.BGR888i,
+                                              fps=SIDE_PERSON_HZ * 2).createOutputQueue(maxSize=1, blocking=False)
                 pipeline.start()
                 while not stop.wait(0.02) and stream_profile == profile:
                     packet = queue.tryGet()
                     if packet is not None:
                         latest[0] = packet.getCvFrame()
+                    if det_q is not None:
+                        p = det_q.tryGet()
+                        if p is not None:   # depthai timestamps are host CLOCK_MONOTONIC
+                            _side_frames['rear'] = (p.getCvFrame(), p.getTimestamp().total_seconds())
         except Exception as exc:
             logger.warning("Rear OAK preview unavailable: %s", exc)
         latest[0] = None
@@ -5147,7 +5161,7 @@ async def side_person_loop():
     if det is None:
         return
     cams = {}
-    for role in ('left', 'right'):
+    for role in ('left', 'right') + (('rear',) if REAR_PERSONS and os.environ.get('X3_REAR_OAK_ID') else ()):
         try:
             cams[role] = spr.load_camera(role)
         except Exception as e:
@@ -5180,8 +5194,8 @@ async def side_person_loop():
                 continue
             due[role] = now + 1.0 / SIDE_PERSON_HZ
             try:
-                if role == 'left':
-                    got = _side_frames.get('left')
+                if role in ('left', 'rear'):
+                    got = _side_frames.get(role)
                 elif camera is not None:
                     got = camera.get_frame_stamped()
                 else:

@@ -42,6 +42,10 @@ CAMERAS = {
              'frame': 'left_cam_optical_frame'},
     'right': {'intrinsics': ROOT / 'config' / 'arducam_uc844_intrinsics.json',
               'frame': 'arducam_optical_frame'},
+    # Rear OAK RGB: OpenCV rational (pinhole) model, not fisheye; pixel_dirs picks the
+    # model from the number of distortion coefficients (4 = fisheye).
+    'rear': {'intrinsics': ROOT / 'config' / 'oak_rear_rgb_intrinsics.json',
+             'frame': 'oak_rear_rgb_camera_optical_frame', 'model': 'pinhole'},
 }
 RANGE_M = (0.4, 6.0)          # == person_candidates.RAY_RANGE_M
 EDGE_PX = 3                   # a box edge this close to the image edge is cut off
@@ -62,12 +66,14 @@ def quat_to_R(qx, qy, qz, qw):
 
 
 def load_camera(role, extrinsics_path=EXTRINSICS):
-    """{'K', 'D', 'wh' (calibration size), 'frame', 'R_lc', 't_lc'} for 'left' / 'right'.
+    """{'K', 'D', 'wh' (calibration size), 'frame', 'R_lc', 't_lc'} for 'left' / 'right' / 'rear'.
     R_lc, t_lc: the optical frame in livox_frame (p_lidar = R p_cam + t)."""
     spec = CAMERAS[role]
-    fe = json.loads(pathlib.Path(spec['intrinsics']).read_text())['fisheye']
+    model = spec.get('model', 'fisheye')
+    fe = json.loads(pathlib.Path(spec['intrinsics']).read_text())[model]
     v = json.loads(pathlib.Path(extrinsics_path).read_text())[role]['T_lidar_camera']
-    return {'K': np.array(fe['K'], dtype=np.float64), 'D': np.array(fe['D'], dtype=np.float64).reshape(4),
+    D = np.array(fe['D'], dtype=np.float64).ravel()
+    return {'K': np.array(fe['K'], dtype=np.float64), 'D': D.reshape(4) if model == 'fisheye' else D,
             'wh': (int(fe['width']), int(fe['height'])), 'frame': spec['frame'],
             'R_lc': quat_to_R(*v[3:7]), 't_lc': np.array(v[:3], dtype=np.float64)}
 
@@ -87,7 +93,12 @@ def pixel_dirs(K, D, uv):
     """(N, 2) pixels -> (N, 3) unit directions in the optical frame (x right, y down, z fwd)."""
     import cv2
     uv = np.asarray(uv, dtype=np.float64).reshape(-1, 1, 2)
-    xy = cv2.fisheye.undistortPoints(uv, np.asarray(K, np.float64), np.asarray(D, np.float64)).reshape(-1, 2)
+    D = np.asarray(D, np.float64).ravel()
+    if len(D) == 4:
+        xy = cv2.fisheye.undistortPoints(uv, np.asarray(K, np.float64), D).reshape(-1, 2)
+    else:   # OpenCV pinhole/rational (OAK EEPROM, 14 coefficients)
+        xy = cv2.undistortPointsIter(uv, np.asarray(K, np.float64), D, None, None,
+                                     (cv2.TERM_CRITERIA_COUNT | cv2.TERM_CRITERIA_EPS, 40, 1e-8)).reshape(-1, 2)
     d = np.c_[xy, np.ones(len(xy))]
     return d / np.linalg.norm(d, axis=1, keepdims=True)
 
