@@ -46,7 +46,11 @@ from yahboomcar_bringup.person_candidates import (FIELDS as CANDIDATE_FIELDS, ex
 
 # Side cameras (X3_SIDE_PERSONS in x3_server): role -> index in server_x3.CAMERA_ROLES.
 SIDE_CAMERAS = (('left', 2), ('right', 3), ('rear', 1))  # rear: X3_REAR_PERSONS
-SIDE_RAY_MAX_AGE_S = 0.3
+# A ray is searched on every Livox frame (10 Hz) until it is this old.  The cameras detect at
+# 3-5 Hz, so 0.3 s left frames with no ray; a body only the ray finds (crouched among
+# furniture, 2026-11-23 rear test) then missed the tracker's 0.4 s lidar gap and was reborn
+# under a new id every ~2 s.  The body XY still comes from the current frame.
+SIDE_RAY_MAX_AGE_S = 0.6
 # /livox/person_candidates_side rows: the body's CANDIDATE_FIELDS, the anchor XY (the body,
 # or the ordinary candidate it duplicates), the camera index, its per-camera person id and
 # the image age at this frame's end (s).
