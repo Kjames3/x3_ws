@@ -5,6 +5,26 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-22 — Line-of-sight tracker, live lab runs (X3_SEEDED_TRACKER=1)
+
+**Problem:** do the seeded candidates and ray association hold up live over minutes, and do they add false tracks?
+
+**Work done:** recorded `seededlive-desk-r1` (300 s: working, leaning, turning, standing up once), `seededlive-walk-r1` (120 s: crossings at 1.5/3 m, close approach, partial occlusion, sitting at the end) and `seededlive-empty-r1` (90 s, user left at the start). Analysed the live tracker output in `lidar_persons.ndjson`.
+
+**Results:**
+
+| run | camera frames | confirmed track | confirmed ids | longest id |
+|---|---|---|---|---|
+| desk | 2665 | **98.2%** | 15 | 196 s (then 45 s, 18 s) |
+| walk | 857 | **95.2%** (shadow walk earlier: 77%) | 15 | 21 s |
+| empty | 14 (user leaving) | 1 frame, at t≈0 while leaving | 1 | 0 s |
+
+- **Desk:** three ids cover ~258 of the 300 s; the other 12 lasted under 3 s. Most uncovered frames cluster at t≈18–30 s.
+- **Walk:** ids churn: 15 in 2 min, longest 21 s.
+- **Empty:** no false tracks after the user left.
+- 29 frames per run had two confirmed tracks at once (a duplicate or a second object).
+- **Next:** id continuity on walks (relink after a loss) and the short-lived extra ids; then consider X3_LIDAR_PERSONS_CBF.
+
 ## 2026-11-22 — Line-of-sight tracker: first live check at the lab desk
 
 **Problem:** confirm live that a seated desk user keeps a lidar track with X3_SEEDED_TRACKER=1.
