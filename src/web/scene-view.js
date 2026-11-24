@@ -270,6 +270,17 @@
         scene.add(envelope, travelEnvelope, gapLine);
     }
 
+    const REALITY_OLD = new THREE.Color();
+    const REALITY_CLASS = { wall: 1.2, furniture: 0.25 };   // column-top thresholds (m)
+    function realityVoxelColor(color, z, top) {
+        if (top >= REALITY_CLASS.wall) {
+            // Structure: dark slate body, cyan within 12 cm of the column top.
+            color.setHex(top - z < .12 ? 0x67d4f5 : 0x2a3e54);
+            color.offsetHSL(0, 0, Math.min(.12, z * .04));
+        } else if (top >= REALITY_CLASS.furniture) {
+            color.setHex(top - z < .08 ? 0xd7e3f0 : 0x7f93aa);       // furniture, lit top
+        } else color.setHex(0xf59e0b);                              // low: trip hazard
+    }
     function updateCloud(d, now) {
         const enabled = document.getElementById('surroundings-cloud-toggle').checked && !oakOnlyEnvironment();
         const hideCeiling = document.getElementById('surroundings-ceiling-toggle').checked;
@@ -296,9 +307,9 @@
         const useMemory = memoryEnabled && pose && memoryCloud === d.surroundingsCloud;
         // Reality view with map walls: drop voxels the map already explains.
         const mapFilter = realityOn && reality && reality.mapActive ? reality.isKnownWall : null;
-        const options = `${mode}/${voxelSize}/${overlay}/${height}/${useMemory}/${coverage}/${surroundingsMemory.revision}/${mapFilter ? reality.mapKey : -1}`;
+        const options = `${mode}/${voxelSize}/${overlay}/${height}/${useMemory}/${coverage}/${surroundingsMemory.revision}/${mapFilter ? reality.mapKey : -1}/${realityOn}`;
         floorTiles.visible = !!fresh && coverage && !!useMemory;
-        floorBase.material.color.setHex(coverage ? 0xd6d9de : 0xf8f9fa);
+        if (!realityOn) floorBase.material.color.setHex(coverage ? 0xd6d9de : 0xf8f9fa);
         cloud.visible = !!fresh && mode === 'raw';
         voxels.visible = !!fresh && mode === 'clean';
         envelope.visible = travelEnvelope.visible = !!fresh && overlay;
@@ -340,6 +351,15 @@
                 : (snapshot ? snapshot.cells : SurroundingsMemory.voxelize(xyz, voxelSize));
             const matrix = new THREE.Matrix4();
             let count = 0;
+            // Reality view classes each voxel by its column's top (20 cm floor cells):
+            // tall = structure (walls, doors, shelves), mid = furniture, low = trip hazard.
+            const columnTop = new Map();
+            const colKey = c => `${Math.floor(c.x / .2)},${Math.floor(c.y / .2)}`;
+            if (realityOn) for (const c of displayCells) {
+                if (hideCeiling && c.z > 2) continue;
+                const k = colKey(c), top = columnTop.get(k);
+                if (top === undefined || c.z > top) columnTop.set(k, c.z);
+            }
             for (const c of displayCells) {
                 if (count >= VOXEL_CAP) break;
                 const size = c.s || voxelSize;
@@ -350,8 +370,9 @@
                 voxels.setMatrixAt(count, matrix);
                 const risk = !useMemory || c.age < .4 ? riskCells.get(`${Math.floor(c.x / .1)},${Math.floor(c.y / .1)},${Math.floor(c.z / .1)}`) : 0;
                 if (overlay && risk) color.setHex(risk === 2 ? 0xef4444 : 0xf59e0b);
+                else if (realityOn) realityVoxelColor(color, c.z, columnTop.get(colKey(c)) ?? c.z);
                 else color.setHSL((.60 - Math.min(3, Math.max(0, c.z)) * .25 + 1) % 1, .45, .62);
-                if (useMemory && (c.age > .5 || !c.confidence)) color.lerp(new THREE.Color(0xcbd0d7), c.confidence ? Math.min(.85, .35 + c.age / 10) : .8);
+                if (useMemory && (c.age > .5 || !c.confidence)) color.lerp(REALITY_OLD.set(realityOn ? 0x1b2530 : 0xcbd0d7), c.confidence ? Math.min(.85, .35 + c.age / 10) : .8);
                 voxels.geometry.attributes.memoryOpacity.array[count] = useMemory
                     ? (c.confidence ? .95 * Math.min(1, Math.max(0, (8 - c.age) / 3)) : .18) : 1;
                 voxels.setColorAt(count++, color);
@@ -367,7 +388,7 @@
                     matrix.copy(floorRotation);
                     matrix.setPosition(-tile.y, .008, -tile.x);
                     floorTiles.setMatrixAt(n, matrix);
-                    color.setHex(tile.age < .6 ? 0x93c5fd : 0xb6bcc7);
+                    color.setHex(realityOn ? (tile.age < .6 ? 0x173650 : 0x161d26) : tile.age < .6 ? 0x93c5fd : 0xb6bcc7);
                     floorTiles.setColorAt(n++, color);
                 }
                 floorTiles.count = n; floorTiles.instanceMatrix.needsUpdate = true;
@@ -480,7 +501,7 @@
         initPersonCloud();
         fadeOccluders(panels.material); fadeOccluders(posts.material);
         if (window.RealityMode) reality = RealityMode.create(THREE, scene, renderer,
-            { floor, rings: ringMats, tinted: [panels.material, posts.material, voxels.material] });
+            { floor, rings: ringMats, tinted: [panels.material, posts.material] });
         restoreOptions();
         document.getElementById('surroundings-memory-reset').addEventListener('click', () => { memoryReset = true; personCloudTracker.clear(); associatedCloud = null; });
 
@@ -1264,8 +1285,8 @@
                 persons.push({ x: p.group.position.x, z: p.group.position.z,
                                sx: p.vel ? p.vel.sx : 0, sz: p.vel ? p.vel.sz : 0 });
             }
-            const mapWallsToggle = document.getElementById('surroundings-reality-mapwalls');
-            reality.update(realityOn, d, state.nav, now, persons, !mapWallsToggle || mapWallsToggle.checked);
+            const mapWallsToggle = document.getElementById('surroundings-reality-mapcheck');
+            reality.update(realityOn, d, state.nav, now, persons, !!(mapWallsToggle && mapWallsToggle.checked));
         }
         if (hint) {
             const msgs = [];
