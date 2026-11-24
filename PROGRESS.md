@@ -5,6 +5,23 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-23 (evening, lab) — GUI lag: Tailscale robot→laptop throttled by eno1 UDP segmentation offload
+
+**Problem.** In the lab the GUI lagged: every camera feed arrived at ~1.4 fps (low profile) while telemetry kept ~15 Hz. The question was whether the Slate's USB power was the cause.
+
+**Potential solution.** Measure each hop separately rather than swapping hardware.
+
+**Work done.**
+- Laptop on Slate 5 GHz (-53 dBm, 720 Mb/s PHY), ping to the robot 3–4 ms, no loss. Robot not CPU-starved (py-spy: GIL ~43% held, executor threads idle).
+- Bulk transfer robot→laptop: plain LAN (192.168.1.50) **227 Mb/s**, raw UDP 73.5 Mb/s with zero loss, but over Tailscale (`orin`, direct path 192.168.1.50:41641) only **2–4 Mb/s**. Laptop→robot over Tailscale was 190 Mb/s. Restarting `tailscaled` on the robot did not help.
+- The Orin's `eno1` had `tx-udp-segmentation: on`, and Tailscale sends WireGuard with UDP GSO. Ran `ethtool -K eno1 tx-udp-segmentation off` (runtime only).
+
+**Results.**
+- Robot→laptop over Tailscale 2–4 → **152 Mb/s**; GUI feeds 1.4 → 14–16 fps on all four cameras; Livox unaffected (`/scan` 9.6 Hz, `/imu/data` 202 Hz).
+- Not the router's power: the Slate carried 227 Mb/s TCP and lossless UDP throughout.
+- Why it worked the night before with the same setting is unexplained.
+- The fix is **not persistent** yet (lost on reboot).
+
 ## 2026-11-23 — Surroundings view: avatars for people the front camera can't see
 
 **Problem.** Surroundings avatars came only from the front camera's C3 tracks, so a person behind or beside the robot showed only as a ring.
