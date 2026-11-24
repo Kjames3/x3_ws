@@ -13,8 +13,11 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
   horizontal field ~87° (-47.5° to +39.7° at mid-height), was ~60° (800b510).
 - Gap: the board never reached the far left 185 px of the image (beyond -34°), so
   distortion there is extrapolated.
-- Deployed; x3_server restarted. Still to check: the left-camera ray lands on the person's
-  lidar cluster (the mount angle may have shifted with the lens swap).
+- Deployed; x3_server restarted. Alignment checked live (apartment, `left-check-r1`): left
+  ray vs the person's confirmed lidar track, centre of the image -0.35° (median of 134),
+  front-left at 2.4 m 64.5° vs 63.5° (~1°). Larger offsets only with the person <= 1.4 m and
+  the box cut off by the image edge (the box centre moves inward), not a calibration error.
+  No mount-angle correction needed.
 
 ## 2026-11-23 (night) — GUI: right camera at full resolution; robot boots in HQ
 
