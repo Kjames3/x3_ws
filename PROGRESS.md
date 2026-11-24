@@ -5,6 +5,17 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-24 — Left camera recalibrated for the new lens
+
+- 35 checkerboard views (`~/calib/left_views_newlens` on the robot). The tool's all-views fit
+  was 1.61 px: 5 views at 2.8–5.2 px each (board cut off at the frame edge), the other 30
+  at <= 0.25 px. Without those 5: **0.13 px**, fx 891 (old lens ~1120), cx 691, cy 381;
+  horizontal field ~87° (-47.5° to +39.7° at mid-height), was ~60° (800b510).
+- Gap: the board never reached the far left 185 px of the image (beyond -34°), so
+  distortion there is extrapolated.
+- Deployed; x3_server restarted. Still to check: the left-camera ray lands on the person's
+  lidar cluster (the mount angle may have shifted with the lens swap).
+
 ## 2026-11-23 (night) — GUI: right camera at full resolution; robot boots in HQ
 
 - The GUI was in the boot-default `low` profile (JPEG quality 70, primary 384x240). The
