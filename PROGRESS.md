@@ -5,6 +5,13 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-23 (night) — eno1 UDP offload fix made persistent
+
+- `deploy/systemd/x3_eno1_offload.service` (oneshot, bound to the eno1 device) runs
+  `ethtool -K eno1 tx-udp-segmentation off` at boot; added to `install_service.sh`.
+- Installed and enabled on the robot. Tested by turning the offload back on and restarting
+  the unit: it went off again. Not yet checked across a real power-off.
+
 ## 2026-11-23 (night) — No duplicate tracks from a camera id a track already owns
 
 - Pattern (replay of all 24 recorded tracker runs): a front-camera (C3) id already on a
