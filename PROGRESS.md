@@ -5,6 +5,19 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-24 — Reality view: merge stacked wall panels, reject blob lines
+
+- **Problem:** live run: 2–3 parallel panels 20–40 cm apart for one wall; a panel cutting
+  diagonally through a dense furniture area.
+- **Work done:** parallel panels within 5°, 40 cm offset and 30 cm end gap merge into one;
+  a panel needs a mostly empty strip (<= 50% tall columns, 25–55 cm out) on at least one
+  side, so lines inside dense blobs drop; off-grid lines dropped entirely; the square grid
+  is seeded from the strongest single wall and refined from walls within 8° (one clutter
+  line had tilted every wall 3–8°).
+- **Results:** synthetic thick wall + dense tall blob, 60 seeds: one panel for the thick
+  wall 60/60 (was 5/30), no panel inside the blob 57/60, worst tilt 1.5° (was 10°); rotated
+  apartment 5.0 panels/room, worst 1.0°; chair room 30/30. Not yet re-checked live.
+
 ## 2026-11-24 — Reality view: wall panel fixes (diagonals, height)
 
 - **Problem:** live apartment run showed diagonal panels cutting across rooms and 2 m

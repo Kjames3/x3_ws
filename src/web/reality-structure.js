@@ -22,8 +22,10 @@
     const MAX_SEGS = 14;
     const MIN_FILL = 0.55;         // occupied columns / columns a full wall of that length has
     const SNAP_DEG = 15;           // snap to the room's square grid within this
-    const OFFGRID_MIN_FILL = 0.8;  // an off-grid wall must be this solid ...
-    const OFFGRID_MIN_LEN = 1.2;   // ... and this long, or it is dropped
+    const MERGE_OFFSET = 0.4;      // parallel panels closer than this merge ...
+    const MERGE_GAP = 0.3;         // ... when their extents overlap or nearly touch
+    const SIDE_OFFSET = [0.25, 0.55];  // strip each side of a wall (m) ...
+    const SIDE_MAX_FILL = 0.5;     // ... at least one must be this empty (else: inside a blob)
     const OBJ_RADIUS = 0.9;        // voxels considered for a detection (m)
     const OBJ_HOLD_S = 3.0;
     const OBJ_SMOOTH = 0.3;
@@ -115,12 +117,26 @@
         }
         // Square-grid snap: dominant direction mod 90 deg from the length-weighted
         // mean of 4*angle; walls within SNAP_DEG rotate onto it about their midpoint.
-        let cx = 0, cy = 0;
+        // Re-estimated twice from walls within 8 deg of the previous estimate,
+        // so one clutter line cannot tilt the whole grid. Weight = length * fill^2.
+        // Seeded from the strongest single wall (longest x fill^2).
+        let dom = null, bestW = 0;
         for (const g of segs) {
-            const a = Math.atan2(g.y1 - g.y0, g.x1 - g.x0), L = Math.hypot(g.x1 - g.x0, g.y1 - g.y0);
-            cx += L * Math.cos(4 * a); cy += L * Math.sin(4 * a);
+            const wgt = Math.hypot(g.x1 - g.x0, g.y1 - g.y0) * g.fill * g.fill;
+            if (wgt > bestW) { bestW = wgt; dom = Math.atan2(g.y1 - g.y0, g.x1 - g.x0); }
         }
-        const dom = Math.atan2(cy, cx) / 4, out = [];
+        for (let pass = 0; pass < 2; pass++) {
+            let cx = 0, cy = 0;
+            for (const g of segs) {
+                const a = Math.atan2(g.y1 - g.y0, g.x1 - g.x0), L = Math.hypot(g.x1 - g.x0, g.y1 - g.y0);
+                if (dom !== null && Math.abs(Math.atan2(Math.sin(4 * (a - dom)), Math.cos(4 * (a - dom))) / 4) > 8 * Math.PI / 180) continue;
+                const wgt = L * g.fill * g.fill;
+                cx += wgt * Math.cos(4 * a); cy += wgt * Math.sin(4 * a);
+            }
+            if (cx || cy) dom = Math.atan2(cy, cx) / 4;
+        }
+        if (dom === null) dom = 0;
+        const out = [];
         for (const g of segs) {
             const a = Math.atan2(g.y1 - g.y0, g.x1 - g.x0), L = Math.hypot(g.x1 - g.x0, g.y1 - g.y0);
             const off = Math.atan2(Math.sin(4 * (a - dom)), Math.cos(4 * (a - dom))) / 4;
@@ -128,12 +144,52 @@
                 const na = a - off, mx = (g.x0 + g.x1) / 2, my = (g.y0 + g.y1) / 2;
                 g.x0 = mx - Math.cos(na) * L / 2; g.y0 = my - Math.sin(na) * L / 2;
                 g.x1 = mx + Math.cos(na) * L / 2; g.y1 = my + Math.sin(na) * L / 2;
-            } else if (g.fill < OFFGRID_MIN_FILL || L < OFFGRID_MIN_LEN) continue;
-            for (const k of g.keys) used.add(k);
-            delete g.keys;
+            } else continue;   // rooms here are square; off-grid lines were clutter
             out.push(g);
         }
-        return { segs: out, used };
+        // Open-side test: a wall has free space on at least one side; a line
+        // through a dense blob (bed, shelving, piled furniture) has neither.
+        const tall = new Set([...cols.values()].filter(c => c.top >= WALL_TOP).map(c => c.k));
+        const walls = out.filter(g => {
+            const L = Math.hypot(g.x1 - g.x0, g.y1 - g.y0), ux = (g.x1 - g.x0) / L, uy = (g.y1 - g.y0) / L;
+            const side = sgn => {
+                let hit = 0, n = 0;
+                for (let t = COL / 2; t < L; t += COL) for (let o = SIDE_OFFSET[0]; o <= SIDE_OFFSET[1]; o += COL) {
+                    const x = g.x0 + ux * t - uy * o * sgn, y = g.y0 + uy * t + ux * o * sgn;
+                    n++; if (tall.has(colKey(x, y))) hit++;
+                }
+                return n ? hit / n : 0;
+            };
+            return Math.min(side(1), side(-1)) <= SIDE_MAX_FILL;
+        });
+        // Merge parallel neighbours (thick or noisy walls fit as 2-3 lines).
+        const merged = [];
+        for (const g of walls.sort((a, b) => Math.hypot(b.x1 - b.x0, b.y1 - b.y0) - Math.hypot(a.x1 - a.x0, a.y1 - a.y0))) {
+            const L = Math.hypot(g.x1 - g.x0, g.y1 - g.y0), ux = (g.x1 - g.x0) / L, uy = (g.y1 - g.y0) / L;
+            const host = merged.find(m => {
+                if (Math.abs(m.ux * uy - m.uy * ux) > 0.09) return false;         // > ~5 deg apart
+                const off = (g.x0 + g.x1) / 2 * -m.uy + (g.y0 + g.y1) / 2 * m.ux - m.off;
+                if (Math.abs(off) > MERGE_OFFSET) return false;
+                const a = g.x0 * m.ux + g.y0 * m.uy, b = g.x1 * m.ux + g.y1 * m.uy;
+                return Math.min(a, b) <= m.t1 + MERGE_GAP && Math.max(a, b) >= m.t0 - MERGE_GAP;
+            });
+            if (!host) {
+                const t0 = g.x0 * ux + g.y0 * uy;
+                merged.push({ ux, uy, off: g.x0 * -uy + g.y0 * ux, t0, t1: t0 + L, w: L, top: g.top, keys: [...g.keys] });
+                continue;
+            }
+            const a = g.x0 * host.ux + g.y0 * host.uy, b = g.x1 * host.ux + g.y1 * host.uy;
+            const off = (g.x0 + g.x1) / 2 * -host.uy + (g.y0 + g.y1) / 2 * host.ux;
+            host.off = (host.off * host.w + off * L) / (host.w + L); host.w += L;
+            host.t0 = Math.min(host.t0, a, b); host.t1 = Math.max(host.t1, a, b);
+            host.top = Math.max(host.top, g.top); host.keys.push(...g.keys);
+        }
+        const fitted = merged.map(m => {
+            for (const k of m.keys) used.add(k);
+            const px = -m.uy * m.off, py = m.ux * m.off;   // foot of the line
+            return { x0: px + m.ux * m.t0, y0: py + m.uy * m.t0, x1: px + m.ux * m.t1, y1: py + m.uy * m.t1, top: m.top };
+        });
+        return { segs: fitted, used };
     }
 
     function cluster(low, cols, p, wallUsed) {
