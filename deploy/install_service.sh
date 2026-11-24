@@ -41,6 +41,7 @@ for rule in 63-rosmaster 64-openrb150; do
 done
 
 # Discovery server must start first — it has Before= x3_server and orbbec_depth
+install_service x3_eno1_offload
 install_service fastdds_discovery
 # Level the tilting lidar mount before starting the server; it needs
 # /dev/openrb150 (the sweep loop and this service share the Dynamixel bus).

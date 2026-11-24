@@ -1,0 +1,15 @@
+# Turn off UDP segmentation offload on eno1 at boot.  With it on, Tailscale's WireGuard
+# (UDP GSO) through eno1 is throttled to ~200 KB/s: laggy GUI, slow bag copies
+# (2026-11-23).  The setting is runtime-only, so it came back after every power-off.
+[Unit]
+Description=Disable eno1 tx-udp-segmentation (Tailscale throughput)
+BindsTo=sys-subsystem-net-devices-eno1.device
+After=sys-subsystem-net-devices-eno1.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/ethtool -K eno1 tx-udp-segmentation off
+
+[Install]
+WantedBy=sys-subsystem-net-devices-eno1.device multi-user.target
