@@ -307,7 +307,8 @@
         const useMemory = memoryEnabled && pose && memoryCloud === d.surroundingsCloud;
         // Reality view with map walls: drop voxels the map already explains.
         const mapFilter = realityOn && reality && reality.mapActive ? reality.isKnownWall : null;
-        const options = `${mode}/${voxelSize}/${overlay}/${height}/${useMemory}/${coverage}/${surroundingsMemory.revision}/${mapFilter ? reality.mapKey : -1}/${realityOn}`;
+        const structureOn = realityOn && document.getElementById('surroundings-reality-structure')?.checked;
+        const options = `${mode}/${voxelSize}/${overlay}/${height}/${useMemory}/${coverage}/${surroundingsMemory.revision}/${mapFilter ? reality.mapKey : -1}/${realityOn}/${structureOn}`;
         floorTiles.visible = !!fresh && coverage && !!useMemory;
         if (!realityOn) floorBase.material.color.setHex(coverage ? 0xd6d9de : 0xf8f9fa);
         cloud.visible = !!fresh && mode === 'raw';
@@ -353,6 +354,11 @@
             let count = 0;
             // Reality view classes each voxel by its column's top (20 cm floor cells):
             // tall = structure (walls, doors, shelves), mid = furniture, low = trip hazard.
+            const structToggle = document.getElementById('surroundings-reality-structure');
+            const st = realityOn && reality && (!structToggle || structToggle.checked)
+                ? reality.analyzeStructure(displayCells,
+                    d.oakDetectionsAt && now - d.oakDetectionsAt < 1000 ? d.oakDetections : [], d.robotPose, now)
+                : null;
             const columnTop = new Map();
             const colKey = c => `${Math.floor(c.x / .2)},${Math.floor(c.y / .2)}`;
             if (realityOn) for (const c of displayCells) {
@@ -365,6 +371,7 @@
                 const size = c.s || voxelSize;
                 if (hideCeiling && c.z - size / 2 > 2) continue;
                 if (mapFilter && mapFilter(c.x, c.y)) continue;
+                if (st && st.hidden(c)) continue;
                 matrix.makeScale(size / SurroundingsGeometry.CELL, size / SurroundingsGeometry.CELL, size / SurroundingsGeometry.CELL);
                 matrix.setPosition(-c.y, c.z, -c.x);
                 voxels.setMatrixAt(count, matrix);
@@ -1286,7 +1293,9 @@
                                sx: p.vel ? p.vel.sx : 0, sz: p.vel ? p.vel.sz : 0 });
             }
             const mapWallsToggle = document.getElementById('surroundings-reality-mapcheck');
-            reality.update(realityOn, d, state.nav, now, persons, !!(mapWallsToggle && mapWallsToggle.checked));
+            const structToggle = document.getElementById('surroundings-reality-structure');
+            reality.update(realityOn, d, state.nav, now, persons, !!(mapWallsToggle && mapWallsToggle.checked),
+                !structToggle || structToggle.checked);
         }
         if (hint) {
             const msgs = [];

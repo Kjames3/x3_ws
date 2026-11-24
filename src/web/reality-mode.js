@@ -23,6 +23,9 @@
 //           wall panels hide, and isKnownWall(fwd, left) lets the voxel layer
 //           drop cells within MAP_DILATE_M of a map wall, so live voxels show
 //           only what the map does not already explain.
+//   struct: RealityStructure (reality-structure.js) output: fitted wall
+//           segments as flat panels with a lit top edge, and furniture
+//           stand-ins (low-poly, built here, scaled to the lidar box).
 //   people: soft halo under every person; avatars restyled to mannequins
 //           through X3Humanoid.setStyle (shared materials).
 // Display only: nothing here feeds control.
@@ -327,6 +330,102 @@ window.RealityMode = (() => {
             return grid.mask[row * grid.w + col] === 1;
         }
 
+        // ---- fitted wall panels + furniture stand-ins ------------------------
+        // Base (x fwd, y left, z up) -> scene (x = -y, y = z, z = -x).
+        const panelVert = `varying vec2 vUv; void main(){ vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`;
+        const panelFrag = `uniform float h; varying vec2 vUv;
+            void main(){
+                float y = vUv.y * h;
+                vec3 body = mix(vec3(0.07,0.10,0.14), vec3(0.16,0.22,0.30), vUv.y);
+                float edge = smoothstep(h - 0.05, h - 0.01, y);
+                float base = 1.0 - smoothstep(0.0, 0.04, y);
+                vec3 col = mix(body, vec3(0.45,0.85,1.0), edge) + vec3(0.1,0.25,0.35) * base;
+                gl_FragColor = vec4(col, 0.92);
+            }`;
+        const panels = [];
+        function panel(i) {
+            if (panels[i]) return panels[i];
+            const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.ShaderMaterial({
+                uniforms: { h: { value: 1 } }, vertexShader: panelVert, fragmentShader: panelFrag,
+                transparent: true, side: THREE.DoubleSide }));
+            m.frustumCulled = false;
+            scene.add(m);
+            return (panels[i] = m);
+        }
+        const furnMat = new THREE.MeshLambertMaterial({ color: 0xc4cfdb, emissive: 0x141c26, transparent: true });
+        const furnEdgeMat = new THREE.MeshBasicMaterial({ color: 0x67d4f5, transparent: true, opacity: 0.6,
+            depthWrite: false, blending: THREE.AdditiveBlending });
+        // Parts in a unit box: x = length, y = height, z = depth, origin at floor centre.
+        const PARTS = {
+            chair: [[0, .46, .05, .9, .06, .9], [0, .75, -.42, .9, .5, .08],
+                    [-.4, .22, -.4, .07, .45, .07], [.4, .22, -.4, .07, .45, .07], [-.4, .22, .4, .07, .45, .07], [.4, .22, .4, .07, .45, .07]],
+            couch: [[0, .25, .08, 1, .3, .84], [0, .62, -.42, 1, .55, .16], [-.46, .45, .08, .08, .3, .84], [.46, .45, .08, .08, .3, .84]],
+            table: [[0, .96, 0, 1, .06, 1], [-.45, .47, -.42, .05, .94, .06], [.45, .47, -.42, .05, .94, .06],
+                    [-.45, .47, .42, .05, .94, .06], [.45, .47, .42, .05, .94, .06]],
+            tv:    [[0, .62, 0, 1, .72, .12], [0, .13, 0, .08, .26, .08], [0, .02, 0, .4, .04, .6]],
+            bed:   [[0, .3, 0, 1, .55, 1], [-.42, .62, 0, .12, .12, .8], [.48, .55, 0, .04, .9, 1]],
+            plant: [[0, .2, 0, .5, .4, .5], [0, .7, 0, .95, .6, .95]],
+            box:   [[0, .5, 0, 1, 1, 1]],
+        };
+        const unit = new THREE.BoxGeometry(1, 1, 1);
+        const objects = new Map();   // id -> {group}
+        function makeObject(kind) {
+            const g = new THREE.Group(), inner = new THREE.Group();
+            for (const [x, y, z, sx, sy, sz] of PARTS[kind] || PARTS.box) {
+                const m = new THREE.Mesh(unit, furnMat);
+                m.position.set(x, y, z); m.scale.set(sx, sy, sz);
+                inner.add(m);
+            }
+            const ring = new THREE.Mesh(new THREE.PlaneGeometry(1.08, 1.08), furnEdgeMat);
+            ring.rotation.x = -Math.PI / 2; ring.position.y = 0.004; ring.scale.set(1, 1, 1);
+            inner.add(ring);
+            g.add(inner); scene.add(g);
+            return { group: g, inner };
+        }
+        function updateStructure(st) {
+            const walls = st ? st.walls : [];
+            walls.forEach((w, i) => {
+                const m = panel(i);
+                const x0 = -w.y0, z0 = -w.x0, x1 = -w.y1, z1 = -w.x1, len = Math.hypot(x1 - x0, z1 - z0);
+                const h = Math.max(0.3, Math.min(2.0, w.top));
+                m.scale.set(len, h, 1);
+                m.position.set((x0 + x1) / 2, h / 2, (z0 + z1) / 2);
+                m.rotation.set(0, Math.atan2(-(z1 - z0), x1 - x0), 0);
+                m.material.uniforms.h.value = h;
+                m.visible = true;
+            });
+            for (let i = walls.length; i < panels.length; i++) panels[i].visible = false;
+            const seen = new Set();
+            for (const o of st ? st.objects : []) {
+                seen.add(o.id);
+                let ob = objects.get(o.id);
+                if (!ob || ob.kind !== o.kind) {
+                    if (ob) scene.remove(ob.group);
+                    ob = makeObject(o.kind); ob.kind = o.kind; objects.set(o.id, ob);
+                }
+                ob.group.position.set(-o.y, 0, -o.x);
+                // Box yaw is ambiguous by pi: turn the front (local +Z) toward the robot.
+                let th = o.yaw + Math.PI / 2;
+                if (Math.sin(th) * o.y + Math.cos(th) * o.x < 0) th += Math.PI;   // front . (robot - obj) >= 0
+                ob.group.rotation.set(0, th, 0);
+                ob.inner.scale.set(o.L, o.H, o.D);
+                ob.group.visible = true;
+            }
+            for (const [id, ob] of objects) if (!seen.has(id)) { scene.remove(ob.group); objects.delete(id); }
+        }
+        const structTracker = window.RealityStructure ? new RealityStructure.Tracker() : null;
+        let structOn = false;
+        function analyzeStructure(cells, dets, odomPoseCm, nowMs) {
+            if (!structTracker) return null;
+            const pose = odomPoseCm && [odomPoseCm.x, odomPoseCm.y, odomPoseCm.theta].every(Number.isFinite)
+                ? { x: odomPoseCm.x / 100, y: odomPoseCm.y / 100, theta: odomPoseCm.theta } : null;
+            const st = RealityStructure.analyze(cells, dets, pose, structTracker, nowMs / 1000);
+            updateStructure(st);
+            structOn = true;
+            return st;
+        }
+
         // ---- theme swap -----------------------------------------------------
         const saved = {
             bg: scene.background.clone(), fog: scene.fog.color.clone(), fogNear: scene.fog.near, fogFar: scene.fog.far,
@@ -409,9 +508,11 @@ window.RealityMode = (() => {
             // Changes whenever the voxel filter's answer can change wholesale.
             get mapKey() { return mapOuter.visible ? mapRevision : -1; },
             isKnownWall,
+            analyzeStructure,
             // persons: [{x, z, sx, sz, path?}] in scene coordinates (m, m/s)
-            update(enabled, d, nav, now, persons, mapWalls = true) {
+            update(enabled, d, nav, now, persons, mapWalls = true, structure = true) {
                 applyTheme(enabled);
+                if ((!enabled || !structure) && structOn) { updateStructure(null); structOn = false; }
                 if (!enabled || !mapWalls) { mapOuter.visible = false; mapPose = null; }
                 if (!enabled) { ribbon.visible = beacon.visible = shieldGroup.visible = false; hideTrails(0); return; }
                 if (mapWalls) { buildMap(nav || {}); placeMap(d.robotPoseMap); }

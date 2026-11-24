@@ -5,6 +5,24 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-24 — Reality view: wall panels + furniture stand-ins from live data
+
+- **Problem:** map walls did not match the live scan; the live Livox voxels look better.
+- **Work done:** `src/web/reality-structure.js` (pure, node-testable). Wall panels: RANSAC
+  lines (seen from above) over 20 cm voxel columns topping out >= 1.2 m, column position =
+  mean of its cells, split at 45 cm gaps, drawn as flat panels with a lit top edge.
+  Furniture: an OAK spatial detection (chair/couch/tv/table/bed/plant, conf >= 0.5) seeds a
+  connected cluster of object-height columns (>= 2 cells each); PCA + 5–95th-percentile
+  extents give box, heading and height (clamped per class); held 3 s in odom, shown after
+  2 hits; drawn as procedural low-poly models facing the robot. Voxels explained by a panel
+  or a model are hidden; the rest stay as voxels. Toggle "Reality: wall panels + furniture
+  models" (on). Saved-map walls are now an opt-in localization-check overlay; floor no
+  longer turns white in Reality view.
+- **Results:** synthetic L-room + chair with noise: 2 walls and chair within 12 cm, size
+  <= 0.62 m, in 60/60 trials (was 20/60 before singleton-column and percentile fixes);
+  odom hold keeps the chair in place after a 90° turn + move; ~1.4 ms per 3.8k cells.
+  Headless render looks right. Not yet seen on live data.
+
 ## 2026-11-24 — Reality view: walls from the map
 
 - **Work done:** with a map loaded and a map pose, Reality view extrudes occupied cells into
