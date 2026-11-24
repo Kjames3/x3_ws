@@ -5,6 +5,26 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-23 (night) — Lidar person tracks into the CBF: simulated on the courtyard runs
+
+- New `src/tools/nav/lidar_cbf_sim.py`: a simulated robot (0.1 s delay, 1 m/s² limit, X3 v2
+  live CBF tuning) driven through the recorded courtyard world, with three arms: scan only,
+  + front camera people (today), + lidar tracks (`X3_LIDAR_PERSONS_CBF=1` path: to_local ->
+  cbf_estimates -> PersonMemory -> mover gate). 34 pushes: whenever a person is within 2.5 m,
+  the robot is asked to drive at them at 0.3 m/s for 4 s, from any direction.
+- Geometry gate: replayed tracks sit on the walker's lidar returns (median 6–9 cm).
+  Harness constants updated for v2 inside the new tool only (orca_cbf_compare.py keeps the
+  old X3 values for its October bags).
+- Results (scan / camera / cam+lidar): median min clearance 0.57 / 0.69 / **0.72 m**; time
+  under 0.5 m **15.9 / 12.9 / 5.8 s**. Front pushes: lidar adds nothing (camera already
+  there). Side and rear pushes: e.g. 0.12 -> 0.31, 0.26 -> 0.64, 0.25 -> 0.70, 0.17 -> 0.39 m;
+  reaction starts at ~1.2–1.3 m instead of ~0.25 m (the scan gate).
+- Parked robot (zero request): empty run 0 m in every arm; walk-by 0.26 -> 1.16 m total,
+  all real walkers heading at it at ~1 m/s within 1.6 m, two from behind. One duplicate
+  (camera + lidar, 0.59 m apart, just outside the 0.5 m dedupe) doubled one push.
+- Head-on 1 m/s walkers still reach ~0 clearance in all three arms (walker paths are
+  replayed, they don't react to the simulated robot). Feed NOT enabled on the robot.
+
 ## 2026-11-23 (night) — eno1 UDP offload fix made persistent
 
 - `deploy/systemd/x3_eno1_offload.service` (oneshot, bound to the eno1 device) runs
