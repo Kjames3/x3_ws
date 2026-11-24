@@ -14,7 +14,8 @@ Rules (scope approved 2026-10-30):
     camera id that lands on an existing track joins it (``relinked``) instead of
     starting over, which is the id-churn fix.
   * The track lives while the lidar keeps finding it (a gap > LIDAR_GAP_S ends it) and
-    for at most HOLD_S after the camera last saw it.
+    for at most HOLD_S after the camera last saw it -- LONG_HOLD_S once established
+    (ESTABLISHED_HITS lidar frames with a camera on them): cameras lose people past ~4 m.
   * Ambiguity is left alone: a track, cluster or camera seed with a near rival, or two
     tracks inside one cluster (two people merged), gets no update this frame.
 
@@ -24,6 +25,14 @@ Pure Python, no ROS: importable by tests.  Driven from server_x3.py.
 import math
 
 HOLD_S = 3.0             # longest lidar-only hold after the camera last saw the person
+# Established tracks (>= ESTABLISHED_HITS lidar matches made while a camera also saw
+# them, ~1 s) keep following their cluster for up to LONG_HOLD_S without a camera.  2026-11-23 courtyard: every id ended at 4.4-5.5 m,
+# where no camera reported the person, while the Livox still saw a steady ~100-point,
+# 1.4 m cluster on them; HOLD_S then dropped the track and they came back as a new id.
+# Replay of those 5 runs: 14 ids -> 5 (one per run), empty run still 0.  Counting only
+# camera-backed hits keeps a track born just before the camera lost it on the short hold.
+ESTABLISHED_HITS = 10
+LONG_HOLD_S = 30.0
 LIDAR_GAP_S = 0.4        # a track not found by the lidar for this long ends
 CAMERA_MAX_AGE_S = 0.65  # a camera observation older than this seeds/confirms nothing
 CAMERA_STALE_PACKET_S = 0.5
@@ -112,7 +121,7 @@ def _unique_pairs(n_a, n_b, dist, gate=GATE_M, margin=RIVAL_MARGIN_M):
 
 class _Track:
     __slots__ = ('id', 'x', 'y', 'vx', 'vy', 'at', 'hits', 'last_lidar', 'last_camera',
-                 'camera_id', 'camera_ids', 'born', 'sigma', 'points', 'z_hi', 'held_s')
+                 'camera_id', 'camera_ids', 'born', 'sigma', 'points', 'z_hi', 'held_s', 'cam_hits')
 
     def __init__(self, tid, cand, anchor, now):
         self.id = tid
@@ -129,11 +138,13 @@ class _Track:
         self.points = int(cand['n'])
         self.z_hi = cand['z_hi']
         self.held_s = 0.0
+        self.cam_hits = 1
 
 
 class LidarPersonTracker:
-    def __init__(self, hold_s=HOLD_S):
+    def __init__(self, hold_s=HOLD_S, long_hold_s=LONG_HOLD_S):
         self.hold_s = hold_s
+        self.long_hold_s = max(hold_s, long_hold_s)
         self.next_id = 1
         self.stats = {'frames': 0, 'births': 0, 'revived': 0, 'relinked': 0, 'hold_expired': 0,
                       'lost_lidar': 0, 'resets': 0, 'lidar_held_s': 0.0,
@@ -236,6 +247,8 @@ class LidarPersonTracker:
                     t.vx += VEL_GAIN * rx / dt
                     t.vy += VEL_GAIN * ry / dt
                 t.hits += 1
+                if now - t.last_camera <= CAMERA_FRESH_S:
+                    t.cam_hits += 1
                 t.last_lidar = now
                 t.sigma = max(0.12, t.sigma * 0.8)
                 t.points, t.z_hi = int(c['n']), c['z_hi']
@@ -283,6 +296,7 @@ class LidarPersonTracker:
             if old is not None:
                 t.camera_ids |= old.camera_ids
                 t.born = old.born
+                t.cam_hits = old.cam_hits
             self.tracks.append(t)
             self.stats['births'] += 1
             if free_a[i].get('side'):
@@ -295,7 +309,8 @@ class LidarPersonTracker:
                 self.stats['lost_lidar'] += 1
                 if t.hits >= CONFIRM_HITS:
                     self.ended.append((now, t))
-            elif now - t.last_camera > self.hold_s:
+            elif now - t.last_camera > (self.long_hold_s if t.cam_hits >= ESTABLISHED_HITS
+                                        else self.hold_s):
                 self.stats['hold_expired'] += 1
                 if t.hits >= CONFIRM_HITS:
                     self.ended.append((now, t))

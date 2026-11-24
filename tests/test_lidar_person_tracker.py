@@ -39,6 +39,28 @@ def run(tr, frames):
 
 
 # -- tracker -----------------------------------------------------------------------
+def test_established_track_outlasts_the_short_hold():
+    """2026-11-23 courtyard: the person stands at 4.5 m where no camera sees them.  An
+    established track keeps its id past HOLD_S, up to LONG_HOLD_S; a young one does not."""
+    for seen_frames, expect_alive in ((lpt.ESTABLISHED_HITS + 5, True), (5, False)):
+        tr = LidarPersonTracker()
+        t = 0.0
+        for _ in range(seen_frames):
+            tr.update(t, [cand(4.5, 0.0)], [cam('a', 4.5, 0.0, t)], packet_age=0.0)
+            t += DT
+        tid = tr.results[0]['id']
+        while t < seen_frames * DT + 15.0:
+            out = tr.update(t, [cand(4.5, 0.0)], [], packet_age=0.0)
+            t += DT
+        assert bool(out and out[0]['id'] == tid) == expect_alive
+        if expect_alive:
+            assert out[0]['mode'] == 'lidar held'
+            while t < seen_frames * DT + lpt.LONG_HOLD_S + 1.0:
+                out = tr.update(t, [cand(4.5, 0.0)], [], packet_age=0.0)
+                t += DT
+            assert out == [] and tr.stats['hold_expired'] == 1
+
+
 def test_clusters_alone_never_make_a_person():
     tr = LidarPersonTracker()
     out = run(tr, [(i * DT, [cand(2.0, 0.0)], []) for i in range(30)])
@@ -47,8 +69,9 @@ def test_clusters_alone_never_make_a_person():
 
 def test_walk_up_is_held_through_the_camera_blind_range_then_capped():
     """Walks at the robot (at the odom origin) at 1 m/s from 3 m; the camera loses the
-    person at 1 m, the lidar keeps them: same id, 'lidar held', ends at the 3 s cap."""
-    tr = LidarPersonTracker()
+    person at 1 m, the lidar keeps them: same id, 'lidar held', ends at the 3 s cap
+    (long hold off here; test_established_track_outlasts_the_short_hold covers it)."""
+    tr = LidarPersonTracker(long_hold_s=0.0)
     frames, t = [], 0.0
     x = 3.0
     while x > 1.0:
