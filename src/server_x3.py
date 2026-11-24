@@ -172,7 +172,8 @@ parser.add_argument('--oak-ros-rate', type=_valid_oak_ros_rate, default=10.0, de
 parser.add_argument('--oak-ros-no-stereo', action='store_true', dest='oak_ros_no_stereo',
                     help='With --oak-ros-publish, skip the mono left/right images '
                          '(roughly halves the bag size; keeps depth + IMU + detections).')
-parser.add_argument('--stream-profile', choices=('low', 'high'), default='low',
+parser.add_argument('--stream-profile', choices=('low', 'high'),
+                    default=os.environ.get('X3_STREAM_PROFILE', 'low'),
                     dest='stream_profile',
                     help="GUI stream quality at startup; the GUI can switch it live. 'low' suits "
                          "a shared/congested WiFi; 'high' (30 fps, larger, sharper frames, denser "
@@ -521,7 +522,9 @@ depth_enabled = False
 STREAM_PROFILES = {
     'low':  {'fps': 15, 'quality': 70, 'primary_height': 240, 'rear_size': (480, 300),
              'surroundings_cap': 12000},
-    'high': {'fps': 30, 'quality': 85, 'primary_height': 480, 'rear_size': (960, 600),
+    # 'high': the primary (right Arducam, 1280x800) at its native height, not 480
+    # (2026-11-23: on the Slate with eno1 UDP offload off there is bandwidth for it).
+    'high': {'fps': 30, 'quality': 85, 'primary_height': 800, 'rear_size': (960, 600),
              'surroundings_cap': 24000},
 }
 stream_profile = args.stream_profile
