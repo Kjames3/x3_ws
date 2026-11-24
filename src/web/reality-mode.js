@@ -11,6 +11,14 @@
 //   shield: a translucent shell around the robot coloured from readout.cbf:
 //           cyan = clear, amber pulse = CBF limiting the command,
 //           red = blind (stale obstacles), grey = 3D-sweep hold.
+//   intent: per moving person, the predicted path for TRAIL_S as a floor
+//           ribbon that widens with uncertainty and fades, with a ring at the
+//           predicted spot. Constant velocity for now; an entry carrying
+//           `path` (scene [x, z] points, one per TRAIL_S/(N-1) s) is drawn
+//           as given, so GRU predictions can drop in. Amber normally, red
+//           when the predicted path passes within CONFLICT_M of the robot.
+//   people: soft halo under every person; avatars restyled to mannequins
+//           through X3Humanoid.setStyle (shared materials).
 // Display only: nothing here feeds control.
 // Scene frame (see scene-view.js): forward = -Z, right = +X, up = +Y.
 // =================================================================
@@ -20,6 +28,10 @@ window.RealityMode = (() => {
     const RIBBON_Y = 0.012;
     const SHIELD_R = 0.36, SHIELD_H = 0.32;
     const COLORS = { ok: 0x22d3ee, limited: 0xf59e0b, blind: 0xef4444, hold: 0x9ca3af };
+    const TRAIL_S = 2.0, TRAIL_N = 16, MAX_TRAILS = 12;
+    const TRAIL_W0 = 0.22, TRAIL_W1 = 0.55;       // width now / at TRAIL_S (m)
+    const MOVING_MPS = 0.15, CONFLICT_M = 0.6;
+    const TRAIL_COLORS = { normal: 0xfbbf24, conflict: 0xef4444 };
     const DARK = { bg: 0x0b0f14, floor: 0x111820, ring: 0x1e2a36,
                    tint: 0x8fb4d9, emissive: 0x0a1622 };
 
@@ -109,6 +121,94 @@ window.RealityMode = (() => {
         shieldGroup.visible = false;
         scene.add(shieldGroup);
 
+        // ---- intent trails + person halos ----------------------------------
+        const trailIdx = [];
+        for (let i = 0; i < TRAIL_N - 1; i++) { const a = 2 * i; trailIdx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+        const trailVert = `
+            attribute float u; attribute float side; varying float vU; varying float vSide;
+            void main(){ vU = u; vSide = side;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`;
+        const trailFrag = `
+            uniform float time; uniform vec3 color; varying float vU; varying float vSide;
+            void main(){
+                float edge = 1.0 - smoothstep(0.35, 1.0, abs(vSide));
+                float dash = smoothstep(0.0, 0.2, fract(vU * 6.0 - time * 1.5)) * 0.5 + 0.5;
+                float a = pow(1.0 - vU, 1.3) * edge * dash * 0.8;
+                gl_FragColor = vec4(color, a);
+            }`;
+        const markerFrag = `
+            uniform vec3 color; uniform float strength; varying vec2 vUv;
+            void main(){ float r = length(vUv - 0.5) * 2.0;
+                float ring = smoothstep(0.70, 0.86, r) * (1.0 - smoothstep(0.86, 1.0, r));
+                float fill = (1.0 - smoothstep(0.0, 1.0, r)) * 0.35;
+                gl_FragColor = vec4(color, (ring + fill) * strength); }`;
+        const uvVert = `varying vec2 vUv; void main(){ vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`;
+        function marker(color, strength, size) {
+            const m = new THREE.Mesh(new THREE.PlaneGeometry(size, size), new THREE.ShaderMaterial({
+                uniforms: { color: { value: new THREE.Color(color) }, strength: { value: strength } },
+                vertexShader: uvVert, fragmentShader: markerFrag,
+                transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+            m.rotation.x = -Math.PI / 2; m.visible = false; m.frustumCulled = false;
+            scene.add(m);
+            return m;
+        }
+        const trails = [];
+        for (let k = 0; k < MAX_TRAILS; k++) {
+            const g = new THREE.BufferGeometry();
+            g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(TRAIL_N * 6), 3));
+            const u = new Float32Array(TRAIL_N * 2), sd = new Float32Array(TRAIL_N * 2);
+            for (let i = 0; i < TRAIL_N; i++) { u[2*i] = u[2*i+1] = i / (TRAIL_N - 1); sd[2*i] = 1; sd[2*i+1] = -1; }
+            g.setAttribute('u', new THREE.BufferAttribute(u, 1));
+            g.setAttribute('side', new THREE.BufferAttribute(sd, 1));
+            g.setIndex(trailIdx);
+            const color = { value: new THREE.Color(TRAIL_COLORS.normal) };
+            const mesh = new THREE.Mesh(g, new THREE.ShaderMaterial({
+                uniforms: { time, color }, vertexShader: trailVert, fragmentShader: trailFrag,
+                transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
+            mesh.frustumCulled = false; mesh.visible = false;
+            scene.add(mesh);
+            trails.push({ mesh, color, end: marker(TRAIL_COLORS.normal, 0.9, 0.42),
+                          halo: marker(0x67e8f9, 0.55, 0.9) });
+        }
+        function hideTrails(from) {
+            for (let k = from; k < MAX_TRAILS; k++) trails[k].mesh.visible = trails[k].end.visible = trails[k].halo.visible = false;
+        }
+        function updateIntent(persons) {
+            let k = 0;
+            for (const p of persons || []) {
+                if (k >= MAX_TRAILS) break;
+                const t = trails[k++];
+                t.halo.position.set(p.x, 0.008, p.z); t.halo.visible = true;
+                const speed = Math.hypot(p.sx, p.sz);
+                const path = p.path || (speed > MOVING_MPS ? Array.from({ length: TRAIL_N }, (_, i) => {
+                    const dt = TRAIL_S * i / (TRAIL_N - 1);
+                    return [p.x + p.sx * dt, p.z + p.sz * dt];
+                }) : null);
+                if (!path || path.length !== TRAIL_N) { t.mesh.visible = t.end.visible = false; continue; }
+                const pos = t.mesh.geometry.attributes.position.array;
+                let minD = Infinity;
+                for (let i = 0; i < TRAIL_N; i++) {
+                    const a = path[Math.max(0, i - 1)], b = path[Math.min(TRAIL_N - 1, i + 1)];
+                    let tx = b[0] - a[0], tz = b[1] - a[1];
+                    const tl = Math.hypot(tx, tz) || 1; tx /= tl; tz /= tl;
+                    const w = (TRAIL_W0 + (TRAIL_W1 - TRAIL_W0) * i / (TRAIL_N - 1)) / 2;
+                    const o = 6 * i;
+                    pos[o] = path[i][0] - tz * w; pos[o+1] = 0.014; pos[o+2] = path[i][1] + tx * w;
+                    pos[o+3] = path[i][0] + tz * w; pos[o+4] = 0.014; pos[o+5] = path[i][1] - tx * w;
+                    minD = Math.min(minD, Math.hypot(path[i][0], path[i][1]));
+                }
+                t.mesh.geometry.attributes.position.needsUpdate = true;
+                const hex = minD < CONFLICT_M ? TRAIL_COLORS.conflict : TRAIL_COLORS.normal;
+                t.color.value.setHex(hex);
+                t.end.material.uniforms.color.value.setHex(hex);
+                const e = path[TRAIL_N - 1];
+                t.end.position.set(e[0], 0.016, e[1]);
+                t.mesh.visible = t.end.visible = true;
+            }
+            hideTrails(k);
+        }
+
         // ---- theme swap -----------------------------------------------------
         const saved = {
             bg: scene.background.clone(), fog: scene.fog.color.clone(), fogNear: scene.fog.near, fogFar: scene.fog.far,
@@ -127,6 +227,7 @@ window.RealityMode = (() => {
             renderer.setClearColor(bg, 1);
             refs.floor.material.color.set(on ? DARK.floor : saved.floor);
             refs.rings.forEach((m, i) => m.color.copy(on ? new THREE.Color(DARK.ring) : saved.rings[i]));
+            if (window.X3Humanoid && X3Humanoid.setStyle) X3Humanoid.setStyle(on ? 'mannequin' : 'default');
             refs.tinted.forEach((m, i) => {
                 m.color.copy(on ? new THREE.Color(DARK.tint) : saved.tinted[i].color);
                 if (m.emissive) m.emissive.copy(on ? new THREE.Color(DARK.emissive) : saved.tinted[i].emissive);
@@ -185,9 +286,11 @@ window.RealityMode = (() => {
         }
 
         return {
-            update(enabled, d, nav, now) {
+            // persons: [{x, z, sx, sz, path?}] in scene coordinates (m, m/s)
+            update(enabled, d, nav, now, persons) {
                 applyTheme(enabled);
-                if (!enabled) { ribbon.visible = beacon.visible = shieldGroup.visible = false; return; }
+                if (!enabled) { ribbon.visible = beacon.visible = shieldGroup.visible = false; hideTrails(0); return; }
+                updateIntent(persons);
                 time.value = now / 1000;
                 updatePath(nav && nav.path, d.robotPoseMap);
                 updateShield(d.readout && d.readout.cbf);

@@ -12,8 +12,8 @@
     let sphere, cylinder, solidMaterial, ghostMaterial;
     function resources() {
         if (sphere) return;
-        sphere = new THREE.SphereGeometry(1, 10, 6);
-        cylinder = new THREE.CylinderGeometry(1, 1, 1, 10, 1, true);
+        sphere = new THREE.SphereGeometry(1, 16, 12);
+        cylinder = new THREE.CylinderGeometry(1, 1, 1, 16, 1, true);
         solidMaterial = new THREE.MeshLambertMaterial({ color: 0xf59e0b });
         ghostMaterial = new THREE.MeshLambertMaterial({
             color: 0xf59e0b, transparent: true, opacity: 0.18, depthWrite: false
@@ -264,5 +264,17 @@
         }
         return { group, joints, animate, pose };
     }
-    window.X3Humanoid = { create };
+    // 'mannequin' (Reality view): smooth light-grey figure, faint cyan ghost.
+    // Materials are shared by every avatar, so this restyles all of them.
+    const STYLES = {
+        default:   { solid: 0xf59e0b, solidEmissive: 0x000000, ghost: 0xf59e0b, ghostOpacity: 0.18 },
+        mannequin: { solid: 0xdfe4ea, solidEmissive: 0x1a2533, ghost: 0x67e8f9, ghostOpacity: 0.12 },
+    };
+    function setStyle(name) {
+        resources();
+        const st = STYLES[name] || STYLES.default;
+        solidMaterial.color.setHex(st.solid); solidMaterial.emissive.setHex(st.solidEmissive);
+        ghostMaterial.color.setHex(st.ghost); ghostMaterial.opacity = st.ghostOpacity;
+    }
+    window.X3Humanoid = { create, setStyle };
 })();

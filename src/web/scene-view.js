@@ -28,7 +28,7 @@
     const SCAN_STALE_MS = 1000;   // hide walls when /scan stops (e.g. 3D sweep gate)
 
     let lastPts = null, lastPtsAt = 0;
-    let reality = null;           // reality-mode.js (dark FSD-style theme + path/CBF overlays)
+    let reality = null, realityOn = false;           // reality-mode.js (dark FSD-style theme + path/CBF overlays)
     let renderer, scene, camera, container, hint, _m, _dir, _org;
     let controls = null, interacting = false, viewTween = null;
     const people = new Map();     // track id -> {group, arrow, ghost}
@@ -1018,8 +1018,10 @@
             p.ghost.position.set(right + sx * horizon, 0, -fwd + sz * horizon);
             p.prediction.animate(speed, dt);
             if (p.prediction.pose) p.prediction.pose(bodyPose, dt);
-            p.ghost.visible = moving;
-            p.arrow.visible = moving;
+            p.vel = { sx, sz };
+            // Reality view draws its own intent trail in place of the arrow/ghost.
+            p.ghost.visible = moving && !realityOn;
+            p.arrow.visible = moving && !realityOn;
             if (moving) {
                 // Arrow follows velocity; body retains its filtered travel heading.
                 _org.set(right, kind === 'dynamic' ? 0.3 : 1.3, -fwd);
@@ -1242,6 +1244,8 @@
         if (!scanFresh && (panels.count || posts.count)) {
             clearBins(); panels.count = 0; posts.count = 0;
         }
+        const realityToggle = document.getElementById('surroundings-reality-toggle');
+        realityOn = !!(reality && realityToggle && realityToggle.checked);
         const avatars = avatarEntries(d);
         updatePeople(avatars, dt);
         const uncertaintyToggle = document.getElementById('person-uncertainty-toggle');
@@ -1251,8 +1255,13 @@
         updateFootDiagnostic();
         updateTilt(d.readout);
         if (reality) {
-            const toggle = document.getElementById('surroundings-reality-toggle');
-            reality.update(!!(toggle && toggle.checked), d, state.nav, now);
+            const persons = [];
+            for (const p of people.values()) {
+                if (p.kind !== 'person' || !p.group.visible) continue;
+                persons.push({ x: p.group.position.x, z: p.group.position.z,
+                               sx: p.vel ? p.vel.sx : 0, sz: p.vel ? p.vel.sz : 0 });
+            }
+            reality.update(realityOn, d, state.nav, now, persons);
         }
         if (hint) {
             const msgs = [];

@@ -5,6 +5,17 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-24 — Reality view: intent trails + mannequins
+
+- **Work done:** each moving person (> 0.15 m/s) gets a 2 s predicted floor trail (constant
+  velocity from the avatar's track; widens 0.22 to 0.55 m, fades, ring at the predicted
+  spot). Amber, red if the prediction passes within 0.6 m of the robot. Soft cyan halo under
+  every person. Avatars restyle to light-grey mannequins (`X3Humanoid.setStyle`, smoother
+  16-segment geometry in both modes); the red velocity arrow and ghost hide in Reality view.
+  `reality-mode.js` takes an optional `path` per person so GRU predictions can replace
+  constant velocity once the server sends them (today they only go to the shadow log).
+- **Results:** headless-Chrome render with synthetic people looks right; not yet seen live.
+
 ## 2026-11-24 — Surroundings "Reality view" prototype (FSD-style)
 
 - **Problem:** wanted a Tesla FSD-style visualization from data the GUI already gets.
