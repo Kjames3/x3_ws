@@ -5,6 +5,19 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-23 (courtyard) — Person ids survive walking out of camera range
+
+- Five courtyard runs (`artifacts/person-lidar-2026-11-23/yard-*`): empty, walk-by, circle,
+  stand at 2/4 m, start-stop. Live: 0 false tracks on the empty run; one id held 97 s round
+  every camera on the circle. But every id ended at **4.4–5.5 m**: no camera reported the
+  person there while the Livox still saw a steady ~100-point, 1.4 m cluster, so the 3 s
+  lidar-only hold dropped them and they came back as a new id.
+- Fix (bbdc01e): a track with >= 10 lidar matches made while a camera saw it now holds
+  up to **30 s** without a camera (`LONG_HOLD_S`); younger tracks keep the 3 s cap.
+- Replay (matches the live tracker exactly at the old setting): ids 5/3/2/4 -> **1/1/1/1**,
+  confirmed coverage 76–87% -> 97–100%, empty run still 0. Older lab runs: unchanged except
+  the live desk run (11 -> 10 ids). Deployed and running; not yet re-tested live.
+
 ## 2026-11-23 (evening, lab) — GUI lag: Tailscale robot→laptop throttled by eno1 UDP segmentation offload
 
 **Problem.** In the lab the GUI lagged: every camera feed arrived at ~1.4 fps (low profile) while telemetry kept ~15 Hz. The question was whether the Slate's USB power was the cause.
