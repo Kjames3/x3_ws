@@ -72,6 +72,12 @@ RAY_AFTER_M = 0.5
 # of several side anchors within SIDE_DEDUP_M of each other is kept (two boxes, or two
 # people in line whose rays both end on the nearer body).
 SIDE_DEDUP_M = 0.5
+# Match before birth: a camera anchor whose id already belongs to a live track within
+# OWNED_BIRTH_M starts no new track (it is that person, mislocated -- C3 over-reads, a
+# stale side ray).  2026-11-22 desk replay: C3 id 8/9, owned by L4, kept birthing tracks
+# on a cluster ~0.93 m from it (45 extra births in 4 min); 2026-11-23 walk-round showed
+# the same short duplicates near the front camera.
+OWNED_BIRTH_M = 1.5
 
 
 def _finite(*v):
@@ -276,7 +282,10 @@ class LidarPersonTracker:
                 t.vx, t.vy = t.vx * MAX_SPEED / s, t.vy * MAX_SPEED / s
 
         # 3. births: an unclaimed camera seed on an unclaimed cluster
-        free_a = [a for i, a in enumerate(anchors) if i not in cam]
+        free_a = [a for i, a in enumerate(anchors) if i not in cam
+                  and not any(a['id'] in t.camera_ids
+                              and math.hypot(a['x'] - t.x, a['y'] - t.y) < OWNED_BIRTH_M
+                              for t in self.tracks)]
         free_c = [c for j, c in enumerate(cands) if j not in used]
         born = _unique_pairs(len(free_a), len(free_c),
                              lambda i, j: math.hypot(free_a[i]['x'] - free_c[j]['x'],

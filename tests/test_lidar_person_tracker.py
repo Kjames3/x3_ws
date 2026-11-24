@@ -39,6 +39,25 @@ def run(tr, frames):
 
 
 # -- tracker -----------------------------------------------------------------------
+def test_camera_id_owned_by_a_track_births_no_duplicate():
+    """2026-11-22 desk: C3 id 8, already on track L1, also lands ~0.9 m away on a second
+    cluster.  That second cluster must not become a new track; a different id may."""
+    tr = LidarPersonTracker()
+    t = 0.0
+    for _ in range(10):
+        tr.update(t, [cand(2.0, 0.0)], [cam('8', 2.0, 0.0, t)], packet_age=0.0)
+        t += DT
+    for _ in range(20):
+        out = tr.update(t, [cand(2.0, 0.0), cand(2.0, 0.9)], [cam('8', 2.0, 0.9, t)], packet_age=0.0)
+        t += DT
+    assert [r['id'] for r in out] == ['L1']
+    for _ in range(5):
+        out = tr.update(t, [cand(2.0, 0.0), cand(2.0, 0.9)], [cam('8', 2.0, 0.0, t), cam('7', 2.0, 0.9, t)],
+                        packet_age=0.0)
+        t += DT
+    assert sorted(r['id'] for r in out) == ['L1', 'L2']
+
+
 def test_established_track_outlasts_the_short_hold():
     """2026-11-23 courtyard: the person stands at 4.5 m where no camera sees them.  An
     established track keeps its id past HOLD_S, up to LONG_HOLD_S; a young one does not."""
