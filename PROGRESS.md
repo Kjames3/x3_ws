@@ -5,6 +5,18 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-24 — Reality view: walls from the map
+
+- **Work done:** with a map loaded and a map pose, Reality view extrudes occupied cells into
+  0.5 m dark walls with a cyan top edge (row runs merged into one box each; cells with < 2
+  occupied neighbours not drawn). The /scan wall panels hide while map walls show, and in
+  clean-voxel mode live voxels within 10 cm of a map wall are dropped, so the voxels left are
+  what the map does not explain (furniture, people, clutter). Sub-toggle "Reality: walls
+  from the map", on by default. Raw-points mode is not filtered.
+- **Results:** headless render on `apartment3_test`: all 891 drawn wall boxes test as map
+  walls in the voxel filter, and 34/34 occupied cells transformed independently in Python
+  land on walls. Not yet seen live; alignment depends on AMCL/SLAM being converged.
+
 ## 2026-11-24 — Reality view: intent trails + mannequins
 
 - **Work done:** each moving person (> 0.15 m/s) gets a 2 s predicted floor trail (constant

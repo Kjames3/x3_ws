@@ -294,7 +294,9 @@
             memoryCloud = d.surroundingsCloud; memoryPose = pose;
         }
         const useMemory = memoryEnabled && pose && memoryCloud === d.surroundingsCloud;
-        const options = `${mode}/${voxelSize}/${overlay}/${height}/${useMemory}/${coverage}/${surroundingsMemory.revision}`;
+        // Reality view with map walls: drop voxels the map already explains.
+        const mapFilter = realityOn && reality && reality.mapActive ? reality.isKnownWall : null;
+        const options = `${mode}/${voxelSize}/${overlay}/${height}/${useMemory}/${coverage}/${surroundingsMemory.revision}/${mapFilter ? reality.mapKey : -1}`;
         floorTiles.visible = !!fresh && coverage && !!useMemory;
         floorBase.material.color.setHex(coverage ? 0xd6d9de : 0xf8f9fa);
         cloud.visible = !!fresh && mode === 'raw';
@@ -342,6 +344,7 @@
                 if (count >= VOXEL_CAP) break;
                 const size = c.s || voxelSize;
                 if (hideCeiling && c.z - size / 2 > 2) continue;
+                if (mapFilter && mapFilter(c.x, c.y)) continue;
                 matrix.makeScale(size / SurroundingsGeometry.CELL, size / SurroundingsGeometry.CELL, size / SurroundingsGeometry.CELL);
                 matrix.setPosition(-c.y, c.z, -c.x);
                 voxels.setMatrixAt(count, matrix);
@@ -1236,16 +1239,16 @@
             lastPts = d.lidarPoints; lastPtsAt = now;
             if (lastPts) { ingestScan(lastPts); rebuildWalls(); }
         }
+        const realityToggle = document.getElementById('surroundings-reality-toggle');
+        realityOn = !!(reality && realityToggle && realityToggle.checked);
         updatePersonCloud(d, now);
         const cloudFresh = updateCloud(d, now);
         updateOakCloud(d, now);
-        panels.visible = posts.visible = !cloudFresh && !oakOnlyEnvironment();
+        panels.visible = posts.visible = !cloudFresh && !oakOnlyEnvironment() && !(realityOn && reality.mapActive);
         const scanFresh = lastPts && now - lastPtsAt < SCAN_STALE_MS;
         if (!scanFresh && (panels.count || posts.count)) {
             clearBins(); panels.count = 0; posts.count = 0;
         }
-        const realityToggle = document.getElementById('surroundings-reality-toggle');
-        realityOn = !!(reality && realityToggle && realityToggle.checked);
         const avatars = avatarEntries(d);
         updatePeople(avatars, dt);
         const uncertaintyToggle = document.getElementById('person-uncertainty-toggle');
@@ -1261,7 +1264,8 @@
                 persons.push({ x: p.group.position.x, z: p.group.position.z,
                                sx: p.vel ? p.vel.sx : 0, sz: p.vel ? p.vel.sz : 0 });
             }
-            reality.update(realityOn, d, state.nav, now, persons);
+            const mapWallsToggle = document.getElementById('surroundings-reality-mapwalls');
+            reality.update(realityOn, d, state.nav, now, persons, !mapWallsToggle || mapWallsToggle.checked);
         }
         if (hint) {
             const msgs = [];
