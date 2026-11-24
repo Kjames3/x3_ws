@@ -5,6 +5,15 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-23 (night) — GUI: right camera at full resolution; robot boots in HQ
+
+- The GUI was in the boot-default `low` profile (JPEG quality 70, primary 384x240). The
+  right Arducam captures 1280x800. `high` now sends it at the native 800 px (was 480), and
+  `X3_STREAM_PROFILE=high` in the robot's override makes HQ the boot profile (c7af367).
+  The HQ Stream toggle still switches back to `low` live. Deployed; not yet looked at in the GUI.
+- Left camera: new lens fitted. Its fisheye intrinsics (`config/left_u20cam_intrinsics.json`,
+  11-21, old lens) are now wrong until it is recalibrated.
+
 ## 2026-11-23 (night) — Lidar person tracks into the CBF: simulated on the courtyard runs
 
 - New `src/tools/nav/lidar_cbf_sim.py`: a simulated robot (0.1 s delay, 1 m/s² limit, X3 v2
