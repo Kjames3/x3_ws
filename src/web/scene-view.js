@@ -28,6 +28,7 @@
     const SCAN_STALE_MS = 1000;   // hide walls when /scan stops (e.g. 3D sweep gate)
 
     let lastPts = null, lastPtsAt = 0;
+    let reality = null;           // reality-mode.js (dark FSD-style theme + path/CBF overlays)
     let renderer, scene, camera, container, hint, _m, _dir, _org;
     let controls = null, interacting = false, viewTween = null;
     const people = new Map();     // track id -> {group, arrow, ghost}
@@ -447,9 +448,11 @@
         floorBase = floor;
 
         // 1 m range rings
+        const ringMats = [];
         for (let r = 1; r <= RANGE_M; r++) {
-            const ring = new THREE.Mesh(new THREE.RingGeometry(r - 0.008, r + 0.008, 96),
-                new THREE.MeshBasicMaterial({ color: 0xc5ccd3 }));
+            const ringMat = new THREE.MeshBasicMaterial({ color: 0xc5ccd3 });
+            ringMats.push(ringMat);
+            const ring = new THREE.Mesh(new THREE.RingGeometry(r - 0.008, r + 0.008, 96), ringMat);
             ring.rotation.x = -Math.PI / 2;
             ring.position.y = 0.002;
             scene.add(ring);
@@ -473,6 +476,8 @@
         initCloud();
         initPersonCloud();
         fadeOccluders(panels.material); fadeOccluders(posts.material);
+        if (window.RealityMode) reality = RealityMode.create(THREE, scene, renderer,
+            { floor, rings: ringMats, tinted: [panels.material, posts.material, voxels.material] });
         restoreOptions();
         document.getElementById('surroundings-memory-reset').addEventListener('click', () => { memoryReset = true; personCloudTracker.clear(); associatedCloud = null; });
 
@@ -586,7 +591,9 @@
 
     function loadRobotModel(placeholder) {
         if (!THREE.GLTFLoader) return;
-        new THREE.GLTFLoader().load('models/x3_robot.glb?v=2', (gltf) => {
+        const legacy = new URLSearchParams(window.location.search).get('robot') === 'x3';
+        const modelUrl = legacy ? 'models/x3_robot.glb?v=2' : 'models/x3_v2_robot.glb?v=2';
+        new THREE.GLTFLoader().load(modelUrl, (gltf) => {
             const wrap = new THREE.Group();
             wrap.matrixAutoUpdate = false;
             wrap.matrix.set(0, -1, 0, 0,
@@ -1243,6 +1250,10 @@
         updateLidarPersons(lidarFresh ? d.lidarPersons : [], d.lidarPersonStats);
         updateFootDiagnostic();
         updateTilt(d.readout);
+        if (reality) {
+            const toggle = document.getElementById('surroundings-reality-toggle');
+            reality.update(!!(toggle && toggle.checked), d, state.nav, now);
+        }
         if (hint) {
             const msgs = [];
             if (oakOnlyEnvironment()) msgs.push('OAK-only environment · lidar surfaces hidden');

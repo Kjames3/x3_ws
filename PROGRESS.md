@@ -5,6 +5,19 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-24 — Surroundings "Reality view" prototype (FSD-style)
+
+- **Problem:** wanted a Tesla FSD-style visualization from data the GUI already gets.
+- **Work done:** `src/web/reality-mode.js` + a "Reality view" checkbox under Surroundings →
+  Layers & metrics (off by default). Dark theme (walls/voxels tinted, keeps height colour);
+  Nav2 global plan as a glowing ribbon with chevrons flowing to a goal light pillar
+  (`state.nav.path` moved into the robot frame through `robot_pose_map`); CBF shield ring
+  around the robot from `readout.cbf` (cyan clear, amber pulse limiting, red blind, grey hold).
+  Display only.
+- **Results:** shaders compile and render in headless Chrome with a synthetic path; not yet
+  viewed on the live robot, so the path-to-robot-frame transform is unchecked against real
+  Nav2 output. Not deployed.
+
 ## 2026-11-24 — Left camera recalibrated for the new lens
 
 - 35 checkerboard views (`~/calib/left_views_newlens` on the robot). The tool's all-views fit
