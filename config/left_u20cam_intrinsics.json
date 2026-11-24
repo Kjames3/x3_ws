@@ -2,14 +2,14 @@
   "fisheye": {
     "K": [
       [
-        1119.8147310633908,
+        891.1249279820597,
         0.0,
-        687.7867247303296
+        690.6064922327486
       ],
       [
         0.0,
-        1119.005052302666,
-        378.1940942463927
+        890.8593950569505,
+        381.4082620894154
       ],
       [
         0.0,
@@ -18,35 +18,27 @@
       ]
     ],
     "D": [
-      -0.1301313382744819,
-      0.035611920613743915,
-      -0.1365515321435471,
-      0.14971892847720542
+      -0.09544822898820629,
+      0.00027729410106152116,
+      0.0139560903422586,
+      -0.019877235876084146
     ],
-    "rms_px": 0.4258185577678484,
+    "rms_px": 0.13018607258337006,
     "width": 1280,
     "height": 800,
-    "n_views": 36,
+    "n_views": 30,
     "board": "9x6 squares, 23.3 mm",
-    "date": "2026-11-21",
+    "date": "2026-11-24",
     "rotated": "180 deg (upright, as x3_server publishes)",
-    "views": "~/calib/left_views (35) + ~/calib/left_views_topup (15) on the robot",
+    "lens": "new lens fitted 2026-11-23 (replaces the 11-21 fit, fx ~1120)",
+    "views": "~/calib/left_views_newlens on the robot (35)",
     "dropped_views": [
-      "views/view_001.png",
-      "views/view_002.png",
-      "views/view_003.png",
-      "views/view_005.png",
-      "views/view_009.png",
-      "views/view_010.png",
-      "views/view_012.png",
-      "views/view_018.png",
-      "views/view_020.png",
-      "topup/view_001.png",
-      "topup/view_006.png",
-      "topup/view_008.png",
-      "topup/view_009.png",
-      "topup/view_011.png"
+      "view_001.png",
+      "view_005.png",
+      "view_007.png",
+      "view_016.png",
+      "view_028.png"
     ],
-    "note": "refit on laptop without views whose per-view RMS > 1 px (partial board / bad corners). Robot fits: 1.568 px (35 views), 2.000 px (15 top-up views)."
+    "note": "5 views at 2.8-5.2 px (board cut off at the frame edge) dropped; all-35 fit was 1.61 px. Board never reached x < 185 px (far left of the image)."
   }
 }
