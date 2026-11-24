@@ -5,6 +5,19 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-23 (night) — No duplicate tracks from a camera id a track already owns
+
+- Pattern (replay of all 24 recorded tracker runs): a front-camera (C3) id already on a
+  live track also landed ~0.9–1.1 m away on a second cluster and started a new track there,
+  over and over. Worst: the 11-22 live desk run, C3 id 8/9 on L4 -> 45+ extra births.
+- Fix (1a33b96): an anchor whose camera id belongs to a live track within 1.5 m
+  (`OWNED_BIRTH_M`) starts no track; a different id still can.
+- Replay: desk 67 -> 5 births, 10 -> 2 confirmed ids, coverage 86% unchanged; lab walk
+  9 -> 6 ids; the other 22 runs (empty runs included) unchanged. Deployed; live test pending.
+- Courtyard runs with bags copied to the laptop (`artifacts/person-lidar-2026-11-23/`, 2.3 GB).
+  The copy ran at ~200 KB/s until `ethtool -K eno1 tx-udp-segmentation off`: the offload
+  was back on after the overnight power-off (still not persistent).
+
 ## 2026-11-23 (courtyard) — Person ids survive walking out of camera range
 
 - Five courtyard runs (`artifacts/person-lidar-2026-11-23/yard-*`): empty, walk-by, circle,
