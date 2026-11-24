@@ -18,8 +18,12 @@
     const LINE_TOL = 0.09;         // RANSAC inlier distance (m)
     const MIN_INLIERS = 6;         // columns per accepted line
     const GAP_SPLIT = 0.45;        // split a line where columns are further apart
-    const MIN_SEG = 0.4;           // shortest panel (m)
+    const MIN_SEG = 0.6;           // shortest panel (m)
     const MAX_SEGS = 14;
+    const MIN_FILL = 0.55;         // occupied columns / columns a full wall of that length has
+    const SNAP_DEG = 15;           // snap to the room's square grid within this
+    const OFFGRID_MIN_FILL = 0.8;  // an off-grid wall must be this solid ...
+    const OFFGRID_MIN_LEN = 1.2;   // ... and this long, or it is dropped
     const OBJ_RADIUS = 0.9;        // voxels considered for a detection (m)
     const OBJ_HOLD_S = 3.0;
     const OBJ_SMOOTH = 0.3;
@@ -95,16 +99,41 @@
                 if (i < proj.length && proj[i].t - proj[i - 1].t <= GAP_SPLIT) continue;
                 const piece = proj.slice(start, i); start = i;
                 const t0 = piece[0].t - COL / 2, t1 = piece[piece.length - 1].t + COL / 2;
-                if (piece.length < 3 || t1 - t0 < MIN_SEG) continue;
+                if (piece.length < 4 || t1 - t0 < MIN_SEG) continue;
+                // Sparse lines strung through clutter: reject on fill. A diagonal
+                // run of columns is ~1/sqrt2 as dense as an axis one, so measure
+                // the expected count along the larger grid axis.
+                const expect = (t1 - t0) * Math.max(Math.abs(dx), Math.abs(dy)) / COL;
+                const fill = piece.length / Math.max(1, expect);
+                if (fill < MIN_FILL) continue;
                 const tops = piece.map(q => q.p.top).sort((a, b) => a - b);
                 segs.push({ x0: mx + dx * t0, y0: my + dy * t0, x1: mx + dx * t1, y1: my + dy * t1,
-                            top: tops[Math.floor(tops.length * .8)] });
-                for (const q of piece) used.add(q.p.k);
+                            top: tops[Math.floor(tops.length * .8)], fill, keys: piece.map(q => q.p.k) });
             }
             const gone = new Set(inl);
             pts = pts.filter(p => !gone.has(p));
         }
-        return { segs, used };
+        // Square-grid snap: dominant direction mod 90 deg from the length-weighted
+        // mean of 4*angle; walls within SNAP_DEG rotate onto it about their midpoint.
+        let cx = 0, cy = 0;
+        for (const g of segs) {
+            const a = Math.atan2(g.y1 - g.y0, g.x1 - g.x0), L = Math.hypot(g.x1 - g.x0, g.y1 - g.y0);
+            cx += L * Math.cos(4 * a); cy += L * Math.sin(4 * a);
+        }
+        const dom = Math.atan2(cy, cx) / 4, out = [];
+        for (const g of segs) {
+            const a = Math.atan2(g.y1 - g.y0, g.x1 - g.x0), L = Math.hypot(g.x1 - g.x0, g.y1 - g.y0);
+            const off = Math.atan2(Math.sin(4 * (a - dom)), Math.cos(4 * (a - dom))) / 4;
+            if (Math.abs(off) <= SNAP_DEG * Math.PI / 180) {
+                const na = a - off, mx = (g.x0 + g.x1) / 2, my = (g.y0 + g.y1) / 2;
+                g.x0 = mx - Math.cos(na) * L / 2; g.y0 = my - Math.sin(na) * L / 2;
+                g.x1 = mx + Math.cos(na) * L / 2; g.y1 = my + Math.sin(na) * L / 2;
+            } else if (g.fill < OFFGRID_MIN_FILL || L < OFFGRID_MIN_LEN) continue;
+            for (const k of g.keys) used.add(k);
+            delete g.keys;
+            out.push(g);
+        }
+        return { segs: out, used };
     }
 
     function cluster(low, cols, p, wallUsed) {

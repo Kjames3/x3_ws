@@ -41,6 +41,7 @@ window.RealityMode = (() => {
     const TRAIL_W0 = 0.22, TRAIL_W1 = 0.55;       // width now / at TRAIL_S (m)
     const MOVING_MPS = 0.15, CONFLICT_M = 0.6;
     const TRAIL_COLORS = { normal: 0xfbbf24, conflict: 0xef4444 };
+    const PANEL_MAX_H = 1.0;
     const MAP_WALL_H = 0.5, MAP_DILATE_M = 0.10, OCCUPIED_BELOW = 100;
     const DARK = { bg: 0x0b0f14, floor: 0x111820, ring: 0x1e2a36,
                    tint: 0x8fb4d9, emissive: 0x0a1622 };
@@ -341,7 +342,7 @@ window.RealityMode = (() => {
                 float edge = smoothstep(h - 0.05, h - 0.01, y);
                 float base = 1.0 - smoothstep(0.0, 0.04, y);
                 vec3 col = mix(body, vec3(0.45,0.85,1.0), edge) + vec3(0.1,0.25,0.35) * base;
-                gl_FragColor = vec4(col, 0.92);
+                gl_FragColor = vec4(col, mix(0.85, 0.45, vUv.y) + 0.4 * edge);
             }`;
         const panels = [];
         function panel(i) {
@@ -388,7 +389,8 @@ window.RealityMode = (() => {
             walls.forEach((w, i) => {
                 const m = panel(i);
                 const x0 = -w.y0, z0 = -w.x0, x1 = -w.y1, z1 = -w.x1, len = Math.hypot(x1 - x0, z1 - z0);
-                const h = Math.max(0.3, Math.min(2.0, w.top));
+                // Low walls (Tesla-style) so rooms stay visible from the chase camera.
+                const h = Math.max(0.3, Math.min(PANEL_MAX_H, w.top));
                 m.scale.set(len, h, 1);
                 m.position.set((x0 + x1) / 2, h / 2, (z0 + z1) / 2);
                 m.rotation.set(0, Math.atan2(-(z1 - z0), x1 - x0), 0);

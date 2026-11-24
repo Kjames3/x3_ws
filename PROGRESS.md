@@ -5,6 +5,18 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-24 — Reality view: wall panel fixes (diagonals, height)
+
+- **Problem:** live apartment run showed diagonal panels cutting across rooms and 2 m
+  near-opaque panels hiding the interior.
+- **Work done:** panels must be >= 55% filled with columns along their length (sparse
+  RANSAC lines through clutter rejected); walls snap to the room's dominant square grid
+  within 15° (off-grid walls kept only if >= 80% filled and >= 1.2 m); minimum panel 4
+  columns / 0.6 m; panels capped at 1.0 m and fade 85% -> 45% opacity toward the top.
+- **Results:** synthetic rotated apartment with 25 tall clutter columns, 29 seeds: off-grid
+  panels 4 (worst 42°) -> 0 (worst 0.8°), ~5.1 panels per 5-wall room; chair room 30/30.
+  Not yet re-checked live.
+
 ## 2026-11-24 — Reality view: wall panels + furniture stand-ins from live data
 
 - **Problem:** map walls did not match the live scan; the live Livox voxels look better.
