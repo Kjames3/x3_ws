@@ -5,6 +5,23 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-24 — Lab crowd runs; rear OAK pitch corrected
+
+- **Problem:** four lab crowd recordings (crowd-r1..r4, 2–4 people standing close). The
+  recorder summary showed lidar losses (r2 28 births) and rear-camera rays matching a lidar
+  body only 0.2–81%, worse with distance.
+- **Potential solution:** replay with the seeded candidates the robot uses live; compare
+  rear rays' foot depression against the Livox clusters on the same bearing.
+- **Work done:** replays (`seeded_tracker_replay.py`): with seeded candidates r2 births
+  28 -> 8, camera-seen people with a track on them 90 -> 99.8% (r3 74 -> 88%, r4 98 -> 99.4%);
+  the summary script ignores seeded rows and understated tracking. Rear bearings were within
+  ~1° of the lidar, but feet sat a steady 4.7° low in all runs: the IMU-derived rear pitch
+  (-1.84°) is wrong. Swept pitch/yaw offline with the recorded boxes; set the URDF rear
+  pitch to -5.84° (nose up) and yaw +1.0° (`oak_rear_yaw_trim`).
+- **Results:** rear rays with a lidar body found r1 81 -> 97%, r2 27 -> 79%, r3 36 -> 99%,
+  r4 0.2 -> 99.7%; wrong picks 0% before and after. Interim: a Livox solve for the rear
+  camera goes on the next lab list. r3 losses remain (people hiding each other from the lidar).
+
 ## 2026-11-24 — Reality view: merge stacked wall panels, reject blob lines
 
 - **Problem:** live run: 2–3 parallel panels 20–40 cm apart for one wall; a panel cutting

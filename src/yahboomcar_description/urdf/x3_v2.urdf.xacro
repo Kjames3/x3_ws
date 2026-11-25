@@ -53,7 +53,13 @@
        modelled). Rear = 14442C103181D7D600: -1.84 deg (nose up), roll 0.17.
        An earlier reading the same day had the two units swapped. -->
   <xacro:property name="oak_front_pitch" value="0.0019"/>
-  <xacro:property name="oak_rear_pitch" value="-0.0321"/>
+  <!-- Rear CORRECTED 2026-11-24 from the lab crowd runs (person-lidar-2026-11-24/crowd-r1..r4):
+       person boxes' feet sat a steady 4-5 deg low against the Livox clusters at 1.5-2.9 m,
+       so the IMU reading above (-1.84) is off. Pitch -1.84 - 4.0 = -5.84 deg nose up, yaw
+       +1.0 deg. Rear rays matched to a lidar body 0.2-81% -> 79-99.7%, 0 wrong picks
+       (src/tools/perception/side_ray_eval.py). Interim: replace with a Livox solve. -->
+  <xacro:property name="oak_rear_pitch" value="-0.1019"/>
+  <xacro:property name="oak_rear_yaw_trim" value="0.01745"/>
 
   <!-- PLACEHOLDER: the Rosmaster's MPU9250 frame, carried over unchanged from
        the old chassis. Its board position on v2 is not in the CAD export. -->
@@ -201,9 +207,9 @@
        pitch > 0 = nose down, measured (see oak_front_pitch). oakd_driver's
        xyz_base_m still assumes a level camera. The FRONT end (Top_bus_light)
        was confirmed 2026-11-18: the front OAK sees the open space ahead. -->
-  <xacro:macro name="oak" params="base prefix pose pit calib:=''">
+  <xacro:macro name="oak" params="base prefix pose pit calib:='' yaw_trim:=0">
     <xacro:property name="g" value="${pose['glass_centre']}"/>
-    <xacro:property name="yaw" value="${pose['yaw']}"/>
+    <xacro:property name="yaw" value="${pose['yaw'] + yaw_trim}"/>
     <link name="${base}"/>
     <joint name="${prefix}_center_joint" type="fixed">
       <xacro:if value="${calib == ''}">
@@ -252,6 +258,7 @@
                   value="${dict(xyz='0.3141 0.0081 -0.0585', rpy='-0.058393 -0.022812 -0.011849')}"/>
   <xacro:oak base="oak-d-base-frame" prefix="oak" pose="${cad['oak_front']}" pit="${oak_front_pitch}"
              calib="${oak_front_calib}"/>
-  <xacro:oak base="oak_rear-d-base-frame" prefix="oak_rear" pose="${cad['oak_rear']}" pit="${oak_rear_pitch}"/>
+  <xacro:oak base="oak_rear-d-base-frame" prefix="oak_rear" pose="${cad['oak_rear']}" pit="${oak_rear_pitch}"
+             yaw_trim="${oak_rear_yaw_trim}"/>
 
 </robot>

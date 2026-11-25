@@ -124,8 +124,8 @@ def test_livox_and_laser(urdf):
 
 def test_oaks_face_out_of_their_ends(urdf):
     poses, _ = _fk(urdf)
-    # nose-up, rad: front from the Livox calibration (2026-11-20 lab), rear from its IMU (2026-11-18)
-    measured_up = {"oak": 0.022810, "oak_rear": 0.0321}
+    # nose-up, rad: front from the Livox calibration (2026-11-20 lab), rear from the 2026-11-24 crowd-run correction
+    measured_up = {"oak": 0.022810, "oak_rear": 0.1019}
     for name, sign in (("oak", 1), ("oak_rear", -1)):
         T = poses[f"{name}_rgb_camera_optical_frame"]
         view = T[:3, 2]                            # optical +Z = viewing direction
