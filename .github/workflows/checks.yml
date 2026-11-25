@@ -2,7 +2,7 @@ name: checks
 
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
   workflow_dispatch:   # lets you run it by hand from the Actions tab
 
@@ -24,10 +24,11 @@ jobs:
       # install/ holds colcon-GENERATED setup scripts (install/setup.sh,
       # install/local_setup.sh). They are build output, not source, and they do
       # not pass lint — exclude them rather than editing generated files.
+      # artifacts/ holds frozen one-off experiment scripts kept as a record.
       - name: Collect scripts
         id: collect
         run: |
-          mapfile -t files < <(git ls-files '*.sh' | grep -v '^install/')
+          mapfile -t files < <(git ls-files '*.sh' | grep -vE '^(install|artifacts)/')
           printf '  %s\n' "${files[@]}"
           echo "count=${#files[@]}" >> "$GITHUB_OUTPUT"
           printf '%s\n' "${files[@]}" > /tmp/sh_files.txt
@@ -82,6 +83,15 @@ jobs:
       # themselves. -rs prints the skip reasons so a silent skip is visible.
       - name: pytest
         run: python -m pytest tests -q -rs
+
+  ruff:
+    name: ruff (real-bug lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Only rules that indicate actual bugs: syntax errors, undefined names,
+      # bad comparisons, misplaced return/yield. Style is not enforced.
+      - run: pipx run ruff check --select E9,F63,F7,F82 --output-format=github src tests scripts
 
   web:
     name: web GUI (syntax + humanoid)

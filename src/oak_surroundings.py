@@ -9,7 +9,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 from oak_color_geometry import refine
-from oak_display_diagnostic import DisplayDiagnostic
+try:  # bench diagnostic; optional so a checkout without it still runs
+    from oak_display_diagnostic import DisplayDiagnostic
+except ImportError:
+    DisplayDiagnostic = None
 from oak_geometry_worker import GeometryWorker
 
 PROCESS_FLAG = Path("/tmp/x3_oak_geometry_process")
@@ -50,7 +53,7 @@ class OakSurroundings:
         self.maps=None
         self.offset=None
         self.stage_samples=[]
-        self.diagnostic=DisplayDiagnostic.arm()
+        self.diagnostic=DisplayDiagnostic.arm() if DisplayDiagnostic else None
         self.geometry_worker=None
         self.process_enabled=False
         self.worker_retry_at=0.

@@ -5994,7 +5994,7 @@ def _start_http_server():
             self.send_header("Expires", "0")
             super().end_headers()
 
-        def log_message(self, fmt, *args):  # noqa: suppress per-request noise
+        def log_message(self, fmt, *args):  # suppress per-request noise
             super().log_message(fmt, *args)
 
     handler = functools.partial(NoCacheHandler, directory=web_dir)

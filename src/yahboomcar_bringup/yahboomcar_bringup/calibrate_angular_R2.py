@@ -152,5 +152,5 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        class_calibrateangular.cmd_vel,publish(Twist())
+        class_calibrateangular.cmd_vel.publish(Twist())
     
