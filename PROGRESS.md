@@ -5,6 +5,16 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-24 — Recorder summary replays the tracker the way the robot runs it
+
+- **Problem:** `lidar_person_replay.py` (printed after every `record_person_lidar.sh` run)
+  fed the tracker only the ordinary candidates, so crowd runs looked far worse than live.
+- **Work done:** by default it now adds the seeded and side-camera rows, the side anchors,
+  and ray snapping from the bag's /odom, as x3_server does; `--base` keeps the old arm. The
+  header prints which inputs were used and both holds (3 s young / 30 s established).
+- **Results:** crowd-r1..r4 lidar ids replay 8/13/13/8 vs live 7/13/14/7 (old summary
+  6/6/12/4). 63 related tests pass.
+
 ## 2026-11-24 — Lab crowd runs; rear OAK pitch corrected
 
 - **Problem:** four lab crowd recordings (crowd-r1..r4, 2–4 people standing close). The
