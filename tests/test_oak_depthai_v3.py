@@ -158,6 +158,7 @@ def _v3_cam(monkeypatch, record=False):
     monkeypatch.setattr(oakd_driver, "_DAI_V3", True)
     cam = OakDCamera.__new__(OakDCamera)
     cam.usb2_mode, cam._auto_economy, cam.record_rgbd = False, True, record
+    cam.device_id = None
 
     def build(with_spatial, economy, device=None):
         assert device is not None, "v3 must build against the open device"

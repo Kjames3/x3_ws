@@ -13,7 +13,10 @@ try:  # bench diagnostic; optional so a checkout without it still runs
     from oak_display_diagnostic import DisplayDiagnostic
 except ImportError:
     DisplayDiagnostic = None
-from oak_geometry_worker import GeometryWorker
+try:  # optional out-of-process geometry; in-process path is used without it
+    from oak_geometry_worker import GeometryWorker
+except ImportError:
+    GeometryWorker = None
 
 PROCESS_FLAG = Path("/tmp/x3_oak_geometry_process")
 
@@ -76,7 +79,7 @@ class OakSurroundings:
         self.process_enabled=enabled
         if not subscribed or not enabled:
             self._close_worker()
-        elif self.geometry_worker is None and time.monotonic() >= self.worker_retry_at:
+        elif GeometryWorker is not None and self.geometry_worker is None and time.monotonic() >= self.worker_retry_at:
             try:
                 self.geometry_worker=GeometryWorker()
                 log.info('OAK geometry process started pid=%d',self.geometry_worker.process.pid)

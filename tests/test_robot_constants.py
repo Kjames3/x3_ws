@@ -78,10 +78,10 @@ def test_laser_joint_keeps_its_half_turn(urdf):
     assert rpy[2] == pytest.approx(math.pi + math.radians(4.85), abs=1e-4)
 
 
-def test_lidar_tilt_axis_is_pitch(urdf):
-    j = _joint(urdf, 'lidar_tilt_joint')
-    assert j.get('type') == 'revolute'
-    assert [float(v) for v in j.find('axis').get('xyz').split()] == [0.0, 1.0, 0.0]
+def test_lidar_tilt_joint_is_fixed(urdf):
+    # Fixed since 2026-10-29: the tilt servo was removed for the Livox and
+    # nothing publishes this joint, so a revolute joint would orphan laser_link.
+    assert _joint(urdf, 'lidar_tilt_joint').get('type') == 'fixed'
 
 
 @pytest.mark.parametrize('joint, down_deg', [('tof_upper_joint', 15.0), ('tof_lower_joint', 40.0)])

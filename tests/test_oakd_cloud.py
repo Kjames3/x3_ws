@@ -339,4 +339,15 @@ def test_depth_correction_is_per_device_and_keeps_invalid_zero(tmp_path):
 def test_shipped_depth_correction_covers_the_pro_w():
     import oakd_driver
 
-    assert oakd_driver.load_depth_correction("14442C103181D7D600") > 0.0
+    # Re-solved stereo on 2026-11-23 left this unit needing no correction.
+    assert oakd_driver.load_depth_correction("14442C103181D7D600") == 0.0
+
+
+def test_depth_correction_reads_offset(tmp_path):
+    import json
+    import oakd_driver
+
+    p = tmp_path / "c.json"
+    p.write_text(json.dumps({"devices": {"X": {"inv_depth_offset_per_m": 0.05}}}))
+    assert oakd_driver.load_depth_correction("X", path=str(p)) == 0.05
+    assert oakd_driver.load_depth_correction("Y", path=str(p)) == 0.0
