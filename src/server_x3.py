@@ -364,6 +364,39 @@ CBF_MOVER_MIN_PERSON_FRAMES = 5   # tagged a person for this long
 CBF_MOVER_JUMP_HOLD_FRAMES = 10   # since the track last jumped: one history window
 
 
+# How hard the CBF is overriding the commands it gets (Nav2's above all). An
+# infeasible solve is logged by cbf_filter, but a feasible solve that shrinks
+# Nav2's command to near zero -- what a planner/CBF disagreement looks like --
+# was silent. One INFO line per window while commands are being cut.
+CBF_CUT_LOG_PERIOD_S = float(os.environ.get('X3_CBF_CUT_LOG_PERIOD_S', 10.0))
+_cbf_cut = {'n': 0, 'cut50': 0, 'stopped': 0, 'asked': 0.0, 'got': 0.0,
+            'yaw_cut': 0, 'since': time.monotonic()}
+
+
+def _log_cbf_cut(asked, got, w_asked, w_got):
+    """Count one filtered command; log the window when any were cut hard."""
+    st = _cbf_cut
+    if asked > 0.02:
+        st['n'] += 1
+        st['asked'] += asked
+        st['got'] += got
+        if got < 0.5 * asked:
+            st['cut50'] += 1
+        if got < 0.01:
+            st['stopped'] += 1
+    if w_asked > 0.05 and w_got < 0.5 * w_asked:
+        st['yaw_cut'] += 1
+    now = time.monotonic()
+    if now - st['since'] < CBF_CUT_LOG_PERIOD_S:
+        return
+    if st['n'] and (st['cut50'] or st['yaw_cut']):
+        logger.info("[cbf-cut] %.0f s: %d moving cmds, %d cut >50%% (%d to a stop), "
+                    "mean speed asked %.2f got %.2f m/s, %d yaw cuts",
+                    now - st['since'], st['n'], st['cut50'], st['stopped'],
+                    st['asked'] / st['n'], st['got'] / st['n'], st['yaw_cut'])
+    st.update(n=0, cut50=0, stopped=0, asked=0.0, got=0.0, yaw_cut=0, since=now)
+
+
 def _cbf_movers(estimates):
     """Velocity-estimator tracks the CBF treats as MOVING obstacles.
 
@@ -2027,6 +2060,7 @@ class ROS2Bridge:
         # Summary for the GUI's obstacle warning (touch overlay): is the filter
         # cutting the operator's command, and is it blind (stale /scan)?
         asked = math.hypot(vx, vy)
+        _log_cbf_cut(asked, math.hypot(safe_vx, safe_vy), abs(omega_req), abs(omega))
         self.cbf_info = {
             'limited': bool(asked > 0.01 and math.hypot(safe_vx - vx, safe_vy - vy) > 0.25 * asked),
             'blind': bool(not lidar_3d_scan_enabled and obst_age > OBSTACLE_STALE_S),
