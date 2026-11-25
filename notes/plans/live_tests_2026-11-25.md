@@ -29,6 +29,14 @@ the time spent closer than 0.5 m went from 12.9 to 5.8 s, mostly from side and r
 Watch for the camera + lidar double count (the same person counted once by each, 0.59 m apart,
 outside the 0.5 m dedupe): if a walk-up pushes the robot unusually hard, note the time.
 
+## D. Crowd re-test (needs several people)
+
+Head-peak split + track seeds (5e51134) are live but untested with a crowd. Repeat the
+2026-11-24 crowd runs: `crowd-r5`.. 120 s each, 3+ people standing close, some against the
+desks, from 2-3 robot positions. Expect fewer lidar losses than crowd-r1..r4 (offline r3
+17 -> 3). Also: one person leaves from beside the desks; their track should end within
+30 s and not stay on the furniture.
+
 ## C. Rear OAK Livox calibration
 
 The rear pitch/yaw in the URDF is an interim correction from the 2026-11-24 crowd runs
