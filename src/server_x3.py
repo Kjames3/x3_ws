@@ -106,7 +106,7 @@ from frontier_explorer import FrontierExplorer
 from velocity_estimator import VelocityEstimator
 from velocity_timing import PoseHistory, ros_stamp_ns
 from person_memory import PersonMemory
-from lidar_person_tracker import (LidarPersonTracker, merge_seeded, to_local as lidar_persons_local,
+from lidar_person_tracker import (CONFIRM_HITS as LIDAR_CONFIRM_HITS, LidarPersonTracker, merge_seeded, to_local as lidar_persons_local,
                                   cbf_estimates as lidar_cbf_estimates)
 from people_buffer import people_cloud, cap_velocity as people_cap_velocity
 from pathlib import Path
@@ -456,6 +456,14 @@ SIDE_FRAME_MAX_AGE_S = 0.3
 SIDE_ROWS_MAX_AGE_S = 0.15
 # role -> (upright image, monotonic capture time), written by the side capture threads.
 _side_frames = {}
+# X3_TRACK_SEEDS (default on, needs X3_SEEDED_TRACKER): confirmed lidar person tracks join
+# the camera seeds on /c3/person_seeds, so livox_scan_node cuts their body out of a cluster
+# they have merged into (a person standing against the desks joins one 7-9 m component
+# that extract rejects). Offline 2026-11-24: crowd-r3 lidar losses 17 -> 3, desk 3 -> 0,
+# walk 11 -> 3, empty runs still 0 tracks. A track still ends 30 s after its last camera
+# sighting, which bounds one stuck on furniture.
+TRACK_SEEDS = SEEDED_TRACKER and os.environ.get('X3_TRACK_SEEDS', '1') != '0'
+TRACK_SEED_DEDUP_M = 0.5   # a track this close to a camera seed adds nothing
 LIDAR_PERSONS_CBF_FILE = '/tmp/x3_lidar_persons_cbf'
 _lidar_cbf = {'t': -1.0, 'on': LIDAR_PERSONS_CBF, 'fed': 0, 'ticks': 0, 'logged': 0.0}
 
@@ -1496,7 +1504,17 @@ class ROS2Bridge:
         packet_age = c3_stats.get('packet_age_s', 0.0) if c3_stats else float('inf')
         stamp = self._node.get_clock().now().nanoseconds * 1e-9
         anchors = LidarPersonTracker._anchors(camera, stamp, packet_age)
-        rows = np.array([[a['x'], a['y'], a['vx'], a['vy']] for a in anchors], dtype='<f4').reshape(-1, 4)
+        seeds = [(a['x'], a['y'], a['vx'], a['vy']) for a in anchors]
+        if TRACK_SEEDS:
+            with _lidar_persons_lock:
+                tracks = [(t.x, t.y, t.vx, t.vy, t.at) for t in _lidar_persons.tracks
+                          if t.hits >= LIDAR_CONFIRM_HITS]
+            for x, y, vx, vy, at in tracks:
+                dt = min(0.4, max(0.0, stamp - at))
+                x, y = x + vx * dt, y + vy * dt
+                if all(math.hypot(x - sx, y - sy) >= TRACK_SEED_DEDUP_M for sx, sy, _, _ in seeds):
+                    seeds.append((x, y, vx, vy))
+        rows = np.array(seeds, dtype='<f4').reshape(-1, 4)
         msg = self._PointCloud2()
         msg.header.stamp.sec, msg.header.stamp.nanosec = divmod(int(stamp * 1e9), 1_000_000_000)
         msg.header.frame_id = 'odom'

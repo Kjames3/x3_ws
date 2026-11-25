@@ -5,6 +5,23 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-24 — Crowd tracking: head-peak split on, lidar tracks seed their own body
+
+- **Problem:** crowd-r3 lost tracked people 17 times in 2 min. At every "cluster gone"
+  loss the person was still in the raw Livox cloud (400-530 points at 1.7 m, top 1.7 m):
+  standing against the desks they joined one 7-9 m component that `extract` rejects, and
+  close-standing groups formed blobs the default path does not split (`peaks` was off).
+- **Work done:** `livox_scan_node` param `person_peaks` (default True) turns on
+  `_peak_split`. `server_x3` adds confirmed lidar tracks (predicted to now, not within
+  0.5 m of a camera seed) to `/c3/person_seeds` (`X3_TRACK_SEEDS`, default on with the
+  seeded tracker), so `seeded_candidates` cuts each tracked body out of a merged cluster.
+- **Results (offline, regenerated candidates, live-like replay):** lidar losses / ids,
+  base -> peaks+track seeds: crowd-r2 11/14 -> 3/6, crowd-r3 17/12 -> 3/9, crowd-r1 2/8 ->
+  1/7, crowd-r4 0/7 unchanged, 11-22 desk 3/2 -> 0/1, 11-22 walk 11/7 -> 3/6. Empty runs
+  (11-20 lab, 11-22 lab, 11-23 yard): 0 tracks in every arm. Cost +0.3 ms peaks, ~1.2 ms
+  for 6 seeds per frame. Risk: a track can now hold onto furniture until the 30 s camera
+  hold ends it; not yet tested live.
+
 ## 2026-11-24 — Recorder summary replays the tracker the way the robot runs it
 
 - **Problem:** `lidar_person_replay.py` (printed after every `record_person_lidar.sh` run)

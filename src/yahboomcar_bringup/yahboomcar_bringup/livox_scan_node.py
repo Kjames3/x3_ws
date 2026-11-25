@@ -119,6 +119,10 @@ class LivoxScanNode(Node):
         # Point budget of /surroundings/points; x3_server raises it in its
         # "high" stream profile (a fast local link, e.g. the Slate router).
         self.display_cap = int(self.declare_parameter('display_cap', DISPLAY_CAP).value)
+        # Split one cluster of several close-standing people by their heads
+        # (person_candidates._peak_split). On 2026-11-24 lab crowd runs: crowd-r2 lidar ids
+        # 14 -> 6, losses 11 -> 5; empty runs still 0 tracks. False = the old behaviour.
+        self.person_peaks = bool(self.declare_parameter('person_peaks', True).value)
         self.add_on_set_parameters_callback(self._on_params)
         self.declare_parameter('odom_topic', '/odom')
         self.declare_parameter('source_frame', 'livox_frame')
@@ -519,7 +523,7 @@ class LivoxScanNode(Node):
         wx = c * xyz[:, 0] - sn * xyz[:, 1] + px
         wy = sn * xyz[:, 0] + c * xyz[:, 1] + py
         origin = (float(frame[0][0]), float(frame[1][0]))
-        cands = extract_candidates(wx, wy, xyz[:, 2], origin=origin)
+        cands = extract_candidates(wx, wy, xyz[:, 2], origin=origin, peaks=self.person_peaks)
         seeds = self.seeds_at(end)
         if seeds is not None and self.seed_pub.get_subscription_count() > 0:
             more = seeded_candidates(wx, wy, xyz[:, 2], seeds, origin, existing=cands)
