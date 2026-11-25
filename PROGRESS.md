@@ -5,6 +5,50 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-24 — Synthetic crowd checks before the live re-test
+
+**Problem:** The crowd left before the head-peak split and track seeds could be tested live. Track seeds could also keep a track alive on furniture after the person leaves.
+
+**Potential solution:** Insert synthetic people into real empty lab frames with `synthetic_people.py`, then compare each change on and off on identical scenes.
+
+**Work done:** Added `src/tools/perception/crowd_synth_check.py`:
+- `split` scores `extract` with the peak split off and on. Scenes are tight groups (2–4 people, 0.35–1 m apart), people 0.25–0.45 m from the real lab benches, and people beside synthetic desks or shelves.
+- `linger` runs the live chain frame by frame: extract, then seeds, then `seeded_candidates`, then `merge_seeded`, then the tracker. A person stands at a desk for 8 s in view of the camera, then walks away at 1 m/s. The camera loses them at once, and 4 s later they vanish.
+
+Backgrounds were the empty-r1 run from 11-20 and the seeded-empty-r1 and seededlive-empty-r1 runs from 11-22.
+
+**Results:**
+
+Synthetic people are about 40% sparser than real ones, so only the on-versus-off differences count.
+
+Split, 2533 people:
+
+| Scene | Found, split off | Found, split on |
+|---|---|---|
+| Tight groups | 51% | 67% |
+| Tight groups, nearest person < 0.6 m | 34% | 56% |
+| Real-bench people | 57% | 59% |
+| Synthetic desk | 82% | 83% |
+
+- No person that was found with the split off was lost with it on.
+- Empty frames gained 0.43 candidates per frame (9.43 → 9.86).
+
+Linger, 115 episodes:
+
+| Track seeds | A track stays on the vacated spot | A track outlives the person by > 2 s |
+|---|---|---|
+| Off | 0 episodes | 14 |
+| On (as deployed) | 2/60 at real benches, ~29 s each | 54 |
+| On only if the camera saw the track within 3 s | 0 episodes | 22 |
+
+With seeds on, the extra tracks lock onto clutter at the last place the person was seen. Vanishing mid-room is harsher than leaving through a door.
+
+Replayed on the real bags, the 3 s gate keeps the gains on crowd-r2 and r4, and on crowd-r3 losses go 3 → 5. On the 11-22 desk run, losses go 0 → 2 and ids go 1 → 2.
+
+The gate is **not deployed**; that decision is pending. Tomorrow's Part D check ("track ends within 30 s of the person leaving the desk") is the live test of this.
+
+---
+
 ## 2026-11-24 — Crowd tracking: head-peak split on, lidar tracks seed their own body
 
 - **Problem:** crowd-r3 lost tracked people 17 times in 2 min. At every "cluster gone"
