@@ -93,6 +93,43 @@ jobs:
       # bad comparisons, misplaced return/yield. Style is not enforced.
       - run: pipx run ruff check --select E9,F63,F7,F82 --output-format=github src tests scripts
 
+  ros-build:
+    name: ROS 2 Humble build + colcon test
+    runs-on: ubuntu-22.04
+    container: ros:humble
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # ydlidar_ros2_driver links against the YDLidar C++ SDK (not in rosdep).
+      - name: Build YDLidar SDK
+        run: |
+          apt-get update -qq && apt-get install -y -qq cmake git
+          git clone --depth 1 https://github.com/YDLIDAR/YDLidar-SDK.git /tmp/ydsdk
+          cmake -S /tmp/ydsdk -B /tmp/ydsdk/build -DCMAKE_BUILD_TYPE=Release
+          make -C /tmp/ydsdk/build -j"$(nproc)" install && ldconfig
+
+      - name: rosdep install
+        run: |
+          source /opt/ros/humble/setup.bash
+          rosdep update --rosdistro humble
+          rosdep install --from-paths src --ignore-src -r -y
+
+      - name: colcon build
+        run: |
+          source /opt/ros/humble/setup.bash
+          colcon build --event-handlers console_cohesion+ --cmake-args -DBUILD_TESTING=ON
+
+      - name: colcon test
+        run: |
+          source /opt/ros/humble/setup.bash
+          colcon test --event-handlers console_cohesion+
+          colcon test-result --verbose
+
   web:
     name: web GUI (syntax + humanoid)
     runs-on: ubuntu-latest
