@@ -37,6 +37,12 @@ desks, from 2-3 robot positions. Expect fewer lidar losses than crowd-r1..r4 (of
 17 -> 3). Also: one person leaves from beside the desks; their track should end within
 30 s and not stay on the furniture.
 
+In the synthetic test (`crowd_synth_check.py linger`, 0f73b3a), track seeds kept a track
+alive on clutter after its person had gone in 54 of 115 episodes. Watch for this. If a
+track sits on a desk or bench after its person leaves, gate track seeds on the camera
+having seen the track within the last 3 s. That gate is tested offline but not deployed.
+It cost two desk-run losses.
+
 ## C. Rear OAK Livox calibration
 
 The rear pitch/yaw in the URDF is an interim correction from the 2026-11-24 crowd runs
