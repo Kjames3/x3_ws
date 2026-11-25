@@ -29,6 +29,14 @@ the time spent closer than 0.5 m went from 12.9 to 5.8 s, mostly from side and r
 Watch for the camera + lidar double count (the same person counted once by each, 0.59 m apart,
 outside the 0.5 m dedupe): if a walk-up pushes the robot unusually hard, note the time.
 
+## C. Rear OAK Livox calibration
+
+The rear pitch/yaw in the URDF is an interim correction from the 2026-11-24 crowd runs
+(fac31f6: -5.84 deg nose up, +1 deg yaw, from person feet vs Livox clusters). Do a proper
+camera-to-Livox solve for the rear OAK, like the front/right/left, and replace it.
+
 ## Already done
+
+- Lab crowd runs crowd-r1..r4 (2026-11-24); rear OAK pitch corrected from them (fac31f6).
 
 - Left camera, new lens: recalibrated (800b510) and alignment checked (`left-check-r1`, 2026-11-24).
