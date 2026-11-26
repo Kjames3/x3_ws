@@ -473,6 +473,10 @@ class OLEDDisplay:
             except Exception as e:
                 logger.error(f"OLED init failed: {e}")
 
+    @property
+    def has_device(self) -> bool:
+        return self._device is not None
+
     def show(self, lines):
         """Render up to 3 lines of text on the 128x32 display."""
         if self._device is None:

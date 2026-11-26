@@ -23,6 +23,24 @@ Added `X3_CAM_DECODE_ON_DEMAND=1` and `X3_CAM_DECODE_HZ` (default 10) on `t3/cam
 
 These are laptop numbers for 300 synthetic 1280x800 MJPEG frames at 30 fps with a 10 Hz cap. The V4L2 model (raw packets plus `imdecode`) dropped from 2.12 to 0.71 ms of CPU per frame, 3.0x less. The FFmpeg file backend decodes inside `grab()`, so it saved only 1.5x. The full suite went from 992 to 1007 passing tests and kept the same 4 failures and 8 URDF errors. The change has not been deployed or tested on the robot. The saving needs the V4L2 backend (check the open log line) and applies only when no GUI is connected, because `broadcast_loop` requests a frame on every cycle while a client is connected.
 
+## 2026-11-26 — Server event-loop performance prototypes
+
+**Problem**
+
+The parked AGX Orin journal captured a 150 ms stall during the OLED network lookup and a 220 ms stall while the standalone test scanner started a thread. The server also checks the CBF override file on every motion command.
+
+**Potential solution**
+
+Skip network lookups for an absent OLED, move connected-display lookups to the executor, reuse one process scanner thread, and cache CBF override checks for one second.
+
+**Work done**
+
+Added three independent, default-off flags on `t3/server-perf-prototypes`. `X3_OLED_GUARD=1` skips absent-display updates and runs the two network commands off the loop for a connected display. `X3_PSUTIL_SCAN_THREAD=1` starts the daemon at startup and keeps the same process matching. `X3_CBF_FLAG_CACHE=1` caches override creation and removal for up to one second.
+
+**Results**
+
+The full laptop suite went from 992 to 1,000 passing tests with the same four failures and eight URDF errors. On the i9-14900HX, median OLED first-turn time fell from 1,526 to 14 µs unplugged and from 1,492 to 41 µs connected. The due standalone check fell from 212 to 0.64 µs, and the warm CBF override check fell from 0.803 to 0.084 µs per call. Run `python3 src/tools/perf/server_loop_bench.py` to repeat the isolated measurements. Robot checks are pending.
+
 ---
 
 ## 2026-11-26 — Livox point cloud processing prototype

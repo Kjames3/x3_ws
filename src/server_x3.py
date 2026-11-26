@@ -745,6 +745,22 @@ LIDAR_X_M = float(os.environ.get('X3_LIDAR_X_M', -0.0025))
 # While this file exists the CBF is bypassed for manual driving (calibration
 # runs). Remove it to re-arm; nothing else changes.
 CBF_OFF_FILE = os.environ.get('X3_CBF_OFF_FILE', '/tmp/x3_cbf_off')
+CBF_FLAG_CACHE = os.environ.get('X3_CBF_FLAG_CACHE', '0') == '1'
+_cbf_off_cache = (False, float('-inf'))  # (file_exists, last_check_monotonic)
+
+
+def _cbf_off() -> bool:
+    global _cbf_off_cache
+    if not CBF_FLAG_CACHE:
+        return os.path.exists(CBF_OFF_FILE)
+    off, checked_at = _cbf_off_cache
+    now = time.monotonic()
+    if now - checked_at >= 1.0:
+        off = os.path.exists(CBF_OFF_FILE)
+        _cbf_off_cache = (off, now)
+    return off
+
+
 # Clearance kept round that outline. 0.05 (was 0.10): at 0.10 the CBF needed
 # 0.79 m of clear width, leaving +-4.5 cm of centring in the 0.88 m apartment
 # doorway (2026-11-22).
@@ -2071,9 +2087,9 @@ class ROS2Bridge:
             # scanning station anyway, and every step-and-stare guarantee depends
             # on it not moving. Hold still, rotation included.
             safe_vx, safe_vy, omega = 0.0, 0.0, 0.0
-        elif os.path.exists(CBF_OFF_FILE):
+        elif _cbf_off():
             # Operator override for calibration drives (touch the file, rm to
-            # re-arm; checked every command). Same pass-through as blind.
+            # re-arm). With caching enabled, either change can take 1 s to apply.
             safe_vx, safe_vy = vx, vy
             if (vx or vy) and not getattr(self, '_warned_cbf_off', False):
                 self._warned_cbf_off = True
@@ -5839,6 +5855,7 @@ _standalone_test_cache = (False, 0.0)   # (last_result, last_scan_monotonic)
 _STANDALONE_TEST_SCAN_INTERVAL = 1.0    # seconds between full /proc scans
 _STANDALONE_TESTS = ('ab_comparison_test.py', 'point_to_point_test.py', 'strafe_drift_test.py',
                      'base_speed_test.py', 'footprint_measure.py', 'lidar_yaw_calib.py')
+PSUTIL_SCAN_THREAD = os.environ.get('X3_PSUTIL_SCAN_THREAD', '0') == '1'
 
 _standalone_scan_busy = False
 
@@ -5866,7 +5883,17 @@ def _scan_standalone_tests():
     _standalone_scan_busy = False
 
 
+def _standalone_test_scan_loop():
+    """Refresh the process cache on a single daemon thread."""
+    while not _shutting_down:
+        _scan_standalone_tests()
+        time.sleep(_STANDALONE_TEST_SCAN_INTERVAL)
+
+
 def _is_standalone_test_running() -> bool:
+    if PSUTIL_SCAN_THREAD:
+        return _standalone_test_cache[0]
+
     # Scanning every process' cmdline costs 150-200 ms on the Orin (~260 /proc
     # reads). motion_loop calls this at ~30 Hz from the event loop, so the scan
     # runs on a worker thread about once a second and callers get the last
@@ -6086,15 +6113,20 @@ async def tof_loop():
         await asyncio.sleep(0.02)
 
 
+OLED_GUARD = os.environ.get('X3_OLED_GUARD', '0') == '1'
+
+
 async def oled_loop():
     """Refresh OLED with WiFi SSID and IP every 5 seconds."""
     while True:
         if _shutting_down:
             break
         try:
-            if oled:
-                ssid    = _get_ssid()
-                ip      = _get_ip()
+            if oled and (not OLED_GUARD or oled.has_device):
+                if OLED_GUARD:
+                    ssid, ip = await asyncio.to_thread(lambda: (_get_ssid(), _get_ip()))
+                else:
+                    ssid, ip = _get_ssid(), _get_ip()
                 clients = len(connected_clients)
                 oled.show([
                     f"WiFi:{ssid[:16]}",
@@ -6648,6 +6680,9 @@ async def lidar_scan_loop():
 
 async def main():
     global motion_queue
+    if PSUTIL_SCAN_THREAD:
+        threading.Thread(target=_standalone_test_scan_loop, name='standalone_scan',
+                         daemon=True).start()
     _start_http_server()
     initialize_hardware()
     motion_queue = asyncio.Queue(maxsize=2)
