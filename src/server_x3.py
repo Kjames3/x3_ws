@@ -1070,8 +1070,15 @@ class ROS2Bridge:
         rclpy.init(args=None)
         from rclpy.parameter import Parameter
         from tf2_ros import Buffer, TransformListener
-        self._node = Node('x3_ws_bridge',
-                          parameter_overrides=[Parameter('use_sim_time', value=SIM_MODE)])
+        lean_rclpy = os.environ.get('X3_RCLPY_LEAN') == '1'
+        node_type = Node
+        if lean_rclpy:
+            from lean_rclpy import LeanNode
+            node_type = LeanNode
+        self._node = node_type('x3_ws_bridge',
+                               parameter_overrides=[Parameter('use_sim_time', value=SIM_MODE)])
+        # Exploration needs the dynamic map->odom transform. OAK floor
+        # obstacles also use this buffer for camera/base transforms into odom.
         self._explore_tf = Buffer(node=self._node)
         self._explore_tf_listener = TransformListener(self._explore_tf, self._node)
         self._lock = threading.Lock()
@@ -1168,8 +1175,7 @@ class ROS2Bridge:
         self._node.create_subscription(Image,          '/camera/depth_image', self._depth_cb, 1)
         self._node.create_subscription(Image,          '/camera/depth/image_raw', self._depth_cb, 1)
         self._velocity_pose_history = PoseHistory()
-        self._node.create_subscription(Odometry,       '/odom',             self._odom_cb,  10)
-        self._node.create_subscription(Odometry,       '/odom_raw',         lambda msg: self._odom_cb(msg, fused=False),  10)
+        self._init_odom_subscriptions(Odometry, lean_rclpy)
         self._node.create_subscription(Float32,        '/voltage',          self._voltage_cb, 10)
         self._node.create_subscription(OccupancyGrid,  '/map',              self._map_cb,    _map_qos)
         from rclpy.qos import qos_profile_sensor_data
@@ -1406,6 +1412,44 @@ class ROS2Bridge:
         if self._last_depth_write_time == 0.0:
             return float('inf')
         return time.monotonic() - self._last_depth_write_time
+
+    def _init_odom_subscriptions(self, odom_type, lean):
+        self._raw_odom_watch_enabled = lean
+        if not lean:
+            self._node.create_subscription(odom_type, '/odom', self._odom_cb, 10)
+            self._subscribe_raw_odom(odom_type)
+            return
+
+        self._odom_type = odom_type
+        self._raw_odom_sub = None
+        self._fused_odom_stamp = time.monotonic()  # Give the EKF one second at startup.
+        self._node.create_subscription(odom_type, '/odom', self._lean_fused_odom_cb, 10)
+        if SIM_MODE:
+            # The people-cloud timer follows ROS time, which can pause in sim.
+            from rclpy.clock import Clock, ClockType
+            self._node.create_timer(
+                PEOPLE_CLOUD_PERIOD_S, self._check_raw_odom,
+                clock=Clock(clock_type=ClockType.STEADY_TIME))
+
+    def _subscribe_raw_odom(self, odom_type):
+        return self._node.create_subscription(
+            odom_type, '/odom_raw', lambda msg: self._odom_cb(msg, fused=False), 10)
+
+    def _check_raw_odom(self):
+        # The timer and /odom callbacks share the executor thread. The lock
+        # prevents subscription changes once cleanup starts on the main thread.
+        with self._lock:
+            if (self._raw_odom_watch_enabled and self._raw_odom_sub is None
+                    and time.monotonic() - self._fused_odom_stamp > 1.0):
+                self._raw_odom_sub = self._subscribe_raw_odom(self._odom_type)
+
+    def _lean_fused_odom_cb(self, msg):
+        self._odom_cb(msg)
+        if self._raw_odom_sub is not None:
+            with self._lock:
+                if self._raw_odom_watch_enabled:
+                    self._node.destroy_subscription(self._raw_odom_sub)
+                    self._raw_odom_sub = None
 
     def _odom_cb(self, msg, fused=True):
         """Extract position (metres), yaw (radians), and body twist from nav_msgs/Odometry."""
@@ -2043,6 +2087,9 @@ class ROS2Bridge:
         """Timer: keep /people/obstacles going while no drive command arrives (parked,
         or before Nav2's first command), so the first plan already routes round people.
         Commands publish it themselves; this only fills the gaps."""
+        # On hardware the existing 10 Hz tick also checks odometry freshness.
+        if self._raw_odom_watch_enabled and not SIM_MODE:
+            self._check_raw_odom()
         if not PEOPLE_COSTMAP_ENABLED:
             return
         now = time.monotonic()
@@ -2278,6 +2325,8 @@ class ROS2Bridge:
         import rclpy
         import time
         try:
+            with self._lock:
+                self._raw_odom_watch_enabled = False
             logger.info("ROS2Bridge: sending stop command before shutdown...")
             self.stop()
             time.sleep(0.2)  # Allow DDS to flush stop packet
