@@ -31,6 +31,7 @@
     const OBJ_HOLD_S = 3.0;
     const OBJ_SMOOTH = 0.3;
     const OBJ_MATCH_M = 0.7;
+    const LIDAR_CONFIRM_HITS = 10, LIDAR_CONFIRM_S = 3.0;   // promote a lidar-only surface
 
     // Labels from COCO / VOC style detectors -> stand-in kind.
     const KINDS = {
@@ -642,9 +643,9 @@
             const nearby = this.tracks.filter(t=>t.kind===o.kind && Math.hypot(t.X-X,t.Y-Y)<radius)
                 .sort((a,b)=>Math.hypot(a.X-X,a.Y-Y)-Math.hypot(b.X-X,b.Y-Y));
             const t = nearby[0];
-            if (t && (!t.inferred || matched.has(t))) continue;
+            if (t && ((!t.inferred && !t.lidarOnly) || matched.has(t))) continue;
             if (!t) {
-                const track = {...o,X,Y,yaw,id:this.nextId++,hits:1,seen:nowS,inferred:true};
+                const track = {...o,X,Y,yaw,id:this.nextId++,hits:1,seen:nowS,first:nowS,inferred:true};
                 this.tracks.push(track);
                 matched.add(track);
             } else if (frame.xyz !== this.lastCloud) {
@@ -654,7 +655,12 @@
                 const symmetry = o.kind==='chair' ? 1 : 2;
                 const delta = symmetry*(yaw-t.yaw);
                 t.yaw += .25*Math.atan2(Math.sin(delta),Math.cos(delta))/symmetry;
-                t.hits++; t.seen=nowS;
+                t.hits++; t.seen=nowS; t.misses=0;
+                // Lidar-only furniture: the low camera rarely labels chairs and
+                // tables, so a surface seen consistently becomes a landmark.
+                if (t.inferred && t.hits >= LIDAR_CONFIRM_HITS && nowS - (t.first ?? nowS) >= LIDAR_CONFIRM_S) {
+                    t.inferred = false; t.lidarOnly = true;
+                }
             }
         }
         this.tracks = this.tracks.filter(t => {

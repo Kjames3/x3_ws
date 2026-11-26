@@ -29,3 +29,20 @@ assert.ok(!furnitureOverlap(desk,{...desk,x:-.5,y:.5}));
 const seat = furnitureSurfaces(cells).find(o=>o.kind==='chair');
 // The raised returns lie along the -Y edge. Local back is +Y in fit coordinates.
 assert.ok(Math.cos(seat.yaw)<-.95);
+
+// Lidar-only furniture (no camera label) is promoted to a session landmark
+// after consistent sightings, and then held while out of view on a map.
+{
+    const tr = new Tracker(), p0 = {x:0,y:0,theta:0};
+    let objs;
+    for (let i = 0; i <= 40; i++) objs = analyze(cells, [], p0, tr, i * .1, {mapped:true, xyz:[i]}).objects;
+    const kinds = tr.exportLandmarks().map(o => o.kind).sort();
+    assert.deepEqual(kinds, ['chair','table'], 'lidar-only chair and table become landmarks');
+    assert.ok(objs.every(o => !o.inferred));
+    for (let t = 5; t < 30; t++) objs = analyze([], [], p0, tr, t, {mapped:true, xyz:new Float32Array(0)}).objects;
+    assert.equal(objs.length, 2, 'promoted furniture stays while unseen');
+    const early = new Tracker();
+    for (let i = 0; i <= 15; i++) analyze(cells, [], p0, early, i * .1, {mapped:true, xyz:[i]});
+    assert.equal(early.exportLandmarks().length, 0, 'not promoted before 3 s');
+    console.log('Lidar-only furniture promotion passed');
+}

@@ -5,6 +5,18 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-26 — Reality view: lidar-only furniture becomes landmarks
+
+**Problem:** No furniture models appeared live. The OAK on-device YOLO reported nothing in 20 s of live data (threshold 0.5) and the host YOLO only "bottle"/"refrigerator" at 0.3: from 0.21 m the camera mostly sees legs.
+
+**Potential solution:** Do not require a camera label for chairs and tables; the Livox already finds seats and table tops.
+
+**Work done:** A lidar-only surface track seen in >= 10 clouds over >= 3 s is promoted to a landmark (`lidarOnly`), so it is kept in the session memory, hides its voxels, and gets the OAK colour model. It keeps updating from later surface fits.
+
+**Results:** New case in `tests/web/reality_furniture_check.cjs` (promoted after 3 s, not before, held 25 s unseen on a map); all reality checks pass. Not yet seen live. The scene "vibration" with detection on is still open.
+
+---
+
 ## 2026-11-26 — Reality view: look-alike furniture from OAK color points (Codex)
 
 **Problem:** Furniture showed as generic stand-ins even though the OAK sees the real objects.
