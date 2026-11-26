@@ -1161,6 +1161,7 @@ class ROS2Bridge:
         self._keepout = []
         self._keepout_pub = self._node.create_publisher(PointCloud2, '/explore/keepout', 5)
         self._node.create_timer(0.5, self._publish_keepout)
+        self._node.create_timer(PEOPLE_CLOUD_PERIOD_S, self._people_cloud_tick)
         if LIDAR_PERSONS_ENABLED:
             self._node.create_subscription(PointCloud2, '/livox/person_candidates',
                                            self._person_candidates_cb, qos_profile_sensor_data)
@@ -1943,19 +1944,11 @@ class ROS2Bridge:
             if not _motion_inhibited():
                 self._move_impl(vx, vy, omega)
 
-    def _move_impl(self, vx: float, vy: float, omega: float):
-        omega_req = omega        # the CBF may shrink omega; publish what was asked
-        from geometry_msgs.msg import Twist
+    def _people_inputs(self):
+        """(moving, people) from the velocity estimator (+ lidar tracks when the CBF feed
+        is on) through the person memory.  Called per drive command and, while no
+        commands arrive, by the people-cloud timer."""
         global velocity_estimation_enabled, velocity_estimator
-        
-        with self._lock:
-            obstacles = list(self._latest_obstacles)
-            obst_age = time.monotonic() - self._obstacles_stamp
-            now = time.monotonic()
-            for xy, stamp in self._tof_obstacles.values():
-                if now - stamp < TOF_CBF_STALE_S:
-                    obstacles.extend(map(tuple, xy.tolist()))
-            
         moving = []     # ((x, y), (vx, vy)) of tracked movers, base frame
         people = []     # everyone the person memory knows, for the social buffer
         lidar_cbf = _lidar_cbf_on()
@@ -1993,7 +1986,49 @@ class ROS2Bridge:
                     moving = _cbf_movers(estimates)
             except Exception as e:
                 logger.warning(f"Failed to add predictive obstacles: {e}")
+        return moving, people
+
+    def _send_people_cloud(self, people, now):
+        self._people_last_pub = now
+        try:
+            cloud = people_cloud(people)
+            if len(cloud):
+                self.publish_people_cloud(cloud)
+        except Exception as e:
+            logger.warning("people cloud failed: %s", e)
+
+    def _people_cloud_tick(self):
+        """Timer: keep /people/obstacles going while no drive command arrives (parked,
+        or before Nav2's first command), so the first plan already routes round people.
+        Commands publish it themselves; this only fills the gaps."""
+        if not PEOPLE_COSTMAP_ENABLED:
+            return
+        now = time.monotonic()
+        if now - self._people_last_pub < 2 * PEOPLE_CLOUD_PERIOD_S:
+            return
+        try:
+            _, people = self._people_inputs()
+        except Exception as e:
+            logger.warning("people cloud tick failed: %s", e)
+            return
+        if people:
+            self._send_people_cloud(people, now)
+
+    def _move_impl(self, vx: float, vy: float, omega: float):
+        omega_req = omega        # the CBF may shrink omega; publish what was asked
+        from geometry_msgs.msg import Twist
+        global velocity_estimation_enabled, velocity_estimator
         
+        with self._lock:
+            obstacles = list(self._latest_obstacles)
+            obst_age = time.monotonic() - self._obstacles_stamp
+            now = time.monotonic()
+            for xy, stamp in self._tof_obstacles.values():
+                if now - stamp < TOF_CBF_STALE_S:
+                    obstacles.extend(map(tuple, xy.tolist()))
+            
+        moving, people = self._people_inputs()
+
         # CBF safety filter. Its proactive repulsion INVENTS velocity from a zero
         # command, so it is only ever safe on FRESH obstacles -- and _scan_cb only
         # refreshes them when a /scan message arrives.
@@ -2049,13 +2084,7 @@ class ROS2Bridge:
             if PEOPLE_SPEED_CAP_ENABLED:
                 safe_vx, safe_vy = people_cap_velocity(safe_vx, safe_vy, [p["pos"] for p in people])
             if PEOPLE_COSTMAP_ENABLED and now - self._people_last_pub >= PEOPLE_CLOUD_PERIOD_S:
-                self._people_last_pub = now
-                try:
-                    cloud = people_cloud(people)
-                    if len(cloud):
-                        self.publish_people_cloud(cloud)
-                except Exception as e:
-                    logger.warning("people cloud failed: %s", e)
+                self._send_people_cloud(people, now)
 
         # Summary for the GUI's obstacle warning (touch overlay): is the filter
         # cutting the operator's command, and is it blind (stale /scan)?

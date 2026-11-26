@@ -361,7 +361,14 @@ local_costmap:
           topic: /livox/obstacles
           data_type: "PointCloud2"
           marking: True
-          clearing: False
+          # 2026-11-26: clearing on. Only /scan erased these marks, so a person's legs
+          # and feet stayed ~10 s after they walked past a parked robot. Rays are traced
+          # from the Livox (the cloud is in odom, hence sensor_frame); points still in
+          # the cloud, remembered near voxels included, are re-marked in the same update.
+          clearing: True
+          sensor_frame: livox_frame
+          raytrace_min_range: 0.0
+          raytrace_max_range: 6.0
           min_obstacle_height: 0.04
           max_obstacle_height: 2.0
           obstacle_min_range: 0.0
@@ -454,7 +461,14 @@ global_costmap:
           topic: /livox/obstacles
           data_type: "PointCloud2"
           marking: True
-          clearing: False
+          # 2026-11-26: clearing on. Only /scan erased these marks, so a person's legs
+          # and feet stayed ~10 s after they walked past a parked robot. Rays are traced
+          # from the Livox (the cloud is in odom, hence sensor_frame); points still in
+          # the cloud, remembered near voxels included, are re-marked in the same update.
+          clearing: True
+          sensor_frame: livox_frame
+          raytrace_min_range: 0.0
+          raytrace_max_range: 6.0
           min_obstacle_height: 0.04
           max_obstacle_height: 2.0
           obstacle_min_range: 0.0
