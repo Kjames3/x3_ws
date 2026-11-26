@@ -10,6 +10,13 @@ Features:
 - YOLOv11 Detection
 """
 
+import os
+
+# Apply before importing NumPy or anything else that may initialize BLAS.
+if 'X3_BLAS_THREADS' in os.environ:
+    os.environ.setdefault('OPENBLAS_NUM_THREADS', os.environ['X3_BLAS_THREADS'])
+    os.environ.setdefault('OMP_NUM_THREADS', os.environ['X3_BLAS_THREADS'])
+
 import asyncio
 import time
 import json
@@ -30,7 +37,6 @@ import numpy as np
 import cv2
 import websockets
 import sys
-import os
 import signal
 import threading
 import socket

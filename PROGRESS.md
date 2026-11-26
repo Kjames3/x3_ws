@@ -5,6 +5,26 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-26 — Server OpenBLAS thread limit prototype
+
+**Problem**
+
+The parked AGX Orin server profile showed 11 OpenBLAS workers using roughly 3.6 cores.
+
+**Potential solution**
+
+Cap the pool before NumPy loads and preserve any explicit OpenBLAS or OpenMP limits.
+
+**Work done**
+
+Added `X3_BLAS_THREADS` and a commented systemd setting on `overnight/perf-proto`. The benchmark sets the environment in fresh processes and measures process CPU and call latency under a periodic NumPy workload.
+
+**Results**
+
+On the i9-14900HX laptop with OpenBLAS 0.3.29, small calls used 0.96% of a core with the default pool and 1.24% with one thread. Adding a 512 × 512 multiply at 10 Hz reproduced spin, taking 30.27 cores with the default pool and 0.055 cores with one thread. Four startup tests passed. Robot deployment and measurement are pending.
+
+---
+
 ## 2026-11-26 — Reality view: furniture models hold still
 
 **Problem:** Live in the apartment the chair/table models kept rotating, or appeared and disappeared. Causes: the ~78 cm square dining table's "length" side flipped with noise (90 degree turns); every new fit moved confirmed furniture 25% toward it; an off-centre fit started a duplicate, and the most recently seen duplicate was drawn, so they swapped.
