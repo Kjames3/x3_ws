@@ -5,6 +5,7 @@ import math
 import pathlib
 import struct
 import sys
+from array import array
 from types import SimpleNamespace as NS
 
 import numpy as np
@@ -268,20 +269,23 @@ def test_fallback_labeler_matches_scipy():
     assert len(pairs) == a.max() == b.max()
 
 
-def test_node_publishes_candidates_in_odom():
+@pytest.mark.parametrize('fast', [False, True])
+def test_node_publishes_candidates_in_odom(fast):
     pytest.importorskip('sensor_msgs.msg')
     import time as _time
     from sensor_msgs.msg import PointCloud2, PointField
     path = pathlib.Path('src/yahboomcar_bringup/yahboomcar_bringup/livox_scan_node.py')
-    cls = next(n for n in ast.parse(path.read_text()).body if isinstance(n, ast.ClassDef))
+    tree = ast.parse(path.read_text())
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    cloud_data = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_cloud_data')
     names = ('publish_person_candidates', 'seeds_at', '_candidate_msg', 'side_rays_at')
     methods = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in names]
     ns = dict(np=np, struct=struct, time=_time, PointCloud2=PointCloud2, PointField=PointField,
               extract_candidates=pc.extract, seeded_candidates=pc.seeded_candidates,
               ray_candidates=pc.ray_candidates, CANDIDATE_FIELDS=pc.FIELDS,
-              SIDE_RAY_MAX_AGE_S=0.3)
+              SIDE_RAY_MAX_AGE_S=0.3, array=array, FAST_CLOUD=fast)
     ns['SIDE_FIELDS'] = pc.FIELDS + ('ax', 'ay', 'cam', 'tid', 'age')
-    exec(compile(ast.Module(body=methods, type_ignores=[]), 'cands', 'exec'), ns)
+    exec(compile(ast.Module(body=[cloud_data, *methods], type_ignores=[]), 'cands', 'exec'), ns)
     rng = np.random.default_rng(4)
     person = _person(rng, 2.0, 0.0, n=200) - [0.0432, 0.0, 0.31]     # sensor frame
     pts = np.zeros(len(person), dtype=[('t', '<u4'), ('x', '<f4'), ('y', '<f4'), ('z', '<f4')])
@@ -295,6 +299,7 @@ def test_node_publishes_candidates_in_odom():
              cloud_R=np.eye(3), cloud_t=np.array([0.0432, 0.0, 0.31]), pose_at=pose,
              cand_ms=[], cand_n=[], cand_logged_ns=0, get_logger=lambda: logger,
              get_clock=lambda: NS(now=lambda: NS(nanoseconds=0)),
+             person_peaks=True,
              seeds=None, seed_pub=NS(get_subscription_count=lambda: 1, publish=seeded.append),
              side_rays={}, side_pub=NS(get_subscription_count=lambda: 1, publish=side_sent.append),
              _candidate_msg=ns['_candidate_msg'])

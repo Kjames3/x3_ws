@@ -24,7 +24,9 @@ cost ~20% of a core in rclpy executor overhead alone.  And the previous frame is
 per bin) because one frame of the non-repetitive pattern fills only ~91-97%
 of 0.5-1 deg bins.
 """
+from array import array
 import math
+import os
 import struct
 import time
 
@@ -38,8 +40,6 @@ from geometry_msgs.msg import PoseStamped
 from collections import deque
 from sensor_msgs.msg import LaserScan, PointCloud2, PointField
 from tf2_ros import Buffer, TransformListener
-
-from livox_ros_driver2.msg import CustomMsg
 
 from yahboomcar_bringup.obstacle_memory import ObstacleMemory
 from yahboomcar_bringup.person_candidates import (FIELDS as CANDIDATE_FIELDS, extract as extract_candidates,
@@ -78,16 +78,30 @@ def decode_points(data):
 NEAR_RADIUS = 3.0
 NEAR_CELL, FAR_CELL = 0.025, 0.05
 DISPLAY_CAP = 12000  # 12 B/pt at 5 Hz: ~700 KB/s, 2x the old 6000 cap
+FAST_CLOUD = os.environ.get('X3_LIVOX_FAST_CLOUD') == '1'
 
 
-def _first_per_cell(xyz, cell):
+def _first_per_cell(xyz, cell, *, fast=False):
     if not len(xyz):
         return xyz
-    _, idx = np.unique(np.floor(xyz / cell).astype(np.int32), axis=0, return_index=True)
-    return xyz[np.sort(idx)]
+    cells = np.floor(xyz / cell).astype(np.int32)
+    if not fast:
+        _, idx = np.unique(cells, axis=0, return_index=True)
+        return xyz[np.sort(idx)]
+
+    # lexsort is stable, so the first sorted row in a cell is its first input point.
+    x, y, z = cells.T
+    order = np.lexsort((z, y, x))
+    sorted_cells = cells[order]
+    first = np.empty(len(order), dtype=bool)
+    first[0] = True
+    first[1:] = np.any(sorted_cells[1:] != sorted_cells[:-1], axis=1)
+    keep = np.zeros(len(order), dtype=bool)
+    keep[order[first]] = True
+    return xyz[keep]
 
 
-def display_voxels(xyz, near_radius=NEAR_RADIUS, cap=DISPLAY_CAP):
+def display_voxels(xyz, near_radius=NEAR_RADIUS, cap=DISPLAY_CAP, *, fast=False):
     """One point per 2.5 cm cell near the robot and per 5 cm cell beyond.
 
     Over the cap, the far shell is thinned first but keeps at least a third of
@@ -95,14 +109,23 @@ def display_voxels(xyz, near_radius=NEAR_RADIUS, cap=DISPLAY_CAP):
     """
     xyz = np.asarray(xyz)
     near_mask = np.hypot(xyz[:, 0], xyz[:, 1]) < near_radius
-    near = _first_per_cell(xyz[near_mask], NEAR_CELL)
-    far = _first_per_cell(xyz[~near_mask], FAR_CELL)
+    near = _first_per_cell(xyz[near_mask], NEAR_CELL, fast=fast)
+    far = _first_per_cell(xyz[~near_mask], FAR_CELL, fast=fast)
     if len(near) + len(far) > cap:
         far_keep = min(len(far), max(cap - len(near), cap // 3))
         near_keep = min(len(near), cap - far_keep)
         far = far[np.linspace(0, len(far) - 1, far_keep, dtype=int)] if far_keep else far[:0]
         near = near[np.linspace(0, len(near) - 1, near_keep, dtype=int)] if near_keep else near[:0]
     return np.concatenate((near, far)) if len(far) else near
+
+
+def _cloud_data(rows, *, fast=False):
+    if not fast:
+        return rows.tobytes()
+    # Humble's uint8 sequence setter accepts array('B') without scanning each byte.
+    data = array('B')
+    data.frombytes(memoryview(np.ascontiguousarray(rows).reshape(-1)).cast('B'))
+    return data
 
 
 def quat_to_mat(q):
@@ -115,6 +138,8 @@ def quat_to_mat(q):
 
 class LivoxScanNode(Node):
     def __init__(self):
+        from livox_ros_driver2.msg import CustomMsg
+
         super().__init__('livox_scan_node')
         self.declare_parameter('cloud_topic', '/livox/lidar')
         # Point budget of /surroundings/points; x3_server raises it in its
@@ -316,7 +341,7 @@ class LivoxScanNode(Node):
                 xyz[:, 0] = c * (wx - fx) + sn * (wy - fy)
                 xyz[:, 1] = -sn * (wx - fx) + c * (wy - fy)
         if len(xyz):
-            xyz = display_voxels(xyz, cap=self.display_cap)
+            xyz = display_voxels(xyz, cap=self.display_cap, fast=FAST_CLOUD)
         xyz = np.asarray(xyz, dtype='<f4')
         msg = PointCloud2()
         sec, nsec = struct.unpack_from('<iI', data, 4)
@@ -336,7 +361,7 @@ class LivoxScanNode(Node):
                       for i, name in enumerate(('x', 'y', 'z'))]
         msg.is_bigendian, msg.is_dense = False, True
         msg.point_step, msg.row_step = 12, len(xyz) * 12
-        msg.data = xyz.tobytes()
+        msg.data = _cloud_data(xyz, fast=FAST_CLOUD)
         self.cloud_pub.publish(msg)
 
     def on_cloud(self, data):
@@ -432,7 +457,7 @@ class LivoxScanNode(Node):
         zmin = self.ob_zmin + self.ob_zslope * np.maximum(r - 2.0, 0.0)
         keep = ((xyz[:, 2] > zmin) & (xyz[:, 2] < self.ob_zmax) & (r < self.ob_rmax)
                 & ~((np.abs(xyz[:, 0]) < self.self_x) & (np.abs(xyz[:, 1]) < self.self_y)))
-        cur = _first_per_cell(xyz[keep], self.ob_cell)
+        cur = _first_per_cell(xyz[keep], self.ob_cell, fast=FAST_CLOUD)
         c, sn = math.cos(fa), math.sin(fa)
         wx = c * cur[:, 0] - sn * cur[:, 1] + fx
         wy = sn * cur[:, 0] + c * cur[:, 1] + fy
@@ -450,7 +475,7 @@ class LivoxScanNode(Node):
                       for i, name in enumerate(('x', 'y', 'z'))]
         msg.is_bigendian, msg.is_dense = False, True
         msg.point_step, msg.row_step = 12, len(out) * 12
-        msg.data = out.tobytes()
+        msg.data = _cloud_data(out, fast=FAST_CLOUD)
         self.ob_pub.publish(msg)
 
     def on_seeds(self, msg):
@@ -554,7 +579,7 @@ class LivoxScanNode(Node):
         msg.is_bigendian, msg.is_dense = False, True
         msg.point_step = 4 * len(fields)
         msg.row_step = msg.point_step * len(cands)
-        msg.data = np.ascontiguousarray(cands, dtype='<f4').tobytes()
+        msg.data = _cloud_data(np.ascontiguousarray(cands, dtype='<f4'), fast=FAST_CLOUD)
         return msg
 
 

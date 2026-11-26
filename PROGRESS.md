@@ -5,6 +5,26 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-26 — Livox point cloud processing prototype
+
+**Problem**
+
+The parked AGX Orin profile put 21% of samples in the PointCloud2 data setter and 15% in first-point-per-cell selection. The Livox node used about 40% of one core.
+
+**Potential solution**
+
+Send a byte array through Humble's typed setter and use a stable NumPy sort to pick the original first point in each voxel.
+
+**Work done**
+
+Added `X3_LIVOX_FAST_CLOUD=1` on `overnight/perf-proto`. The fast path handles display, obstacle, and person-candidate payloads and preserves voxel output order. The laptop benchmark uses 20,000-point clouds at 10 Hz and the installed Humble message type.
+
+**Results**
+
+Laptop medians were 6,824 to 13 µs for payload creation and assignment, 9,027 to 2,561 µs for single-grid voxelization, and 15,856 to 2,940 µs for display voxelization plus payload assignment. ROS-sourced focused tests passed 48 checks, including byte parity and browser decoding. The standard full suite retained the same four failures and eight URDF errors and increased from 985 to 992 passing tests. The profile suggests a saving of roughly 0.12 core at the sampled load, pending Jetson measurement.
+
+---
+
 ## 2026-11-26 — Server OpenBLAS thread limit prototype
 
 **Problem**
