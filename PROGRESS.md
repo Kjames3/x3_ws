@@ -5,6 +5,26 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-26 — On-demand camera decode prototype
+
+**Problem**
+
+On the robot the Arducam capture thread used about 14% CPU. It decoded every 1280x800 MJPEG frame with `cap.read()`, but the side person detector samples it at 5 Hz. The left camera also read and rotated every frame.
+
+**Potential solution**
+
+Call `grab()` on every frame to keep the buffer fresh, and call `retrieve()` (plus the rotate) only at a capped rate or when a consumer asks for a frame.
+
+**Work done**
+
+Added `X3_CAM_DECODE_ON_DEMAND=1` and `X3_CAM_DECODE_HZ` (default 10) on `t3/camera-decode-on-demand` (`src/cam_decode.py`). The flag is off by default, which keeps the old behaviour. `AstraCamera.get_frame*`, the side detector and the GUI feed loop request decodes. Frames are stamped at grab time. Both cameras now log their capture backend, FOURCC and fps when opened. Added 15 tests that use a fake capture to count calls, and `src/tools/perf/cam_decode_bench.py`.
+
+**Results**
+
+These are laptop numbers for 300 synthetic 1280x800 MJPEG frames at 30 fps with a 10 Hz cap. The V4L2 model (raw packets plus `imdecode`) dropped from 2.12 to 0.71 ms of CPU per frame, 3.0x less. The FFmpeg file backend decodes inside `grab()`, so it saved only 1.5x. The full suite went from 992 to 1007 passing tests and kept the same 4 failures and 8 URDF errors. The change has not been deployed or tested on the robot. The saving needs the V4L2 backend (check the open log line) and applies only when no GUI is connected, because `broadcast_loop` requests a frame on every cycle while a client is connected.
+
+---
+
 ## 2026-11-26 — Livox point cloud processing prototype
 
 **Problem**

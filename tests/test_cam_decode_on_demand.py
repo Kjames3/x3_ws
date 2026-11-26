@@ -223,3 +223,20 @@ def test_astra_on_demand_concurrent_consumer(monkeypatch, clock):
     th.join()
     assert seen and all(b >= a for a, b in zip(seen, seen[1:]))
     assert cap.retrieves < cap.grabs
+
+
+def test_post_runs_only_on_decoded_frames(clock):
+    """The left camera's rotate is skipped together with the decode."""
+    cap = FakeCap(clock, fps=30.0, n_frames=31)
+    gate = cam_decode.DecodeGate(hz=10.0)
+    posts = []
+    for _ in range(30):
+        cam_decode.next_frame(cap, gate, post=lambda f: posts.append(1) or f[::-1])
+    assert len(posts) == cap.retrieves and cap.retrieves < cap.grabs
+
+
+def test_fourcc_str():
+    class C:
+        def get(self, prop):
+            return float(int.from_bytes(b'MJPG', 'little'))
+    assert cam_decode.fourcc_str(C()) == 'MJPG'

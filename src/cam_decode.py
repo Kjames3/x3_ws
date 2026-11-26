@@ -18,6 +18,15 @@ frame (the driver buffer never goes stale, so latency is unchanged) and only
 
 Unset or ``0`` keeps the old ``read()``-every-frame behaviour.
 
+Keep X3_CAM_DECODE_HZ at or above 2 x SIDE_PERSON_HZ (5 Hz): a request returns
+the previously decoded frame and triggers the next, so at a low or zero rate a
+5 Hz consumer sees frames ~200 ms old against SIDE_FRAME_MAX_AGE_S (0.3 s).
+``X3_CAM_DECODE_HZ=0`` (request-only) is for tests, not the robot.
+
+The saving assumes the V4L2 backend, where ``retrieve()`` does the MJPEG
+decode. FFmpeg and GStreamer decode inside ``grab()``; the capture code logs
+the backend at open.
+
 Timestamps: a decoded frame is stamped with the monotonic time its ``grab()``
 returned, i.e. when the frame reached the host, not when it was decoded.
 """
@@ -82,6 +91,15 @@ class DecodeGate:
 def gate_from_env(env=None):
     """A DecodeGate when the opt-in flag is set, else None (legacy read())."""
     return DecodeGate(decode_hz(env)) if on_demand_enabled(env) else None
+
+
+def fourcc_str(cap):
+    """The capture's FOURCC as text ('MJPG', 'YUYV', ...), '?' if unreadable."""
+    try:
+        v = int(cap.get(6))   # cv2.CAP_PROP_FOURCC; no cv2 import needed here
+        return ''.join(chr((v >> 8 * i) & 0xFF) for i in range(4)) if v > 0 else '?'
+    except Exception:
+        return '?'
 
 
 def next_frame(cap, gate, active=True, post=None):

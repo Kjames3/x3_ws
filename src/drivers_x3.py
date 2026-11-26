@@ -275,7 +275,16 @@ class AstraCamera:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         self._cap = cap
-        logger.info(f"AstraCamera: RGB opened at {device} ({self.width}x{self.height})")
+        try:
+            backend = cap.getBackendName()
+        except Exception:
+            backend = '?'
+        # The on-demand decode only saves CPU where retrieve() does the MJPEG decode
+        # (V4L2); FFmpeg/GStreamer decode inside grab(). Log what we actually got.
+        logger.info(f"AstraCamera: RGB opened at {device} ({self.width}x{self.height}, "
+                    f"backend {backend}, {cam_decode.fourcc_str(cap)}, "
+                    f"{cap.get(cv2.CAP_PROP_FPS):.0f} fps, decode "
+                    f"{'on demand' if self._decode_gate is not None else 'every frame'})")
         # Start background thread that continuously drains the camera buffer
         self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._capture_thread.start()

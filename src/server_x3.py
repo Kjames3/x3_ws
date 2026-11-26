@@ -5180,7 +5180,10 @@ def _left_capture(stop, latest):
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 400)
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            logger.info("Left camera opened: %s", dev)
+            logger.info("Left camera opened: %s (backend %s, %s, %.0f fps, decode %s)", dev,
+                        cap.getBackendName(), cam_decode.fourcc_str(cap),
+                        cap.get(cv2.CAP_PROP_FPS),
+                        'on demand' if _left_decode_gate is not None else 'every frame')
             while not stop.is_set():
                 ok, frame, t_cap = cam_decode.next_frame(cap, _left_decode_gate, post=_left_rotate)
                 if not ok:
@@ -5367,6 +5370,8 @@ async def side_person_loop():
             due[role] = now + 1.0 / SIDE_PERSON_HZ
             try:
                 if role in ('left', 'rear'):
+                    if role == 'left' and _left_decode_gate is not None:
+                        _left_decode_gate.request()   # on-demand: decode the next left frame
                     got = _side_frames.get(role)
                 elif camera is not None:
                     got = camera.get_frame_stamped()
