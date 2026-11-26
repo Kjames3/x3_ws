@@ -17,6 +17,40 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-26 — Costmap cells left by a passer-by
+
+**Problem:** With Nav2 running and the robot parked, the cells where someone walked took about 10 s to clear. Where they paused, the cells stayed 10–15 s. `/people/obstacles` never published.
+
+**Potential solution:**
+- Let the Livox low band clear its own marks.
+- Make the low-band memory forget a person's shoes once their legs have gone.
+- Draw lidar person tracks in the people costmap layer.
+- Publish that layer while parked.
+
+**Work done:**
+- a528b26: `livox_low` now clears in both costmaps, from `livox_frame`. `/people/obstacles` also publishes on a 10 Hz timer when no drive command has published it recently.
+- ff6e852: new `obstacle_memory.ObstacleMemory` in livox_scan_node. When a 15 cm cell that held points at 0.2 m or higher has been in view and unhit for 1 s, together with its neighbours, the hidden low voxels within 0.2 m of it are forgotten. `obstacle_tall_m:=0` restores the old rule.
+- ff6e852: confirmed lidar tracks join the people costmap layer only (`X3_LIDAR_PEOPLE_COSTMAP`). Before this, person memory took people from the camera estimator alone, and the primary camera is the side one.
+
+**Results:**
+
+Replay of old versus new memory (`src/tools/lidar/obstacle_memory_replay.py`):
+- On the three empty lab runs, 100%, 100% and 96% of remembered cells were kept.
+- On four runs with people, lingering went down by 25–72%.
+
+Live walk-bys while parked (`artifacts/costmap-clear-2026-11-26`):
+
+| | walkby-r1, before | walkby-r2, after |
+|---|---|---|
+| Livox cells 1–2 m out lasting > 5 s | 37 | 1 |
+| Longest-lasting cell | 64 s | 20 s |
+| `/people/obstacles` messages | 0 | 995 (disks followed the walker) |
+
+- The headphone case stayed in the costmap after the clearing change. It hasn't been re-checked since the memory change.
+- The costmap itself wasn't recorded in r2, because Nav2 wasn't running.
+
+---
+
 ## 2026-11-24 — Synthetic crowd checks before the live re-test
 
 **Problem:** The crowd left before the head-peak split and track seeds could be tested live. Track seeds could also keep a track alive on furniture after the person leaves.
