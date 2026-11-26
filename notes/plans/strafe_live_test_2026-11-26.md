@@ -27,10 +27,16 @@ Get this branch onto the robot first, then rebuild yahboomcar_nav. Nav2 loads pa
 the **install** tree, so a new yaml does not exist for Nav2 until it is built. That holds
 even with `--symlink-install`, because the symlink for a new file is only created by a build.
 
+First check how the robot's install tree was built. Whether it uses symlinks is the
+open question in the diagnosis.
+
 ```bash
 cd ~/x3_ws
-colcon build --symlink-install --packages-select yahboomcar_nav
-ls -l install/yahboomcar_nav/share/yahboomcar_nav/params/nav2_params_x3*.yaml
+ls -l install/yahboomcar_nav/share/yahboomcar_nav/params/nav2_params_x3.yaml
+#   "-> .../src/..."  symlink install:  colcon build --symlink-install --packages-select yahboomcar_nav
+#   regular file      plain install:    colcon build --packages-select yahboomcar_nav
+#                     (and every later yaml edit needs this rebuild too)
+ls -l install/yahboomcar_nav/share/yahboomcar_nav/params/nav2_params_x3*.yaml   # after the build
 ```
 
 ### Stale-install check (do this before any driving)
@@ -68,7 +74,10 @@ was picked:
 journalctl -u x3_server --since "5 min ago" | grep "Nav2 params file"
 #   expect: [Nav2Client] Nav2 params file: /home/jetson/x3_ws/install/.../nav2_params_x3_omni_direct.yaml (from X3_NAV2_PARAMS='omni_direct')
 #   "ERROR: ... does not exist" means the build in step 0 was skipped; the server fell back to the default
-grep params_file ~/.ros/log/x3_nav2_launch.log | head -3
+journalctl -u x3_server --since "5 min ago" | grep "Launching Nav2"
+#   omni: the command line ends with params_file:=.../nav2_params_x3_omni_direct.yaml
+#   default: no params_file:= argument at all
+# (~/.ros/log/x3_nav2_launch.log has the Nav2 console output, for load errors)
 ```
 
 ## 2. Param checks on the live nodes
@@ -106,6 +115,8 @@ ros2 bag record -o strafe_$(date +%H%M) /plan /cmd_vel_nav /cmd_vel /cmd_vel_saf
 - Localize first (AMCL converged, robot marker on the map in the right place). Leave
   at least 0.5 m of clear floor to the left and keep the robot away from walls, because
   the CBF can redirect near obstacles.
+- **Hard-reload** the GUI (Ctrl+Shift+R). `GUI.html` loads `main.js?v=nav-keep-yaw-1`;
+  if a click never prints a `navKeepYaw:` console line, the old JS is still cached.
 - Open the GUI with `?navKeepYaw=1`. In navigate mode, **plain-click** about 0.8 m to the
   robot's left. The browser console should print `navKeepYaw: goal yaw = current map heading N°`.
   Without the toggle, drag along the robot's current heading. A yaw-0 goal muddies the result
