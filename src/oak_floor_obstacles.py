@@ -17,7 +17,8 @@ when it projects inside the image, in the trusted depth range, is NOT occluded
 memory_s; or when it is far from the robot.
 
 X3_OAK_FLOOR_FAST=1 (read when OakFloorObstacles is built; default off) selects a
-prototype path with the same outputs and no BLAS/LAPACK calls: closed-form plane
+prototype path with the same outputs and no BLAS/LAPACK calls (except an lstsq
+fallback for a degenerate, collinear floor cloud): closed-form plane
 fit from centred sums instead of lstsq, elementwise rigid transforms instead of
 `@`, packed int64 voxel keys instead of np.unique(axis=0), and an array-backed
 voxel memory instead of a per-point Python dict loop.  See
@@ -341,7 +342,8 @@ class OakFloorObstacles:
                 & ~((np.abs(p_base[:, 0]) < self.self_x) & (np.abs(p_base[:, 1]) < self.self_y)))
         # Need 2+ returns per 4 cm cell, to reject single-pixel stereo speckle.
         cand = min_returns_per_voxel(p_odom[keep], self.mem.cell, self.fast)
-        R_co, t_co = R_oc.T, -R_oc.T @ t_oc                  # odom -> camera
+        R_co = R_oc.T                                        # odom -> camera
+        t_co = -rigid(t_oc[None], R_co, None, True)[0] if self.fast else -R_oc.T @ t_oc
 
         def visible(xyz):
             pc = rigid(xyz, R_co, t_co, self.fast)
