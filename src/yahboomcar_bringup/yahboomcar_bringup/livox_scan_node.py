@@ -41,6 +41,7 @@ from tf2_ros import Buffer, TransformListener
 
 from livox_ros_driver2.msg import CustomMsg
 
+from yahboomcar_bringup.obstacle_memory import ObstacleMemory
 from yahboomcar_bringup.person_candidates import (FIELDS as CANDIDATE_FIELDS, extract as extract_candidates,
                                                   seeded_candidates, ray_candidates, RAY_IN_FIELDS)
 
@@ -150,6 +151,9 @@ class LivoxScanNode(Node):
         # Chassis box (Design_v2 extent +-0.32 x +-0.293) plus margin: no self-returns.
         self.declare_parameter('obstacle_memory_s', 20.0)
         self.declare_parameter('min_elevation_deg', 7.0)   # spec 7.5; 7 forgets later
+        # Forget remembered low voxels next to a tall column (a leg) once it has gone;
+        # 0 = old behaviour (obstacle_memory.py, 2026-11-26).
+        self.declare_parameter('obstacle_tall_m', 0.2)
         self.declare_parameter('self_x', 0.37)
         self.declare_parameter('self_y', 0.34)
 
@@ -165,7 +169,8 @@ class LivoxScanNode(Node):
         self.ob_zslope = float(gp('obstacle_z_slope'))
         self.ob_rmax, self.ob_cell = float(gp('obstacle_range_max')), float(gp('obstacle_cell'))
         self.self_x, self.self_y = float(gp('self_x')), float(gp('self_y'))
-        self.ob_memory = {}
+        self.ob_mem = None          # ObstacleMemory, built once the sensor height is known
+        self.ob_tall_m = float(gp('obstacle_tall_m'))
         self.ob_memory_s = float(gp('obstacle_memory_s'))
         self.min_elev_tan = math.tan(math.radians(float(gp('min_elevation_deg'))))
         self.ob_pub = self.create_publisher(PointCloud2, '/livox/obstacles', qos_profile_sensor_data)
@@ -431,23 +436,11 @@ class LivoxScanNode(Node):
         c, sn = math.cos(fa), math.sin(fa)
         wx = c * cur[:, 0] - sn * cur[:, 1] + fx
         wy = sn * cur[:, 0] + c * cur[:, 1] + fy
-        cell = self.ob_cell
-        seen = set()
-        for x, y, z in zip(wx, wy, cur[:, 2]):
-            k = (int(math.floor(x / cell)), int(math.floor(y / cell)), int(math.floor(z / cell)))
-            seen.add(k)
-            self.ob_memory[k] = (x, y, z, end)
-        # Forget what is visible-and-empty, stale, or far away.
-        sz = float(self.cloud_t[2])
-        for k, (x, y, z, t) in list(self.ob_memory.items()):
-            if k in seen:
-                continue
-            dx, dy = x - fx, y - fy
-            d = math.hypot(dx, dy)
-            visible = (d >= (sz - z) / self.min_elev_tan + 0.15) and d < self.ob_rmax
-            if visible or end - t > self.ob_memory_s or d > self.ob_rmax + 1.0:
-                del self.ob_memory[k]
-        out = np.array([v[:3] for v in self.ob_memory.values()], dtype='<f4').reshape(-1, 3)
+        if self.ob_mem is None:
+            self.ob_mem = ObstacleMemory(self.ob_cell, self.ob_memory_s, self.min_elev_tan,
+                                         float(self.cloud_t[2]), self.ob_rmax,
+                                         tall_m=self.ob_tall_m if self.ob_tall_m > 0 else None)
+        out = self.ob_mem.update(wx, wy, cur[:, 2], fx, fy, end)
         msg = PointCloud2()
         stamp_ns = round(end * 1_000_000_000)
         msg.header.stamp.sec, msg.header.stamp.nanosec = divmod(stamp_ns, 1_000_000_000)

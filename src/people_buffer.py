@@ -81,6 +81,20 @@ def people_cloud(people, radius=RADIUS_M, unknown_extra=UNKNOWN_EXTRA_M,
     return np.column_stack([arr, np.full(len(arr), Z_M, dtype=np.float32)])
 
 
+def merge_lidar_people(people, lidar_estimates, dedupe_m=0.5):
+    """people (people_cloud format) plus lidar_person_tracker.cbf_estimates rows not
+    within dedupe_m of one already listed.  Untrusted lidar velocity -> 'trusted' False
+    (bigger disk, no predicted positions).  Returns a new list."""
+    out = list(people)
+    for e in lidar_estimates:
+        pos = (float(e['z']), -float(e['x']))
+        if any(math.hypot(pos[0] - q['pos'][0], pos[1] - q['pos'][1]) < dedupe_m for q in out):
+            continue
+        out.append({'pos': pos, 'vel': (float(e['vx']), float(e['vy'])),
+                    'trusted': e.get('person_frames', 0) > 0, 'ghost': False})
+    return out
+
+
 def speed_cap(positions, near=CAP_NEAR_M, far=CAP_FAR_M, floor=CAP_FLOOR, free=FREE_SPEED):
     """Largest translational speed (m/s) allowed given the people at `positions` (base frame):
     `free` beyond `far`, falling linearly to `floor` at `near` and inside it."""

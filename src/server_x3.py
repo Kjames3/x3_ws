@@ -108,7 +108,7 @@ from velocity_timing import PoseHistory, ros_stamp_ns
 from person_memory import PersonMemory
 from lidar_person_tracker import (CONFIRM_HITS as LIDAR_CONFIRM_HITS, LidarPersonTracker, merge_seeded, to_local as lidar_persons_local,
                                   cbf_estimates as lidar_cbf_estimates)
-from people_buffer import people_cloud, cap_velocity as people_cap_velocity
+from people_buffer import people_cloud, merge_lidar_people, cap_velocity as people_cap_velocity
 from pathlib import Path
 
 # =============================================================================
@@ -531,6 +531,9 @@ LIDAR_PERSONS_RECORD_FLAG = '/tmp/x3_lidar_persons_record'
 PEOPLE_COSTMAP_ENABLED = os.environ.get('X3_PEOPLE_COSTMAP', '1') != '0'
 PEOPLE_SPEED_CAP_ENABLED = os.environ.get('X3_PEOPLE_SPEED_CAP', '1') != '0'
 PEOPLE_CLOUD_PERIOD_S = 0.1
+# Confirmed lidar person tracks are drawn in /people/obstacles too (costmaps only; the CBF
+# and speed cap still take them only with X3_LIDAR_PERSONS_CBF).  X3_LIDAR_PEOPLE_COSTMAP=0 off.
+LIDAR_PEOPLE_COSTMAP = os.environ.get('X3_LIDAR_PEOPLE_COSTMAP', '1') != '0'
 
 # Safety gate on the driver's command input.  The driver listens on /cmd_vel_safe and the
 # only publisher there is this server, so EVERYTHING that publishes /cmd_vel -- Nav2's
@@ -1951,6 +1954,7 @@ class ROS2Bridge:
         global velocity_estimation_enabled, velocity_estimator
         moving = []     # ((x, y), (vx, vy)) of tracked movers, base frame
         people = []     # everyone the person memory knows, for the social buffer
+        estimates = []
         lidar_cbf = _lidar_cbf_on()
         if (velocity_estimation_enabled and velocity_estimator is not None) or lidar_cbf:
             try:
@@ -1986,7 +1990,22 @@ class ROS2Bridge:
                     moving = _cbf_movers(estimates)
             except Exception as e:
                 logger.warning(f"Failed to add predictive obstacles: {e}")
-        return moving, people
+        return moving, people, estimates, lidar_cbf
+
+    def _costmap_people(self, people, estimates, lidar_cbf):
+        """people + confirmed lidar tracks the camera estimator does not have, for
+        /people/obstacles only (not the CBF, not the speed cap).  PersonMemory takes only
+        camera estimates unless the lidar CBF feed is on, and the primary camera may face
+        sideways, so without this a parked robot drew no people at all (2026-11-26)."""
+        if lidar_cbf or not LIDAR_PEOPLE_COSTMAP:
+            return people
+        try:
+            tracks, _ = self.lidar_person_tracks()
+            extra = lidar_cbf_estimates(tracks, estimates, time.time())
+        except Exception as e:
+            logger.warning("lidar people for the costmap failed: %s", e)
+            return people
+        return merge_lidar_people(people, extra)
 
     def _send_people_cloud(self, people, now):
         self._people_last_pub = now
@@ -2007,7 +2026,8 @@ class ROS2Bridge:
         if now - self._people_last_pub < 2 * PEOPLE_CLOUD_PERIOD_S:
             return
         try:
-            _, people = self._people_inputs()
+            _, people, estimates, lidar_cbf = self._people_inputs()
+            people = self._costmap_people(people, estimates, lidar_cbf)
         except Exception as e:
             logger.warning("people cloud tick failed: %s", e)
             return
@@ -2027,7 +2047,7 @@ class ROS2Bridge:
                 if now - stamp < TOF_CBF_STALE_S:
                     obstacles.extend(map(tuple, xy.tolist()))
             
-        moving, people = self._people_inputs()
+        moving, people, estimates, lidar_cbf = self._people_inputs()
 
         # CBF safety filter. Its proactive repulsion INVENTS velocity from a zero
         # command, so it is only ever safe on FRESH obstacles -- and _scan_cb only
@@ -2080,11 +2100,12 @@ class ROS2Bridge:
             safe_vx, safe_vy = self._limit_for_deadband(
                 safe_vx, safe_vy, obstacles, velocities, omega, radii, gammas, soft)
 
-        if people:
-            if PEOPLE_SPEED_CAP_ENABLED:
-                safe_vx, safe_vy = people_cap_velocity(safe_vx, safe_vy, [p["pos"] for p in people])
-            if PEOPLE_COSTMAP_ENABLED and now - self._people_last_pub >= PEOPLE_CLOUD_PERIOD_S:
-                self._send_people_cloud(people, now)
+        if people and PEOPLE_SPEED_CAP_ENABLED:
+            safe_vx, safe_vy = people_cap_velocity(safe_vx, safe_vy, [p["pos"] for p in people])
+        if PEOPLE_COSTMAP_ENABLED and now - self._people_last_pub >= PEOPLE_CLOUD_PERIOD_S:
+            cm_people = self._costmap_people(people, estimates, lidar_cbf)
+            if cm_people:
+                self._send_people_cloud(cm_people, now)
 
         # Summary for the GUI's obstacle warning (touch overlay): is the filter
         # cutting the operator's command, and is it blind (stale /scan)?
