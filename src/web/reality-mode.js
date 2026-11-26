@@ -255,6 +255,41 @@ window.RealityMode = (() => {
         };
         const unit = new THREE.BoxGeometry(1, 1, 1);
         const objects = new Map();   // id -> {group}
+        const splatMaterial = new THREE.PointsMaterial({size:.037, color:0xcbd5df, vertexColors:true});
+        function removeObject(ob) {
+            scene.remove(ob.group);
+            ob.ring.geometry.dispose();
+            if (ob.splats) ob.splats.geometry.dispose();
+        }
+        function updateModel(ob, model) {
+            const show = !!RealityStructure.Lookalike.ready(model);
+            for (const part of ob.inner.children) part.visible = part === ob.ring || !show;
+            if (ob.splats) ob.splats.visible = show;
+            if (!show || (ob.model === model && ob.revision === model.revision)) return;
+            const {STEP, CAP} = RealityStructure.Lookalike;
+            if (!ob.splats) {
+                const geom = new THREE.BufferGeometry();
+                for (const name of ['position','color'])
+                    geom.setAttribute(name,new THREE.BufferAttribute(new Float32Array(3*CAP),3));
+                ob.splats = new THREE.Points(geom,splatMaterial);
+                ob.splats.frustumCulled = false;
+                ob.group.add(ob.splats);
+            }
+            const geom = ob.splats.geometry;
+            let i=0;
+            for (const v of model.voxels.values()) {
+                geom.attributes.position.setXYZ(i,v.x*STEP,v.z*STEP,-v.y*STEP);
+                geom.attributes.color.setXYZ(i,v.r/255,v.g/255,v.b/255);
+                i++;
+            }
+            geom.setDrawRange(0,i);
+            for (const attr of Object.values(geom.attributes)) {
+                attr.updateRange.count = 3*i;
+                attr.needsUpdate = true;
+            }
+            ob.model = model;
+            ob.revision = model.revision;
+        }
         function makeObject(kind) {
             const g = new THREE.Group(), inner = new THREE.Group();
             for (const [x, y, z, sx, sy, sz] of PARTS[kind] || PARTS.box) {
@@ -266,7 +301,7 @@ window.RealityMode = (() => {
             ring.rotation.x = -Math.PI / 2; ring.position.y = 0.004; ring.scale.set(1, 1, 1);
             inner.add(ring);
             g.add(inner); scene.add(g);
-            return { group: g, inner };
+            return { group: g, inner, ring };
         }
         const doorFrames = [];
         const doorMaterial = new THREE.MeshBasicMaterial({color:0xffce86});
@@ -311,7 +346,7 @@ window.RealityMode = (() => {
                 seen.add(o.id);
                 let ob = objects.get(o.id);
                 if (!ob || ob.kind !== o.kind) {
-                    if (ob) scene.remove(ob.group);
+                    if (ob) removeObject(ob);
                     ob = makeObject(o.kind); ob.kind = o.kind; objects.set(o.id, ob);
                 }
                 ob.group.position.set(-o.y, o.bottom || 0, -o.x);
@@ -328,9 +363,10 @@ window.RealityMode = (() => {
                         leg.scale.y = seat;
                     }
                 }
+                updateModel(ob,o.model);
                 ob.group.visible = true;
             }
-            for (const [id, ob] of objects) if (!seen.has(id)) { scene.remove(ob.group); objects.delete(id); }
+            for (const [id, ob] of objects) if (!seen.has(id)) { removeObject(ob); objects.delete(id); }
         }
         const cabinets = new Map();
         try {
@@ -349,7 +385,7 @@ window.RealityMode = (() => {
                 }
                 cabinets.set(roomKey, {x,y,yaw:heading*Math.PI/180,L,D,H});
             } else cabinets.delete(roomKey);
-            try { localStorage.setItem('x3-reality-cabinets', JSON.stringify([...cabinets])); } catch { /* Session only. */ }
+            try { localStorage.setItem('x3-reality-cabinets', JSON.stringify([...cabinets], (key,value) => key==='model' ? undefined : value)); } catch { /* Session only. */ }
         };
         let roomKey;
         // Session furniture memory: the server keeps confirmed landmarks per map
@@ -358,8 +394,13 @@ window.RealityMode = (() => {
         let landmarksPutAt = -1e9, lastPose = null;
         if (window.addEventListener) window.addEventListener('x3-reality-landmarks', ev => {
             const msg = ev.detail || {};
-            if (structTracker && roomKey && msg.key === 'map:' + roomKey)
+            if (structTracker && roomKey && msg.key === 'map:' + roomKey) {
                 structTracker.importLandmarks(msg.objects, performance.now() / 1000);
+                const cabinet = cabinets.get(roomKey);
+                const saved = msg.objects?.find(o => o.kind === 'cabinet' && cabinet &&
+                    o.X===cabinet.x && o.Y===cabinet.y && ['yaw','L','D','H'].every(k=>o[k]===cabinet[k]));
+                if (saved) cabinet.model = RealityStructure.Lookalike.unpack(saved.lookalike);
+            }
         });
         // Measured furniture in map coordinates (cm, deg) for tape-measure checks.
         const measureButton = document.getElementById('reality-measurements');
@@ -380,7 +421,7 @@ window.RealityMode = (() => {
         let structTracker = window.RealityStructure ? new RealityStructure.Tracker() : null;
         let wallHistory = window.RealityStructure && new RealityStructure.WallHistory();
         let structOn = false;
-        function analyzeStructure(cells, dets, d, mapName, xyz, nowMs, cloudPose) {
+        function analyzeStructure(cells, dets, d, mapName, xyz, nowMs, cloudPose, oakPose, people=[]) {
             const mapped = !!(mapName && d.robotPoseMap);
             const key = mapName || null;
             if (key !== roomKey && structTracker) {
@@ -407,10 +448,41 @@ window.RealityMode = (() => {
                         x: c*dx+s*dy, y: -s*dx+c*dy, yaw: cabinet.yaw-pose.theta});
                 }
             }
+            // Rendered boxes and detections are base-relative to the readout pose.
+            // Use its paired odometry pose to place them in the OAK cloud's odom
+            // frame. The OAK stream pose gives the observation bearing only.
+            const odom = d.robotPose;
+            const oak = oakPose && d.oakCloud;
+            const detectedPeople = (dets || []).filter(det => det.label === 'person').map(det => det.xyz_base_m);
+            // An unlocalized person cannot be masked in 3D. Wait for the next cloud.
+            const canFuse = oak?.colors && odom && [odom.x,odom.y,odom.theta].every(Number.isFinite)
+                && detectedPeople.every(p => p && Number.isFinite(p.x) && Number.isFinite(p.y));
+            const toOdom = p => ({
+                x:odom.x/100+Math.cos(odom.theta)*p.x-Math.sin(odom.theta)*p.y,
+                y:odom.y/100+Math.sin(odom.theta)*p.x+Math.cos(odom.theta)*p.y
+            });
+            const masks = canFuse ? people.concat(detectedPeople).map(toOdom) : [];
+            for (const o of st.objects) {
+                const t = o.kind==='cabinet' ? cabinets.get(mapName) : structTracker.tracks.find(t=>t.id===o.id);
+                if (!t || t.inferred || t.misses>0) continue;
+                if (o.kind!=='cabinet' && t.hits < RealityStructure.LANDMARK_HITS) continue;
+                if (canFuse) {
+                    t.model ||= RealityStructure.Lookalike.create();
+                    RealityStructure.Lookalike.ingest(t.model, oak,
+                        {...o,...toOdom(o),yaw:o.yaw+odom.theta},oakPose,masks);
+                }
+                o.model=t.model;
+            }
             if (mapped && pose && window.sendMessage && nowMs - landmarksPutAt > LANDMARK_PUT_MS) {
                 landmarksPutAt = nowMs;
+                const objects = structTracker.exportLandmarks();
+                const cabinet = cabinets.get(mapName);
+                if (cabinet?.model?.voxels.size) {
+                    const {x:X,y:Y,yaw,L,D,H,model} = cabinet;
+                    objects.push({kind:'cabinet',X,Y,yaw,L,D,H,lookalike:RealityStructure.Lookalike.pack(model)});
+                }
                 window.sendMessage({type: 'reality_landmarks_put', key: 'map:' + key,
-                                    objects: structTracker.exportLandmarks()});
+                                    objects});
             }
             lastPose = mapped ? pose : null;
             updateStructure(st);

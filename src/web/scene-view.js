@@ -177,15 +177,20 @@
         if (event.target.value === 'oak') document.getElementById('surroundings-oak-toggle').checked = true;
     });
     const oakPositions = new Float32Array(12000*3), oakColors = new Float32Array(12000*3);
-    function updateOakCloud(d, now) {
-        const enabled = document.getElementById('surroundings-oak-toggle').checked;
-        const status = document.getElementById('surroundings-oak-status');
+    function freshOakPose(d, now) {
         const xyz = d.oakCloud;
         const poses = [d.oakPose, ...(d.surroundingsPoses || [])].filter(p => p && now-p.receivedAt < 500);
         poses.sort((a,b) => b.stamp-a.stamp);
         const pose = poses[0];
         const age = xyz && pose ? pose.stamp-xyz.stamp : Infinity;
-        const fresh = enabled && xyz && pose && now-d.oakCloudAt < 750 && age >= -.1 && age < .75;
+        return xyz && pose && now-d.oakCloudAt < 750 && age >= -.1 && age < .75 ? pose : null;
+    }
+    function updateOakCloud(d, now) {
+        const enabled = document.getElementById('surroundings-oak-toggle').checked;
+        const status = document.getElementById('surroundings-oak-status');
+        const xyz = d.oakCloud;
+        const pose = enabled && freshOakPose(d, now);
+        const fresh = !!pose;
         oakPoints.visible = !!fresh;
         if (!fresh) {
             setText(status, enabled ? 'Waiting for fresh OAK color and pose' : 'Off · gray points mean uncertain color, not gray material.');
@@ -355,7 +360,9 @@
             const structToggle = document.getElementById('surroundings-reality-structure');
             const st = realityOn && reality && (!structToggle || structToggle.checked)
                 ? reality.analyzeStructure(displayCells,
-                    d.oakDetectionsAt && now - d.oakDetectionsAt < 1000 ? d.oakDetections : [], d, state.nav.roomMap, xyz, now, pose)
+                    d.oakDetectionsAt && now - d.oakDetectionsAt < 1000 ? d.oakDetections : [], d, state.nav.roomMap, xyz, now, pose,
+                    freshOakPose(d, now), avatarEntries(d).filter(e => e.category === 'person')
+                        .map(e => ({x:e.fwdBase ?? e.z+OAK_MOUNT_X, y:-e.x})))
                 : null;
             const columnTop = new Map();
             const colKey = c => `${Math.floor(c.x / .2)},${Math.floor(c.y / .2)}`;
@@ -1225,7 +1232,9 @@
             if (visible && !oakOnlyEnvironment() && document.getElementById('surroundings-cloud-toggle').checked) foxgloveResubscribe(topic);
             else foxgloveUnsubscribe(topic);
         }
-        const oakEnabled = visible && document.getElementById('surroundings-oak-toggle').checked;
+        const oakEnabled = visible && (document.getElementById('surroundings-oak-toggle').checked ||
+            (realityOn && document.getElementById('surroundings-reality-structure').checked &&
+             document.getElementById('surroundings-cloud-toggle').checked));
         for (const topic of ['/surroundings/oak/points', '/surroundings/oak/pose']) {
             if (oakEnabled) foxgloveResubscribe(topic); else foxgloveUnsubscribe(topic);
         }

@@ -4054,6 +4054,16 @@ def _clean_landmarks(objs):
             if isinstance(v, (int, float)) and math.isfinite(v) and abs(v) < 1e4:
                 clean[k] = float(v)
         if all(k in clean for k in ("X", "Y", "yaw", "L", "D", "H")):
+            encoded = o.get("lookalike")
+            # v1 has a two-byte header and up to 4000 seven-byte voxel records.
+            if isinstance(encoded, str) and len(encoded) <= 37336:
+                try:
+                    raw = base64.b64decode(encoded, validate=True)
+                    if (9 <= len(raw) <= 28002 and raw[0] == 1 and
+                            (len(raw) - 2) % 7 == 0 and min(raw[8::7]) >= 2):
+                        clean["lookalike"] = encoded
+                except ValueError:
+                    pass
             out.append(clean)
     return out
 

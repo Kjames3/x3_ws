@@ -13,6 +13,7 @@
 // =================================================================
 (function (root) {
     'use strict';
+    const Lookalike = root.RealityLookalike || (typeof require === 'function' && require('./reality-lookalike'));
     const COL = 0.2;               // column grid (m), same as scene-view's classing
     const WALL_TOP = 1.2;          // column top >= this is structure
     const LINE_TOL = 0.09;         // RANSAC inlier distance (m)
@@ -687,9 +688,15 @@
     const LANDMARK_HITS = 4;
     const LANDMARK_KEYS = ['X','Y','yaw','L','D','H','seat','bottom'];
     Tracker.prototype.exportLandmarks = function () {
-        return this.tracks.filter(t => !t.inferred && t.hits >= LANDMARK_HITS && !(t.misses > 0)).map(t => {
+        const confirmed = this.tracks.filter(t => !t.inferred && t.hits >= LANDMARK_HITS && !(t.misses > 0));
+        // Leave room for landmark metadata under the WebSocket 1 MiB limit.
+        const modeled = confirmed.filter(t => t.model?.voxels.size).length;
+        const limit = Math.floor(95000 / Math.max(1, modeled));
+        return confirmed.map(t => {
             const o = {kind: t.kind};
             for (const k of LANDMARK_KEYS) if (Number.isFinite(t[k])) o[k] = t[k];
+            const encoded = Lookalike.pack(t.model, limit);
+            if (encoded) o.lookalike = encoded;
             return o;
         });
     };
@@ -697,11 +704,16 @@
         let added = 0;
         for (const o of list || []) {
             if (!o || !SIZE[o.kind] || !['X','Y','yaw','L','D','H'].every(k => Number.isFinite(o[k]))) continue;
-            if (this.tracks.some(t => t.kind === o.kind && Math.hypot(t.X - o.X, t.Y - o.Y) < OBJ_MATCH_M)) continue;
-            const t = {kind: o.kind, id: this.nextId++, hits: LANDMARK_HITS, misses: 0, seen: nowS,
+            // A detection can start a provisional track while the GET is in flight.
+            // Restore into that id using the saved box (the model's local frame).
+            const existing = this.tracks.find(t => t.kind === o.kind && Math.hypot(t.X-o.X,t.Y-o.Y)<OBJ_MATCH_M);
+            if (existing && !existing.inferred && existing.hits >= LANDMARK_HITS) continue;
+            const t = {kind: o.kind, id: existing?.id ?? this.nextId++, hits: LANDMARK_HITS, misses: 0, seen: nowS,
                        inferred: false, restored: true, measuredHeading: o.kind === 'chair' && Number.isFinite(o.seat)};
             for (const k of LANDMARK_KEYS) if (Number.isFinite(o[k])) t[k] = o[k];
-            this.tracks.push(t); added++;
+            t.model = Lookalike.unpack(o.lookalike);
+            if (existing) this.tracks[this.tracks.indexOf(existing)] = t;
+            else { this.tracks.push(t); added++; }
         }
         return added;
     };
@@ -748,7 +760,7 @@
         };
     }
 
-    const api = { furnitureOverlap, furnitureSurfaces, analyze, Tracker, WallHistory, fitWalls, columns, KINDS, WALL_TOP };
+    const api = { Lookalike, LANDMARK_HITS, furnitureOverlap, furnitureSurfaces, analyze, Tracker, WallHistory, fitWalls, columns, KINDS, WALL_TOP };
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     else root.RealityStructure = api;
 })(typeof window !== 'undefined' ? window : globalThis);
