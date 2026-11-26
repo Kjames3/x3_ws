@@ -15,9 +15,17 @@ raytracing would clear its costmap cells.  A remembered voxel is forgotten only
 when it projects inside the image, in the trusted depth range, is NOT occluded
 (the depth there is not much shorter), and was not seen this frame; or after
 memory_s; or when it is far from the robot.
+
+X3_OAK_FLOOR_FAST=1 (read when OakFloorObstacles is built; default off) selects a
+prototype path with the same outputs and no BLAS/LAPACK calls: closed-form plane
+fit from centred sums instead of lstsq, elementwise rigid transforms instead of
+`@`, packed int64 voxel keys instead of np.unique(axis=0), and an array-backed
+voxel memory instead of a per-point Python dict loop.  See
+tests/test_oak_floor_fast.py and src/tools/perf/oak_floor_bench.py.
 """
 import logging
 import math
+import os
 import threading
 import time
 
@@ -68,16 +76,203 @@ class FloorObstacleMemory:
             return np.zeros((0, 3), np.float32)
         return np.array([v[:3] for v in self.vox.values()], np.float32)
 
+    def __len__(self):
+        return len(self.vox)
+
+
+# Fixed bit fields for odom-frame voxel keys that must stay stable across frames:
+# 21 bits per axis is +-2^20 cells, i.e. +-41.9 km at 4 cm.
+_KEY_BITS = 21
+_KEY_OFF = 1 << (_KEY_BITS - 1)
+
+
+def _pack_fixed(ik):
+    """(N,3) int64 cell indices -> (N,) int64 keys, or None if any is out of range."""
+    if len(ik) and (ik.min() < -_KEY_OFF or ik.max() >= _KEY_OFF):
+        return None
+    o = ik + _KEY_OFF
+    return (o[:, 0] << (2 * _KEY_BITS)) | (o[:, 1] << _KEY_BITS) | o[:, 2]
+
+
+def _pack_frame(ik):
+    """(N,3) int64 -> (N,) int64 keys unique within this array (per-frame min/span)."""
+    o = ik - ik.min(axis=0)
+    sy = int(o[:, 1].max()) + 1
+    sz = int(o[:, 2].max()) + 1
+    return (o[:, 0] * sy + o[:, 1]) * sz + o[:, 2]
+
+
+class FastFloorObstacleMemory:
+    """Array-backed FloorObstacleMemory: same voxels and values, no per-point Python.
+
+    Falls back to a FloorObstacleMemory if a key ever leaves the packed range.
+    """
+
+    def __init__(self, cell=0.04, memory_s=30.0, keep_radius=4.0):
+        self.cell, self.memory_s, self.keep_radius = cell, memory_s, keep_radius
+        self._keys = np.zeros(0, np.int64)       # packed cell keys, unique
+        self._vals = np.zeros((0, 4))            # x, y, z, last_seen
+        self._slow = None
+
+    def _to_slow(self):
+        slow = FloorObstacleMemory(self.cell, self.memory_s, self.keep_radius)
+        c = self.cell
+        for x, y, z, t in self._vals:
+            k = (int(math.floor(x / c)), int(math.floor(y / c)), int(math.floor(z / c)))
+            slow.vox[k] = [float(x), float(y), float(z), float(t)]
+        self._slow = slow
+
+    def update(self, pts_odom, now, robot_xy, visible_fn=None):
+        if self._slow is not None:
+            return self._slow.update(pts_odom, now, robot_xy, visible_fn)
+        pts = np.asarray(pts_odom)
+        if len(pts):
+            packed = _pack_fixed(np.floor(pts / self.cell).astype(np.int64))
+            if packed is None:
+                self._to_slow()
+                return self._slow.update(pts_odom, now, robot_xy, visible_fn)
+            # Last occurrence wins, like dict assignment: unique over the reversed keys.
+            n = len(packed)
+            new_keys, first_rev = np.unique(packed[::-1], return_index=True)
+            last = n - 1 - first_rev
+            new_vals = np.empty((len(new_keys), 4))
+            new_vals[:, :3] = pts[last]
+            new_vals[:, 3] = now
+        else:
+            new_keys, new_vals = np.zeros(0, np.int64), np.zeros((0, 4))
+        if len(self._keys) == 0:
+            self._keys, self._vals = new_keys, new_vals
+            return
+        unseen = ~np.isin(self._keys, new_keys, assume_unique=True)
+        old_k, old_v = self._keys[unseen], self._vals[unseen]
+        if len(old_k):
+            far = np.hypot(old_v[:, 0] - robot_xy[0], old_v[:, 1] - robot_xy[1]) > self.keep_radius
+            old = now - old_v[:, 3] > self.memory_s
+            vis = visible_fn(old_v[:, :3]) if visible_fn is not None \
+                else np.zeros(len(old_k), bool)
+            keep = ~(far | old | vis)
+            old_k, old_v = old_k[keep], old_v[keep]
+        self._keys = np.concatenate((old_k, new_keys))
+        self._vals = np.concatenate((old_v, new_vals))
+
+    def points(self):
+        if self._slow is not None:
+            return self._slow.points()
+        return self._vals[:, :3].astype(np.float32)
+
+    def __len__(self):
+        return len(self._slow) if self._slow is not None else len(self._keys)
+
+
+def min_returns_per_voxel(cand, cell, fast=False, n_min=2):
+    """Rows of `cand` whose cell holds >= n_min rows (order preserved)."""
+    if not len(cand):
+        return cand
+    keys = np.floor(cand / cell).astype(np.int64)
+    if fast:
+        _, inv, cnt = np.unique(_pack_frame(keys), return_inverse=True, return_counts=True)
+    else:
+        _, inv, cnt = np.unique(keys, axis=0, return_inverse=True, return_counts=True)
+    return cand[cnt[inv.ravel()] >= n_min]
+
+
+def rigid(p, M, t=None, fast=False):
+    """p @ M.T (+ t).  fast: elementwise, no BLAS (not bit-identical to dgemm)."""
+    if not fast:
+        out = p @ M.T
+        if t is not None:
+            out += t
+        return out
+    q = np.asarray(p).T.astype(np.float64)     # (3, N) contiguous rows
+    out = np.empty((q.shape[1], 3))
+    for j in range(3):
+        r = q[0] * M[j, 0]
+        r += q[1] * M[j, 1]
+        r += q[2] * M[j, 2]
+        if t is not None:
+            r += t[j]
+        out[:, j] = r
+    return out
+
+
+def _fit_lstsq(x, y, z):
+    A = np.column_stack((x, y, np.ones(len(x))))
+    coef = np.linalg.lstsq(A, z, rcond=None)[0]
+    for _ in range(2):
+        r = z - A @ coef
+        keep = np.abs(r) < max(0.015, 2.5 * np.median(np.abs(r)))
+        if keep.sum() < 200:
+            return None
+        coef = np.linalg.lstsq(A[keep], z[keep], rcond=None)[0]
+    return coef
+
+
+def _lsq_plane(x, y, z):
+    """Least-squares z = a*x + b*y + c from centred sums; no BLAS/LAPACK."""
+    mx, my, mz = x.mean(), y.mean(), z.mean()
+    dx, dy, dz = x - mx, y - my, z - mz
+    sxx, syy, sxy = (dx * dx).sum(), (dy * dy).sum(), (dx * dy).sum()
+    sxz, syz = (dx * dz).sum(), (dy * dz).sum()
+    det = sxx * syy - sxy * sxy
+    # Degenerate (x or y spread < ~1 um, or x, y collinear): lstsq's min-norm answer.
+    tiny = 1e-12 * len(x)
+    if not (sxx > tiny and syy > tiny and det > 1e-9 * sxx * syy):
+        A = np.column_stack((x, y, np.ones(len(x))))
+        return np.linalg.lstsq(A, z, rcond=None)[0]
+    a = (sxz * syy - syz * sxy) / det
+    b = (syz * sxx - sxz * sxy) / det
+    return np.array([a, b, mz - a * mx - b * my])
+
+
+def _fit_fast(x, y, z):
+    coef = _lsq_plane(x, y, z)
+    for _ in range(2):
+        a, b, c = coef
+        ar = np.abs(z - (a * x + b * y + c))
+        keep = ar < max(0.015, 2.5 * np.median(ar))
+        if keep.sum() < 200:
+            return None
+        coef = _lsq_plane(x[keep], y[keep], z[keep])
+    return coef
+
+
+def fit_floor_plane(p_base, fast=False):
+    """(a, b, c) of z = a*x + b*y + c fitted to the floor in base_footprint coords, or None.
+
+    Least squares on points within 0.12 m of the URDF floor, refitted twice on the
+    lower residuals.  None if fewer than 300 candidates, fewer than 200 survive a
+    trim, or the plane is implausible (> ~8 deg or > 0.10 m from the URDF floor).
+    """
+    m = np.abs(p_base[:, 2]) < 0.12
+    if m.sum() < 300:
+        return None
+    P = p_base[m]
+    x, y, z = P[:, 0], P[:, 1], P[:, 2]
+    if fast:
+        x, y, z = (np.ascontiguousarray(v, dtype=np.float64) for v in (x, y, z))
+    coef = _fit_fast(x, y, z) if fast else _fit_lstsq(x, y, z)
+    if coef is None:
+        return None
+    a, b, c = coef
+    if math.hypot(a, b) > 0.14 or abs(c) > 0.10:
+        return None
+    return float(a), float(b), float(c)
+
 
 class OakFloorObstacles:
     def __init__(self, oak, bridge, camera_frame='oak_rgb_camera_optical_frame',
                  z_min=0.03, z_max=0.45, range_max=1.6, hz=5.0,
-                 self_x=0.37, self_y=0.34):
+                 self_x=0.37, self_y=0.34, fast=None):
         self.oak, self.bridge, self.frame = oak, bridge, camera_frame
         self.z_min, self.z_max, self.range_max = z_min, z_max, range_max
         self.period = 1.0 / hz
         self.self_x, self.self_y = self_x, self_y
-        self.mem = FloorObstacleMemory()
+        if fast is None:
+            fast = os.environ.get('X3_OAK_FLOOR_FAST', '0') == '1'
+        self.fast = bool(fast)
+        self.mem = FastFloorObstacleMemory() if self.fast else FloorObstacleMemory()
+        if self.fast:
+            logger.info('oak floor obstacles: X3_OAK_FLOOR_FAST path')
         self.stats = {}
         self._stop = threading.Event()
         node = bridge._node
@@ -125,8 +320,8 @@ class OakFloorObstacles:
         # Mark only where visible() below can also clear (it trusts up to range_max - 0.1).
         R_oc, t_oc = self._tf('odom', self.frame)          # camera -> odom
         R_ob, t_ob = self._tf('odom', 'base_footprint')    # base -> odom
-        p_odom = pts @ R_oc.T + t_oc
-        p_base = (p_odom - t_ob) @ R_ob                      # odom -> base
+        p_odom = rigid(pts, R_oc, t_oc, self.fast)
+        p_base = rigid(p_odom - t_ob, R_ob.T, None, self.fast)  # odom -> base
         h = self.floor_relative_height(p_base)
         if h is None:
             return
@@ -145,15 +340,11 @@ class OakFloorObstacles:
         keep = ((h > zmin) & (h < self.z_max)
                 & ~((np.abs(p_base[:, 0]) < self.self_x) & (np.abs(p_base[:, 1]) < self.self_y)))
         # Need 2+ returns per 4 cm cell, to reject single-pixel stereo speckle.
-        cand = p_odom[keep]
-        if len(cand):
-            keys = np.floor(cand / self.mem.cell).astype(np.int64)
-            _, inv, cnt = np.unique(keys, axis=0, return_inverse=True, return_counts=True)
-            cand = cand[cnt[inv.ravel()] >= 2]
+        cand = min_returns_per_voxel(p_odom[keep], self.mem.cell, self.fast)
         R_co, t_co = R_oc.T, -R_oc.T @ t_oc                  # odom -> camera
 
         def visible(xyz):
-            pc = xyz @ R_co.T + t_co
+            pc = rigid(xyz, R_co, t_co, self.fast)
             z = pc[:, 2]
             ok = (z > 0.35) & (z < self.range_max - 0.1)
             u = np.where(ok, fx * pc[:, 0] / np.maximum(z, 1e-3) + cx, -1)
@@ -177,7 +368,7 @@ class OakFloorObstacles:
             if len(fh):
                 p = np.percentile(fh, [1, 50, 99])
                 logger.info('oak floor obstacles: %d voxels; floor h p1/p50/p99 %.3f/%.3f/%.3f m; '
-                            'plane a,b,c %s', len(self.mem.vox), *p,
+                            'plane a,b,c %s', len(self.mem), *p,
                             tuple(round(v, 3) for v in self.stats.get('floor', ())))
 
     def floor_relative_height(self, p_base):
@@ -190,23 +381,10 @@ class OakFloorObstacles:
         (fewer than 300 candidate points) or the fit is implausible.
         """
         h0 = p_base[:, 2]
-        m = np.abs(h0) < 0.12
-        if m.sum() < 300:
+        coef = fit_floor_plane(p_base, getattr(self, 'fast', False))
+        if coef is None:
             return None
-        P = p_base[m]
-        A = np.column_stack((P[:, 0], P[:, 1], np.ones(len(P))))
-        z = P[:, 2]
-        coef = np.linalg.lstsq(A, z, rcond=None)[0]
-        for _ in range(2):
-            r = z - A @ coef
-            keep = np.abs(r) < max(0.015, 2.5 * np.median(np.abs(r)))
-            if keep.sum() < 200:
-                return None
-            coef = np.linalg.lstsq(A[keep], z[keep], rcond=None)[0]
         a, b, c = coef
-        # Plausible: within ~8 deg and 0.10 m of the URDF floor.
-        if math.hypot(a, b) > 0.14 or abs(c) > 0.10:
-            return None
         self.stats['floor'] = (float(a), float(b), float(c))
         return (h0 - (a * p_base[:, 0] + b * p_base[:, 1] + c)) / math.sqrt(1 + a * a + b * b)
 
