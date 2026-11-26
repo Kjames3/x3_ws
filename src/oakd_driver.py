@@ -252,6 +252,11 @@ class OakDCamera:
         self._latest_raw_depth = None     # float32, metres
         self._last_depth_time = 0.0
         self._latest_depth_observation = None
+        # Wake hint for consumers (VelocityEstimator, X3_VEL_WAKE_ON_FRAME=1):
+        # bumped per depth frame and announced on _depth_cond. Its own lock so a
+        # waiter never contends with _lock.
+        self._depth_seq = 0
+        self._depth_cond = threading.Condition()
         self._latest_imu = None
         self._latest_detections = []
         self._latest_detections_t = 0.0   # monotonic, last NN packet decoded
@@ -916,12 +921,18 @@ class OakDCamera:
             size = self._depth_intr_size
             intr = ((self._depth_fx, self._depth_fy, self._depth_cx, self._depth_cy,
                      *size) if size is not None else None)
+            seq = self._depth_seq = getattr(self, '_depth_seq', 0) + 1
             self._latest_depth_observation = {
                 'depth': raw_m, 'intrinsics': intr, 'capture_t': capture_t,
                 'frame_id': frame_id if frame_id is not None else capture_t,
                 'session_id': getattr(self, '_capture_session', None),
                 'receipt_t': receipt_t if receipt_t is not None else self._last_depth_time,
+                'depth_seq': seq,
             }
+        cond = getattr(self, '_depth_cond', None)
+        if cond is not None:
+            with cond:
+                cond.notify_all()
 
     def _colourise(self, raw_m):
         clean = np.where(raw_m <= 0.1, DEPTH_MAX_M, raw_m)
@@ -1456,6 +1467,17 @@ class OakDCamera:
         with self._lock:
             obs = self._latest_depth_observation
             return dict(obs) if obs is not None else None
+
+    def wait_for_depth(self, last_seq, timeout):
+        """Block until a depth frame newer than `last_seq` (an observation's
+        'depth_seq') is stored, or `timeout` seconds pass. Returns the current
+        sequence number. A wake hint only: dedupe on the observation itself."""
+        cond = getattr(self, '_depth_cond', None)
+        if cond is None:
+            return getattr(self, '_depth_seq', 0)
+        with cond:
+            cond.wait_for(lambda: self._depth_seq != last_seq, max(0.0, timeout))
+            return self._depth_seq
 
     def get_detection_capture_time(self):
         """Monotonic capture time of the frame behind the latest detections."""

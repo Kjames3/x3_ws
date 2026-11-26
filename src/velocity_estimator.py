@@ -390,6 +390,11 @@ class VelocityEstimator:
         self._last_model = {}           # tid -> (capture_t, vx, vy) from the last model run
         self._coasting = {}             # tid -> capture_t its current coast began
         self._last_depth_key = None
+        # X3_VEL_WAKE_ON_FRAME=1: wait on the depth source's new-frame signal
+        # instead of a fixed 10 Hz sleep (see _pace). Off = the old poll.
+        self._wake_on_frame = os.environ.get("X3_VEL_WAKE_ON_FRAME") == "1"
+        self._seen_depth_seq = None     # 'depth_seq' of the last observation read
+        self._last_work_t = float('-inf')  # t0 of the last iteration that used a frame
         self.timing_stats = dict(accepted=0, duplicates=0, invalid=0,
                                  missing_pose=0, window_wait=0, gap_resets=0, coasted=0)
         self._logged_missing_intrinsics = False
@@ -1179,12 +1184,44 @@ class VelocityEstimator:
             reasons = dict(self._frame_gates) or {'gated_other': 1}
         self.dropout_log.frame(time.monotonic(), 0, reasons)
 
+    def _pace(self, cam_src, t0, dt, worked=True):
+        """End-of-iteration wait. Default: sleep out the 10 Hz cycle.
+
+        Wake mode (X3_VEL_WAKE_ON_FRAME=1, source has wait_for_depth): two bounds.
+        - Rate cap: frames are taken at most every dt (10 Hz, same CPU ceiling),
+          timed from the last iteration that used a frame, so duplicate or
+          no-frame iterations cannot let a fast camera through.
+        - Idle timeout: wait for a new frame only until t0 + dt, so the stale,
+          invalid and dropout-log paths keep ticking at 10 Hz with no frames.
+        A frame arriving after the cap is picked up within ms instead of at the
+        next 100 ms tick. Dedupe stays with _last_depth_key; the seq is a hint.
+        """
+        if worked:
+            self._last_work_t = t0
+        # getattr: some tests build the estimator with __new__ (no __init__).
+        wake = getattr(self, '_wake_on_frame', False)
+        wait = getattr(cam_src, 'wait_for_depth', None) if wake else None
+        if wait is None:
+            time.sleep(max(0.001, dt - (time.monotonic() - t0)))
+            return
+        hold = self._last_work_t + dt - time.monotonic()
+        if hold > 0:
+            time.sleep(hold)
+        remaining = t0 + dt - time.monotonic()
+        if remaining > 0:
+            wait(self._seen_depth_seq, remaining)
+        # Spin guard (the old poll's 1 ms floor): a hint that keeps firing
+        # without a new frame must not peg a core.
+        if time.monotonic() - t0 < 0.001:
+            time.sleep(0.001)
+
     def _inference_loop(self):
         dt = 1.0 / INFER_HZ
         logger.info("VelocityEstimator: inference loop started")
 
         while self._running:
             t0 = time.monotonic()
+            cam_src = None
 
             try:
                 # 1. Get depth and raw depth frames
@@ -1193,6 +1230,8 @@ class VelocityEstimator:
                 capture_pose = None
                 if cam_src is not None and hasattr(cam_src, 'get_depth_observation'):
                     obs = cam_src.get_depth_observation()
+                    # 0 = "no frame yet", the producer's initial seq.
+                    self._seen_depth_seq = obs.get('depth_seq') if obs is not None else 0
                     now = time.monotonic()
                     if (obs is None or obs['capture_t'] is None or
                             not math.isfinite(obs['capture_t']) or
@@ -1200,12 +1239,13 @@ class VelocityEstimator:
                         self.timing_stats['invalid'] += 1
                         self.dropout_log.frame(now, 0, {'depth_invalid': 1})
                         self._reset_timed_tracks()
-                        time.sleep(max(0.001, dt - (time.monotonic() - t0)))
+                        # No frame yet is not work: don't start the rate cap.
+                        self._pace(cam_src, t0, dt, worked=obs is not None)
                         continue
                     key = (id(cam_src), obs.get('session_id'), obs['frame_id'])
                     if key == self._last_depth_key:
                         self.timing_stats['duplicates'] += 1
-                        time.sleep(max(0.001, dt - (time.monotonic() - t0)))
+                        self._pace(cam_src, t0, dt, worked=False)
                         continue
                     if self._last_depth_key is not None and key[:2] != self._last_depth_key[:2]:
                         self._reset_timed_tracks()
@@ -1217,7 +1257,7 @@ class VelocityEstimator:
                         if capture_pose is None:
                             self.timing_stats['missing_pose'] += 1
                             self._reset_timed_tracks()
-                            time.sleep(max(0.001, dt - (time.monotonic() - t0)))
+                            self._pace(cam_src, t0, dt)
                             continue
                     else:
                         capture_pose = {'x': 0.0, 'y': 0.0, 'theta': 0.0}
@@ -1251,8 +1291,7 @@ class VelocityEstimator:
                             self._estimates = []
                         self.dropout_log.frame(time.monotonic(), 0, {'depth_stale': 1})
                         self._tracker.reset()
-                        elapsed = time.monotonic() - t0
-                        time.sleep(max(0.001, dt - elapsed))
+                        self._pace(cam_src, t0, dt)
                         continue
                     if self._logged_stale_depth:
                         logger.info("VelocityEstimator: depth frames recovered")
@@ -1266,8 +1305,7 @@ class VelocityEstimator:
                         with self._lock:
                             self._estimates = []
                         self.dropout_log.frame(time.monotonic(), 0, {'no_depth_in_band': 1})
-                        elapsed = time.monotonic() - t0
-                        time.sleep(max(0.001, (1.0 / INFER_HZ) - elapsed))
+                        self._pace(cam_src, t0, dt)
                         continue
 
                 # 2. Extract local centroids (relative to camera/robot)
@@ -1307,8 +1345,7 @@ class VelocityEstimator:
                         self._estimates = []
                     self.dropout_log.frame(time.monotonic(), 0, {'no_pose': 1})
                     self._tracker.reset()
-                    elapsed = time.monotonic() - t0
-                    time.sleep(max(0.001, dt - elapsed))
+                    self._pace(cam_src, t0, dt)
                     continue
                 if self._logged_missing_pose:
                     logger.info("VelocityEstimator: robot pose recovered")
@@ -1382,10 +1419,8 @@ class VelocityEstimator:
             except Exception as e:
                 logger.error(f"VelocityEstimator: inference error: {e}")
 
-            # Sleep remainder of cycle
-            elapsed = time.monotonic() - t0
-            sleep_t = max(0.001, dt - elapsed)
-            time.sleep(sleep_t)
+            # Sleep remainder of cycle (or wait for the next frame, wake mode)
+            self._pace(cam_src, t0, dt)
 
     def start(self):
         if self._model is None:
