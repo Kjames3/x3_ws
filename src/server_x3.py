@@ -5289,8 +5289,9 @@ def _load_side_detector():
         return None
     try:
         from trt_detector import TRTDetector
-        det = TRTDetector(engine, pt_path=YOLO_MODEL, conf_thres=SIDE_PERSON_CONF)
-        logger.info("[side-persons] TensorRT detector ready (%s)", engine)
+        det = TRTDetector(engine, pt_path=YOLO_MODEL, conf_thres=SIDE_PERSON_CONF,
+                          fast=os.environ.get("X3_TRT_FAST") == "1")
+        logger.info("[side-persons] TensorRT detector ready (%s, fast=%s)", engine, det.fast)
         return det
     except Exception as e:
         logger.error("[side-persons] detector init failed, side-camera people OFF: %s", e)
@@ -5302,8 +5303,13 @@ def _side_detect(det, img):
     if img.ndim == 2 or img.shape[2] == 1:
         img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     names = det.names or {}
+    # Custom checkpoints can put "person" at another index.
+    options = {}
+    if det.fast and isinstance(names, dict) and names.get(0) == 'person':
+        if all(c == 0 or name != 'person' for c, name in names.items()):
+            options["class_zero_only"] = True
     out = []
-    for r in det(img, verbose=False, conf=SIDE_PERSON_CONF):
+    for r in det(img, verbose=False, conf=SIDE_PERSON_CONF, **options):
         for b in r.boxes:
             c = int(b.cls[0])
             name = names[c] if isinstance(names, (list, tuple)) and c < len(names) else (
