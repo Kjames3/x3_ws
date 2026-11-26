@@ -414,9 +414,21 @@ window.RealityMode = (() => {
             })) : [];
             const text = JSON.stringify({map: roomKey || null, objects: rows}, null, 1);
             console.log('[reality] furniture measurements', text);
-            if (navigator.clipboard) navigator.clipboard.writeText(text).catch(() => {});
-            window.alert(rows.length ? `${rows.length} objects (copied to clipboard):\n` + text
-                                     : 'No confirmed furniture yet (needs a loaded map and Reality view on).');
+            // navigator.clipboard needs https; the GUI is served over http, so
+            // fall back to a selected textarea + execCommand, and report honestly.
+            let copied = false;
+            try {
+                const ta = document.createElement('textarea');
+                ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+                document.body.appendChild(ta); ta.select();
+                copied = document.execCommand('copy');
+                ta.remove();
+            } catch { copied = false; }
+            if (!copied && navigator.clipboard && window.isSecureContext)
+                navigator.clipboard.writeText(text).then(() => {}, () => {});
+            window.alert(rows.length
+                ? `${rows.length} objects${copied ? ' (copied to clipboard)' : ' (copy failed: select the text below, or see the browser console)'}:\n` + text
+                : 'No confirmed furniture yet (needs a loaded map and Reality view on).');
         };
         let structTracker = window.RealityStructure ? new RealityStructure.Tracker() : null;
         let wallHistory = window.RealityStructure && new RealityStructure.WallHistory();
