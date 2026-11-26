@@ -19,11 +19,15 @@ amcl:
     # AMCL tuning from 176bbf2 (Aug 2026), which only ever landed on the
     # worktree-lidar-3d-mapping-plan branch; main ran the stock values until
     # 2026-10-29, when the first Livox loop showed AMCL barely using the scan.
-    alpha1: 0.05   # rotation noise from rotation (measured odometry ~1% in rotation)
-    alpha2: 0.05   # rotation noise from translation
-    alpha3: 0.05   # translation noise from translation
-    alpha4: 0.05   # translation noise from rotation
-    alpha5: 0.05   # strafe noise (omni model only)
+    # 2026-11-25: raised from 0.05. Encoder odometry is ~1% on a straight drive,
+    # but mecanum rollers slip during CBF swerves and recoveries, and at 0.05 the
+    # particle cloud was too tight to follow the slip (robot "lost" mid-goal).
+    # See notes/plans/2026-11-25-nav2-stuck-lost-fixes.md.
+    alpha1: 0.2    # rotation noise from rotation
+    alpha2: 0.2    # rotation noise from translation
+    alpha3: 0.2    # translation noise from translation
+    alpha4: 0.2    # translation noise from rotation
+    alpha5: 0.3    # strafe noise (omni model only): rollers slip most sideways
     base_frame_id: "base_footprint"
     beam_skip_distance: 0.5
     beam_skip_error_threshold: 0.9
@@ -41,8 +45,10 @@ amcl:
     odom_frame_id: "odom"
     pf_err: 0.05
     pf_z: 0.99
-    recovery_alpha_fast: 0.0
-    recovery_alpha_slow: 0.0
+    # Non-zero: lets AMCL inject random particles when the scan match degrades
+    # (Nav2-recommended values), instead of never recovering from a bad pose.
+    recovery_alpha_fast: 0.1
+    recovery_alpha_slow: 0.001
     resample_interval: 1
     # OmniMotionModel is correct for holonomic (mecanum) robots.
     # DifferentialMotionModel (the DWA default) would produce bad localisation
@@ -52,8 +58,8 @@ amcl:
     sigma_hit: 0.1   # 5 cm maps
     tf_broadcast: true
     transform_tolerance: 1.0
-    update_min_a: 0.2
-    update_min_d: 0.25
+    update_min_a: 0.1    # was 0.2: update more often while dodging at low speed
+    update_min_d: 0.1    # was 0.25
     z_hit: 0.85
     z_max: 0.05
     z_rand: 0.05     # 0.5 treated half of every scan as noise
@@ -134,7 +140,9 @@ controller_server:
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
       required_movement_radius: 0.5
-      movement_time_allowance: 10.0
+      # 20 s (was 10): waiting for a pedestrian to pass is not "stuck"; 10 s
+      # fired spin/backup recoveries mid-yield and restarted the stuck loop.
+      movement_time_allowance: 20.0
 
     general_goal_checker:
       stateful: True
@@ -328,6 +336,11 @@ local_costmap:
           topic: /scan
           max_obstacle_height: 2.0
           obstacle_min_range: 0.1
+          # Clear at least as far as any mark-only source marks (people 4 m,
+          # oak/livox 5 m). The 3.0 m default left a 3-5 m band where marks were
+          # never erased: walking people left ghost walls (2026-11-25).
+          raytrace_max_range: 6.0
+          obstacle_max_range: 5.5
           clearing: True
           marking: True
           data_type: "LaserScan"
@@ -474,7 +487,11 @@ global_costmap:
           observation_persistence: 0.0
         scan:
           topic: /scan
-          raytrace_range: 3.0
+          # raytrace_range is the pre-Humble name and is ignored, so this cleared
+          # to the 3.0 m default while people/oak/livox mark out to 4-5 m:
+          # ghost obstacles in the global plan (2026-11-25).
+          raytrace_max_range: 6.0
+          obstacle_max_range: 5.5
           obstacle_min_range: 0.1
           max_obstacle_height: 2.0
           clearing: True
