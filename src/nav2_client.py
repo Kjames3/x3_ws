@@ -53,6 +53,39 @@ STATE_UNAVAILABLE = "UNAVAILABLE"
 # Maximum path sample points sent to the GUI each broadcast cycle
 _MAX_PATH_PTS = 50
 
+# Opt-in Nav2 params override (strafe experiment, 2026-11-26).  Unset/empty =
+# the launch file's default nav2_params_x3.yaml, launch command unchanged.
+NAV2_PARAMS_ENV = "X3_NAV2_PARAMS"
+_NAV2_PARAMS_ALIASES = {
+    "omni_direct": "nav2_params_x3_omni_direct.yaml",
+}
+
+
+def resolve_nav2_params_file(value: Optional[str], params_dir: str):
+    """X3_NAV2_PARAMS value -> (params_file or None, log message).
+
+    ``None`` means "use the launch file's default".  An alias (``omni_direct``)
+    resolves inside ``params_dir`` (the installed share/yahboomcar_nav/params);
+    anything else must be an absolute path (``~`` expanded).  A missing file or
+    a relative path falls back to the default with an error message rather than
+    launching Nav2 on a bad path.
+    """
+    v = (value or "").strip()
+    if not v:
+        return None, "default (nav2_params_x3.yaml from the launch file)"
+    if v in _NAV2_PARAMS_ALIASES:
+        path = os.path.join(params_dir, _NAV2_PARAMS_ALIASES[v])
+    else:
+        path = os.path.expanduser(v)
+        if not os.path.isabs(path):
+            return None, (f"ERROR: {NAV2_PARAMS_ENV}={v!r} is neither an alias "
+                          f"({', '.join(sorted(_NAV2_PARAMS_ALIASES))}) nor an absolute "
+                          f"path; using the default nav2_params_x3.yaml")
+    if not os.path.isfile(path):
+        return None, (f"ERROR: {NAV2_PARAMS_ENV}={v!r} -> {path} does not exist "
+                      f"(colcon build yahboomcar_nav?); using the default nav2_params_x3.yaml")
+    return path, f"{path} (from {NAV2_PARAMS_ENV}={v!r})"
+
 
 def _yaw_to_quaternion(yaw: float):
     """Return (x, y, z, w) quaternion for a pure Z-axis rotation."""
@@ -295,6 +328,12 @@ class Nav2Client:
             cmd.append(f'map:={map_path}')
         if external_slam:
             cmd.append('external_slam:=true')
+        params_file, params_msg = resolve_nav2_params_file(
+            os.environ.get(NAV2_PARAMS_ENV), os.path.join(nav_pkg, 'params'))
+        if params_file:
+            cmd.append(f'params_file:={params_file}')
+        (logger.error if params_msg.startswith('ERROR') else logger.info)(
+            f"[Nav2Client] Nav2 params file: {params_msg}")
 
         # Keep Nav2's console output: with DEVNULL a launch that loaded no
         # nodes left nothing to read (2026-11-22). Overwritten each launch.

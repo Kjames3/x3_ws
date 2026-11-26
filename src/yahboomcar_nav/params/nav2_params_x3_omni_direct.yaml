@@ -1,0 +1,614 @@
+# nav2_params_x3_omni_direct.yaml  -- OPT-IN strafe experiment (2026-11-26)
+#
+# Identical to nav2_params_x3.yaml except controller_server.FollowPath: plain
+# nav2_mppi_controller::MPPIController with the RotationShimController and its
+# keys (primary_controller, angular_dist_threshold, forward_sampling_distance,
+# rotate_to_heading_angular_vel, max_angular_accel, simulate_ahead_time) removed.
+# tests/test_nav2_omni_direct_params.py enforces that this is the only difference;
+# copy any other change to the base file over here too.
+#
+# Why: the shim was added (4770360, 2026-10-22) while MPPI used DiffDrive.  With
+# MPPI on Omni (de7df33) the shim still turns the robot toward any path more than
+# 45 deg off its heading before MPPI gets control, and the 1 Hz replan re-arms it,
+# so a side goal is turned toward and driven at instead of strafed
+# (notes/plans/overnight_perf_2026-11-26.md section 4).
+#
+# Regression risk (both recorded under DiffDrive, 2026-10-22, not yet re-tested on Omni):
+#   - goal BEHIND the robot: plain MPPI sat at ~0 m/s for ~18 s (35 s at 1.3 m)
+#     before turning -- the reason the shim exists;
+#   - 0.30 m sideways goal: plain MPPI hovered at ~0 m/s for 50+ s.
+# If either stalls under Omni, go back to the default file and keep the shim
+# with a higher threshold and a matching lookahead instead.
+#
+# Enable: X3_NAV2_PARAMS=omni_direct in x3_server's environment, then relaunch
+# Nav2 (notes/plans/strafe_live_test_2026-11-26.md).
+#
+# nav2_params_x3.yaml
+# Nav2 stack tuned for the Yahboom X3 4-wheel mecanum (holonomic) robot.
+#
+# Stack:
+#   Global planner : SmacPlanner2D   (no non-holonomic constraints)
+#   Smoother       : SavitzkyGolay   (smooths global path before controller)
+#   Controller     : MPPI            (holonomic: allows strafing + reverse)
+#   Localization   : AMCL with OmniMotionModel
+#
+# use_sim_time is set by the launch file at runtime.
+# All "False" entries below are the hardware default; the launch file overrides
+# them via the lifecycle manager's use_sim_time launch argument.
+
+amcl:
+  ros__parameters:
+    use_sim_time: False
+    set_initial_pose: true
+    initial_pose: [0.0, 0.0, 0.0, 0.0]
+    # AMCL tuning from 176bbf2 (Aug 2026), which only ever landed on the
+    # worktree-lidar-3d-mapping-plan branch; main ran the stock values until
+    # 2026-10-29, when the first Livox loop showed AMCL barely using the scan.
+    # 2026-11-25: raised from 0.05. Encoder odometry is ~1% on a straight drive,
+    # but mecanum rollers slip during CBF swerves and recoveries, and at 0.05 the
+    # particle cloud was too tight to follow the slip (robot "lost" mid-goal).
+    # See notes/plans/2026-11-25-nav2-stuck-lost-fixes.md.
+    alpha1: 0.2    # rotation noise from rotation
+    alpha2: 0.2    # rotation noise from translation
+    alpha3: 0.2    # translation noise from translation
+    alpha4: 0.2    # translation noise from rotation
+    alpha5: 0.3    # strafe noise (omni model only): rollers slip most sideways
+    base_frame_id: "base_footprint"
+    beam_skip_distance: 0.5
+    beam_skip_error_threshold: 0.9
+    beam_skip_threshold: 0.3
+    do_beamskip: false
+    global_frame_id: "map"
+    lambda_short: 0.1
+    laser_likelihood_max_dist: 2.0
+    laser_max_range: 12.0   # livox_scan_node's range_max
+    laser_min_range: -1.0
+    laser_model_type: "likelihood_field"
+    max_beams: 180   # of 720; 60 left the filter under-constrained
+    max_particles: 2000
+    min_particles: 500
+    odom_frame_id: "odom"
+    pf_err: 0.05
+    pf_z: 0.99
+    # Non-zero: lets AMCL inject random particles when the scan match degrades
+    # (Nav2-recommended values), instead of never recovering from a bad pose.
+    recovery_alpha_fast: 0.1
+    recovery_alpha_slow: 0.001
+    resample_interval: 1
+    # OmniMotionModel is correct for holonomic (mecanum) robots.
+    # DifferentialMotionModel (the DWA default) would produce bad localisation
+    # because it assumes the robot can only move forward/backward.
+    robot_model_type: "nav2_amcl::OmniMotionModel"
+    save_pose_rate: 0.5
+    sigma_hit: 0.1   # 5 cm maps
+    tf_broadcast: true
+    transform_tolerance: 1.0
+    update_min_a: 0.1    # was 0.2: update more often while dodging at low speed
+    update_min_d: 0.1    # was 0.25
+    z_hit: 0.85
+    z_max: 0.05
+    z_rand: 0.05     # 0.5 treated half of every scan as noise
+    z_short: 0.05
+
+bt_navigator:
+  ros__parameters:
+    use_sim_time: False
+    global_frame: map
+    robot_base_frame: base_footprint
+    odom_topic: odom
+    default_bt_xml_filename: "navigate_to_pose_w_replanning_and_recovery.xml"
+    plugin_lib_names:
+      - nav2_compute_path_to_pose_action_bt_node
+      - nav2_compute_path_through_poses_action_bt_node
+      - nav2_smooth_path_action_bt_node
+      - nav2_follow_path_action_bt_node
+      - nav2_spin_action_bt_node
+      - nav2_wait_action_bt_node
+      - nav2_assisted_teleop_action_bt_node
+      - nav2_back_up_action_bt_node
+      - nav2_drive_on_heading_bt_node
+      - nav2_clear_costmap_service_bt_node
+      - nav2_is_stuck_condition_bt_node
+      - nav2_goal_reached_condition_bt_node
+      - nav2_goal_updated_condition_bt_node
+      - nav2_globally_updated_goal_condition_bt_node
+      - nav2_is_path_valid_condition_bt_node
+      - nav2_initial_pose_received_condition_bt_node
+      - nav2_reinitialize_global_localization_service_bt_node
+      - nav2_rate_controller_bt_node
+      - nav2_distance_controller_bt_node
+      - nav2_speed_controller_bt_node
+      - nav2_truncate_path_action_bt_node
+      - nav2_truncate_path_local_action_bt_node
+      - nav2_goal_updater_node_bt_node
+      - nav2_recovery_node_bt_node
+      - nav2_pipeline_sequence_bt_node
+      - nav2_round_robin_node_bt_node
+      - nav2_transform_available_condition_bt_node
+      - nav2_time_expired_condition_bt_node
+      - nav2_path_expiring_timer_condition
+      - nav2_distance_traveled_condition_bt_node
+      - nav2_single_trigger_bt_node
+      - nav2_goal_updated_controller_bt_node
+      - nav2_is_battery_low_condition_bt_node
+      - nav2_navigate_through_poses_action_bt_node
+      - nav2_navigate_to_pose_action_bt_node
+      - nav2_remove_passed_goals_action_bt_node
+      - nav2_planner_selector_bt_node
+      - nav2_controller_selector_bt_node
+      - nav2_goal_checker_selector_bt_node
+      - nav2_controller_cancel_bt_node
+      - nav2_path_longer_on_approach_bt_node
+      - nav2_wait_cancel_bt_node
+      - nav2_spin_cancel_bt_node
+      - nav2_back_up_cancel_bt_node
+      - nav2_assisted_teleop_cancel_bt_node
+      - nav2_drive_on_heading_cancel_bt_node
+      - nav2_is_battery_charging_condition_bt_node
+
+# ── Controller Server (MPPI) ────────────────────────────────────────────────
+# MPPI samples many trajectory rollouts and picks the lowest-cost one.
+# It naturally exploits the full holonomic envelope — diagonal motion,
+# strafing, and in-place rotation — without needing hand-tuned sampling grids.
+controller_server:
+  ros__parameters:
+    use_sim_time: False
+    controller_frequency: 10.0
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.001   # non-zero: holonomic, y matters
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.3
+    progress_checker_plugins: ["progress_checker"]
+    goal_checker_plugins: ["general_goal_checker"]
+    controller_plugins: ["FollowPath"]
+
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.5
+      # 20 s (was 10): waiting for a pedestrian to pass is not "stuck"; 10 s
+      # fired spin/backup recoveries mid-yield and restarted the stuck loop.
+      movement_time_allowance: 20.0
+
+    general_goal_checker:
+      stateful: True
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.25
+      yaw_goal_tolerance: 0.25
+
+    FollowPath:
+      # OMNI-DIRECT VARIANT: plain MPPI, no RotationShimController (see file header).
+      # MPPI's parameters below are unchanged from nav2_params_x3.yaml.
+      plugin: "nav2_mppi_controller::MPPIController"
+      time_steps: 56
+      model_dt: 0.10
+      batch_size: 2000
+      vx_std: 0.2
+      vy_std: 0.2
+      wz_std: 0.4
+      vx_max: 0.26
+      vx_min: -0.26      # holonomic: allow reversing
+      vy_max: 0.26       # holonomic: allow strafing
+      wz_max: 1.0
+      ax_max: 3.0
+      ax_min: -3.0
+      ay_max: 3.0
+      az_max: 3.5
+      iteration_count: 1
+      prune_distance: 1.7
+      transform_tolerance: 0.1
+      temperature: 0.3
+      gamma: 0.015
+      # Omni (2026-11-26; DiffDrive since 2026-10-21, 27dfd3c).  The velocity_smoother
+      # used to run on its defaults with max vy = 0, so every sideways command Omni
+      # planned was discarded and the robot sat still (MPPI vy -0.15, driver vy exactly
+      # 0.000); the velocity_smoother block below now passes vy.  The old chassis also
+      # drifted in yaw while strafing; the AGX chassis has heading hold.  If strafing
+      # misbehaves, "DiffDrive" here alone restores forward/turn-only driving.
+      motion_model: "Omni"
+      visualize: false
+      TrajectoryVisualizer:
+        trajectory_step: 5
+        time_step: 3
+      AckermannConstraints:
+        min_turning_r: 0.2
+      critics:
+        - "ConstraintCritic"
+        - "CostCritic"
+        - "GoalCritic"
+        - "GoalAngleCritic"
+        - "PathAlignCritic"
+        - "PathFollowCritic"
+        - "PreferForwardCritic"
+        - "DBaSCritic"
+      DBaSCritic:
+        enabled: true
+        safe_radius: 0.6
+        collision_cost: 100000.0
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+      GoalCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 1.0
+      GoalAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.0
+        threshold_to_consider: 0.4
+      PreferForwardCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 0.4
+      CostCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.81
+        critical_cost: 300.0
+        consider_footprint: true    # rectangular footprint now defined; MPPI scores the real chassis
+        collision_cost: 1000000.0
+        near_goal_distance: 1.0
+      PathAlignCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 14.0
+        max_path_occupancy_ratio: 0.05
+        trajectory_point_step: 3
+        threshold_to_consider: 0.40
+        offset_from_furthest: 20
+        use_path_orientations: false
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        offset_from_furthest: 5
+        threshold_to_consider: 1.4
+      PathAngleCritic:
+        enabled: false   # disabled: MPPI Omni model handles heading natively
+
+# ── Smoother Server (SavitzkyGolay) ────────────────────────────────────────
+# Smooths the global plan before handing it to MPPI, removing grid staircase
+# artefacts from SmacPlanner2D.
+# Sits between the controller and the robot (controller -> cmd_vel_nav -> smoother ->
+# cmd_vel -> server_x3 CBF gate).  Without this block it ran on defaults with max vy = 0
+# and zeroed every strafe (2026-10-21).  Limits match MPPI's vx/vy/wz.
+velocity_smoother:
+  ros__parameters:
+    use_sim_time: False
+    smoothing_frequency: 20.0
+    scale_velocities: False
+    feedback: "OPEN_LOOP"
+    max_velocity: [0.26, 0.26, 1.0]
+    min_velocity: [-0.26, -0.26, -1.0]
+    max_accel: [2.5, 2.5, 3.2]
+    max_decel: [-2.5, -2.5, -3.2]
+    odom_topic: "odom"
+    odom_duration: 0.1
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 1.0
+
+smoother_server:
+  ros__parameters:
+    use_sim_time: False
+    smoother_plugins: ["simple_smoother"]
+    simple_smoother:
+      plugin: "nav2_smoother::SavitzkyGolaySmoother"
+      num_iterations: 2
+      do_refinement: true
+      refinement_num: 2
+
+# ── Planner Server (SmacPlanner2D) ─────────────────────────────────────────
+# SmacPlanner2D uses A* on an SE2 grid without orientation constraints, which
+# is ideal for holonomic robots that can move in any direction.
+planner_server:
+  ros__parameters:
+    use_sim_time: False
+    expected_planner_frequency: 10.0
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "nav2_smac_planner/SmacPlanner2D"
+      tolerance: 0.5
+      downsample_costmap: false
+      downsampling_factor: 1
+      allow_unknown: true
+      max_iterations: 1000000
+      max_on_approach_iterations: 1000
+      max_planning_time: 2.0
+      cost_travel_multiplier: 2.0
+      use_final_approach_orientation: false
+      smoother:
+        max_iterations: 1000
+        w_smooth: 0.3
+        w_data: 0.2
+        tolerance: 1.0e-10
+
+# ── Costmaps ────────────────────────────────────────────────────────────────
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      update_frequency: 5.0
+      publish_frequency: 2.0
+      global_frame: odom
+      robot_base_frame: base_footprint
+      use_sim_time: False
+      rolling_window: true
+      # 4 m, not 3: MPPI's horizon (56 x 0.1 s at 0.26 m/s = 1.46 m) plus the
+      # chassis' 0.32 m front reaches 1.78 m, past a 3 m window's 1.5 m edge.
+      width: 4
+      height: 4
+      resolution: 0.05
+      # The chassis as the same rectangle the CBF uses (server_x3.py CBF_FOOTPRINT,
+      # metres from the base origin: front 0.32, rear 0.32, left 0.30, right 0.30).
+      # X3 v2 locked geometry (Design_v2, 2026-11-18): CAD extent x +-0.320,
+      # y +-0.293 (no longer rounded up to 0.30, 2026-11-22) from the wheel centroid, which base_footprint sits on
+      # (yahboomcar_description/config/x3_v2_cad_frames.yaml). The wide
+      # 2026-11-13 frame was 0.41/0.37. The old X3 was [[0.16, 0.11], [0.16, -0.11], [-0.13, -0.11],
+      # [-0.13, 0.11]]; a circle there let MPPI pass 0.15 m from a box while the front
+      # corners sat 0.19 m out (box test 2026-10-22), hence a polygon.
+      footprint: "[[0.32, 0.293], [0.32, -0.293], [-0.32, -0.293], [-0.32, 0.293]]"
+      plugins: ["obstacle_layer", "inflation_layer"]
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        # >= the circumscribed radius (hypot(0.32, 0.30) = 0.44 m) or MPPI's CostCritic
+        # footprint-checks every trajectory point. Inscribed is 0.30 m, so a 0.80 m
+        # doorway leaves 10 cm a side. (Wide 2026-11-13 frame: 0.65; old X3: 0.35.)
+        inflation_radius: 0.50
+        cost_scaling_factor: 5.0
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        # tof_*: dual VL53L5CX arrays (Teensy -> server_x3) covering the low band
+        # in front of the wheels that the 0.34 m scan plane passes over.
+        observation_sources: scan livox_low oak_low keepout tof_upper tof_lower people
+        scan:
+          topic: /scan
+          max_obstacle_height: 2.0
+          obstacle_min_range: 0.1
+          # Clear at least as far as any mark-only source marks (people 4 m,
+          # oak/livox 5 m). The 3.0 m default left a 3-5 m band where marks were
+          # never erased: walking people left ghost walls (2026-11-25).
+          raytrace_max_range: 6.0
+          obstacle_max_range: 5.5
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+        # Mark-only.  /tof/*/obstacles is already floor-filtered by server_x3
+        # (per-zone lowest-ray test; the raw clouds fake a 6 cm edge where a
+        # zone grazes the floor).  Floor returns land at z = -0.015..0 m, so 0.04
+        # also rejects them here; they are height-filtered before clearing too, so the
+        # ToF could never clear anyway.  A removed box is cleared by /scan rays
+        # passing over its cell -- the layer clears before it marks, so a box
+        # the ToF still sees survives every scan pass.  Do not raise
+        # min_obstacle_height to the 0.12 used elsewhere: that discards exactly
+        # the low obstacles these sensors exist for.
+        # Livox low band (livox_scan_node /livox/obstacles, odom frame): 0.06-0.45 m
+        # above the floor, the table/truss base bars and chair bases the 0.31 m
+        # /scan slice misses.  The node remembers voxels the lidar can no longer
+        # see up close, so mark-only with persistence 0 (re-marked after /scan clears).
+        livox_low:
+          topic: /livox/obstacles
+          data_type: "PointCloud2"
+          marking: True
+          # 2026-11-26: clearing on. Only /scan erased these marks, so a person's legs
+          # and feet stayed ~10 s after they walked past a parked robot. Rays are traced
+          # from the Livox (the cloud is in odom, hence sensor_frame); points still in
+          # the cloud, remembered near voxels included, are re-marked in the same update.
+          clearing: True
+          sensor_frame: livox_frame
+          raytrace_min_range: 0.0
+          raytrace_max_range: 6.0
+          min_obstacle_height: 0.04
+          max_obstacle_height: 2.0
+          obstacle_min_range: 0.0
+          obstacle_max_range: 4.5
+          observation_persistence: 0.0
+        # Front-OAK floor obstacles (server_x3 oak_floor_obstacles, odom): 0.03-0.45 m
+        # within 1.6 m of the camera, e.g. power strips under the Livox band.
+        # Remembered until back in view and empty, so mark-only, persistence 0.
+        # Auto-Explore keep-out discs (server_x3 /explore/keepout, map frame): dropped
+        # ahead of a spot where the robot got stuck, cleared when Auto-Explore starts.
+        keepout:
+          topic: /explore/keepout
+          data_type: "PointCloud2"
+          marking: True
+          clearing: False
+          min_obstacle_height: -1.0
+          max_obstacle_height: 2.0
+          obstacle_min_range: 0.0
+          obstacle_max_range: 50.0
+          observation_persistence: 0.0
+        oak_low:
+          topic: /oak/obstacles
+          data_type: "PointCloud2"
+          marking: True
+          clearing: False
+          min_obstacle_height: -1.0
+          max_obstacle_height: 2.0
+          obstacle_min_range: 0.0
+          obstacle_max_range: 5.0
+          observation_persistence: 0.0
+        tof_upper:
+          topic: /tof/upper/obstacles
+          data_type: "PointCloud2"
+          marking: True
+          clearing: False
+          min_obstacle_height: 0.04
+          max_obstacle_height: 2.0
+          obstacle_min_range: 0.0
+          obstacle_max_range: 1.5
+          observation_persistence: 0.0
+        tof_lower:
+          topic: /tof/lower/obstacles
+          data_type: "PointCloud2"
+          marking: True
+          clearing: False
+          min_obstacle_height: -0.05   # server already decided (height OR floor-deficit test); deficit hits can sit ~1 cm up
+          max_obstacle_height: 2.0
+          obstacle_min_range: 0.0
+          obstacle_max_range: 1.5
+          observation_persistence: 0.0
+        # People (server_x3.py people_buffer): each tracked person as a filled disk, plus
+        # where a trusted walker will be in 0.5 s and 1.0 s, so the planners keep a
+        # comfortable distance and leave the path a walker is heading down.  Mark-only; the
+        # /scan rays clear a person's cells once they have moved on.
+        people:
+          topic: /people/obstacles
+          data_type: "PointCloud2"
+          marking: True
+          clearing: False
+          min_obstacle_height: 0.0
+          max_obstacle_height: 2.0
+          obstacle_min_range: 0.0
+          obstacle_max_range: 4.0
+          observation_persistence: 0.0
+      always_send_full_costmap: True
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      update_frequency: 1.0
+      publish_frequency: 1.0
+      global_frame: map
+      robot_base_frame: base_footprint
+      use_sim_time: False
+      # Same rectangle as local_costmap and the CBF (see the note there).
+      footprint: "[[0.32, 0.293], [0.32, -0.293], [-0.32, -0.293], [-0.32, 0.293]]"
+      # Must match the map: the static layer resizes the global costmap to the
+      # map's resolution anyway (0.025 here still ran at 0.05, 2026-11-22).
+      resolution: 0.05
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        observation_sources: scan livox_low oak_low keepout people
+        # Livox low band (livox_scan_node /livox/obstacles, odom frame): 0.06-0.45 m
+        # above the floor, the table/truss base bars and chair bases the 0.31 m
+        # /scan slice misses.  The node remembers voxels the lidar can no longer
+        # see up close, so mark-only with persistence 0 (re-marked after /scan clears).
+        livox_low:
+          topic: /livox/obstacles
+          data_type: "PointCloud2"
+          marking: True
+          # 2026-11-26: clearing on. Only /scan erased these marks, so a person's legs
+          # and feet stayed ~10 s after they walked past a parked robot. Rays are traced
+          # from the Livox (the cloud is in odom, hence sensor_frame); points still in
+          # the cloud, remembered near voxels included, are re-marked in the same update.
+          clearing: True
+          sensor_frame: livox_frame
+          raytrace_min_range: 0.0
+          raytrace_max_range: 6.0
+          min_obstacle_height: 0.04
+          max_obstacle_height: 2.0
+          obstacle_min_range: 0.0
+          obstacle_max_range: 5.0
+          observation_persistence: 0.0
+        # Front-OAK floor obstacles (server_x3 oak_floor_obstacles, odom): 0.03-0.45 m
+        # within 1.6 m of the camera, e.g. power strips under the Livox band.
+        # Remembered until back in view and empty, so mark-only, persistence 0.
+        # Auto-Explore keep-out discs (server_x3 /explore/keepout, map frame): dropped
+        # ahead of a spot where the robot got stuck, cleared when Auto-Explore starts.
+        keepout:
+          topic: /explore/keepout
+          data_type: "PointCloud2"
+          marking: True
+          clearing: False
+          min_obstacle_height: -1.0
+          max_obstacle_height: 2.0
+          obstacle_min_range: 0.0
+          obstacle_max_range: 50.0
+          observation_persistence: 0.0
+        oak_low:
+          topic: /oak/obstacles
+          data_type: "PointCloud2"
+          marking: True
+          clearing: False
+          min_obstacle_height: -1.0
+          max_obstacle_height: 2.0
+          obstacle_min_range: 0.0
+          obstacle_max_range: 5.0
+          observation_persistence: 0.0
+        scan:
+          topic: /scan
+          # raytrace_range is the pre-Humble name and is ignored, so this cleared
+          # to the 3.0 m default while people/oak/livox mark out to 4-5 m:
+          # ghost obstacles in the global plan (2026-11-25).
+          raytrace_max_range: 6.0
+          obstacle_max_range: 5.5
+          obstacle_min_range: 0.1
+          max_obstacle_height: 2.0
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+        # Same people source as the local costmap, so the GLOBAL plan also routes wide.
+        people:
+          topic: /people/obstacles
+          data_type: "PointCloud2"
+          marking: True
+          clearing: False
+          min_obstacle_height: 0.0
+          max_obstacle_height: 2.0
+          obstacle_min_range: 0.0
+          obstacle_max_range: 4.0
+          observation_persistence: 0.0
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: True
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 5.0
+        inflation_radius: 0.50   # >= circumscribed 0.44 m; see local_costmap
+      always_send_full_costmap: True
+
+# ── Map Server ───────────────────────────────────────────────────────────────
+map_server:
+  ros__parameters:
+    use_sim_time: False
+    yaml_filename: "yahboomcar.yaml"
+
+map_saver:
+  ros__parameters:
+    use_sim_time: False
+    save_map_timeout: 5.0
+    free_thresh_default: 0.25
+    occupied_thresh_default: 0.65
+
+# ── Behavior Server ──────────────────────────────────────────────────────────
+behavior_server:
+  ros__parameters:
+    costmap_topic: local_costmap/costmap_raw
+    footprint_topic: local_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: ["spin", "backup", "wait"]
+    spin:
+      plugin: "nav2_behaviors/Spin"
+    backup:
+      plugin: "nav2_behaviors/BackUp"
+    wait:
+      plugin: "nav2_behaviors/Wait"
+    global_frame: odom
+    robot_base_frame: base_footprint
+    transform_timeout: 0.1
+    use_sim_time: False
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 1.0
+    min_rotational_vel: 0.4
+    rotational_acc_lim: 3.2
+
+# ── Waypoint Follower ────────────────────────────────────────────────────────
+waypoint_follower:
+  ros__parameters:
+    use_sim_time: False
+    loop_rate: 20
+    stop_on_failure: false
+    waypoint_task_executor_plugin: "wait_at_waypoint"
+    wait_at_waypoint:
+      plugin: "nav2_waypoint_follower::WaitAtWaypoint"
+      enabled: True
+      waypoint_pause_duration: 200
+
+robot_state_publisher:
+  ros__parameters:
+    use_sim_time: False

@@ -798,6 +798,14 @@ function setupNavMapInteraction(canvas) {
         if (Math.hypot(d.ex - d.sx, d.ey - d.sy) >= DRAG_MIN_PX) {
             const w2 = canvasPxToWorld(d.ex, d.ey);
             if (w2) theta = Math.atan2(w2.y - d.wy, w2.x - d.wx);
+        } else if (state.nav.mapMode === 'navigate' && navKeepYawEnabled()) {
+            // Opt-in (?navKeepYaw=1 or localStorage navKeepYaw=1): a plain click keeps
+            // the robot's current map heading instead of yaw 0, which forced a final spin.
+            const mapYaw = state.latestData.robotPoseMap?.theta;
+            if (Number.isFinite(mapYaw)) {
+                theta = mapYaw;
+                console.log(`navKeepYaw: goal yaw = current map heading ${(mapYaw * 180 / Math.PI).toFixed(0)}°`);
+            }
         }
         commitNavMapPoint(d.wx, d.wy, theta);
     };
@@ -815,6 +823,20 @@ function setupNavMapInteraction(canvas) {
         updateNavViewButtons();
         drawNavMap();
     });
+}
+
+// Strafe experiment toggle (2026-11-26), default off.  URL ?navKeepYaw=1|0 wins
+// and is remembered in localStorage; otherwise localStorage navKeepYaw === '1'.
+function navKeepYawEnabled() {
+    try {
+        const q = new URLSearchParams(window.location.search).get('navKeepYaw');
+        if (q !== null) {
+            const on = q === '1' || q === 'true';
+            try { localStorage.setItem('navKeepYaw', on ? '1' : '0'); } catch (_) {}
+            return on;
+        }
+    } catch (_) {}
+    try { return localStorage.getItem('navKeepYaw') === '1'; } catch (_) { return false; }
 }
 
 function commitNavMapPoint(x, y, theta) {
