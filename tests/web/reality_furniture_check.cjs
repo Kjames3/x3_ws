@@ -6,7 +6,7 @@ function surface(x0,l,d,h) {
         const x=x0+i*.12+.01, y=j*.12+.01;
         cells.push({x,y,z:h});
         if((i===0 || i===l-1) && (j===0 || j===d-1)) cells.push({x,y,z:.2});
-        if(h<.5 && j===0) cells.push({x,y,z:.82});
+        if(h<.5 && j===0) cells.push({x,y,z:.62},{x,y,z:.82});   // backrest spans heights
     }
 }
 surface(1.2,12,6,.74);

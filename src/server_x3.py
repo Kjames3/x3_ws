@@ -4040,7 +4040,7 @@ def _start_frontier_exploration():
 
 # Session furniture memory for the GUI Reality view: {map key: [landmark]}.
 _REALITY_LANDMARKS = {}
-_LANDMARK_NUM = ("X", "Y", "yaw", "L", "D", "H", "seat", "bottom")
+_LANDMARK_NUM = ("X", "Y", "yaw", "L", "D", "H", "seat", "bottom", "round")
 
 
 def _clean_landmarks(objs):

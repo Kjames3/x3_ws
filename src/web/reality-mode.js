@@ -290,9 +290,18 @@ window.RealityMode = (() => {
             ob.model = model;
             ob.revision = model.revision;
         }
+        const roundTop = new THREE.CylinderGeometry(.5, .5, 1, 32);
         function makeObject(kind) {
             const g = new THREE.Group(), inner = new THREE.Group();
-            for (const [x, y, z, sx, sy, sz] of PARTS[kind] || PARTS.box) {
+            if (kind === 'table_round') {
+                // Round top (unit diameter) on a pedestal and foot, scaled to L x H x D.
+                for (const [y, r, h] of [[.97, 1, .06], [.47, .12, .94], [.02, .5, .04]]) {
+                    const m = new THREE.Mesh(roundTop, furnMat);
+                    m.position.set(0, y, 0); m.scale.set(r, h, r);
+                    inner.add(m);
+                }
+            }
+            for (const [x, y, z, sx, sy, sz] of kind === 'table_round' ? [] : PARTS[kind] || PARTS.box) {
                 const m = new THREE.Mesh(unit, furnMat);
                 m.position.set(x, y, z); m.scale.set(sx, sy, sz);
                 inner.add(m);
@@ -345,9 +354,10 @@ window.RealityMode = (() => {
             for (const o of st ? st.objects : []) {
                 seen.add(o.id);
                 let ob = objects.get(o.id);
-                if (!ob || ob.kind !== o.kind) {
+                const shape = o.kind === 'table' && o.round ? 'table_round' : o.kind;
+                if (!ob || ob.kind !== shape) {
                     if (ob) removeObject(ob);
-                    ob = makeObject(o.kind); ob.kind = o.kind; objects.set(o.id, ob);
+                    ob = makeObject(shape); ob.kind = shape; objects.set(o.id, ob);
                 }
                 ob.group.position.set(-o.y, o.bottom || 0, -o.x);
                 ob.group.rotation.set(0, o.yaw + Math.PI / 2, 0);

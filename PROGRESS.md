@@ -5,6 +5,16 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-26 — Reality view: furniture sized to the apartment tape measurements
+
+**Problem:** Measured in the apartment (user tape): dining table 76 x 76 x 76 cm square, round coffee table 81 cm across, 46 cm tall. The robot reported the dining table as 98 x 64 x 72 and missed the coffee table. Causes: tables had to be >= 82 cm long (the 76 cm table only passed when a pushed-in chair stretched it); sizes came from 12 cm grid cells; a seat-height surface without a backrest was discarded; a tabletop overhanging a pushed-in seat counted as its backrest.
+
+**Work done:** Table minimum length 60 cm. Table and chair extents from the surface points (2-98 percentile) instead of grid cells. Tabletop cells with vertical structure above them (a backrest) are excluded. A backrest must span >= 12 cm of height. Seat-height, backless, table-sized surfaces become low tables. Round tops (no points in the box corners) are flagged and drawn as a round top on a pedestal; the flag is kept in the session memory (server keeps `round` after the next restart).
+
+**Results:** New `tests/web/reality_apartment_furniture_check.cjs` built from the measurements: dining 78 x 78 x 74 cm, coffee 75 x 75 x 46 cm round, chair seat 46 cm; all reality checks pass. The old furniture fixture's single-point backrest got a second point at 62 cm so it is vertical. Live check pending.
+
+---
+
 ## 2026-11-26 — Reality view: stop lidar furniture flicker
 
 **Problem:** With detection off, furniture models briefly appeared then disappeared (map newApartment1 loaded). Unconfirmed lidar candidates were drawn after 4 hits and dropped after a 1.6 s gap, which also reset them before the 3 s promotion.

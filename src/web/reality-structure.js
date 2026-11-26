@@ -465,6 +465,31 @@
             x:cx+c*(lo+hi)/2-s*(bot+top)/2,y:cy+s*(lo+hi)/2+c*(bot+top)/2};
     }
 
+    // Top extents from the surface points themselves (not 12 cm cells), in the
+    // fitted frame, trimmed 2% each side so one stray return cannot stretch it.
+    function pointBounds(patch, level, rect, keepYaw = false) {
+        const c=Math.cos(rect.yaw), s=Math.sin(rect.yaw), as=[], bs=[];
+        for (const col of patch) for (const p of col.pts) {
+            if (Math.abs(p.z-level)>=.033) continue;
+            as.push(c*p.x+s*p.y); bs.push(-s*p.x+c*p.y);
+        }
+        if (as.length < 8) return rect;
+        const ua=as.slice(), ub=bs.slice();
+        as.sort((a,b)=>a-b); bs.sort((a,b)=>a-b);
+        const q=(v,f)=>v[Math.min(v.length-1,Math.floor(f*v.length))];
+        const a0=q(as,.02),a1=q(as,.98),b0=q(bs,.02),b1=q(bs,.98);
+        const L=a1-a0+.03, D=b1-b0+.03, ma=(a0+a1)/2, mb=(b0+b1)/2;
+        // Share of top points in the box corners (outer 15% on both axes):
+        // ~9% for a full rectangle, ~0 for a round top.
+        let corner=0;
+        for (let i=0;i<ua.length;i++) {
+            if (Math.abs(ua[i]-ma)>.35*L && Math.abs(ub[i]-mb)>.35*D) corner++;
+        }
+        const out={yaw:rect.yaw,L,D,x:c*ma-s*mb,y:s*ma+c*mb,corner:corner/as.length};
+        if (!keepYaw && out.D>out.L) { [out.L,out.D]=[out.D,out.L]; out.yaw+=Math.PI/2; }
+        return out;
+    }
+
     function furnitureSurfaces(cells) {
         const step = .12;
         const grid = new Map();
@@ -473,8 +498,8 @@
             if (p.age > 1.5 || p.z < .09 || p.z > 1.45) continue;
             const i = Math.floor(p.x/step), j = Math.floor(p.y/step), k=key(i,j);
             let col = grid.get(k);
-            if (!col) { col={i,j,z:[]}; grid.set(k,col); }
-            col.z.push(p.z);
+            if (!col) { col={i,j,z:[],pts:[]}; grid.set(k,col); }
+            col.z.push(p.z); col.pts.push(p);
         }
         const output = [];
         for (const [kind,min,max] of [['table',.65,.86],['chair',.37,.53]]) {
@@ -482,7 +507,11 @@
             for (let level=min; level<=max+.001; level+=.045) {
                 const active = new Map();
                 for (const [k,col] of grid) {
-                    if (col.z.some(z=>Math.abs(z-level)<.033)) active.set(k,col);
+                    if (!col.z.some(z=>Math.abs(z-level)<.033)) continue;
+                    // Tabletops: skip cells where a vertical surface (a pushed-in
+                    // chair's backrest) carries on well above the top.
+                    if (kind==='table' && col.z.filter(z=>z>level+.06 && z<level+.4).length>=3) continue;
+                    active.set(k,col);
                 }
                 for (const [k,seed] of active) {
                     const patch=[seed];
@@ -502,7 +531,10 @@
                         const x=(col.i+.5)*step-cx,y=(col.j+.5)*step-cy;
                         xx+=x*x; xy+=x*y; yy+=y*y;
                         if (col.z.some(z=>z<level-.15)) under++;
-                        if (col.z.some(z=>z>level+.17)) {above++;bx+=x;by+=y;}
+                        // Vertical structure above the surface (a backrest), not a
+                        // flat overhang such as a tabletop over a pushed-in seat.
+                        const up=col.z.filter(z=>z>level+.12 && z<1.16);
+                        if (up.length>=2 && Math.max(...up)-Math.min(...up)>=.12) {above++;bx+=x;by+=y;}
                     }
                     if (!under || under>.60*patch.length || above>.58*patch.length) continue;
                     let rect = surfaceBounds(patch,step,cx,cy,.5*Math.atan2(2*xy,xx-yy));
@@ -531,17 +563,40 @@
                             heading=.5*Math.atan2(2*bxy,bxx-byy);
                             if (-Math.sin(heading)*bx+Math.cos(heading)*by<0) heading+=Math.PI;
                         }
-                        rect=surfaceBounds(patch,step,cx,cy,heading);
+                        rect=pointBounds(patch,level,surfaceBounds(patch,step,cx,cy,heading),true);
                     }
+                    if (kind==='table') rect=pointBounds(patch,level,rect);
                     const {L,D}=rect;
                     if (patch.length*step*step < .55*L*D) continue;
-                    if (kind==='chair' && (L<.27 || L>.76 || D<.27 || D>.76 || !above || Math.hypot(bx,by)/above<.08)) continue;
-                    if (kind==='table' && (L<.82 || L>2.65 || D<.36 || D>1.38)) continue;
+                    // Seat-height surface with no backrest and a table-sized top:
+                    // a coffee/side table (e.g. 81 cm round, 46 cm tall).
+                    let lowTable = false;
+                    if (kind==='chair' && (!above || Math.hypot(bx,by)/above<.08 || L>.76)) {
+                        if (above > .25*patch.length || L<.55 || L>1.6 || D<.4 || D>1.2) continue;
+                        lowTable = true;
+                        for (let deg=0;deg<90;deg+=3) {
+                            const candidate=surfaceBounds(patch,step,cx,cy,deg*Math.PI/180);
+                            if (candidate.L*candidate.D < rect.L*rect.D*.995) rect=candidate;
+                        }
+                        if (rect.D>rect.L) { [rect.L,rect.D]=[rect.D,rect.L]; rect.yaw+=Math.PI/2; }
+                        rect=pointBounds(patch,level,rect);
+                    }
+                    if (kind==='chair' && !lowTable && (L<.27 || L>.76 || D<.27 || D>.76)) continue;
+                    // 60 cm: a 76 cm square table must stand on its own, not only
+                    // when a pushed-in chair stretches it past a longer minimum.
+                    if (kind==='table' && (L<.6 || L>2.65 || D<.36 || D>1.38)) continue;
+                    // Round top: near-square box, but cells fill well under 100% of it.
+                    const round = (lowTable || kind==='table') && rect.D > .85*rect.L && rect.L >= .5
+                        && rect.corner !== undefined && rect.corner < .02;
+                    if (lowTable) {
+                        output.push({kind:'table',...rect,H:level,low:true,round,support:patch.length});
+                        continue;
+                    }
                     const backHeights = kind==='chair'
                         ? patch.flatMap(col=>col.z.filter(z=>z>level+.17 && z<1.16)).sort((a,b)=>a-b) : [];
                     if (kind==='chair' && !backHeights.length) continue;
                     const height = kind==='chair' ? backHeights[Math.floor(.9*backHeights.length)] : level;
-                    output.push({kind,...rect,H:height,seat:level,support:patch.length});
+                    output.push({kind,...rect,H:height,seat:level,support:patch.length,...(kind==='table'?{round}:{})});
                 }
             }
         }
@@ -651,7 +706,8 @@
             } else if (frame.xyz !== this.lastCloud) {
                 matched.add(t);
                 t.X += .25*(X-t.X); t.Y += .25*(Y-t.Y);
-                for (const key of ['H','L','D','seat']) t[key]+=.25*(o[key]-t[key]);
+                for (const key of ['H','L','D','seat']) if (Number.isFinite(o[key])) t[key]+=.25*(o[key]-t[key]);
+                if (o.kind==='table') t.round = o.round;
                 const symmetry = o.kind==='chair' ? 1 : 2;
                 const delta = symmetry*(yaw-t.yaw);
                 t.yaw += .25*Math.atan2(Math.sin(delta),Math.cos(delta))/symmetry;
@@ -679,7 +735,7 @@
         const candidates = this.tracks.filter(t => !t.inferred && t.hits >= 2).map(t => {
             const [x, y] = toBase(t.X, t.Y);
             return { id: t.id, kind: t.kind, x, y, yaw: t.yaw - pose.theta, L: t.L, D: t.D, H: t.H,
-                     seat: t.seat, inferred: !!t.inferred, bottom: t.bottom || 0, age: nowS - t.seen };
+                     seat: t.seat, round: !!t.round, inferred: !!t.inferred, bottom: t.bottom || 0, age: nowS - t.seen };
         });
         // A changed partial view can start a second track before the old one
         // expires. Resolve competing models after smoothing, in rendered space.
@@ -703,6 +759,7 @@
         return confirmed.map(t => {
             const o = {kind: t.kind};
             for (const k of LANDMARK_KEYS) if (Number.isFinite(t[k])) o[k] = t[k];
+            if (t.round) o.round = 1;
             const encoded = Lookalike.pack(t.model, limit);
             if (encoded) o.lookalike = encoded;
             return o;
@@ -719,6 +776,7 @@
             const t = {kind: o.kind, id: existing?.id ?? this.nextId++, hits: LANDMARK_HITS, misses: 0, seen: nowS,
                        inferred: false, restored: true, measuredHeading: o.kind === 'chair' && Number.isFinite(o.seat)};
             for (const k of LANDMARK_KEYS) if (Number.isFinite(o[k])) t[k] = o[k];
+            t.round = o.round === 1 || o.round === true;
             t.model = Lookalike.unpack(o.lookalike);
             if (existing) this.tracks[this.tracks.indexOf(existing)] = t;
             else { this.tracks.push(t); added++; }
