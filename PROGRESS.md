@@ -5,6 +5,18 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-26 — Reality view: occupancy-map wall overlay removed
+
+**Problem:** The saved-map wall overlay drew every occupied map pixel row as an extruded box, giving thick stair-stepped walls that did not match the live scan (screenshot, apartment).
+
+**Potential solution:** Remove it; walls come from the lidar wall planes (WallHistory) instead.
+
+**Work done:** Deleted the map-wall mesh, its voxel filter (`isKnownWall`) and the "Use occupancy map instead of lidar wall planes" checkbox. The map is still used for the map-frame furniture memory and the cabinet.
+
+**Results:** The four `tests/web/reality_*.cjs` checks pass (map-wall asserts dropped). Pulled on the robot; needs a browser refresh.
+
+---
+
 ## 2026-11-25 — Reality view: session furniture memory
 
 **Problem:** Furniture in the Reality view was forgotten on a page refresh, and there was no way to compare its measured size with the real object.

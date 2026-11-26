@@ -17,12 +17,6 @@
 //           `path` (scene [x, z] points, one per TRAIL_S/(N-1) s) is drawn
 //           as given, so GRU predictions can drop in. Amber normally, red
 //           when the predicted path passes within CONFLICT_M of the robot.
-//   walls : with a map loaded (state.nav rawPixels or the legacy PNG) and a
-//           map pose, occupied cells are extruded into low dark walls with a
-//           glowing top edge (row runs merged into one box each). The scan
-//           wall panels hide, and isKnownWall(fwd, left) lets the voxel layer
-//           drop cells within MAP_DILATE_M of a map wall, so live voxels show
-//           only what the map does not already explain.
 //   struct: RealityStructure (reality-structure.js) output: fitted wall
 //           segments as flat panels with a lit top edge, and furniture
 //           stand-ins (low-poly, built here, scaled to the lidar box).
@@ -41,7 +35,6 @@ window.RealityMode = (() => {
     const TRAIL_W0 = 0.22, TRAIL_W1 = 0.55;       // width now / at TRAIL_S (m)
     const MOVING_MPS = 0.15, CONFLICT_M = 0.6;
     const TRAIL_COLORS = { normal: 0xfbbf24, conflict: 0xef4444 };
-    const MAP_WALL_H = 0.5, MAP_DILATE_M = 0.10, OCCUPIED_BELOW = 100;
     const DARK = { bg: 0x0b0f14, floor: 0x111820, ring: 0x1e2a36,
                    tint: 0x8fb4d9, emissive: 0x0a1622 };
 
@@ -219,116 +212,7 @@ window.RealityMode = (() => {
             hideTrails(k);
         }
 
-        // ---- map walls -------------------------------------------------------
-        // Built in cell-local metres (u along columns, v up the rows from the
-        // map's bottom edge), placed by inner (map origin) and outer (robot
-        // pose) matrices. The outer one is a reflection; three flips culling
-        // for negative-determinant world matrices.
-        const mapOuter = new THREE.Group(), mapInner = new THREE.Group();
-        mapOuter.matrixAutoUpdate = mapInner.matrixAutoUpdate = false;
-        mapOuter.add(mapInner); mapOuter.visible = false; scene.add(mapOuter);
-        const wallMat = new THREE.MeshLambertMaterial({ color: 0x1c2733, emissive: 0x0b1420 });
-        const capMat = new THREE.MeshBasicMaterial({ color: 0x7dd3fc, transparent: true, opacity: 0.5,
-            depthWrite: false, blending: THREE.AdditiveBlending });
         const unitBox = new THREE.BoxGeometry(1, 1, 1);
-        let wallMesh = null, capMesh = null, mapSource = null, grid = null, mapRevision = 0;
-        let scratchCanvas = null;
-
-        function mapPixels(nav) {
-            if (nav.rawPixels && nav.mapMeta) return { src: nav.rawPixels, px: nav.rawPixels, w: nav.rawPixelW, h: nav.rawPixelH };
-            const img = nav.mapImage;
-            if (!img || !nav.mapMeta || !img.width) return null;
-            if (mapSource === img) return { src: img };
-            scratchCanvas = scratchCanvas || document.createElement('canvas');
-            scratchCanvas.width = img.width; scratchCanvas.height = img.height;
-            const ctx = scratchCanvas.getContext('2d');
-            ctx.drawImage(img, 0, 0);
-            const rgba = ctx.getImageData(0, 0, img.width, img.height).data;
-            const px = new Uint8Array(img.width * img.height);
-            for (let i = 0; i < px.length; i++) px[i] = rgba[4 * i];
-            return { src: img, px, w: img.width, h: img.height };
-        }
-
-        function buildMap(nav) {
-            const m = mapPixels(nav);
-            if (!m) { mapSource = null; grid = null; return; }
-            if (m.src === mapSource) return;
-            mapSource = m.src;
-            const { px, w, h } = m, meta = nav.mapMeta, res = meta.resolution;
-            // Dilated occupancy mask for the voxel filter.
-            const r = Math.max(1, Math.ceil(MAP_DILATE_M / res));
-            const occ = new Uint8Array(w * h), mask = new Uint8Array(w * h);
-            for (let i = 0; i < w * h; i++) occ[i] = px[i] < OCCUPIED_BELOW ? 1 : 0;
-            for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-                if (!occ[y * w + x]) continue;
-                for (let dy = -r; dy <= r; dy++) {
-                    const yy = y + dy; if (yy < 0 || yy >= h) continue;
-                    for (let dx = -r; dx <= r; dx++) { const xx = x + dx; if (xx >= 0 && xx < w) mask[yy * w + xx] = 1; }
-                }
-            }
-            // Drawn walls skip speckle (cells with < 2 occupied neighbours);
-            // the filter mask above keeps them.
-            const draw = new Uint8Array(w * h);
-            for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
-                const i = y * w + x;
-                if (!occ[i]) continue;
-                const nb = occ[i-w-1] + occ[i-w] + occ[i-w+1] + occ[i-1] + occ[i+1] + occ[i+w-1] + occ[i+w] + occ[i+w+1];
-                draw[i] = nb >= 2 ? 1 : 0;
-            }
-            // Row runs -> boxes.
-            const runs = [];
-            for (let y = 0; y < h; y++) {
-                let x = 0;
-                while (x < w) {
-                    if (!draw[y * w + x]) { x++; continue; }
-                    const x0 = x; while (x < w && draw[y * w + x]) x++;
-                    runs.push(x0, x, y);
-                }
-            }
-            const n = runs.length / 3;
-            if (wallMesh) { mapInner.remove(wallMesh, capMesh); wallMesh.dispose(); capMesh.dispose(); }
-            wallMesh = new THREE.InstancedMesh(unitBox, wallMat, Math.max(1, n));
-            capMesh = new THREE.InstancedMesh(unitBox, capMat, Math.max(1, n));
-            const mat = new THREE.Matrix4();
-            for (let i = 0; i < n; i++) {
-                const x0 = runs[3 * i], x1 = runs[3 * i + 1], row = runs[3 * i + 2];
-                const u = (x0 + x1) / 2 * res, v = (h - row - 0.5) * res, len = (x1 - x0) * res;
-                mat.makeScale(len, MAP_WALL_H, res); mat.setPosition(u, MAP_WALL_H / 2, v);
-                wallMesh.setMatrixAt(i, mat);
-                mat.makeScale(len, 0.012, res); mat.setPosition(u, MAP_WALL_H + 0.006, v);
-                capMesh.setMatrixAt(i, mat);
-            }
-            wallMesh.count = capMesh.count = n;
-            wallMesh.frustumCulled = capMesh.frustumCulled = false;
-            mapInner.add(wallMesh, capMesh);
-            const c = Math.cos(meta.originYaw || 0), s = Math.sin(meta.originYaw || 0);
-            const [ox, oy] = meta.origin;
-            // (u, v) -> map (X = ox + c u - s v, Z = oy + s u + c v)
-            mapInner.matrix.set(c, 0, -s, ox,  0, 1, 0, 0,  s, 0, c, oy,  0, 0, 0, 1);
-            grid = { mask, w, h, res, ox, oy, c, s };
-            mapRevision++;
-        }
-
-        let mapPose = null;
-        function placeMap(pose) {
-            mapPose = pose && grid ? { x: pose.x / 100, y: pose.y / 100, c: Math.cos(pose.theta), s: Math.sin(pose.theta) } : null;
-            mapOuter.visible = !!mapPose;
-            if (!mapPose) return;
-            const { x: px, y: py, c, s } = mapPose;
-            // map (X, Z) -> scene: x = s dX - c dZ, z = -c dX - s dZ
-            mapOuter.matrix.set(s, 0, -c, -(s * px - c * py),  0, 1, 0, 0,  -c, 0, -s, c * px + s * py,  0, 0, 0, 1);
-            mapOuter.matrixWorldNeedsUpdate = true;
-        }
-
-        function isKnownWall(fwd, left) {
-            if (!mapPose || !grid) return false;
-            const mx = mapPose.x + mapPose.c * fwd - mapPose.s * left - grid.ox;
-            const my = mapPose.y + mapPose.s * fwd + mapPose.c * left - grid.oy;
-            const u = grid.c * mx + grid.s * my, v = -grid.s * mx + grid.c * my;
-            const col = Math.floor(u / grid.res), row = grid.h - 1 - Math.floor(v / grid.res);
-            if (col < 0 || row < 0 || col >= grid.w || row >= grid.h) return false;
-            return grid.mask[row * grid.w + col] === 1;
-        }
 
         // ---- fitted wall panels + furniture stand-ins ------------------------
         // Base (x fwd, y left, z up) -> scene (x = -y, y = z, z = -x).
@@ -409,8 +293,8 @@ window.RealityMode = (() => {
             for (let i=gaps.length;i<doorFrames.length;i++) doorFrames[i].visible=false;
         }
         function updateStructure(st) {
-            const walls = st && !mapOuter.visible ? st.walls : [];
-            updateDoorFrames(st && !mapOuter.visible ? st.doorways || [] : []);
+            const walls = st ? st.walls : [];
+            updateDoorFrames(st ? st.doorways || [] : []);
             walls.forEach((w, i) => {
                 const m = panel(i);
                 const x0 = -w.y0, z0 = -w.x0, x1 = -w.y1, z1 = -w.x1, len = Math.hypot(x1 - x0, z1 - z0);
@@ -511,9 +395,9 @@ window.RealityMode = (() => {
             const pose = odomPoseCm && [odomPoseCm.x, odomPoseCm.y, odomPoseCm.theta].every(Number.isFinite)
                 ? { x: odomPoseCm.x / 100, y: odomPoseCm.y / 100, theta: odomPoseCm.theta } : null;
             const st = RealityStructure.analyze(cells, dets, pose, structTracker, nowMs / 1000,
-                {mapped, wallHistory: mapOuter.visible ? null : wallHistory,
+                {mapped, wallHistory,
                  wallPose: cloudPose || (d.robotPose && {x:d.robotPose.x/100, y:d.robotPose.y/100, yaw:d.robotPose.theta}),
-                 mapWalls: mapOuter.visible, xyz, detectionStamp: d.oakDetectionsAt});
+                 xyz, detectionStamp: d.oakDetectionsAt});
             if (mapped && pose) {
                 const cabinet = cabinets.get(mapName);
                 if (cabinet) {
@@ -611,20 +495,13 @@ window.RealityMode = (() => {
         }
 
         return {
-            // True while map walls are drawn (scene-view hides the scan panels).
-            get mapActive() { return mapOuter.visible; },
-            // Changes whenever the voxel filter's answer can change wholesale.
-            get mapKey() { return mapOuter.visible ? mapRevision : -1; },
-            isKnownWall,
             analyzeStructure,
             // persons: [{x, z, sx, sz, path?}] in scene coordinates (m, m/s)
-            update(enabled, d, nav, now, persons, mapWalls = true, structure = true) {
+            update(enabled, d, nav, now, persons, structure = true) {
                 applyTheme(enabled);
                 cabinetButton.disabled = !(enabled && structure && roomKey && roomKey === nav?.roomMap && d.robotPoseMap);
                 if ((!enabled || !structure) && structOn) { updateStructure(null); structOn = false; }
-                if (!enabled || !mapWalls) { mapOuter.visible = false; mapPose = null; }
                 if (!enabled) { ribbon.visible = beacon.visible = shieldGroup.visible = false; hideTrails(0); return; }
-                if (mapWalls) { buildMap(nav || {}); placeMap(d.robotPoseMap); }
                 updateIntent(persons);
                 time.value = now / 1000;
                 updatePath(nav && nav.path, d.robotPoseMap);

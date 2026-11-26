@@ -46,8 +46,6 @@ const nav = {roomMap:'replay', rawPixels:pixels, rawPixelW:20, rawPixelH:20,
     mapMeta:{resolution:.1,origin:[0,0]}};
 const data = {robotPoseMap:{x:0,y:0,theta:0}};
 view.update(true,data,nav,0,[]);
-assert.ok(view.isKnownWall(.4,1.05));
-assert.ok(!view.isKnownWall(1.0,1.05));
 view.analyzeStructure([],[],data,'replay',[],0);
 global.prompt = () => '1,2,90,.8,.4,1.1';
 button.onclick();
@@ -56,8 +54,7 @@ assert.equal(cabinet().kind,'cabinet');
 assert.equal(cabinet().x,1);
 data.robotPoseMap = {x:100,y:100,theta:Math.PI/2};
 view.update(true,data,nav,100,[]);
-assert.ok(view.isKnownWall(.05,.6));
 assert.ok(Math.abs(cabinet().x-1) < 1e-8);
 assert.ok(Math.abs(cabinet().y) < 1e-8);
 assert.equal(cabinet().yaw,0);
-console.log('Mapped walls, doorway and cabinet placement passed');
+console.log('Mapped cabinet placement passed');
