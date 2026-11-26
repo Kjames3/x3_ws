@@ -31,7 +31,7 @@
     const OBJ_HOLD_S = 3.0;
     const OBJ_SMOOTH = 0.3;
     const OBJ_MATCH_M = 0.7;
-    const LIDAR_CONFIRM_HITS = 10, LIDAR_CONFIRM_S = 3.0;   // promote a lidar-only surface
+    const LIDAR_CONFIRM_HITS = 10, LIDAR_CONFIRM_S = 3.0, INFERRED_GAP_S = 4.0;   // promote a lidar-only surface
 
     // Labels from COCO / VOC style detectors -> stand-in kind.
     const KINDS = {
@@ -664,7 +664,9 @@
             }
         }
         this.tracks = this.tracks.filter(t => {
-            if (t.inferred) return nowS-t.seen < 1.6;
+            // Surface fits come and go between clouds; keep the candidate long
+            // enough to accumulate hits toward promotion. Candidates are not drawn.
+            if (t.inferred) return nowS-t.seen < INFERRED_GAP_S;
             if (!frame.mapped || t.hits < 2) return nowS - t.seen < OBJ_HOLD_S;
             if (!matched.has(t) && frame.xyz && this.lastCloud !== frame.xyz && nowS - t.seen > OBJ_HOLD_S) {
                 const [x, y] = toBase(t.X, t.Y);
@@ -674,7 +676,7 @@
             return !(t.misses >= 3);
         });
         this.lastCloud = frame.xyz;
-        const candidates = this.tracks.filter(t => t.hits >= (t.inferred ? 4 : 2)).map(t => {
+        const candidates = this.tracks.filter(t => !t.inferred && t.hits >= 2).map(t => {
             const [x, y] = toBase(t.X, t.Y);
             return { id: t.id, kind: t.kind, x, y, yaw: t.yaw - pose.theta, L: t.L, D: t.D, H: t.H,
                      seat: t.seat, inferred: !!t.inferred, bottom: t.bottom || 0, age: nowS - t.seen };

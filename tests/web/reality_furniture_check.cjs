@@ -16,11 +16,11 @@ const step=(points,frame,t)=>analyze(points,[],pose,tracker,t,{xyz:frame}).objec
 const same=[];
 for(let i=0;i<6;i++) assert.equal(step(cells,same,i*.01).length,0);
 let found;
-for(let i=1;i<=5;i++) found=step(cells,[],i*.2);
+for(let i=1;i<=20;i++) found=step(cells,[],i*.2);   // promoted after >= 3 s
 assert.deepEqual(found.map(o=>o.kind).sort(),['chair','table']);
 assert.ok(Math.abs(found.find(o=>o.kind==='chair').seat-.45)<.04);
 assert.ok(Math.abs(found.find(o=>o.kind==='table').H-.74)<.04);
-assert.equal(step(cells.map(p=>({...p,age:4})),[],4).length,0);
+assert.equal(step(cells.map(p=>({...p,age:4})),[],12).length,0);
 console.log('Furniture geometry, confirmation, stale evidence and expiry passed');
 const {furnitureOverlap,furnitureSurfaces} = require('../../src/web/reality-structure');
 const desk = {kind:'table',x:0,y:0,L:1.7,D:.65,yaw:Math.PI/4};
@@ -45,4 +45,19 @@ assert.ok(Math.cos(seat.yaw)<-.95);
     for (let i = 0; i <= 15; i++) analyze(cells, [], p0, early, i * .1, {mapped:true, xyz:[i]});
     assert.equal(early.exportLandmarks().length, 0, 'not promoted before 3 s');
     console.log('Lidar-only furniture promotion passed');
+}
+
+// Intermittent surface fits (seen in bursts with 1.5 s gaps) still promote,
+// and nothing is drawn before promotion (no appear/disappear flicker).
+{
+    const tr = new Tracker(), p0 = {x:0,y:0,theta:0};
+    let drawnEarly = 0, last;
+    for (let i = 0; i < 80; i++) {
+        const t = i * .1, burst = Math.floor(t / 1.5) % 2 === 0;
+        last = analyze(burst ? cells : [], [], p0, tr, t, {mapped:true, xyz:[i]}).objects;
+        if (t < 2.9) drawnEarly += last.length;
+    }
+    assert.equal(drawnEarly, 0, 'candidates are not drawn');
+    assert.deepEqual(last.map(o => o.kind).sort(), ['chair','table'], 'intermittent sightings promote and stay');
+    console.log('Intermittent lidar furniture: no early flicker, promoted and held');
 }

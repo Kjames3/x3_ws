@@ -5,6 +5,16 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-26 — Reality view: stop lidar furniture flicker
+
+**Problem:** With detection off, furniture models briefly appeared then disappeared (map newApartment1 loaded). Unconfirmed lidar candidates were drawn after 4 hits and dropped after a 1.6 s gap, which also reset them before the 3 s promotion.
+
+**Work done:** Candidates are no longer drawn; they survive 4 s gaps and are drawn only once promoted. Server copy at the time held 4 camera-labelled objects (chair, couch, 2 plants) at minimum clamp sizes and no colour models.
+
+**Results:** New intermittent-sighting case (1.5 s on/off bursts) promotes with nothing drawn early; all reality checks pass. Live check pending.
+
+---
+
 ## 2026-11-26 — Reality view: lidar-only furniture becomes landmarks
 
 **Problem:** No furniture models appeared live. The OAK on-device YOLO reported nothing in 20 s of live data (threshold 0.5) and the host YOLO only "bottle"/"refrigerator" at 0.3: from 0.21 m the camera mostly sees legs.
