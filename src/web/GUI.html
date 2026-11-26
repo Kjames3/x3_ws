@@ -351,7 +351,9 @@
                             <div class="scene-options-title">Environment</div>
                             <label><input type="checkbox" id="surroundings-reality-toggle"> Reality view (dark, path + CBF shield)</label>
                             <label><input type="checkbox" id="surroundings-reality-structure" checked> Reality: wall panels + furniture models</label>
-                            <label><input type="checkbox" id="surroundings-reality-mapcheck"> Reality: saved-map walls overlay (localization check)</label>
+                            <label><input type="checkbox" id="surroundings-wall-map-overlay"> Use occupancy map instead of lidar wall planes</label>
+                            <button type="button" id="reality-cabinet" disabled>Set mapped cabinet</button>
+                            <button type="button" id="reality-measurements">Show furniture measurements</button>
                             <label><input type="checkbox" id="surroundings-cloud-toggle" checked> Live 3D points</label>
                             <label><input type="checkbox" id="surroundings-oak-toggle"> OAK color (experimental)</label>
                             <label>Environment <select id="surroundings-oak-view"><option value="combined">Livox + OAK</option><option value="oak">OAK only</option></select></label>
@@ -922,7 +924,7 @@
             </div>
         </form>
     </dialog>
-    <script src="main.js?v=nav-pose-1"></script>
+    <script src="main.js?v=room-map-2"></script>
     <script src="dashboard.js?v=2"></script>
     <script src="log-console.js?v=2"></script>
     <script src="vendor/three/GLTFLoader.js"></script>
@@ -933,9 +935,9 @@
     <script src="surroundings-memory.js?v=3"></script>
     <script src="person-cloud-tracker.js?v=1"></script>
     <script src="oak-splats.js?v=2"></script>
-    <script src="reality-structure.js?v=3"></script>
-    <script src="reality-mode.js?v=5"></script>
-    <script src="scene-view.js?v=40"></script>
+    <script src="reality-structure.js?v=10"></script>
+    <script src="reality-mode.js?v=10"></script>
+    <script src="scene-view.js?v=42"></script>
     <script src="mobile.js?v=1"></script>
 </body>
 

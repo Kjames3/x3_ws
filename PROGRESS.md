@@ -5,6 +5,18 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-25 — Reality view: session furniture memory
+
+**Problem:** Furniture in the Reality view was forgotten on a page refresh, and there was no way to compare its measured size with the real object.
+
+**Potential solution:** Keep confirmed furniture per loaded map on the server until it stops, and add a readout of the measured dimensions.
+
+**Work done:** `Tracker.exportLandmarks/importLandmarks` in `reality-structure.js`; the browser sends confirmed camera-labelled objects every 2 s (`reality_landmarks_put`) and asks for the room's copy when a map is loaded (`reality_landmarks_get`); the server holds them in memory (`_REALITY_LANDMARKS`). A "Show furniture measurements" button lists kind, map position, heading and L/D/H/seat in cm. This builds on the uncommitted 2026-11-24 work (measured chair seat/back, map-frame tracks, evidence-based removal).
+
+**Results:** `tests/web/reality_landmarks_check.cjs` passes (round trip, held 60 s out of view, unmapped 3 s expiry kept, cleared when the lidar sees through a moved chair); the other three reality checks still pass. Not yet tested live; needs an x3_server restart for the server messages.
+
+---
+
 ## 2026-11-24 — Synthetic crowd checks before the live re-test
 
 **Problem:** The crowd left before the head-peak split and track seeds could be tested live. Track seeds could also keep a track alive on furniture after the person leaves.

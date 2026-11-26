@@ -357,7 +357,7 @@
             const structToggle = document.getElementById('surroundings-reality-structure');
             const st = realityOn && reality && (!structToggle || structToggle.checked)
                 ? reality.analyzeStructure(displayCells,
-                    d.oakDetectionsAt && now - d.oakDetectionsAt < 1000 ? d.oakDetections : [], d.robotPose, now)
+                    d.oakDetectionsAt && now - d.oakDetectionsAt < 1000 ? d.oakDetections : [], d, state.nav.roomMap, xyz, now, pose)
                 : null;
             const columnTop = new Map();
             const colKey = c => `${Math.floor(c.x / .2)},${Math.floor(c.y / .2)}`;
@@ -1292,7 +1292,7 @@
                 persons.push({ x: p.group.position.x, z: p.group.position.z,
                                sx: p.vel ? p.vel.sx : 0, sz: p.vel ? p.vel.sz : 0 });
             }
-            const mapWallsToggle = document.getElementById('surroundings-reality-mapcheck');
+            const mapWallsToggle = document.getElementById('surroundings-wall-map-overlay');
             const structToggle = document.getElementById('surroundings-reality-structure');
             reality.update(realityOn, d, state.nav, now, persons, !!(mapWallsToggle && mapWallsToggle.checked),
                 !structToggle || structToggle.checked);

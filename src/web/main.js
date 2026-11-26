@@ -1032,6 +1032,7 @@ function drawNavMap() {
 function updateNavStatus(nav) {
     if (!nav) return;
     const prevNavStatus = state.nav.status;
+    state.nav.roomMap = nav.map || null;
     state.nav.status = nav.state || 'UNAVAILABLE';
 
     // Rumble once when goal is successfully reached
@@ -2498,6 +2499,10 @@ function handleFoxgloveTextMessage(obj) {
 // Data Handling
 // =================================================================
 function handleMessage(data) {
+    if (data.type === "reality_landmarks") {
+        window.dispatchEvent(new CustomEvent('x3-reality-landmarks', { detail: data }));
+        return;
+    }
     if (data.type === "movement_state") {
         state.motorsEnabled = data.enabled;
         updateMotorToggleButton();

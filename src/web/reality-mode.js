@@ -41,7 +41,6 @@ window.RealityMode = (() => {
     const TRAIL_W0 = 0.22, TRAIL_W1 = 0.55;       // width now / at TRAIL_S (m)
     const MOVING_MPS = 0.15, CONFLICT_M = 0.6;
     const TRAIL_COLORS = { normal: 0xfbbf24, conflict: 0xef4444 };
-    const PANEL_MAX_H = 1.0;
     const MAP_WALL_H = 0.5, MAP_DILATE_M = 0.10, OCCUPIED_BELOW = 100;
     const DARK = { bg: 0x0b0f14, floor: 0x111820, ring: 0x1e2a36,
                    tint: 0x8fb4d9, emissive: 0x0a1622 };
@@ -367,6 +366,7 @@ window.RealityMode = (() => {
             tv:    [[0, .62, 0, 1, .72, .12], [0, .13, 0, .08, .26, .08], [0, .02, 0, .4, .04, .6]],
             bed:   [[0, .3, 0, 1, .55, 1], [-.42, .62, 0, .12, .12, .8], [.48, .55, 0, .04, .9, 1]],
             plant: [[0, .2, 0, .5, .4, .5], [0, .7, 0, .95, .6, .95]],
+            cabinet: [[0,.5,0,1,1,.94],[-.25,.5,.48,.48,.96,.04],[.25,.5,.48,.48,.96,.04]],
             box:   [[0, .5, 0, 1, 1, 1]],
         };
         const unit = new THREE.BoxGeometry(1, 1, 1);
@@ -384,13 +384,37 @@ window.RealityMode = (() => {
             g.add(inner); scene.add(g);
             return { group: g, inner };
         }
+        const doorFrames = [];
+        const doorMaterial = new THREE.MeshBasicMaterial({color:0xffce86});
+        function updateDoorFrames(gaps) {
+            gaps.forEach((g,i) => {
+                let frame = doorFrames[i];
+                if (!frame) {
+                    frame = new THREE.Group();
+                    for (let part=0;part<3;part++) frame.add(new THREE.Mesh(unitBox,doorMaterial));
+                    scene.add(frame);
+                    doorFrames.push(frame);
+                }
+                const width = Math.hypot(g.x1-g.x0,g.y1-g.y0);
+                frame.position.set(-(g.y0+g.y1)/2,0,-(g.x0+g.x1)/2);
+                frame.rotation.y = Math.atan2(g.x1-g.x0,g.y0-g.y1);
+                const [left,right,header] = frame.children;
+                for (const post of [left,right]) post.scale.set(.028,g.top,.028);
+                left.position.set(-width/2,g.top/2,0);
+                right.position.set(width/2,g.top/2,0);
+                header.scale.set(width+.028,.028,.028);
+                header.position.set(0,g.top,0);
+                frame.visible = true;
+            });
+            for (let i=gaps.length;i<doorFrames.length;i++) doorFrames[i].visible=false;
+        }
         function updateStructure(st) {
-            const walls = st ? st.walls : [];
+            const walls = st && !mapOuter.visible ? st.walls : [];
+            updateDoorFrames(st && !mapOuter.visible ? st.doorways || [] : []);
             walls.forEach((w, i) => {
                 const m = panel(i);
                 const x0 = -w.y0, z0 = -w.x0, x1 = -w.y1, z1 = -w.x1, len = Math.hypot(x1 - x0, z1 - z0);
-                // Low walls (Tesla-style) so rooms stay visible from the chase camera.
-                const h = Math.max(0.3, Math.min(PANEL_MAX_H, w.top));
+                const h = w.top;
                 m.scale.set(len, h, 1);
                 m.position.set((x0 + x1) / 2, h / 2, (z0 + z1) / 2);
                 m.rotation.set(0, Math.atan2(-(z1 - z0), x1 - x0), 0);
@@ -406,23 +430,105 @@ window.RealityMode = (() => {
                     if (ob) scene.remove(ob.group);
                     ob = makeObject(o.kind); ob.kind = o.kind; objects.set(o.id, ob);
                 }
-                ob.group.position.set(-o.y, 0, -o.x);
-                // Box yaw is ambiguous by pi: turn the front (local +Z) toward the robot.
-                let th = o.yaw + Math.PI / 2;
-                if (Math.sin(th) * o.y + Math.cos(th) * o.x < 0) th += Math.PI;   // front . (robot - obj) >= 0
-                ob.group.rotation.set(0, th, 0);
+                ob.group.position.set(-o.y, o.bottom || 0, -o.x);
+                ob.group.rotation.set(0, o.yaw + Math.PI / 2, 0);
                 ob.inner.scale.set(o.L, o.H, o.D);
+                if (o.kind === 'chair') {
+                    const seat = Number.isFinite(o.seat) ? Math.max(.30,Math.min(.72,o.seat/o.H)) : .46;
+                    const [pad,back,...rest] = ob.inner.children;
+                    pad.position.y = seat;
+                    back.position.y = (1+seat)/2;
+                    back.scale.y = 1-seat;
+                    for (const leg of rest.slice(0,4)) {
+                        leg.position.y = seat/2;
+                        leg.scale.y = seat;
+                    }
+                }
                 ob.group.visible = true;
             }
             for (const [id, ob] of objects) if (!seen.has(id)) { scene.remove(ob.group); objects.delete(id); }
         }
-        const structTracker = window.RealityStructure ? new RealityStructure.Tracker() : null;
+        const cabinets = new Map();
+        try {
+            for (const entry of JSON.parse(localStorage.getItem('x3-reality-cabinets') || '[]')) cabinets.set(...entry);
+        } catch { /* Browser storage can be disabled. */ }
+        const cabinetButton = document.getElementById('reality-cabinet');
+        cabinetButton.onclick = () => {
+            if (!roomKey) return;
+            const input = window.prompt('Cabinet in map coordinates: center X, center Y, heading (degrees), width, depth, height (metres). Leave empty to remove.');
+            if (input === null) return;
+            if (input.trim()) {
+                const fields = input.split(',').map(v => v.trim() ? Number(v) : NaN);
+                const [x,y,heading,L,D,H] = fields;
+                if (fields.length !== 6 || !fields.every(Number.isFinite) || Math.min(L,D,H) <= 0) {
+                    window.alert('Enter six numbers with positive dimensions.'); return;
+                }
+                cabinets.set(roomKey, {x,y,yaw:heading*Math.PI/180,L,D,H});
+            } else cabinets.delete(roomKey);
+            try { localStorage.setItem('x3-reality-cabinets', JSON.stringify([...cabinets])); } catch { /* Session only. */ }
+        };
+        let roomKey;
+        // Session furniture memory: the server keeps confirmed landmarks per map
+        // until it stops, so a refresh or a second browser gets the same room.
+        const LANDMARK_PUT_MS = 2000;
+        let landmarksPutAt = -1e9, lastPose = null;
+        if (window.addEventListener) window.addEventListener('x3-reality-landmarks', ev => {
+            const msg = ev.detail || {};
+            if (structTracker && roomKey && msg.key === 'map:' + roomKey)
+                structTracker.importLandmarks(msg.objects, performance.now() / 1000);
+        });
+        // Measured furniture in map coordinates (cm, deg) for tape-measure checks.
+        const measureButton = document.getElementById('reality-measurements');
+        if (measureButton && measureButton !== cabinetButton) measureButton.onclick = () => {
+            const rows = structTracker && roomKey ? structTracker.exportLandmarks().map(o => ({
+                kind: o.kind, x_cm: Math.round(o.X * 100), y_cm: Math.round(o.Y * 100),
+                heading_deg: Math.round(o.yaw * 180 / Math.PI),
+                length_cm: Math.round(o.L * 100), depth_cm: Math.round(o.D * 100), height_cm: Math.round(o.H * 100),
+                seat_cm: Number.isFinite(o.seat) ? Math.round(o.seat * 100) : null,
+                range_cm: lastPose ? Math.round(Math.hypot(o.X - lastPose.x, o.Y - lastPose.y) * 100) : null,
+            })) : [];
+            const text = JSON.stringify({map: roomKey || null, objects: rows}, null, 1);
+            console.log('[reality] furniture measurements', text);
+            if (navigator.clipboard) navigator.clipboard.writeText(text).catch(() => {});
+            window.alert(rows.length ? `${rows.length} objects (copied to clipboard):\n` + text
+                                     : 'No confirmed furniture yet (needs a loaded map and Reality view on).');
+        };
+        let structTracker = window.RealityStructure ? new RealityStructure.Tracker() : null;
+        let wallHistory = window.RealityStructure && new RealityStructure.WallHistory();
         let structOn = false;
-        function analyzeStructure(cells, dets, odomPoseCm, nowMs) {
+        function analyzeStructure(cells, dets, d, mapName, xyz, nowMs, cloudPose) {
+            const mapped = !!(mapName && d.robotPoseMap);
+            const key = mapName || null;
+            if (key !== roomKey && structTracker) {
+                structTracker = new RealityStructure.Tracker();
+                roomKey = key;
+                wallHistory = new RealityStructure.WallHistory();
+                landmarksPutAt = nowMs;      // let the server copy arrive before overwriting it
+                if (key && window.sendMessage) window.sendMessage({type: 'reality_landmarks_get', key: 'map:' + key});
+            }
+            const odomPoseCm = mapName ? d.robotPoseMap : d.robotPose;
             if (!structTracker) return null;
             const pose = odomPoseCm && [odomPoseCm.x, odomPoseCm.y, odomPoseCm.theta].every(Number.isFinite)
                 ? { x: odomPoseCm.x / 100, y: odomPoseCm.y / 100, theta: odomPoseCm.theta } : null;
-            const st = RealityStructure.analyze(cells, dets, pose, structTracker, nowMs / 1000);
+            const st = RealityStructure.analyze(cells, dets, pose, structTracker, nowMs / 1000,
+                {mapped, wallHistory: mapOuter.visible ? null : wallHistory,
+                 wallPose: cloudPose || (d.robotPose && {x:d.robotPose.x/100, y:d.robotPose.y/100, yaw:d.robotPose.theta}),
+                 mapWalls: mapOuter.visible, xyz, detectionStamp: d.oakDetectionsAt});
+            if (mapped && pose) {
+                const cabinet = cabinets.get(mapName);
+                if (cabinet) {
+                    const dx = cabinet.x - pose.x, dy = cabinet.y - pose.y;
+                    const c = Math.cos(pose.theta), s = Math.sin(pose.theta);
+                    st.objects.push({...cabinet, id: 'manual-cabinet', kind: 'cabinet',
+                        x: c*dx+s*dy, y: -s*dx+c*dy, yaw: cabinet.yaw-pose.theta});
+                }
+            }
+            if (mapped && pose && window.sendMessage && nowMs - landmarksPutAt > LANDMARK_PUT_MS) {
+                landmarksPutAt = nowMs;
+                window.sendMessage({type: 'reality_landmarks_put', key: 'map:' + key,
+                                    objects: structTracker.exportLandmarks()});
+            }
+            lastPose = mapped ? pose : null;
             updateStructure(st);
             structOn = true;
             return st;
@@ -514,6 +620,7 @@ window.RealityMode = (() => {
             // persons: [{x, z, sx, sz, path?}] in scene coordinates (m, m/s)
             update(enabled, d, nav, now, persons, mapWalls = true, structure = true) {
                 applyTheme(enabled);
+                cabinetButton.disabled = !(enabled && structure && roomKey && roomKey === nav?.roomMap && d.robotPoseMap);
                 if ((!enabled || !structure) && structOn) { updateStructure(null); structOn = false; }
                 if (!enabled || !mapWalls) { mapOuter.visible = false; mapPose = null; }
                 if (!enabled) { ribbon.visible = beacon.visible = shieldGroup.visible = false; hideTrails(0); return; }

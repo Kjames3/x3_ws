@@ -3954,6 +3954,26 @@ def _start_frontier_exploration():
     return False, "Auto-Explore is already running or Nav2 is busy"
 
 
+# Session furniture memory for the GUI Reality view: {map key: [landmark]}.
+_REALITY_LANDMARKS = {}
+_LANDMARK_NUM = ("X", "Y", "yaw", "L", "D", "H", "seat", "bottom")
+
+
+def _clean_landmarks(objs):
+    out = []
+    for o in objs[:200]:
+        if not isinstance(o, dict) or not isinstance(o.get("kind"), str):
+            continue
+        clean = {"kind": o["kind"][:24]}
+        for k in _LANDMARK_NUM:
+            v = o.get(k)
+            if isinstance(v, (int, float)) and math.isfinite(v) and abs(v) < 1e4:
+                clean[k] = float(v)
+        if all(k in clean for k in ("X", "Y", "yaw", "L", "D", "H")):
+            out.append(clean)
+    return out
+
+
 async def handle_client(websocket):
     global detection_enabled, depth_enabled, stereo_enabled, lidar_enabled, is_auto_driving
     global current_left_power, current_right_power
@@ -4069,6 +4089,21 @@ async def handle_client(websocket):
 
                 elif msg_type == "stop_manual":
                     _stop_manual_motion()
+
+                elif msg_type == "reality_landmarks_put":
+                    # Reality-view furniture landmarks, kept in memory until the
+                    # server stops, so a page refresh keeps the room's objects.
+                    key, objs = data.get("key"), data.get("objects")
+                    if isinstance(key, str) and 0 < len(key) <= 128 and isinstance(objs, list):
+                        _REALITY_LANDMARKS[key] = _clean_landmarks(objs)
+
+                elif msg_type == "reality_landmarks_get":
+                    key = data.get("key")
+                    if isinstance(key, str):
+                        await websocket.send(json.dumps({
+                            "type": "reality_landmarks", "key": key,
+                            "objects": _REALITY_LANDMARKS.get(key, []),
+                        }))
 
                 elif msg_type == "shutdown_robot":
                     # Confirmed in the GUI. Stop the wheels first, then ask systemd to
