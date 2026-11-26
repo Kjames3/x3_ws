@@ -43,6 +43,23 @@ track sits on a desk or bench after its person leaves, gate track seeds on the c
 having seen the track within the last 3 s. That gate is tested offline but not deployed.
 It cost two desk-run losses.
 
+## E. Nav2 with people in view: strafing, clearing, people layer
+
+Deployed 2026-11-26 and not drive-tested. Restart Nav2 first so it loads the new params.
+
+1. **Strafing (de7df33, MPPI Omni plus the velocity_smoother vy limits).** Drive plain goals
+   with nobody around, including a goal 0.3–0.5 m to the side. The robot should strafe
+   rather than turn and drive. Watch for heading drift during sideways moves. If strafing
+   misbehaves, set `motion_model: "DiffDrive"` to restore forward/turn-only driving.
+2. **Costmap with people (a528b26, ff6e852).** Run goals while 1–3 people walk across the
+   path and stand near it. Check:
+   - The people disks appear: `ros2 topic echo /people/obstacles --field width`.
+   - Leftover cells clear within about 1–2 s.
+   - The headphone case or a cable still stays in the costmap.
+   - Count the `[cbf-cut]` log lines.
+3. **Recording.** Record `/people/obstacles`, `/livox/obstacles`, `/local_costmap/costmap`,
+   `/cmd_vel`, `/cmd_vel_safe`, `/odom` and `/scan`, plus the usual person-lidar topics.
+
 ## C. Rear OAK Livox calibration
 
 The rear pitch/yaw in the URDF is an interim correction from the 2026-11-24 crowd runs
