@@ -49,3 +49,54 @@ console.log(`Apartment furniture: dining ${(dining.L*100).toFixed(0)}x${(dining.
     assert.ok(fresh.tracks.some(t => t.round && Math.abs(t.H - .46) < .05), 'round survives export/import');
     console.log('Round coffee table drawn round and kept through the session memory');
 }
+
+// Stability: 15 s of noisy, partial clouds while the robot turns in place.
+// Once confirmed, the same objects must stay (same ids, no swapping) and
+// their heading must not wander or flip by 90 degrees.
+{
+    const {Tracker, analyze} = require('../../src/web/reality-structure');
+    let seed = 7; const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+    const tr = new Tracker();
+    const history = new Map();
+    let firstIds = null;
+    for (let i = 0; i <= 150; i++) {
+        const t = i * .1, theta = .3 * Math.sin(t / 2);          // turning +-17 degrees
+        const c = Math.cos(theta), s = Math.sin(theta);
+        // World cells -> base frame, 2 cm jitter, 30% of returns missing each scan.
+        const frame = [];
+        for (const p of cells) {
+            if (rand() < .3) continue;
+            const x = p.x + (rand() - .5) * .04, y = p.y + (rand() - .5) * .04;
+            frame.push({x: c * x + s * y, y: -s * x + c * y, z: p.z + (rand() - .5) * .02});
+        }
+        const objs = analyze(frame, [], {x:0, y:0, theta}, tr, t, {mapped:true, xyz:[i]}).objects;
+        if (t < 4.5) continue;
+        const ids = objs.map(o => o.id).sort((a, b) => a - b).join(',');
+        if (firstIds === null) firstIds = ids;
+        assert.equal(ids, firstIds, `same objects at t=${t.toFixed(1)}`);
+        for (const o of objs) {
+            const yaw = o.yaw + theta;                             // world heading
+            if (!history.has(o.id)) history.set(o.id, []);
+            history.get(o.id).push(yaw);
+        }
+    }
+    assert.ok(firstIds && firstIds.split(',').length >= 3, 'dining, coffee and chair present');
+    for (const [id, yaws] of history) {
+        const spread = Math.max(...yaws.map(y => Math.abs(Math.atan2(Math.sin(y - yaws[0]), Math.cos(y - yaws[0])))));
+        assert.ok(spread < 3 * Math.PI / 180, `object ${id} heading wandered ${(spread * 180 / Math.PI).toFixed(1)} deg`);
+    }
+    // A real turn: rotate the dining table 40 degrees about its centre. The
+    // confirmed model follows after its sustained-disagreement window.
+    const turned = cells.map(p => {
+        if (Math.hypot(p.x - 2, p.y) > .6 || p.y > .42) return p;
+        const a = 40 * Math.PI / 180, dx = p.x - 2, dy = p.y;
+        return {x: 2 + Math.cos(a)*dx - Math.sin(a)*dy, y: Math.sin(a)*dx + Math.cos(a)*dy, z: p.z};
+    });
+    const dining = () => tr.tracks.find(t => !t.inferred && t.kind === 'table' && !t.round && Math.hypot(t.X - 2, t.Y) < .3);
+    const before = dining().yaw;
+    for (let i = 0; i < 40; i++) analyze(turned, [], {x:0,y:0,theta:0}, tr, 20 + i * .1, {mapped:true, xyz:['turn', i]});
+    let moved = dining().yaw - before; moved -= Math.PI/2 * Math.round(moved / (Math.PI/2));
+    assert.ok(Math.abs(Math.abs(moved) - 40 * Math.PI / 180) < 8 * Math.PI / 180 || Math.abs(Math.abs(moved) - 50 * Math.PI / 180) < 8 * Math.PI / 180,
+        `turned table re-headed (${(moved * 180 / Math.PI).toFixed(1)} deg)`);
+    console.log(`Stable under noise while turning: ${history.size} objects, same ids, heading within 3 deg`);
+}

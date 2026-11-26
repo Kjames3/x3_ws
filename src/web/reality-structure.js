@@ -31,7 +31,9 @@
     const OBJ_HOLD_S = 3.0;
     const OBJ_SMOOTH = 0.3;
     const OBJ_MATCH_M = 0.7;
-    const LIDAR_CONFIRM_HITS = 10, LIDAR_CONFIRM_S = 3.0, INFERRED_GAP_S = 4.0;   // promote a lidar-only surface
+    const LIDAR_CONFIRM_HITS = 10, LIDAR_CONFIRM_S = 3.0, INFERRED_GAP_S = 4.0;
+    const CONFIRMED_GAIN = .05;                 // per-cloud position/size gain once confirmed
+    const TURN_DEG = 25, TURN_FITS = 20;        // confirmed heading changes only after 20 fits > 25 deg off   // promote a lidar-only surface
 
     // Labels from COCO / VOC style detectors -> stand-in kind.
     const KINDS = {
@@ -676,11 +678,16 @@
             t.X += k * (X - t.X); t.Y += k * (Y - t.Y);
             // Box yaw is symmetric by pi: move the shorter way.
             let dyaw = Yaw - t.yaw; dyaw = Math.atan2(Math.sin(2 * dyaw), Math.cos(2 * dyaw)) / 2;
+            // Confirmed tracks keep their heading (see TURN_DEG in the lidar path).
+            const settled = t.hits >= LANDMARK_HITS && t.measuredHeading;
             if (surface && kind==='chair') {
                 if (!t.measuredHeading) t.yaw=Yaw;
-                else t.yaw+=k*Math.atan2(Math.sin(Yaw-t.yaw),Math.cos(Yaw-t.yaw));
+                else if (!settled) t.yaw+=k*Math.atan2(Math.sin(Yaw-t.yaw),Math.cos(Yaw-t.yaw));
                 t.measuredHeading=true;
-            } else if (surface || !frame.mapped || t.hits < 3) t.yaw += k * dyaw;
+            } else if (!settled && (surface || !frame.mapped || t.hits < 3)) {
+                t.yaw += k * dyaw;
+                if (t.hits + 1 >= LANDMARK_HITS) t.measuredHeading = true;
+            }
             if (kind === 'tv' && Number.isFinite(p.z)) {
                 H = clamp(L * 9 / 16, sz.h);
                 t.bottom = Math.max(0, p.z - H / 2);
@@ -695,8 +702,12 @@
             const [X,Y] = toOdom(o.x,o.y);
             const yaw = o.yaw + pose.theta;
             const radius = o.kind==='chair' ? .36 : .57;
-            const nearby = this.tracks.filter(t=>t.kind===o.kind && Math.hypot(t.X-X,t.Y-Y)<radius)
-                .sort((a,b)=>Math.hypot(a.X-X,a.Y-Y)-Math.hypot(b.X-X,b.Y-Y));
+            // A fit that overlaps a confirmed piece of furniture is that piece,
+            // even if its centre landed off; never start a duplicate beside it.
+            const box = {kind:o.kind, x:X, y:Y, yaw, L:o.L, D:o.D};
+            const nearby = this.tracks.filter(t=>t.kind===o.kind && (Math.hypot(t.X-X,t.Y-Y)<radius ||
+                    (!t.inferred && furnitureOverlap(box,{kind:t.kind,x:t.X,y:t.Y,yaw:t.yaw,L:t.L,D:t.D}))))
+                .sort((a,b)=>Number(a.inferred)-Number(b.inferred) || Math.hypot(a.X-X,a.Y-Y)-Math.hypot(b.X-X,b.Y-Y));
             const t = nearby[0];
             if (t && ((!t.inferred && !t.lidarOnly) || matched.has(t))) continue;
             if (!t) {
@@ -705,17 +716,48 @@
                 matched.add(track);
             } else if (frame.xyz !== this.lastCloud) {
                 matched.add(t);
-                t.X += .25*(X-t.X); t.Y += .25*(Y-t.Y);
-                for (const key of ['H','L','D','seat']) if (Number.isFinite(o[key])) t[key]+=.25*(o[key]-t[key]);
+                // Confirmed furniture barely moves with each new fit: lidar noise
+                // must not make it creep or spin. Candidates still settle quickly.
+                const k = t.inferred ? .25 : CONFIRMED_GAIN, kYaw = .25;
+                // A box is symmetric by pi, a near-square top by pi/2 (its "length"
+                // side flips with noise); a chair has a front. Turn the short way
+                // and swap the measured L/D when the matching side is the other one.
+                const square = o.kind==='table' && Math.min(o.L,o.D)>.85*Math.max(o.L,o.D);
+                const step = o.kind==='chair' ? 2*Math.PI : square ? Math.PI/2 : Math.PI;
+                let delta = yaw - t.yaw;
+                delta -= step*Math.round(delta/step);
+                let mL = o.L, mD = o.D;
+                if (square && Math.abs(Math.round((yaw - t.yaw - delta)/(Math.PI/2))) % 2 === 1) [mL, mD] = [mD, mL];
+                t.X += k*(X-t.X); t.Y += k*(Y-t.Y);
+                const measured = {...o, L:mL, D:mD};
+                for (const key of ['H','L','D','seat']) if (Number.isFinite(measured[key])) t[key]+=k*(measured[key]-t[key]);
                 if (o.kind==='table') t.round = o.round;
-                const symmetry = o.kind==='chair' ? 1 : 2;
-                const delta = symmetry*(yaw-t.yaw);
-                t.yaw += .25*Math.atan2(Math.sin(delta),Math.cos(delta))/symmetry;
+                if (t.inferred) {
+                    // Remember each fit's heading (folded onto the track's) so the
+                    // heading at confirmation is the average, not the last noisy fit.
+                    (t.yawFits ||= []).push(t.yaw + delta);
+                    if (t.yawFits.length > 40) t.yawFits.shift();
+                }
+                if (t.round) {
+                    // A round top has no heading.
+                } else if (t.inferred) {
+                    t.yaw += kYaw*delta;
+                } else if (Math.abs(delta) > TURN_DEG*Math.PI/180) {
+                    // Confirmed: heading is fixed. Only a sustained disagreement
+                    // (the furniture really was turned) re-heads it.
+                    if (++t.turnVotes >= TURN_FITS) { t.yaw += delta; t.turnVotes = 0; }
+                } else t.turnVotes = 0;
                 t.hits++; t.seen=nowS; t.misses=0;
                 // Lidar-only furniture: the low camera rarely labels chairs and
                 // tables, so a surface seen consistently becomes a landmark.
                 if (t.inferred && t.hits >= LIDAR_CONFIRM_HITS && nowS - (t.first ?? nowS) >= LIDAR_CONFIRM_S) {
-                    t.inferred = false; t.lidarOnly = true;
+                    t.inferred = false; t.lidarOnly = true; t.turnVotes = 0;
+                    if (t.yawFits?.length && !t.round) {
+                        // Circular median of fit headings relative to the current one.
+                        const rel = t.yawFits.map(y => { let d = y - t.yaw; return d - step*Math.round(d/step); }).sort((a,b)=>a-b);
+                        t.yaw += rel[Math.floor(rel.length/2)];
+                    }
+                    t.yawFits = null;
                 }
             }
         }
@@ -739,7 +781,10 @@
         });
         // A changed partial view can start a second track before the old one
         // expires. Resolve competing models after smoothing, in rendered space.
-        candidates.sort((a,b)=>a.age-b.age || Number(a.inferred)-Number(b.inferred) || a.id-b.id);
+        // Overlapping copies: keep the established one (lowest id) while it is
+        // current, instead of whichever was seen last, so models do not swap.
+        candidates.sort((a,b)=>Number(a.age>OBJ_HOLD_S)-Number(b.age>OBJ_HOLD_S) ||
+            Number(a.inferred)-Number(b.inferred) || a.id-b.id);
         const visible=[];
         for (const o of candidates) {
             if (!visible.some(q=>furnitureOverlap(o,q))) visible.push(o);

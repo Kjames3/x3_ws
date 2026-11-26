@@ -5,6 +5,16 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-26 — Reality view: furniture models hold still
+
+**Problem:** Live in the apartment the chair/table models kept rotating, or appeared and disappeared. Causes: the ~78 cm square dining table's "length" side flipped with noise (90 degree turns); every new fit moved confirmed furniture 25% toward it; an off-centre fit started a duplicate, and the most recently seen duplicate was drawn, so they swapped.
+
+**Work done:** Near-square tables fold heading by 90 degrees (L/D swapped to match). Confirmed furniture: position/size gain 0.05 per cloud, heading fixed; it only re-heads after 20 consecutive fits > 25 degrees off (really turned). Heading at confirmation is the median of the candidate fits. Round tops never rotate. Fits overlapping confirmed furniture update it instead of starting a duplicate; among overlapping copies the established one is drawn. Camera-labelled tracks get the same heading lock.
+
+**Results:** New 15 s noise test (30% dropout, 2 cm jitter, robot turning +-17 degrees): heading wander before/after = dining 91 -> 0 deg, other table 42 -> 0, chair 59 -> 0; same ids throughout. A 40 degree real turn is still followed. All reality checks pass. Live check pending.
+
+---
+
 ## 2026-11-26 — Reality view: furniture sized to the apartment tape measurements
 
 **Problem:** Measured in the apartment (user tape): dining table 76 x 76 x 76 cm square, round coffee table 81 cm across, 46 cm tall. The robot reported the dining table as 98 x 64 x 72 and missed the coffee table. Causes: tables had to be >= 82 cm long (the 76 cm table only passed when a pushed-in chair stretched it); sizes came from 12 cm grid cells; a seat-height surface without a backrest was discarded; a tabletop overhanging a pushed-in seat counted as its backrest.
