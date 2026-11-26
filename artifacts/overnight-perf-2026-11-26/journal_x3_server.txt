@@ -1,0 +1,300 @@
+Nov 26 03:57:48 ubuntu x3_server[71081]:   - ID 59: Centroid=(x=0.02, y=-0.26, z=1.29)m | Vel=(vx=-0.02, vy=0.01)m/s | Speed=0.02m/s | cat=static age=0 pf=0 jump=25
+Nov 26 03:57:49 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:57:49 ubuntu x3_server[71081]:   - ID 60: Centroid=(x=0.02, y=-0.26, z=1.30)m | Vel=(vx=-0.01, vy=-0.00)m/s | Speed=0.01m/s | cat=static age=0 pf=0 jump=18
+Nov 26 03:57:49 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:57:49 ubuntu x3_server[71081]:   - ID 60: Centroid=(x=0.02, y=-0.27, z=1.34)m | Vel=(vx=0.08, vy=-0.00)m/s | Speed=0.08m/s | cat=static age=0 pf=0 jump=20
+Nov 26 03:57:50 ubuntu x3_server[71081]: 03:57:50 - x3_server - INFO - OakDCamera: depth 21.8 fps (USB SUPER, mono 80 req)
+Nov 26 03:57:50 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:57:50 ubuntu x3_server[71081]:   - ID 61: Centroid=(x=0.02, y=-0.28, z=1.35)m | Vel=(vx=0.11, vy=0.01)m/s | Speed=0.11m/s | cat=static age=0 pf=0 jump=19
+Nov 26 03:57:51 ubuntu x3_server[71081]: 03:57:51 - loop_stall_probe - WARNING - event loop blocked 0.22 s (stall #11), loop thread at:
+Nov 26 03:57:51 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/asyncio/events.py", line 80, in _run
+Nov 26 03:57:51 ubuntu x3_server[71081]:     self._context.run(self._callback, *self._args)
+Nov 26 03:57:51 ubuntu x3_server[71081]:   File "/home/jetson/x3_ws/src/server_x3.py", line 5924, in motion_loop
+Nov 26 03:57:51 ubuntu x3_server[71081]:     _is_standalone_test_running()
+Nov 26 03:57:51 ubuntu x3_server[71081]:   File "/home/jetson/x3_ws/src/server_x3.py", line 5859, in _is_standalone_test_running
+Nov 26 03:57:51 ubuntu x3_server[71081]:     daemon=True).start()
+Nov 26 03:57:51 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/threading.py", line 940, in start
+Nov 26 03:57:51 ubuntu x3_server[71081]:     self._started.wait()
+Nov 26 03:57:51 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/threading.py", line 607, in wait
+Nov 26 03:57:51 ubuntu x3_server[71081]:     signaled = self._cond.wait(timeout)
+Nov 26 03:57:51 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/threading.py", line 320, in wait
+Nov 26 03:57:51 ubuntu x3_server[71081]:     waiter.acquire()
+Nov 26 03:57:51 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:57:51 ubuntu x3_server[71081]:   - ID 61: Centroid=(x=0.02, y=-0.27, z=1.32)m | Vel=(vx=0.05, vy=0.00)m/s | Speed=0.05m/s | cat=static age=0 pf=0 jump=23
+Nov 26 03:57:52 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:57:52 ubuntu x3_server[71081]:   - ID 62: Centroid=(x=0.02, y=-0.27, z=1.33)m | Vel=(vx=0.04, vy=0.01)m/s | Speed=0.04m/s | cat=static age=0 pf=0 jump=18
+Nov 26 03:57:54 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:57:54 ubuntu x3_server[71081]:   - ID 63: Centroid=(x=0.02, y=-0.26, z=1.30)m | Vel=(vx=-0.00, vy=0.00)m/s | Speed=0.00m/s | cat=static age=0 pf=0 jump=18
+Nov 26 03:57:55 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:57:55 ubuntu x3_server[71081]:   - ID 63: Centroid=(x=0.02, y=-0.27, z=1.32)m | Vel=(vx=0.08, vy=-0.01)m/s | Speed=0.08m/s | cat=static age=0 pf=0 jump=22
+Nov 26 03:57:55 ubuntu x3_server[71081]: 03:57:55 - x3_server - INFO - OakDCamera: depth 20.3 fps (USB SUPER, mono 80 req)
+Nov 26 03:57:56 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:57:56 ubuntu x3_server[71081]:   - ID 64: Centroid=(x=0.02, y=-0.26, z=1.31)m | Vel=(vx=-0.02, vy=0.01)m/s | Speed=0.02m/s | cat=static age=0 pf=0 jump=18
+Nov 26 03:57:57 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:57:57 ubuntu x3_server[71081]:   - ID 65: Centroid=(x=0.02, y=-0.26, z=1.30)m | Vel=(vx=-0.01, vy=0.00)m/s | Speed=0.01m/s | cat=static age=0 pf=0 jump=19
+Nov 26 03:57:58 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:57:58 ubuntu x3_server[71081]:   - ID 65: Centroid=(x=0.02, y=-0.26, z=1.28)m | Vel=(vx=0.01, vy=-0.00)m/s | Speed=0.01m/s | cat=static age=0 pf=0 jump=22
+Nov 26 03:57:59 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:57:59 ubuntu x3_server[71081]:   - ID 66: Centroid=(x=0.02, y=-0.26, z=1.30)m | Vel=(vx=0.03, vy=0.01)m/s | Speed=0.03m/s | cat=static age=0 pf=0 jump=18
+Nov 26 03:57:59 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:57:59 ubuntu x3_server[71081]:   - ID 66: Centroid=(x=0.02, y=-0.27, z=1.32)m | Vel=(vx=-0.01, vy=0.00)m/s | Speed=0.01m/s | cat=static age=0 pf=0 jump=21
+Nov 26 03:58:00 ubuntu x3_server[71081]: 03:58:00 - x3_server - INFO - OakDCamera: depth 22.6 fps (USB SUPER, mono 80 req)
+Nov 26 03:58:00 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:00 ubuntu x3_server[71081]:   - ID 67: Centroid=(x=0.02, y=-0.26, z=1.31)m | Vel=(vx=-0.01, vy=-0.00)m/s | Speed=0.01m/s | cat=static age=0 pf=0 jump=18
+Nov 26 03:58:01 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:01 ubuntu x3_server[71081]:   - ID 67: Centroid=(x=0.02, y=-0.27, z=1.31)m | Vel=(vx=-0.01, vy=0.00)m/s | Speed=0.01m/s | cat=static age=0 pf=0 jump=21
+Nov 26 03:58:02 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:02 ubuntu x3_server[71081]:   - ID 68: Centroid=(x=0.02, y=-0.27, z=1.31)m | Vel=(vx=-0.02, vy=0.00)m/s | Speed=0.02m/s | cat=static age=0 pf=0 jump=18
+Nov 26 03:58:03 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:03 ubuntu x3_server[71081]:   - ID 68: Centroid=(x=0.03, y=-0.27, z=1.32)m | Vel=(vx=0.06, vy=-0.01)m/s | Speed=0.06m/s | cat=static age=0 pf=0 jump=20
+Nov 26 03:58:04 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:04 ubuntu x3_server[71081]:   - ID 69: Centroid=(x=0.02, y=-0.26, z=1.30)m | Vel=(vx=0.00, vy=0.02)m/s | Speed=0.02m/s | cat=static age=0 pf=0 jump=18
+Nov 26 03:58:04 ubuntu x3_server[71081]: 03:58:04 - loop_stall_probe - WARNING - event loop blocked 0.19 s (stall #12), loop thread at:
+Nov 26 03:58:04 ubuntu x3_server[71081]:   File "/home/jetson/x3_ws/src/server_x3.py", line 6710, in <module>
+Nov 26 03:58:04 ubuntu x3_server[71081]:     asyncio.run(main())
+Nov 26 03:58:04 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/asyncio/runners.py", line 44, in run
+Nov 26 03:58:04 ubuntu x3_server[71081]:     return loop.run_until_complete(main)
+Nov 26 03:58:04 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/asyncio/base_events.py", line 636, in run_until_complete
+Nov 26 03:58:04 ubuntu x3_server[71081]:     self.run_forever()
+Nov 26 03:58:04 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/asyncio/base_events.py", line 603, in run_forever
+Nov 26 03:58:04 ubuntu x3_server[71081]:     self._run_once()
+Nov 26 03:58:04 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/asyncio/base_events.py", line 1871, in _run_once
+Nov 26 03:58:04 ubuntu x3_server[71081]:     event_list = self._selector.select(timeout)
+Nov 26 03:58:04 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/selectors.py", line 469, in select
+Nov 26 03:58:04 ubuntu x3_server[71081]:     fd_event_list = self._selector.poll(timeout, max_ev)
+Nov 26 03:58:04 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:04 ubuntu x3_server[71081]:   - ID 69: Centroid=(x=0.02, y=-0.26, z=1.30)m | Vel=(vx=0.00, vy=0.00)m/s | Speed=0.00m/s | cat=static age=0 pf=0 jump=21
+Nov 26 03:58:05 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:05 ubuntu x3_server[71081]:   - ID 70: Centroid=(x=0.02, y=-0.26, z=1.30)m | Vel=(vx=-0.02, vy=0.00)m/s | Speed=0.02m/s | cat=static age=0 pf=0 jump=18
+Nov 26 03:58:06 ubuntu x3_server[71081]: 03:58:06 - x3_server - INFO - OakDCamera: depth 21.9 fps (USB SUPER, mono 80 req)
+Nov 26 03:58:06 ubuntu x3_server[71081]: 03:58:06 - loop_stall_probe - WARNING - event loop blocked 0.15 s (stall #13), loop thread at:
+Nov 26 03:58:06 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/asyncio/events.py", line 80, in _run
+Nov 26 03:58:06 ubuntu x3_server[71081]:     self._context.run(self._callback, *self._args)
+Nov 26 03:58:06 ubuntu x3_server[71081]:   File "/home/jetson/x3_ws/src/server_x3.py", line 6074, in oled_loop
+Nov 26 03:58:06 ubuntu x3_server[71081]:     ssid    = _get_ssid()
+Nov 26 03:58:06 ubuntu x3_server[71081]:   File "/home/jetson/x3_ws/src/server_x3.py", line 3393, in _get_ssid
+Nov 26 03:58:06 ubuntu x3_server[71081]:     result = subprocess.run(
+Nov 26 03:58:06 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/subprocess.py", line 503, in run
+Nov 26 03:58:06 ubuntu x3_server[71081]:     with Popen(*popenargs, **kwargs) as process:
+Nov 26 03:58:06 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/subprocess.py", line 971, in __init__
+Nov 26 03:58:06 ubuntu x3_server[71081]:     self._execute_child(args, executable, preexec_fn, close_fds,
+Nov 26 03:58:06 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/subprocess.py", line 1825, in _execute_child
+Nov 26 03:58:06 ubuntu x3_server[71081]:     os.close(errpipe_read)
+Nov 26 03:58:06 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:06 ubuntu x3_server[71081]:   - ID 70: Centroid=(x=0.02, y=-0.27, z=1.31)m | Vel=(vx=0.04, vy=0.00)m/s | Speed=0.04m/s | cat=static age=0 pf=0 jump=21
+Nov 26 03:58:06 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:06 ubuntu x3_server[71081]:   - ID 70: Centroid=(x=0.02, y=-0.27, z=1.32)m | Vel=(vx=-0.01, vy=0.00)m/s | Speed=0.01m/s | cat=static age=0 pf=0 jump=26
+Nov 26 03:58:07 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:07 ubuntu x3_server[71081]:   - ID 70: Centroid=(x=0.02, y=-0.26, z=1.31)m | Vel=(vx=-0.03, vy=-0.00)m/s | Speed=0.03m/s | cat=static age=0 pf=0 jump=31
+Nov 26 03:58:09 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:09 ubuntu x3_server[71081]:   - ID 71: Centroid=(x=0.02, y=-0.26, z=1.31)m | Vel=(vx=0.00, vy=0.00)m/s | Speed=0.00m/s | cat=static age=0 pf=0 jump=19
+Nov 26 03:58:10 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:10 ubuntu x3_server[71081]:   - ID 72: Centroid=(x=0.02, y=-0.27, z=1.32)m | Vel=(vx=-0.01, vy=0.00)m/s | Speed=0.01m/s | cat=static age=0 pf=0 jump=18
+Nov 26 03:58:11 ubuntu x3_server[71081]: 03:58:11 - x3_server - INFO - OakDCamera: depth 20.2 fps (USB SUPER, mono 80 req)
+Nov 26 03:58:11 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:11 ubuntu x3_server[71081]:   - ID 72: Centroid=(x=0.02, y=-0.26, z=1.30)m | Vel=(vx=-0.03, vy=0.00)m/s | Speed=0.03m/s | cat=static age=0 pf=0 jump=20
+Nov 26 03:58:12 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:12 ubuntu x3_server[71081]:   - ID 73: Centroid=(x=0.02, y=-0.26, z=1.29)m | Vel=(vx=-0.02, vy=-0.00)m/s | Speed=0.02m/s | cat=static age=0 pf=0 jump=18
+Nov 26 03:58:12 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:12 ubuntu x3_server[71081]:   - ID 73: Centroid=(x=0.02, y=-0.27, z=1.32)m | Vel=(vx=0.01, vy=-0.00)m/s | Speed=0.01m/s | cat=static age=0 pf=0 jump=21
+Nov 26 03:58:13 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:13 ubuntu x3_server[71081]:   - ID 74: Centroid=(x=0.02, y=-0.26, z=1.29)m | Vel=(vx=-0.03, vy=0.00)m/s | Speed=0.03m/s | cat=static age=0 pf=0 jump=18
+Nov 26 03:58:14 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:14 ubuntu x3_server[71081]:   - ID 74: Centroid=(x=0.02, y=-0.26, z=1.30)m | Vel=(vx=-0.01, vy=0.00)m/s | Speed=0.01m/s | cat=static age=0 pf=0 jump=22
+Nov 26 03:58:15 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:15 ubuntu x3_server[71081]:   - ID 75: Centroid=(x=0.02, y=-0.26, z=1.28)m | Vel=(vx=0.00, vy=0.00)m/s | Speed=0.00m/s | cat=static age=0 pf=0 jump=19
+Nov 26 03:58:16 ubuntu x3_server[71081]: 03:58:16 - x3_server - INFO - OakDCamera: depth 19.8 fps (USB SUPER, mono 80 req)
+Nov 26 03:58:16 ubuntu x3_server[71081]: 03:58:16 - loop_stall_probe - WARNING - event loop blocked 0.79 s (stall #14), loop thread at:
+Nov 26 03:58:16 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/asyncio/runners.py", line 44, in run
+Nov 26 03:58:16 ubuntu x3_server[71081]:     return loop.run_until_complete(main)
+Nov 26 03:58:16 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/asyncio/base_events.py", line 636, in run_until_complete
+Nov 26 03:58:16 ubuntu x3_server[71081]:     self.run_forever()
+Nov 26 03:58:16 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/asyncio/base_events.py", line 603, in run_forever
+Nov 26 03:58:16 ubuntu x3_server[71081]:     self._run_once()
+Nov 26 03:58:16 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/asyncio/base_events.py", line 1909, in _run_once
+Nov 26 03:58:16 ubuntu x3_server[71081]:     handle._run()
+Nov 26 03:58:16 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/asyncio/events.py", line 80, in _run
+Nov 26 03:58:16 ubuntu x3_server[71081]:     self._context.run(self._callback, *self._args)
+Nov 26 03:58:16 ubuntu x3_server[71081]:   File "/home/jetson/x3_ws/src/server_x3.py", line 5642, in broadcast_loop
+Nov 26 03:58:16 ubuntu x3_server[71081]:     if traj_shadow is not None and traj_shadow.enabled and ros_bridge is not None:
+Nov 26 03:58:16 ubuntu x3_server[71081]: 03:58:16 - loop_stall_probe - WARNING - event loop blocked 0.19 s (stall #15), loop thread at:
+Nov 26 03:58:16 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/asyncio/runners.py", line 44, in run
+Nov 26 03:58:16 ubuntu x3_server[71081]:     return loop.run_until_complete(main)
+Nov 26 03:58:16 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/asyncio/base_events.py", line 636, in run_until_complete
+Nov 26 03:58:16 ubuntu x3_server[71081]:     self.run_forever()
+Nov 26 03:58:16 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/asyncio/base_events.py", line 603, in run_forever
+Nov 26 03:58:16 ubuntu x3_server[71081]:     self._run_once()
+Nov 26 03:58:16 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/asyncio/base_events.py", line 1909, in _run_once
+Nov 26 03:58:16 ubuntu x3_server[71081]:     handle._run()
+Nov 26 03:58:16 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/asyncio/events.py", line 80, in _run
+Nov 26 03:58:16 ubuntu x3_server[71081]:     self._context.run(self._callback, *self._args)
+Nov 26 03:58:16 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/asyncio/selector_events.py", line 115, in _read_from_self
+Nov 26 03:58:16 ubuntu x3_server[71081]:     data = self._ssock.recv(4096)
+Nov 26 03:58:17 ubuntu x3_server[71081]: 03:58:17 - oak_floor_obstacles - INFO - oak floor obstacles: 329 voxels; floor h p1/p50/p99 -0.008/0.000/0.056 m; plane a,b,c (-0.005, -0.067, 0.06)
+Nov 26 03:58:17 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:17 ubuntu x3_server[71081]:   - ID 76: Centroid=(x=0.02, y=-0.26, z=1.29)m | Vel=(vx=0.00, vy=0.00)m/s | Speed=0.00m/s | cat=static age=0 pf=0 jump=18
+Nov 26 03:58:18 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:18 ubuntu x3_server[71081]:   - ID 76: Centroid=(x=0.03, y=-0.25, z=1.29)m | Vel=(vx=-0.02, vy=-0.01)m/s | Speed=0.02m/s | cat=static age=0 pf=0 jump=23
+Nov 26 03:58:19 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:19 ubuntu x3_server[71081]:   - ID 76: Centroid=(x=0.02, y=-0.26, z=1.28)m | Vel=(vx=0.00, vy=0.00)m/s | Speed=0.00m/s | cat=static age=0 pf=0 jump=29
+Nov 26 03:58:19 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:19 ubuntu x3_server[71081]:   - ID 76: Centroid=(x=0.02, y=-0.26, z=1.30)m | Vel=(vx=-0.02, vy=0.00)m/s | Speed=0.02m/s | cat=static age=0 pf=0 jump=34
+Nov 26 03:58:20 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:20 ubuntu x3_server[71081]:   - ID 76: Centroid=(x=0.02, y=-0.27, z=1.33)m | Vel=(vx=0.05, vy=-0.00)m/s | Speed=0.05m/s | cat=static age=0 pf=0 jump=37
+Nov 26 03:58:21 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:21 ubuntu x3_server[71081]:   - ID 77: Centroid=(x=0.02, y=-0.27, z=1.31)m | Vel=(vx=0.00, vy=0.00)m/s | Speed=0.00m/s | cat=static age=0 pf=0 jump=19
+Nov 26 03:58:21 ubuntu x3_server[71081]: 03:58:21 - x3_server - INFO - OakDCamera: depth 23.1 fps (USB SUPER, mono 80 req)
+Nov 26 03:58:21 ubuntu x3_server[71081]: 03:58:21 - loop_stall_probe - WARNING - event loop blocked 0.21 s (stall #16), loop thread at:
+Nov 26 03:58:21 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/asyncio/base_events.py", line 1909, in _run_once
+Nov 26 03:58:21 ubuntu x3_server[71081]:     handle._run()
+Nov 26 03:58:21 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/asyncio/events.py", line 80, in _run
+Nov 26 03:58:21 ubuntu x3_server[71081]:     self._context.run(self._callback, *self._args)
+Nov 26 03:58:21 ubuntu x3_server[71081]:   File "/home/jetson/x3_ws/src/server_x3.py", line 5660, in broadcast_loop
+Nov 26 03:58:21 ubuntu x3_server[71081]:     websockets.broadcast(cam_targets, img_bytes)
+Nov 26 03:58:21 ubuntu x3_server[71081]:   File "/home/jetson/.local/lib/python3.10/site-packages/websockets/asyncio/connection.py", line 1245, in broadcast
+Nov 26 03:58:21 ubuntu x3_server[71081]:     connection.send_data()
+Nov 26 03:58:21 ubuntu x3_server[71081]:   File "/home/jetson/.local/lib/python3.10/site-packages/websockets/asyncio/connection.py", line 975, in send_data
+Nov 26 03:58:21 ubuntu x3_server[71081]:     self.transport.write(data)
+Nov 26 03:58:21 ubuntu x3_server[71081]:   File "/usr/lib/python3.10/asyncio/selector_events.py", line 924, in write
+Nov 26 03:58:21 ubuntu x3_server[71081]:     n = self._sock.send(data)
+Nov 26 03:58:23 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:23 ubuntu x3_server[71081]:   - ID 78: Centroid=(x=0.02, y=-0.27, z=1.32)m | Vel=(vx=0.08, vy=-0.01)m/s | Speed=0.08m/s | cat=static age=0 pf=0 jump=18
+Nov 26 03:58:23 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:23 ubuntu x3_server[71081]:   - ID 78: Centroid=(x=0.02, y=-0.26, z=1.30)m | Vel=(vx=-0.01, vy=0.00)m/s | Speed=0.01m/s | cat=static age=0 pf=0 jump=20
+Nov 26 03:58:24 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:24 ubuntu x3_server[71081]:   - ID 79: Centroid=(x=0.02, y=-0.26, z=1.30)m | Vel=(vx=-0.01, vy=0.00)m/s | Speed=0.02m/s | cat=static age=0 pf=0 jump=18
+Nov 26 03:58:25 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:25 ubuntu x3_server[71081]:   - ID 79: Centroid=(x=0.02, y=-0.27, z=1.32)m | Vel=(vx=0.05, vy=0.01)m/s | Speed=0.05m/s | cat=static age=0 pf=0 jump=21
+Nov 26 03:58:25 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:25 ubuntu x3_server[71081]:   - ID 79: Centroid=(x=0.02, y=-0.27, z=1.31)m | Vel=(vx=0.03, vy=0.00)m/s | Speed=0.03m/s | cat=static age=0 pf=0 jump=26
+Nov 26 03:58:26 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:26 ubuntu x3_server[71081]:   - ID 79: Centroid=(x=0.02, y=-0.26, z=1.28)m | Vel=(vx=0.00, vy=0.00)m/s | Speed=0.00m/s | cat=static age=0 pf=0 jump=31
+Nov 26 03:58:26 ubuntu x3_server[71081]: 03:58:26 - x3_server - INFO - OakDCamera: depth 21.3 fps (USB SUPER, mono 80 req)
+Nov 26 03:58:26 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:26 ubuntu x3_server[71081]:   - ID 79: Centroid=(x=0.03, y=-0.25, z=1.28)m | Vel=(vx=0.00, vy=-0.00)m/s | Speed=0.00m/s | cat=static age=0 pf=0 jump=34
+Nov 26 03:58:28 ubuntu x3_server[71081]: 03:58:28 - __main__ - INFO - [lidar-persons] births 25 (revived ids 5), camera ids re-linked 97, held 428.3 s, ended: hold cap 14, lidar lost 10; resets 1; side births 25, side confirms 8630
+Nov 26 03:58:29 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:29 ubuntu x3_server[71081]:   - ID 82: Centroid=(x=0.02, y=-0.27, z=1.34)m | Vel=(vx=0.13, vy=-0.00)m/s | Speed=0.13m/s | cat=static age=0 pf=0 jump=19
+Nov 26 03:58:31 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:31 ubuntu x3_server[71081]:   - ID 83: Centroid=(x=0.02, y=-0.26, z=1.30)m | Vel=(vx=-0.02, vy=0.00)m/s | Speed=0.02m/s | cat=static age=0 pf=0 jump=18
+Nov 26 03:58:31 ubuntu x3_server[71081]: 03:58:31 - x3_server - INFO - OakDCamera: depth 21.1 fps (USB SUPER, mono 80 req)
+Nov 26 03:58:32 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:32 ubuntu x3_server[71081]:   - ID 83: Centroid=(x=0.02, y=-0.26, z=1.30)m | Vel=(vx=-0.01, vy=0.00)m/s | Speed=0.02m/s | cat=static age=0 pf=0 jump=22
+Nov 26 03:58:33 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:33 ubuntu x3_server[71081]:   - ID 84: Centroid=(x=0.02, y=-0.27, z=1.34)m | Vel=(vx=0.12, vy=-0.01)m/s | Speed=0.12m/s | cat=static age=0 pf=0 jump=19
+Nov 26 03:58:34 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:34 ubuntu x3_server[71081]:   - ID 84: Centroid=(x=0.02, y=-0.28, z=1.35)m | Vel=(vx=0.02, vy=-0.00)m/s | Speed=0.02m/s | cat=static age=0 pf=0 jump=21
+Nov 26 03:58:34 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:34 ubuntu x3_server[71081]:   - ID 85: Centroid=(x=0.02, y=-0.26, z=1.28)m | Vel=(vx=-0.03, vy=-0.00)m/s | Speed=0.03m/s | cat=static age=0 pf=0 jump=18
+Nov 26 03:58:36 ubuntu x3_server[71081]: 03:58:36 - __main__ - INFO - [side-persons] last 60 s: left 248 frames, 10 boxes, 1 rays, 36.0 ms/detect, right 252 frames, 0 boxes, 0 rays, 33.3 ms/detect, rear 252 frames, 0 boxes, 0 rays, 29.2 ms/detect
+Nov 26 03:58:36 ubuntu x3_server[71081]: 03:58:36 - x3_server - INFO - OakDCamera: depth 20.1 fps (USB SUPER, mono 80 req)
+Nov 26 03:58:36 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:36 ubuntu x3_server[71081]:   - ID 86: Centroid=(x=0.02, y=-0.26, z=1.29)m | Vel=(vx=-0.03, vy=0.00)m/s | Speed=0.03m/s | cat=static age=0 pf=0 jump=18
+Nov 26 03:58:37 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:37 ubuntu x3_server[71081]:   - ID 86: Centroid=(x=0.02, y=-0.27, z=1.32)m | Vel=(vx=0.07, vy=-0.01)m/s | Speed=0.07m/s | cat=static age=0 pf=0 jump=20
+Nov 26 03:58:38 ubuntu x3_server[71081]: 03:58:38 - __main__ - INFO - [lidar-persons] births 25 (revived ids 5), camera ids re-linked 97, held 428.3 s, ended: hold cap 14, lidar lost 11; resets 1; side births 25, side confirms 8631
+Nov 26 03:58:38 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:38 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.26, z=1.30)m | Vel=(vx=-0.05, vy=0.00)m/s | Speed=0.05m/s | cat=static age=0 pf=0 jump=18
+Nov 26 03:58:38 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:38 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.26, z=1.29)m | Vel=(vx=-0.02, vy=0.00)m/s | Speed=0.02m/s | cat=static age=0 pf=0 jump=23
+Nov 26 03:58:39 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:39 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.26, z=1.30)m | Vel=(vx=-0.02, vy=0.00)m/s | Speed=0.02m/s | cat=static age=0 pf=0 jump=28
+Nov 26 03:58:40 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:40 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.27, z=1.31)m | Vel=(vx=0.03, vy=0.01)m/s | Speed=0.03m/s | cat=static age=0 pf=0 jump=34
+Nov 26 03:58:40 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:40 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.26, z=1.30)m | Vel=(vx=-0.01, vy=0.00)m/s | Speed=0.01m/s | cat=static age=0 pf=0 jump=39
+Nov 26 03:58:40 ubuntu x3_server[71081]: 03:58:40 - __main__ - INFO - [seeded-shadow] 13179 frames, 0.64 seeded rows/frame, 19 rows with no lidar track within 0.5 m
+Nov 26 03:58:41 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:41 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.27, z=1.33)m | Vel=(vx=0.04, vy=-0.00)m/s | Speed=0.04m/s | cat=static age=0 pf=0 jump=44
+Nov 26 03:58:41 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:41 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.26, z=1.29)m | Vel=(vx=-0.01, vy=0.00)m/s | Speed=0.02m/s | cat=static age=0 pf=0 jump=50
+Nov 26 03:58:41 ubuntu x3_server[71081]: 03:58:41 - x3_server - INFO - OakDCamera: depth 23.7 fps (USB SUPER, mono 80 req)
+Nov 26 03:58:42 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:42 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.27, z=1.32)m | Vel=(vx=-0.00, vy=-0.01)m/s | Speed=0.01m/s | cat=static age=0 pf=0 jump=55
+Nov 26 03:58:42 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:42 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.26, z=1.29)m | Vel=(vx=-0.02, vy=0.01)m/s | Speed=0.02m/s | cat=static age=0 pf=0 jump=60
+Nov 26 03:58:43 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:43 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.27, z=1.31)m | Vel=(vx=0.03, vy=0.00)m/s | Speed=0.03m/s | cat=static age=0 pf=0 jump=66
+Nov 26 03:58:43 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:43 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.26, z=1.29)m | Vel=(vx=-0.01, vy=0.00)m/s | Speed=0.01m/s | cat=static age=0 pf=0 jump=71
+Nov 26 03:58:44 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:44 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.26, z=1.31)m | Vel=(vx=-0.00, vy=0.00)m/s | Speed=0.00m/s | cat=static age=0 pf=0 jump=76
+Nov 26 03:58:44 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:44 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.26, z=1.28)m | Vel=(vx=-0.05, vy=0.00)m/s | Speed=0.05m/s | cat=static age=0 pf=0 jump=81
+Nov 26 03:58:45 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:45 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.27, z=1.32)m | Vel=(vx=0.01, vy=0.00)m/s | Speed=0.01m/s | cat=static age=0 pf=0 jump=86
+Nov 26 03:58:45 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:45 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.27, z=1.31)m | Vel=(vx=-0.02, vy=-0.01)m/s | Speed=0.02m/s | cat=static age=0 pf=0 jump=91
+Nov 26 03:58:46 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:46 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.26, z=1.30)m | Vel=(vx=0.02, vy=-0.01)m/s | Speed=0.02m/s | cat=static age=0 pf=0 jump=96
+Nov 26 03:58:46 ubuntu x3_server[71081]: 03:58:46 - x3_server - INFO - OakDCamera: depth 25.7 fps (USB SUPER, mono 80 req)
+Nov 26 03:58:46 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:46 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.28, z=1.36)m | Vel=(vx=0.09, vy=0.01)m/s | Speed=0.09m/s | cat=static age=0 pf=0 jump=101
+Nov 26 03:58:47 ubuntu x3_server[71081]: 03:58:47 - oak_floor_obstacles - INFO - oak floor obstacles: 335 voxels; floor h p1/p50/p99 -0.008/0.000/0.056 m; plane a,b,c (-0.007, -0.068, 0.062)
+Nov 26 03:58:47 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:47 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.27, z=1.33)m | Vel=(vx=0.00, vy=0.00)m/s | Speed=0.00m/s | cat=static age=0 pf=0 jump=106
+Nov 26 03:58:47 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:47 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.27, z=1.32)m | Vel=(vx=0.03, vy=-0.01)m/s | Speed=0.03m/s | cat=static age=0 pf=0 jump=111
+Nov 26 03:58:48 ubuntu x3_server[71081]: 03:58:48 - __main__ - INFO - [lidar-persons] births 26 (revived ids 5), camera ids re-linked 98, held 432.0 s, ended: hold cap 15, lidar lost 11; resets 1; side births 26, side confirms 8637
+Nov 26 03:58:48 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:48 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.26, z=1.31)m | Vel=(vx=-0.01, vy=0.00)m/s | Speed=0.01m/s | cat=static age=0 pf=0 jump=117
+Nov 26 03:58:49 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:49 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.26, z=1.29)m | Vel=(vx=0.01, vy=0.01)m/s | Speed=0.02m/s | cat=static age=0 pf=0 jump=123
+Nov 26 03:58:49 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:49 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.27, z=1.31)m | Vel=(vx=0.04, vy=0.00)m/s | Speed=0.04m/s | cat=static age=0 pf=0 jump=128
+Nov 26 03:58:50 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:50 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.27, z=1.32)m | Vel=(vx=-0.01, vy=0.00)m/s | Speed=0.01m/s | cat=static age=0 pf=0 jump=133
+Nov 26 03:58:50 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:50 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.26, z=1.28)m | Vel=(vx=-0.14, vy=-0.00)m/s | Speed=0.14m/s | cat=static age=0 pf=0 jump=139
+Nov 26 03:58:51 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:51 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.26, z=1.30)m | Vel=(vx=0.00, vy=0.00)m/s | Speed=0.00m/s | cat=static age=0 pf=0 jump=144
+Nov 26 03:58:51 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:51 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.26, z=1.30)m | Vel=(vx=-0.13, vy=-0.00)m/s | Speed=0.13m/s | cat=static age=0 pf=0 jump=149
+Nov 26 03:58:51 ubuntu x3_server[71081]: 03:58:51 - x3_server - INFO - OakDCamera: depth 26.7 fps (USB SUPER, mono 80 req)
+Nov 26 03:58:52 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:52 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.27, z=1.31)m | Vel=(vx=0.01, vy=0.00)m/s | Speed=0.01m/s | cat=static age=0 pf=0 jump=155
+Nov 26 03:58:52 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:52 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.03, y=-0.26, z=1.29)m | Vel=(vx=-0.03, vy=-0.01)m/s | Speed=0.03m/s | cat=static age=0 pf=0 jump=160
+Nov 26 03:58:53 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:53 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.03, y=-0.26, z=1.28)m | Vel=(vx=-0.01, vy=-0.01)m/s | Speed=0.01m/s | cat=static age=0 pf=0 jump=165
+Nov 26 03:58:53 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:53 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.26, z=1.30)m | Vel=(vx=0.00, vy=0.00)m/s | Speed=0.00m/s | cat=static age=0 pf=0 jump=170
+Nov 26 03:58:54 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:54 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.27, z=1.30)m | Vel=(vx=0.00, vy=-0.00)m/s | Speed=0.01m/s | cat=static age=0 pf=0 jump=175
+Nov 26 03:58:54 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:54 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.27, z=1.31)m | Vel=(vx=0.04, vy=0.01)m/s | Speed=0.04m/s | cat=static age=0 pf=0 jump=181
+Nov 26 03:58:55 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:55 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.27, z=1.32)m | Vel=(vx=0.05, vy=0.01)m/s | Speed=0.05m/s | cat=static age=0 pf=0 jump=186
+Nov 26 03:58:56 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:56 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.26, z=1.30)m | Vel=(vx=-0.01, vy=-0.00)m/s | Speed=0.01m/s | cat=static age=0 pf=0 jump=191
+Nov 26 03:58:56 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:56 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.28, z=1.36)m | Vel=(vx=0.14, vy=-0.01)m/s | Speed=0.14m/s | cat=static age=0 pf=0 jump=196
+Nov 26 03:58:56 ubuntu x3_server[71081]: 03:58:56 - x3_server - INFO - OakDCamera: depth 26.3 fps (USB SUPER, mono 80 req)
+Nov 26 03:58:57 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:57 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.26, z=1.29)m | Vel=(vx=0.00, vy=0.00)m/s | Speed=0.00m/s | cat=static age=0 pf=0 jump=202
+Nov 26 03:58:57 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:57 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.26, z=1.30)m | Vel=(vx=0.00, vy=0.00)m/s | Speed=0.00m/s | cat=static age=0 pf=0 jump=207
+Nov 26 03:58:58 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:58 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.27, z=1.34)m | Vel=(vx=0.05, vy=0.00)m/s | Speed=0.05m/s | cat=static age=0 pf=0 jump=212
+Nov 26 03:58:58 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:58 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.27, z=1.32)m | Vel=(vx=0.02, vy=0.01)m/s | Speed=0.02m/s | cat=static age=0 pf=0 jump=217
+Nov 26 03:58:59 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:59 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.26, z=1.29)m | Vel=(vx=-0.03, vy=-0.01)m/s | Speed=0.03m/s | cat=static age=0 pf=0 jump=222
+Nov 26 03:58:59 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:58:59 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.26, z=1.29)m | Vel=(vx=-0.03, vy=0.00)m/s | Speed=0.03m/s | cat=static age=0 pf=0 jump=228
+Nov 26 03:59:00 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:59:00 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.27, z=1.35)m | Vel=(vx=0.03, vy=-0.00)m/s | Speed=0.03m/s | cat=static age=0 pf=0 jump=234
+Nov 26 03:59:00 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:59:00 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.26, z=1.30)m | Vel=(vx=0.03, vy=-0.00)m/s | Speed=0.03m/s | cat=static age=0 pf=0 jump=240
+Nov 26 03:59:01 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:59:01 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.26, z=1.31)m | Vel=(vx=-0.01, vy=0.00)m/s | Speed=0.01m/s | cat=static age=0 pf=0 jump=245
+Nov 26 03:59:01 ubuntu x3_server[71081]: 03:59:01 - x3_server - INFO - OakDCamera: depth 26.7 fps (USB SUPER, mono 80 req)
+Nov 26 03:59:02 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:59:02 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.27, z=1.31)m | Vel=(vx=0.00, vy=0.00)m/s | Speed=0.00m/s | cat=static age=0 pf=0 jump=251
+Nov 26 03:59:02 ubuntu x3_server[71081]: 03:59:02 - __main__ - INFO - [lidar-persons] births 27 (revived ids 5), camera ids re-linked 98, held 432.0 s, ended: hold cap 15, lidar lost 11; resets 1; side births 27, side confirms 8637
+Nov 26 03:59:02 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:59:02 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.27, z=1.33)m | Vel=(vx=0.06, vy=0.00)m/s | Speed=0.06m/s | cat=static age=0 pf=0 jump=255
+Nov 26 03:59:03 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:59:03 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.27, z=1.31)m | Vel=(vx=-0.01, vy=0.00)m/s | Speed=0.01m/s | cat=static age=0 pf=0 jump=260
+Nov 26 03:59:03 ubuntu x3_server[71081]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 03:59:03 ubuntu x3_server[71081]:   - ID 87: Centroid=(x=0.02, y=-0.26, z=1.28)m | Vel=(vx=-0.03, vy=0.00)m/s | Speed=0.03m/s | cat=static age=0 pf=0 jump=266

@@ -1,0 +1,7 @@
+WARNING: topic [/oak/obstacles] does not appear to be published yet
+average rate: 4.625
+	min: 0.150s max: 0.386s std dev: 0.07537s window: 7
+average rate: 4.873
+	min: 0.141s max: 0.386s std dev: 0.06170s window: 13
+average rate: 4.482
+	min: 0.141s max: 0.531s std dev: 0.09523s window: 17

@@ -1,0 +1,80 @@
+    PID     TID %CPU COMMAND         COMMAND
+  71081   71081 12.4 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71118  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71255  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71256  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71257  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71258  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71259  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71260  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71261  0.7 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71262  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71263  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71264  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71266 21.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71267  0.3 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71268  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71281 14.4 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71282  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71283  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71284  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71285  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71288  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71289  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71290  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71291  4.3 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71292 12.1 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71293  0.0 cuda-EvtHandlr  python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71295  4.4 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71296  0.4 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71297  0.7 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71298  0.2 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71299  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71300  8.9 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71301  2.9 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71302  3.9 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71312  0.0 cuda-EvtHandlr  python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71348  0.4 Scheduler00Thr  python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71349  2.9 EventRead00Thr  python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71351  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71352  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71355  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71356  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71357  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71359  0.3 XLinkInHost(2)  python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71360  0.7 XLinkInHost(4)  python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71369  1.3 Scheduler01Thr  python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71370  2.8 EventRead01Thr  python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71371  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71372  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71378  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71379  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71380  0.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71385  0.4 XLinkInHost(7)  python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71386  0.4 XLinkInHost(9)  python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71387  0.3 XLinkInHost(11) python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71388  0.3 XLinkInHost(13) python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71389  0.1 XLinkInHost(15) python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71411 34.7 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71412 34.5 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71413 34.5 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71414 34.3 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71415 34.1 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71416 34.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71417 33.8 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71418 33.7 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71419 33.4 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71420 33.2 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71421 33.2 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71440  9.0 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71467  8.9 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   71484  8.9 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71081   75391  8.3 python3         python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71162   71162 39.0 livox_scan_node /usr/bin/python3 /home/jetson/x3_ws/install/yahboomcar_bringup/lib/yahboomcar_bringup/livox_scan_node --ros-args -r __node:=livox_scan_node
+  71162   71242  0.0 livox_scan_node /usr/bin/python3 /home/jetson/x3_ws/install/yahboomcar_bringup/lib/yahboomcar_bringup/livox_scan_node --ros-args -r __node:=livox_scan_node
+  71162   71243  0.0 livox_scan_node /usr/bin/python3 /home/jetson/x3_ws/install/yahboomcar_bringup/lib/yahboomcar_bringup/livox_scan_node --ros-args -r __node:=livox_scan_node
+  71162   71244  0.0 livox_scan_node /usr/bin/python3 /home/jetson/x3_ws/install/yahboomcar_bringup/lib/yahboomcar_bringup/livox_scan_node --ros-args -r __node:=livox_scan_node
+  71162   71245  0.0 livox_scan_node /usr/bin/python3 /home/jetson/x3_ws/install/yahboomcar_bringup/lib/yahboomcar_bringup/livox_scan_node --ros-args -r __node:=livox_scan_node
+  71162   71246  0.0 livox_scan_node /usr/bin/python3 /home/jetson/x3_ws/install/yahboomcar_bringup/lib/yahboomcar_bringup/livox_scan_node --ros-args -r __node:=livox_scan_node
+  71162   71247  0.0 livox_scan_node /usr/bin/python3 /home/jetson/x3_ws/install/yahboomcar_bringup/lib/yahboomcar_bringup/livox_scan_node --ros-args -r __node:=livox_scan_node
+  71162   71248  0.6 livox_scan_node /usr/bin/python3 /home/jetson/x3_ws/install/yahboomcar_bringup/lib/yahboomcar_bringup/livox_scan_node --ros-args -r __node:=livox_scan_node

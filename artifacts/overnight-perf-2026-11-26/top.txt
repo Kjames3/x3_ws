@@ -1,0 +1,50 @@
+top - 03:57:23 up  3:09,  1 user,  load average: 7.31, 7.81, 7.96
+Tasks: 399 total,   3 running, 396 sleeping,   0 stopped,   0 zombie
+%Cpu(s): 51.4 us,  3.8 sy,  0.0 ni, 42.9 id,  0.5 wa,  0.5 hi,  1.0 si,  0.0 st
+MiB Mem :  62827.9 total,  57333.3 free,   3221.2 used,   2273.4 buff/cache
+MiB Swap:  31413.9 total,  31413.9 free,      0.0 used.  58984.4 avail Mem 
+
+    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+  71081 jetson    20   0   70.4g   1.6g 391868 R 487.5   2.6 166:30.85 python3
+  71150 jetson    20   0  665552  61540  29136 R  37.5   0.1   9:24.44 Mcnamu_+
+  71162 jetson    20   0  682580  86848  38588 S  31.2   0.1  13:02.19 livox_s+
+  71154 jetson    20   0  590868  61424  29016 S  25.0   0.1   6:31.87 livox_i+
+  71160 jetson    20   0 1034536  43532  17616 S  12.5   0.1   4:47.14 livox_r+
+      1 root      20   0  169180  12536   7480 S   6.2   0.0   0:07.85 systemd
+    606 message+  20   0   10376   5632   3596 S   6.2   0.0   0:38.74 dbus-da+
+    627 root      20   0  236864  12292   6356 S   6.2   0.0   0:28.73 polkitd
+  71158 jetson    20   0  595012  27664  19664 S   6.2   0.0   2:00.22 ekf_node
+      2 root      20   0       0      0      0 S   0.0   0.0   0:00.02 kthreadd
+      3 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 rcu_gp
+      4 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 rcu_par+
+      5 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 slub_fl+
+      6 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 netns
+      8 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 kworker+
+     10 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 mm_perc+
+     11 root      20   0       0      0      0 S   0.0   0.0   0:00.00 rcu_tas+
+     12 root      20   0       0      0      0 S   0.0   0.0   0:00.00 rcu_tas+
+     13 root      20   0       0      0      0 S   0.0   0.0   0:00.00 rcu_tas+
+     14 root      20   0       0      0      0 S   0.0   0.0   0:14.34 ksoftir+
+     15 root      20   0       0      0      0 I   0.0   0.0   0:03.40 rcu_pre+
+     16 root      rt   0       0      0      0 S   0.0   0.0   0:00.03 migrati+
+     17 root      20   0       0      0      0 S   0.0   0.0   0:00.00 cpuhp/0
+     18 root      20   0       0      0      0 S   0.0   0.0   0:00.00 cpuhp/1
+     19 root      rt   0       0      0      0 S   0.0   0.0   0:00.00 migrati+
+     20 root      20   0       0      0      0 S   0.0   0.0   0:00.24 ksoftir+
+     22 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 kworker+
+     23 root      20   0       0      0      0 S   0.0   0.0   0:00.00 cpuhp/2
+     24 root      rt   0       0      0      0 S   0.0   0.0   0:00.00 migrati+
+     25 root      20   0       0      0      0 S   0.0   0.0   0:00.23 ksoftir+
+     27 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 kworker+
+     28 root      20   0       0      0      0 S   0.0   0.0   0:00.00 cpuhp/3
+     29 root      rt   0       0      0      0 S   0.0   0.0   0:00.00 migrati+
+     30 root      20   0       0      0      0 S   0.0   0.0   0:00.22 ksoftir+
+     32 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 kworker+
+     33 root      20   0       0      0      0 S   0.0   0.0   0:00.00 cpuhp/4
+     34 root      rt   0       0      0      0 S   0.0   0.0   0:00.00 migrati+
+     35 root      20   0       0      0      0 S   0.0   0.0   0:00.21 ksoftir+
+     37 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 kworker+
+     38 root      20   0       0      0      0 S   0.0   0.0   0:00.00 cpuhp/5
+     39 root      rt   0       0      0      0 S   0.0   0.0   0:00.00 migrati+
+     40 root      20   0       0      0      0 S   0.0   0.0   0:00.21 ksoftir+
+     42 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 kworker+
