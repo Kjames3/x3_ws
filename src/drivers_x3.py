@@ -8,6 +8,7 @@ import time
 import struct
 import numpy as np
 import cv2
+import cam_decode
 
 # Configure logger for this module
 logger = logging.getLogger(__name__)
@@ -206,6 +207,10 @@ class AstraCamera:
         self._latest_frame = None
         self._capture_thread = None
         self._has_clients = False  # set by server; skips lock+copy when nobody is watching (P7)
+        # X3_CAM_DECODE_ON_DEMAND=1: grab() every frame, decode only at
+        # X3_CAM_DECODE_HZ or when get_frame*() asks (cam_decode.py). None = read().
+        self._decode_gate = cam_decode.gate_from_env()
+        self._latest_t = 0.0
 
         if not sim_mode:
             self._open_rgb()
@@ -280,11 +285,14 @@ class AstraCamera:
 
         P7: when no clients are watching, we still drain the buffer (so frames don't
         pile up on reconnect) but skip the lock + copy to save CPU.
+
+        With X3_CAM_DECODE_ON_DEMAND=1 the drain is grab()-only and the MJPEG
+        decode runs only for frames a consumer will use (see cam_decode.py).
         """
+        gate = self._decode_gate
         while self._running and self._cap is not None:
-            ret, frame = self._cap.read()
-            if ret and self._has_clients:
-                t_cap = time.monotonic()
+            ret, frame, t_cap = cam_decode.next_frame(self._cap, gate, active=self._has_clients)
+            if ret and frame is not None and self._has_clients:
                 with self._lock:
                     self._latest_frame = frame
                     self._latest_t = t_cap
@@ -365,6 +373,8 @@ class AstraCamera:
         """Return the latest RGB frame as a BGR numpy array, or None."""
         if self.sim_mode:
             return None
+        if self._decode_gate is not None:
+            self._decode_gate.request()   # on-demand mode: decode the next grabbed frame
         with self._lock:
             return self._latest_frame.copy() if self._latest_frame is not None else None
 
@@ -372,10 +382,12 @@ class AstraCamera:
         """(latest frame copy, monotonic time it was read) or None (side-person rays)."""
         if self.sim_mode:
             return None
+        if self._decode_gate is not None:
+            self._decode_gate.request()
         with self._lock:
             if self._latest_frame is None:
                 return None
-            return self._latest_frame.copy(), getattr(self, '_latest_t', 0.0)
+            return self._latest_frame.copy(), self._latest_t
 
     def get_depth_frame(self):
         """

@@ -101,6 +101,7 @@ LOG_PUSH_INTERVAL_S = 0.3
 LOG_BACKLOG_LINES = 500
 
 # Import X3 specific drivers
+import cam_decode
 from drivers_x3 import (
     Rosmaster, MecanumDrive, YDLidarDriver, AstraCamera, OLEDDisplay, SERIAL_PORT,
     INA226BatteryMonitor, TeensyToFArrays, TEENSY_TOF_PORT, tof_valid_mask,
@@ -5156,6 +5157,13 @@ def _rear_preview(device_id, stop, latest):
 # X3_LEFT_CAM overrides the device ("none" disables it).
 LEFT_CAM_GLOB = '/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB_2.0_Camera_SN0001-video-index0'
 LEFT_CAM_ROTATE = cv2.ROTATE_180   # landscape mount is upside down
+# X3_CAM_DECODE_ON_DEMAND=1: grab() every frame, decode + rotate only at X3_CAM_DECODE_HZ
+# or while the GUI feed has viewers (cam_decode.py). None = read() + rotate every frame.
+_left_decode_gate = cam_decode.gate_from_env()
+
+
+def _left_rotate(frame):
+    return frame if LEFT_CAM_ROTATE is None else cv2.rotate(frame, LEFT_CAM_ROTATE)
 
 
 def _left_capture(stop, latest):
@@ -5174,13 +5182,14 @@ def _left_capture(stop, latest):
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             logger.info("Left camera opened: %s", dev)
             while not stop.is_set():
-                ok, frame = cap.read()
-                t_cap = time.monotonic()
+                ok, frame, t_cap = cam_decode.next_frame(cap, _left_decode_gate, post=_left_rotate)
                 if not ok:
                     logger.warning("Left camera: read failed, reopening")
                     break
-                latest[0] = frame if LEFT_CAM_ROTATE is None else cv2.rotate(frame, LEFT_CAM_ROTATE)
-                _side_frames['left'] = (latest[0], t_cap)
+                if frame is None:      # grabbed, not decoded (on-demand mode)
+                    continue
+                latest[0] = frame
+                _side_frames['left'] = (frame, t_cap)
         except Exception as exc:
             logger.warning("Left camera unavailable: %s", exc)
         finally:
@@ -5207,6 +5216,8 @@ async def oak_camera_feed_loop():
         while not _shutting_down:
             targets = _camera_targets()
             if targets:
+                if _left_decode_gate is not None:
+                    _left_decode_gate.request()   # viewers: decode left frames at full rate
                 front = oak.get_stereo_frames()[0] if oak is not None else None
                 now = time.monotonic()
                 for role, image in (('front', front), ('rear', rear[0]), ('left', left[0])):
