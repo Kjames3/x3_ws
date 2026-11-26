@@ -2,7 +2,7 @@ name: checks
 
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
   workflow_dispatch:   # lets you run it by hand from the Actions tab
 
@@ -24,10 +24,11 @@ jobs:
       # install/ holds colcon-GENERATED setup scripts (install/setup.sh,
       # install/local_setup.sh). They are build output, not source, and they do
       # not pass lint — exclude them rather than editing generated files.
+      # artifacts/ holds frozen one-off experiment scripts kept as a record.
       - name: Collect scripts
         id: collect
         run: |
-          mapfile -t files < <(git ls-files '*.sh' | grep -v '^install/')
+          mapfile -t files < <(git ls-files '*.sh' | grep -vE '^(install|artifacts)/')
           printf '  %s\n' "${files[@]}"
           echo "count=${#files[@]}" >> "$GITHUB_OUTPUT"
           printf '%s\n' "${files[@]}" > /tmp/sh_files.txt
@@ -82,6 +83,55 @@ jobs:
       # themselves. -rs prints the skip reasons so a silent skip is visible.
       - name: pytest
         run: python -m pytest tests -q -rs
+
+  ruff:
+    name: ruff (real-bug lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Only rules that indicate actual bugs: syntax errors, undefined names,
+      # bad comparisons, misplaced return/yield. Style is not enforced.
+      - run: pipx run ruff check --select E9,F63,F7,F82 --output-format=github src tests scripts
+
+  ros-build:
+    name: ROS 2 Humble build + colcon test
+    runs-on: ubuntu-22.04
+    container: ros:humble
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # ydlidar_ros2_driver links against the YDLidar C++ SDK (not in rosdep).
+      - name: Build YDLidar SDK
+        run: |
+          apt-get update -qq && apt-get install -y -qq cmake git
+          git clone --depth 1 https://github.com/YDLIDAR/YDLidar-SDK.git /tmp/ydsdk
+          cmake -S /tmp/ydsdk -B /tmp/ydsdk/build -DCMAKE_BUILD_TYPE=Release
+          make -C /tmp/ydsdk/build -j"$(nproc)" install && ldconfig
+
+      - name: rosdep install
+        run: |
+          source /opt/ros/humble/setup.bash
+          rosdep update --rosdistro humble
+          rosdep install --from-paths src --ignore-src -r -y
+
+      - name: colcon build
+        run: |
+          source /opt/ros/humble/setup.bash
+          colcon build --event-handlers console_cohesion+ --cmake-args -DBUILD_TESTING=ON
+
+      # Report-only: every current result is an ament style linter (cpplint,
+      # flake8, copyright, pep257, uncrustify), mostly in vendor code. All the
+      # results are still printed; the build above is the gate.
+      - name: colcon test (report only)
+        run: |
+          source /opt/ros/humble/setup.bash
+          colcon test --event-handlers console_cohesion+
+          colcon test-result --verbose || echo "::warning::colcon test has failures (style linters; report-only)"
 
   web:
     name: web GUI (syntax + humanoid)

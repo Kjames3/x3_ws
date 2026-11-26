@@ -112,7 +112,7 @@ def record(output, seconds):
         writer.create_topic(rosbag2_py.TopicMetadata(name=topic, type=msg_type,
                             serialization_format='cdr', offered_qos_profiles=offered))
         def receive(msg, topic=topic):
-            writer.write(topic, serialize_message(msg), node.get_clock().now().nanoseconds)
+            writer.write(topic, serialize_message(msg), node.get_clock().now().nanoseconds)  # noqa: F821 (del'd after spin)
             counts[topic] += 1
         subs.append(node.create_subscription(get_message(msg_type), topic, receive, qos))
     manifest['publishers_at_start'] = {topic: node.count_publishers(topic) for topic in TOPICS}

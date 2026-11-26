@@ -6,7 +6,8 @@
 torch
 numpy
 scipy
-opencv-python-headless
+opencv-python-headless<5   # 5.x drops undistortPointsIter; the robot runs 4.x
 pyserial
 pyyaml
 pytest
+websockets

@@ -9,8 +9,14 @@ from pathlib import Path
 import cv2
 import numpy as np
 from oak_color_geometry import refine
-from oak_display_diagnostic import DisplayDiagnostic
-from oak_geometry_worker import GeometryWorker
+try:  # bench diagnostic; optional so a checkout without it still runs
+    from oak_display_diagnostic import DisplayDiagnostic
+except ImportError:
+    DisplayDiagnostic = None
+try:  # optional out-of-process geometry; in-process path is used without it
+    from oak_geometry_worker import GeometryWorker
+except ImportError:
+    GeometryWorker = None
 
 PROCESS_FLAG = Path("/tmp/x3_oak_geometry_process")
 
@@ -50,7 +56,7 @@ class OakSurroundings:
         self.maps=None
         self.offset=None
         self.stage_samples=[]
-        self.diagnostic=DisplayDiagnostic.arm()
+        self.diagnostic=DisplayDiagnostic.arm() if DisplayDiagnostic else None
         self.geometry_worker=None
         self.process_enabled=False
         self.worker_retry_at=0.
@@ -73,7 +79,7 @@ class OakSurroundings:
         self.process_enabled=enabled
         if not subscribed or not enabled:
             self._close_worker()
-        elif self.geometry_worker is None and time.monotonic() >= self.worker_retry_at:
+        elif GeometryWorker is not None and self.geometry_worker is None and time.monotonic() >= self.worker_retry_at:
             try:
                 self.geometry_worker=GeometryWorker()
                 log.info('OAK geometry process started pid=%d',self.geometry_worker.process.pid)

@@ -3,6 +3,7 @@
 import math
 from math import radians, copysign, sqrt, pow
 from math import pi
+RAD2DEG = 180 / pi
 import numpy as np
 #rclpy
 import rclpy

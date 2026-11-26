@@ -410,6 +410,13 @@ class NavigationFSM:
 
         # B. Map Navigation (Fallback)
         else:
+             # Distance/bearing to the persistent goal from odometry (same
+             # convention as the global pure-pursuit path below).
+             dx = self.goal_x - self.current_x
+             dy = self.goal_y - self.current_y
+             map_dist = float(np.hypot(dx, dy))
+             map_bearing = np.arctan2(dy, dx) - self.current_theta
+             map_bearing = (map_bearing + np.pi) % (2 * np.pi) - np.pi
              time_since_loss = time.time() - self.target_lost_time if self.target_lost_time > 0 else 0
              if time_since_loss > self.COAST_TIME_LIMIT:
                  print(f"  🙈 Blind Nav: MapDist={map_dist:.1f}cm, MapBear={np.degrees(map_bearing):.1f}°")
