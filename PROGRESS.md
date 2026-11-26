@@ -5,6 +5,18 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-26 — Reality view: look-alike furniture from OAK color points (Codex)
+
+**Problem:** Furniture showed as generic stand-ins even though the OAK sees the real objects.
+
+**Potential solution:** Fuse OAK colored points inside each confirmed landmark's box into an object-local voxel model and show it once seen from enough sides.
+
+**Work done:** `reality-lookalike.js` (2.5 cm object-frame grid, running colour, 4000-voxel cap, floor and people masked, 8 view sectors, viewpoint proposals for missing sectors, not wired to Nav2). Models ride the session landmark messages; `_clean_landmarks` validates them (<= 37 KB each). Built by Codex gpt-6.2-astra on `t3/reality-lookalike-models` (d60e20a), reviewed and fast-forwarded here.
+
+**Results:** Five `tests/web/reality_*.cjs` checks and `tests/web/reality_cleaner_check.py` pass; ~1.1 ms/frame median for 5 objects on the laptop. Shown after 64 repeat-seen voxels from >= 2 sectors. Not yet seen live.
+
+---
+
 ## 2026-11-26 — Reality view: occupancy-map wall overlay removed
 
 **Problem:** The saved-map wall overlay drew every occupied map pixel row as an extruded box, giving thick stair-stepped walls that did not match the live scan (screenshot, apartment).
