@@ -492,7 +492,96 @@
         return out;
     }
 
-    function furnitureSurfaces(cells) {
+    const angleDelta = (a, b, symmetry = 1) => Math.atan2(Math.sin(symmetry * (a - b)), Math.cos(symmetry * (a - b))) / symmetry;
+    const percentile = (sorted, f) => sorted[Math.floor(f * (sorted.length - 1))];
+
+    // Fit the observed tabletop, without the orientation bias of the 12 cm
+    // segmentation grid. Trim isolated returns and reject narrow edge strips.
+    function tableYaw(points, rect, walls) {
+        if (points.length < 12) return null;
+        const along = new Float64Array(points.length), depth = new Float64Array(points.length);
+        function bounds(yaw) {
+            const c = Math.cos(yaw), s = Math.sin(yaw);
+            for (let i = 0; i < points.length; i++) {
+                const {x,y} = points[i];
+                along[i] = c*x+s*y;
+                depth[i] = -s*x+c*y;
+            }
+            along.sort();
+            depth.sort();
+            const L = percentile(along,.98)-percentile(along,.02);
+            const D = percentile(depth,.98)-percentile(depth,.02);
+            return {yaw,L,D,area:L*D};
+        }
+        let best = bounds(rect.yaw);
+        for (let deg = 0; deg < 90; deg += 3) {
+            const candidate = bounds(deg*Math.PI/180);
+            if (candidate.area < best.area) best = candidate;
+        }
+        // A nearby measured wall can remove a few degrees of voxel noise when
+        // the tabletop independently supports the same grid.
+        let closest = .75, wallYaw;
+        for (const wall of walls) {
+            const dx = wall.x1-wall.x0, dy = wall.y1-wall.y0, len = Math.hypot(dx,dy);
+            if (len < 1) continue;
+            const u = clamp(((rect.x-wall.x0)*dx+(rect.y-wall.y0)*dy)/(len*len),[0,1]);
+            const distance = Math.hypot(rect.x-wall.x0-u*dx,rect.y-wall.y0-u*dy);
+            if (distance < closest) { closest = distance; wallYaw = Math.atan2(dy,dx); }
+        }
+        if (wallYaw !== undefined && Math.abs(angleDelta(wallYaw,best.yaw,4)) < 8*Math.PI/180) {
+            const aligned = bounds(wallYaw);
+            if (aligned.area <= 1.025*best.area) best = aligned;
+        }
+        const L = Math.max(best.L,best.D), D = Math.min(best.L,best.D);
+        if (D < .23 || L < .45) return null;
+        return {yaw:best.yaw+(best.D>best.L ? Math.PI/2 : 0),
+            weight:Math.min(1,D/.45), aspect: L/D};
+    }
+
+    // The mesh back is on +depth. Derive its axis from the raised points and
+    // its sign from the observed seat on the opposite side of that line.
+    function seatYaw(points, seat, kind) {
+        if (points.length < 9) return null;
+        const couch = kind === 'couch';
+        const z = points.map(p => p.z).sort((a,b)=>a-b);
+        const cutoff = couch ? Math.max(seat+.21,percentile(z,.92)-.14) : seat+.17;
+        const high = points.filter(p => p.z >= cutoff && p.z < 1.16);
+        if (high.length < 5) return null;
+        const mx = high.reduce((sum,p)=>sum+p.x,0)/high.length;
+        const my = high.reduce((sum,p)=>sum+p.y,0)/high.length;
+        let xx=0,xy=0,yy=0;
+        for (const p of high) {
+            const x=p.x-mx, y=p.y-my;
+            xx+=x*x; xy+=x*y; yy+=y*y;
+        }
+        if (Math.hypot(xx-yy,2*xy) < .7*(xx+yy)) return null;
+        const yaw = .5*Math.atan2(2*xy,xx-yy), c = Math.cos(yaw), s = Math.sin(yaw);
+        const along = high.map(p => c*(p.x-mx)+s*(p.y-my)).sort((a,b)=>a-b);
+        const span = percentile(along,.95)-percentile(along,.05);
+        if (span < (couch ? .52 : .20)) return null;
+        const opening = couch ? .18 : .09;
+        const across = [];
+        let neg = 0, pos = 0;
+        for (const p of points) {
+            if (Math.abs(p.z-seat) > .10) continue;
+            const x=p.x-mx, y=p.y-my;
+            const depth = -s*x+c*y;
+            across.push(depth);
+            if (Math.abs(c*x+s*y) > span/2+.07) continue;
+            if (depth < -opening) neg++;
+            if (depth > opening) pos++;
+        }
+        if (Math.max(neg,pos) < 4 || Math.max(neg,pos) < 3*Math.min(neg,pos)) return null;
+        if (couch) {
+            // A tall arm can also look like a backrest. Its perpendicular
+            // seat span is the couch's width, beyond the plausible depth.
+            across.sort((a,b)=>a-b);
+            if (percentile(across,.95)-percentile(across,.05) > SIZE.couch.d[1]) return null;
+        }
+        return {yaw:yaw+(pos>neg ? Math.PI : 0), weight:Math.min(1,span/(couch ? .85 : .34))};
+    }
+
+    function furnitureSurfaces(cells, yawWalls = null) {
         const step = .12;
         const grid = new Map();
         const key = (i,j) => i+','+j;
@@ -592,6 +681,7 @@
                         && rect.corner !== undefined && rect.corner < .02;
                     if (lowTable) {
                         output.push({kind:'table',...rect,H:level,low:true,round,support:patch.length});
+                        if (yawWalls) output[output.length-1].yawPatch = patch;
                         continue;
                     }
                     const backHeights = kind==='chair'
@@ -599,18 +689,68 @@
                     if (kind==='chair' && !backHeights.length) continue;
                     const height = kind==='chair' ? backHeights[Math.floor(.9*backHeights.length)] : level;
                     output.push({kind,...rect,H:height,seat:level,support:patch.length,...(kind==='table'?{round}:{})});
+                    if (yawWalls) output[output.length-1].yawPatch = patch;
                 }
             }
         }
         const selected=[];
         for (const o of output.sort((a,b)=>b.support-a.support)) {
-            if (!selected.some(q=>furnitureOverlap(q,o))) selected.push(o);
+            if (selected.some(q=>furnitureOverlap(q,o))) continue;
+            if (o.yawPatch) {
+                const points = o.yawPatch.flatMap(col=>col.pts);
+                const level = o.seat ?? o.H;
+                o.yawFit = o.kind === 'chair' ? seatYaw(points,level,o.kind)
+                    : o.round ? null : tableYaw(points.filter(p=>Math.abs(p.z-level)<.033),o,yawWalls);
+                delete o.yawPatch;
+            }
+            selected.push(o);
         }
         return selected;
     }
 
     // Object tracks persist across calls (odom frame).
-    function Tracker() { this.tracks = []; this.nextId = 1; }
+    function Tracker({furnitureYawV2 = false} = {}) {
+        this.tracks = []; this.nextId = 1; this.furnitureYawV2 = furnitureYawV2;
+    }
+
+    function observeFurnitureYaw(track, fit, pose, nowS) {
+        if (!fit || track.round) return;
+        // Store heading and observation bearing in the map (or odom) frame.
+        // Cap the influence of a single view, even during a long stationary run.
+        const bearing = Math.atan2(pose.y-track.Y,pose.x-track.X);
+        const sector = Math.floor((bearing+Math.PI)/(Math.PI/4)) % 8;
+        const sample = {...fit, yaw:fit.yaw+pose.theta, sector, time:nowS};
+        const samples = (track.headingSamples || []).filter(f=>nowS-f.time <= 8).slice(-15);
+        samples.push(sample);
+        track.headingSamples = samples;
+        const settled = track.headingAccepted || track.restored;
+        if (samples.length < (settled ? 8 : 3)) return;
+        const counts = new Array(8).fill(0);
+        for (const f of samples) counts[f.sector]++;
+        const table = track.kind === 'table', symmetry = table ? 4 : 1;
+        let x=0,y=0,total=0,axisX=0,axisY=0,axisWeight=0;
+        for (const f of samples) {
+            const w = f.weight*Math.min(1,4/counts[f.sector]);
+            x+=w*Math.cos(symmetry*f.yaw); y+=w*Math.sin(symmetry*f.yaw); total+=w;
+            if (table && f.aspect > 1.22) {
+                axisX+=w*Math.cos(2*f.yaw); axisY+=w*Math.sin(2*f.yaw); axisWeight+=w;
+            }
+        }
+        if (Math.hypot(x,y) < (settled ? .88 : .8)*total) return;
+        const mean = Math.atan2(y,x)/symmetry;
+        let delta = angleDelta(mean,track.yaw,symmetry);
+        // For a rectangular top, assign length to the consistently longer axis.
+        // Square or clipped tops can still vote on the common pair of axes.
+        if (axisWeight >= total*.65 && Math.hypot(axisX,axisY) >= .85*axisWeight) {
+            const major = Math.atan2(axisY,axisX)/2;
+            delta = angleDelta(major+angleDelta(mean,major,4),track.yaw,2);
+        }
+        if (settled && Math.abs(delta) < 7*Math.PI/180) return;
+        track.yaw += delta;
+        track.headingAccepted = true;
+        // Lookalike voxels are stored in the old box's local coordinates.
+        if (Math.abs(delta) > 1e-6) track.model = null;
+    }
 
     Tracker.prototype.update = function (cells, cols, wallUsed, dets, pose, nowS, frame = {}) {
         const c = Math.cos(pose.theta), s = Math.sin(pose.theta);
@@ -619,7 +759,9 @@
         const low = cells.filter(q => q.z > 0.03 && !wallUsed.has(colKey(q.x, q.y)) &&
                                      (cols.get(colKey(q.x, q.y))?.top ?? 0) < WALL_TOP + 0.4);
         const matched = new Set();
-        const surfaces = frame.xyz ? furnitureSurfaces(cells) : [];
+        const newHeadingCloud = this.furnitureYawV2 && frame.observationPose !== null
+            && frame.xyz && frame.xyz !== this.lastHeadingCloud;
+        const surfaces = frame.xyz ? furnitureSurfaces(cells,newHeadingCloud ? frame.walls || [] : null) : [];
         const claimed = new Set();
         for (const det of dets || []) {
             const kind = KINDS[String(det.label || '').toLowerCase()];
@@ -664,29 +806,40 @@
                 claimed.add(surface);
                 ({x:cx,y:cy,L,D,H,yaw}=surface);
             }
+            const yawV2 = this.furnitureYawV2 && (kind === 'table' || kind === 'chair' || kind === 'couch');
+            let yawFit = surface?.yawFit;
+            if (yawV2 && newHeadingCloud && !surface) {
+                const fresh = near.filter(q=>!(q.age > 1.5));
+                if (kind === 'table') {
+                    yawFit = tableYaw(fresh.filter(q=>Math.abs(q.z-(H-.03)) < .065),
+                        {x:cx,y:cy,yaw},frame.walls || []);
+                } else yawFit = seatYaw(fresh,.44,kind);
+            }
             const [X, Y] = toOdom(cx, cy), Yaw = yaw + pose.theta;
             let t = this.tracks.filter(t => !matched.has(t) && t.kind === kind && Math.hypot(t.X - X, t.Y - Y) < OBJ_MATCH_M)
                 .sort((a,b) => Math.hypot(a.X-X,a.Y-Y) - Math.hypot(b.X-X,b.Y-Y))[0];
             if (!t) { t = { id: this.nextId++, kind, X, Y, yaw: Yaw, L, D, H, seen: nowS, hits: 0 }; this.tracks.push(t); }
             t.inferred = false;
             if (surface) t.seat = surface.seat;
+            if (yawV2 && surface && kind === 'table') t.round = surface.round;
             matched.add(t);
+            if (yawV2 && newHeadingCloud) observeFurnitureYaw(t,yawFit,pose,nowS);
             if (frame.detectionStamp != null && t.stamp === frame.detectionStamp) continue;
             t.stamp = frame.detectionStamp;
             t.misses = 0;
             const k = OBJ_SMOOTH;
             t.X += k * (X - t.X); t.Y += k * (Y - t.Y);
-            // Box yaw is symmetric by pi: move the shorter way.
-            let dyaw = Yaw - t.yaw; dyaw = Math.atan2(Math.sin(2 * dyaw), Math.cos(2 * dyaw)) / 2;
-            // Confirmed tracks keep their heading (see TURN_DEG in the lidar path).
-            const settled = t.hits >= LANDMARK_HITS && t.measuredHeading;
-            if (surface && kind==='chair') {
-                if (!t.measuredHeading) t.yaw=Yaw;
-                else if (!settled) t.yaw+=k*Math.atan2(Math.sin(Yaw-t.yaw),Math.cos(Yaw-t.yaw));
-                t.measuredHeading=true;
-            } else if (!settled && (surface || !frame.mapped || t.hits < 3)) {
-                t.yaw += k * dyaw;
-                if (t.hits + 1 >= LANDMARK_HITS) t.measuredHeading = true;
+            if (!yawV2) {
+                // Confirmed tracks keep their heading (see TURN_DEG in the lidar path).
+                const settled = t.hits >= LANDMARK_HITS && t.measuredHeading;
+                if (surface && kind==='chair') {
+                    if (!t.measuredHeading) t.yaw=Yaw;
+                    else if (!settled) t.yaw+=k*angleDelta(Yaw,t.yaw);
+                    t.measuredHeading=true;
+                } else if (!settled && (surface || !frame.mapped || t.hits < 3)) {
+                    t.yaw += k * angleDelta(Yaw,t.yaw,2);
+                    if (t.hits + 1 >= LANDMARK_HITS) t.measuredHeading = true;
+                }
             }
             if (kind === 'tv' && Number.isFinite(p.z)) {
                 H = clamp(L * 9 / 16, sz.h);
@@ -709,9 +862,17 @@
                     (!t.inferred && furnitureOverlap(box,{kind:t.kind,x:t.X,y:t.Y,yaw:t.yaw,L:t.L,D:t.D}))))
                 .sort((a,b)=>Number(a.inferred)-Number(b.inferred) || Math.hypot(a.X-X,a.Y-Y)-Math.hypot(b.X-X,b.Y-Y));
             const t = nearby[0];
-            if (t && ((!t.inferred && !t.lidarOnly) || matched.has(t))) continue;
+            if (t && matched.has(t)) continue;
+            if (t && !t.inferred && !t.lidarOnly) {
+                if (newHeadingCloud && o.yawFit) {
+                    observeFurnitureYaw(t,o.yawFit,pose,nowS);
+                    matched.add(t);
+                }
+                continue;
+            }
             if (!t) {
                 const track = {...o,X,Y,yaw,id:this.nextId++,hits:1,seen:nowS,first:nowS,inferred:true};
+                if (newHeadingCloud) observeFurnitureYaw(track,o.yawFit,pose,nowS);
                 this.tracks.push(track);
                 matched.add(track);
             } else if (frame.xyz !== this.lastCloud) {
@@ -732,13 +893,15 @@
                 const measured = {...o, L:mL, D:mD};
                 for (const key of ['H','L','D','seat']) if (Number.isFinite(measured[key])) t[key]+=k*(measured[key]-t[key]);
                 if (o.kind==='table') t.round = o.round;
-                if (t.inferred) {
+                if (t.inferred && !this.furnitureYawV2) {
                     // Remember each fit's heading (folded onto the track's) so the
                     // heading at confirmation is the average, not the last noisy fit.
                     (t.yawFits ||= []).push(t.yaw + delta);
                     if (t.yawFits.length > 40) t.yawFits.shift();
                 }
-                if (t.round) {
+                if (this.furnitureYawV2) {
+                    if (newHeadingCloud) observeFurnitureYaw(t,o.yawFit,pose,nowS);
+                } else if (t.round) {
                     // A round top has no heading.
                 } else if (t.inferred) {
                     t.yaw += kYaw*delta;
@@ -759,6 +922,9 @@
                     }
                     t.yawFits = null;
                 }
+            } else if (newHeadingCloud && o.yawFit) {
+                observeFurnitureYaw(t,o.yawFit,pose,nowS);
+                matched.add(t);
             }
         }
         this.tracks = this.tracks.filter(t => {
@@ -774,6 +940,7 @@
             return !(t.misses >= 3);
         });
         this.lastCloud = frame.xyz;
+        if (newHeadingCloud) this.lastHeadingCloud = frame.xyz;
         const candidates = this.tracks.filter(t => !t.inferred && t.hits >= 2).map(t => {
             const [x, y] = toBase(t.X, t.Y);
             return { id: t.id, kind: t.kind, x, y, yaw: t.yaw - pose.theta, L: t.L, D: t.D, H: t.H,
@@ -858,14 +1025,35 @@
     function analyze(cells, dets, pose, tracker, nowS, frame = {}) {
         const cols = columns(cells);
         const { segs, used } = fitWalls(cols);
-        const objects = pose && tracker ? tracker.update(cells, cols, used, dets, pose, nowS, {...frame, walls: segs}) : [];
+        let objects = [], yaw = 0;
+        let project = q=>q;
+        if (pose && tracker) {
+            const observed = tracker.furnitureYawV2 ? frame.observationPose || pose : pose;
+            if (observed !== pose) {
+                yaw = observed.theta - pose.theta;
+                const c=Math.cos(yaw), s=Math.sin(yaw);
+                const dx=observed.x-pose.x, dy=observed.y-pose.y;
+                const pc=Math.cos(pose.theta), ps=Math.sin(pose.theta);
+                const tx=pc*dx+ps*dy, ty=-ps*dx+pc*dy;
+                project = q=>({...q,x:tx+c*q.x-s*q.y,y:ty+s*q.x+c*q.y});
+                dets = (dets || []).map(det=>{
+                    const q=det.xyz_base_m;
+                    if (!q) return det;
+                    const x=q.x-tx, y=q.y-ty;
+                    return {...det,xyz_base_m:{...q,x:c*x+s*y,y:-s*x+c*y}};
+                });
+            }
+            objects = tracker.update(cells,cols,used,dets,observed,nowS,{...frame,walls:segs});
+            if (observed !== pose) objects = objects.map(o=>({...project(o),yaw:o.yaw+yaw}));
+        }
         const walls = frame.wallHistory ? frame.wallHistory.update(frame.xyz, frame.wallPose, nowS) : segs;
         const doorways = frame.wallHistory ? frame.wallHistory.doorways(walls,frame.xyz,nowS) : [];
         return {
             walls, doorways, objects,
             hidden(q) {
                 if (!frame.wallHistory && !frame.mapWalls && used.has(colKey(q.x, q.y))) return true;
-                for (const o of objects) if (!o.inferred && inside(o, q, 0.06)) return true;
+                const p = project(q);
+                for (const o of objects) if (!o.inferred && inside(o, p, 0.06)) return true;
                 return false;
             },
         };

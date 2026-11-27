@@ -440,14 +440,23 @@ window.RealityMode = (() => {
                 ? `${rows.length} objects${copied ? ' (copied to clipboard)' : ' (copy failed: select the text below, or see the browser console)'}:\n` + text
                 : 'No confirmed furniture yet (needs a loaded map and Reality view on).');
         };
-        let structTracker = window.RealityStructure ? new RealityStructure.Tracker() : null;
+        function furnitureYawEnabled() {
+            const value = new URLSearchParams(window.location?.search).get('furnitureYawV2');
+            if (value === '1' || value === '0') {
+                try { localStorage.setItem('furnitureYawV2',value); } catch { /* Storage can be disabled. */ }
+                return value === '1';
+            }
+            try { return localStorage.getItem('furnitureYawV2') === '1'; } catch { return false; }
+        }
+        const furnitureYawV2 = furnitureYawEnabled();
+        let structTracker = window.RealityStructure ? new RealityStructure.Tracker({furnitureYawV2}) : null;
         let wallHistory = window.RealityStructure && new RealityStructure.WallHistory();
         let structOn = false;
         function analyzeStructure(cells, dets, d, mapName, xyz, nowMs, cloudPose, oakPose, people=[]) {
             const mapped = !!(mapName && d.robotPoseMap);
             const key = mapName || null;
             if (key !== roomKey && structTracker) {
-                structTracker = new RealityStructure.Tracker();
+                structTracker = new RealityStructure.Tracker({furnitureYawV2});
                 roomKey = key;
                 wallHistory = new RealityStructure.WallHistory();
                 landmarksPutAt = nowMs;      // let the server copy arrive before overwriting it
@@ -457,10 +466,24 @@ window.RealityMode = (() => {
             if (!structTracker) return null;
             const pose = odomPoseCm && [odomPoseCm.x, odomPoseCm.y, odomPoseCm.theta].every(Number.isFinite)
                 ? { x: odomPoseCm.x / 100, y: odomPoseCm.y / 100, theta: odomPoseCm.theta } : null;
+            // A cloud can arrive before its pose. Hold yaw evidence until the
+            // pair is available, then the same cloud can contribute once.
+            let observationPose = null;
+            if (furnitureYawV2 && pose && cloudPose && [cloudPose.x,cloudPose.y,cloudPose.yaw].every(Number.isFinite)) {
+                if (!mapped) observationPose = {x:cloudPose.x,y:cloudPose.y,theta:cloudPose.yaw};
+                else if (d.robotPose && [d.robotPose.x,d.robotPose.y,d.robotPose.theta].every(Number.isFinite)) {
+                    // The cloud pose arrives in odom. Apply the readout's map <- odom
+                    // transform before fitting it into the map-frame furniture tracks.
+                    const yaw = pose.theta - d.robotPose.theta;
+                    const c=Math.cos(yaw), s=Math.sin(yaw);
+                    const x=cloudPose.x-d.robotPose.x/100, y=cloudPose.y-d.robotPose.y/100;
+                    observationPose = {x:pose.x+c*x-s*y,y:pose.y+s*x+c*y,theta:cloudPose.yaw+yaw};
+                }
+            }
             const st = RealityStructure.analyze(cells, dets, pose, structTracker, nowMs / 1000,
                 {mapped, wallHistory,
                  wallPose: cloudPose || (d.robotPose && {x:d.robotPose.x/100, y:d.robotPose.y/100, yaw:d.robotPose.theta}),
-                 xyz, detectionStamp: d.oakDetectionsAt});
+                 xyz, detectionStamp: d.oakDetectionsAt, observationPose});
             if (mapped && pose) {
                 const cabinet = cabinets.get(mapName);
                 if (cabinet) {
@@ -590,6 +613,7 @@ window.RealityMode = (() => {
 
         return {
             analyzeStructure,
+            furnitureYawV2,
             // persons: [{x, z, sx, sz, path?}] in scene coordinates (m, m/s)
             update(enabled, d, nav, now, persons, structure = true) {
                 applyTheme(enabled);

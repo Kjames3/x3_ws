@@ -311,7 +311,8 @@
         }
         const useMemory = memoryEnabled && pose && memoryCloud === d.surroundingsCloud;
         const structureOn = realityOn && document.getElementById('surroundings-reality-structure')?.checked;
-        const options = `${mode}/${voxelSize}/${overlay}/${height}/${useMemory}/${coverage}/${surroundingsMemory.revision}/${realityOn}/${structureOn}`;
+        const yawPoseReady = structureOn && reality?.furnitureYawV2 && !!pose;
+        const options = `${mode}/${voxelSize}/${overlay}/${height}/${useMemory}/${coverage}/${surroundingsMemory.revision}/${realityOn}/${structureOn}/${yawPoseReady}`;
         floorTiles.visible = !!fresh && coverage && !!useMemory;
         if (!realityOn) floorBase.material.color.setHex(coverage ? 0xd6d9de : 0xf8f9fa);
         cloud.visible = !!fresh && mode === 'raw';
