@@ -3273,8 +3273,8 @@ def initialize_hardware():
     global person_paths
     try:
         import person_paths as _pp_mod
-        person_paths = _pp_mod.from_env(args.traj_model or str(
-            Path(__file__).resolve().parent.parent / 'config' / 'traj_gru_deploy.npz'), log=logger)
+        person_paths = _pp_mod.from_env(os.environ.get('X3_PERSON_PATH_MODEL') or str(
+            Path(__file__).resolve().parent.parent / 'config' / 'traj_gru_person_paths.npz'), log=logger)
         if person_paths is not None:
             logger.info("Person paths for the GUI: %s", person_paths.mode)
     except Exception as e:

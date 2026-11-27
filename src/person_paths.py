@@ -20,7 +20,10 @@ Modes
   ctrv  constant speed with a turn rate fitted over the last second of
         history, decaying with time constant TAU_S so it bends without
         spiralling; straight when the turn evidence is weak
-  gru   config/traj_gru_deploy.npz (traj_predictor.NumpyTrajGRU), batched
+  gru   a traj_predictor.NumpyTrajGRU, batched. server_x3 loads
+        config/traj_gru_person_paths.npz (trained 2026-11-27 on Livox + C3 tracks
+        from the runs before 2026-11-10; X3_PERSON_PATH_MODEL overrides), with
+        its path shape smoothed over SMOOTH_S so it does not wag
 
 Every mode works in the ODOM frame: histories are odom positions, so the
 robot's own motion does not look like the person turning.
@@ -54,8 +57,14 @@ CTRV = dict(
     shrink=0.5,         # multiply the fitted rate (outside sustained circling,
                         # recent turning barely predicts the next 2 s)
 )
-FAN_SE = 0.25           # rad/s: show alternatives when the turn-rate std error exceeds this
+FAN_W = 0.4             # rad/s: show alternatives when the person is visibly turning (|fitted
+                        # rate| above this) ... direction precision is ~50 % outside circling
+FAN_SE = 0.25           # ... or when the turn-rate std error exceeds this
 FAN_DW = 0.6            # rad/s: alternative bends at +-FAN_DW around the main path
+# Per mode: path-shape smoothing time constant (s). 0.15 for the GRU, chosen on the TUNE
+# runs as the smallest value bringing its frame-to-frame wag of the 2 s endpoint
+# under 1.4x unsmoothed cv's (0.124 -> 0.083 m vs cv 0.081; FDE@2s +3 %).
+SMOOTH_S = {"gru": 0.15}
 SIGMA0, SIGMA_K = 0.08, 0.22   # heuristic spread for cv / ctrv: s0 + k * t * speed
 
 
@@ -127,10 +136,13 @@ def bend_path(path, times, dw, tau):
 
 
 class PersonPaths:
-    def __init__(self, mode, model_path=None, horizon_s=HORIZON_S, n_points=N_POINTS, ctrv=None):
+    def __init__(self, mode, model_path=None, horizon_s=HORIZON_S, n_points=N_POINTS, ctrv=None,
+                 smooth_s=None):
         if mode not in MODES or mode == "off":
             raise ValueError("mode must be one of cv, ctrv, gru")
         self.mode = mode
+        self.smooth_s = SMOOTH_S.get(mode, 0.0) if smooth_s is None else smooth_s
+        self._smooth = {}        # key -> (obs stamp, path relative to p0)
         self.p = dict(CTRV, **(ctrv or {}))
         self.times = np.linspace(0.0, horizon_s, n_points)
         self.dt = 1.0 / RATE_HZ
@@ -168,6 +180,7 @@ class PersonPaths:
                   if not q or now - self._seen.get(k, q[-1][0]) > STALE_S]:
             del self._obs[k]
             self._seen.pop(k, None)
+            self._smooth.pop(k, None)
 
     def history(self, key):
         q = self._obs.get(key)
@@ -190,7 +203,7 @@ class PersonPaths:
             speed = math.hypot(vx, vy)
             hist = self.history(key)
             w, se = turn_rate(hist, self.dt, self.p) if hist is not None else (0.0, math.inf)
-            r = dict(p0=p0, speed=speed, w_fit=w, se=se, used_hist=hist is not None, w=0.0)
+            r = dict(p0=p0, speed=speed, w_fit=w, se=se, used_hist=hist is not None, w=0.0, t=q[-1][0], key=key)
             if self.mode == "ctrv":
                 r["w"] = gated_rate(w, se, self.p)
             r["path"] = ctrv_path(p0, v0, r["w"], self.times, self.p["tau_s"])
@@ -214,10 +227,30 @@ class PersonPaths:
                 if sig is not None:
                     r["sigma"] = np.interp(self.times, ft, np.concatenate([[sig[i, 0]], sig[i]]))
         for r in out.values():
+            self._smooth_path(r)
             r["alts"] = []
-            if self.mode != "cv" and r["used_hist"] and r["speed"] > 0.3 and r["se"] > FAN_SE:
+            if self.mode != "cv" and r["used_hist"] and r["speed"] > 0.3 and (
+                    abs(r["w_fit"]) > FAN_W or r["se"] > FAN_SE):
                 r["alts"] = [bend_path(r["path"], self.times, d, self.p["tau_s"]) for d in (FAN_DW, -FAN_DW)]
         return out
+
+    def _smooth_path(self, r):
+        """Exponential smoothing of the path shape (relative to the person) over
+        observations, time constant smooth_s. Repeated calls on the same
+        observation return the same path, so the 20 Hz telemetry loop re-reading a
+        10-15 Hz tracker does not smooth twice."""
+        if self.smooth_s <= 0:
+            return
+        rel = r["path"] - r["p0"]
+        prev = self._smooth.get(r["key"])
+        if prev is not None:
+            dt = r["t"] - prev[0]
+            if dt <= 0:
+                rel = prev[1]
+            elif dt < GAP_S:
+                rel = prev[1] + (1.0 - math.exp(-dt / self.smooth_s)) * (rel - prev[1])
+        self._smooth[r["key"]] = (r["t"], rel)
+        r["path"] = r["p0"] + rel
 
     # ---- server hook -------------------------------------------------------
     def annotate(self, tracks, source, pose, now=None, stamp_key=None):

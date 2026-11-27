@@ -13,10 +13,13 @@
 //           red = blind (stale obstacles), grey = 3D-sweep hold.
 //   intent: per moving person, the predicted path for TRAIL_S as a floor
 //           ribbon that widens with uncertainty and fades, with a ring at the
-//           predicted spot. Constant velocity for now; an entry carrying
+//           predicted spot. Constant velocity by default; an entry carrying
 //           `path` (scene [x, z] points, one per TRAIL_S/(N-1) s) is drawn
-//           as given, so GRU predictions can drop in. Amber normally, red
-//           when the predicted path passes within CONFLICT_M of the robot.
+//           as given. With `curved` set (GUI ?curvedIntent=1 and server
+//           X3_PERSON_PATH=ctrv|gru) the path is drawn as a spline through
+//           its points, widened by `sigma`, with `alts` as a faint fan of
+//           alternative turns. Amber normally, red when the predicted path
+//           passes within CONFLICT_M of the robot.
 //   struct: RealityStructure (reality-structure.js) output: fitted wall
 //           segments as flat panels with a lit top edge, and furniture
 //           stand-ins (low-poly, built here, scaled to the lidar box).
@@ -125,18 +128,22 @@ window.RealityMode = (() => {
         scene.add(shieldGroup);
 
         // ---- intent trails + person halos ----------------------------------
+        // Geometry holds TRAIL_R vertex pairs; a straight trail uses the first
+        // TRAIL_N (exactly the old ribbon), a curved one (?curvedIntent=1, server
+        // X3_PERSON_PATH) a centripetal Catmull-Rom resample of its points.
+        const TRAIL_SUB = 3, TRAIL_R = (TRAIL_N - 1) * TRAIL_SUB + 1, FAN_N = 2;
         const trailIdx = [];
-        for (let i = 0; i < TRAIL_N - 1; i++) { const a = 2 * i; trailIdx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+        for (let i = 0; i < TRAIL_R - 1; i++) { const a = 2 * i; trailIdx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
         const trailVert = `
             attribute float u; attribute float side; varying float vU; varying float vSide;
             void main(){ vU = u; vSide = side;
                 gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`;
         const trailFrag = `
-            uniform float time; uniform vec3 color; varying float vU; varying float vSide;
+            uniform float time; uniform vec3 color; uniform float strength; varying float vU; varying float vSide;
             void main(){
                 float edge = 1.0 - smoothstep(0.35, 1.0, abs(vSide));
                 float dash = smoothstep(0.0, 0.2, fract(vU * 6.0 - time * 1.5)) * 0.5 + 0.5;
-                float a = pow(1.0 - vU, 1.3) * edge * dash * 0.8;
+                float a = pow(1.0 - vU, 1.3) * edge * dash * 0.8 * strength;
                 gl_FragColor = vec4(color, a);
             }`;
         const markerFrag = `
@@ -156,26 +163,96 @@ window.RealityMode = (() => {
             scene.add(m);
             return m;
         }
-        const trails = [];
-        for (let k = 0; k < MAX_TRAILS; k++) {
+        function ribbonMesh(color, strength) {
             const g = new THREE.BufferGeometry();
-            g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(TRAIL_N * 6), 3));
-            const u = new Float32Array(TRAIL_N * 2), sd = new Float32Array(TRAIL_N * 2);
-            for (let i = 0; i < TRAIL_N; i++) { u[2*i] = u[2*i+1] = i / (TRAIL_N - 1); sd[2*i] = 1; sd[2*i+1] = -1; }
+            g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(TRAIL_R * 6), 3));
+            const u = new Float32Array(TRAIL_R * 2), sd = new Float32Array(TRAIL_R * 2);
+            for (let i = 0; i < TRAIL_R; i++) { sd[2*i] = 1; sd[2*i+1] = -1; }
             g.setAttribute('u', new THREE.BufferAttribute(u, 1));
             g.setAttribute('side', new THREE.BufferAttribute(sd, 1));
             g.setIndex(trailIdx);
-            const color = { value: new THREE.Color(TRAIL_COLORS.normal) };
             const mesh = new THREE.Mesh(g, new THREE.ShaderMaterial({
-                uniforms: { time, color }, vertexShader: trailVert, fragmentShader: trailFrag,
+                uniforms: { time, color, strength: { value: strength } },
+                vertexShader: trailVert, fragmentShader: trailFrag,
                 transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }));
-            mesh.frustumCulled = false; mesh.visible = false;
+            mesh.frustumCulled = false; mesh.visible = false; mesh.userData.n = 0;
             scene.add(mesh);
-            trails.push({ mesh, color, end: marker(TRAIL_COLORS.normal, 0.9, 0.42),
+            return mesh;
+        }
+        const trails = [];
+        for (let k = 0; k < MAX_TRAILS; k++) {
+            const color = { value: new THREE.Color(TRAIL_COLORS.normal) };
+            const fanColor = { value: new THREE.Color(TRAIL_COLORS.normal) };
+            trails.push({ mesh: ribbonMesh(color, 1.0), color, fanColor,
+                          fan: Array.from({ length: FAN_N }, () => ribbonMesh(fanColor, 0.45)),
+                          end: marker(TRAIL_COLORS.normal, 0.9, 0.42),
                           halo: marker(0x67e8f9, 0.55, 0.9) });
         }
         function hideTrails(from) {
-            for (let k = from; k < MAX_TRAILS; k++) trails[k].mesh.visible = trails[k].end.visible = trails[k].halo.visible = false;
+            for (let k = from; k < MAX_TRAILS; k++) {
+                const t = trails[k];
+                t.mesh.visible = t.end.visible = t.halo.visible = false;
+                for (const f of t.fan) f.visible = false;
+            }
+        }
+        // Centripetal Catmull-Rom through pts (each [x, z]), TRAIL_SUB samples per
+        // span; widths (one per point) interpolated linearly. Ends are extended by
+        // reflection so the curve starts at the person and ends at the last point.
+        function splineResample(pts, widths) {
+            const n = pts.length, out = [], ow = [];
+            const P = i => i < 0 ? [2 * pts[0][0] - pts[1][0], 2 * pts[0][1] - pts[1][1]]
+                : i >= n ? [2 * pts[n-1][0] - pts[n-2][0], 2 * pts[n-1][1] - pts[n-2][1]] : pts[i];
+            const knot = (a, b) => Math.max(Math.sqrt(Math.hypot(b[0] - a[0], b[1] - a[1])), 1e-4);
+            for (let i = 0; i < n - 1; i++) {
+                const p0 = P(i - 1), p1 = P(i), p2 = P(i + 1), p3 = P(i + 2);
+                const t1 = knot(p0, p1), t2 = t1 + knot(p1, p2), t3 = t2 + knot(p2, p3);
+                for (let j = 0; j < TRAIL_SUB; j++) {
+                    const f = j / TRAIL_SUB, t = t1 + (t2 - t1) * f, pt = [0, 0];
+                    for (let c = 0; c < 2; c++) {
+                        const a1 = ((t1 - t) * p0[c] + t * p1[c]) / t1;
+                        const a2 = ((t2 - t) * p1[c] + (t - t1) * p2[c]) / (t2 - t1);
+                        const a3 = ((t3 - t) * p2[c] + (t - t2) * p3[c]) / (t3 - t2);
+                        const b1 = ((t2 - t) * a1 + t * a2) / t2;
+                        const b2 = ((t3 - t) * a2 + (t - t1) * a3) / (t3 - t1);
+                        pt[c] = ((t2 - t) * b1 + (t - t1) * b2) / (t2 - t1);
+                    }
+                    out.push(pt); ow.push(widths[i] + (widths[i + 1] - widths[i]) * f);
+                }
+            }
+            out.push(pts[n - 1]); ow.push(widths[n - 1]);
+            return [out, ow];
+        }
+        // Write a ribbon through pts (scene [x, z]) with full widths ws; returns the
+        // closest approach to the robot (scene origin).
+        function fillRibbon(mesh, pts, ws) {
+            const n = Math.min(pts.length, TRAIL_R);
+            const g = mesh.geometry, pos = g.attributes.position.array, u = g.attributes.u.array;
+            let minD = Infinity;
+            for (let i = 0; i < n; i++) {
+                const a = pts[Math.max(0, i - 1)], b = pts[Math.min(n - 1, i + 1)];
+                let tx = b[0] - a[0], tz = b[1] - a[1];
+                const tl = Math.hypot(tx, tz) || 1; tx /= tl; tz /= tl;
+                const w = ws[i] / 2;
+                const o = 6 * i;
+                pos[o] = pts[i][0] - tz * w; pos[o+1] = 0.014; pos[o+2] = pts[i][1] + tx * w;
+                pos[o+3] = pts[i][0] + tz * w; pos[o+4] = 0.014; pos[o+5] = pts[i][1] - tx * w;
+                u[2*i] = u[2*i+1] = i / (n - 1);
+                minD = Math.min(minD, Math.hypot(pts[i][0], pts[i][1]));
+            }
+            g.attributes.position.needsUpdate = true;
+            if (mesh.userData.n !== n) { g.attributes.u.needsUpdate = true; mesh.userData.n = n; }
+            g.setDrawRange(0, (n - 1) * 6);
+            return minD;
+        }
+        // Width from the server's sigma (1-sigma spread, m) when given: the same
+        // TRAIL_W0..TRAIL_W1 widening at a typical 2 s spread of 0.44 m, more or
+        // less as the prediction is less or more sure.
+        function widthsFor(n, sigma) {
+            return Array.from({ length: n }, (_, i) => {
+                if (sigma && sigma.length === n)
+                    return TRAIL_W0 + (TRAIL_W1 - TRAIL_W0) * Math.min(1.8, Math.max(0, (sigma[i] - sigma[0]) / 0.44));
+                return TRAIL_W0 + (TRAIL_W1 - TRAIL_W0) * i / (n - 1);
+            });
         }
         function updateIntent(persons) {
             let k = 0;
@@ -183,31 +260,34 @@ window.RealityMode = (() => {
                 if (k >= MAX_TRAILS) break;
                 const t = trails[k++];
                 t.halo.position.set(p.x, 0.008, p.z); t.halo.visible = true;
+                for (const f of t.fan) f.visible = false;
                 const speed = Math.hypot(p.sx, p.sz);
-                const path = p.path || (speed > MOVING_MPS ? Array.from({ length: TRAIL_N }, (_, i) => {
+                const curved = !!(p.curved && p.path && p.path.length >= 3);
+                const path = curved ? p.path : (p.path || (speed > MOVING_MPS ? Array.from({ length: TRAIL_N }, (_, i) => {
                     const dt = TRAIL_S * i / (TRAIL_N - 1);
                     return [p.x + p.sx * dt, p.z + p.sz * dt];
-                }) : null);
-                if (!path || path.length !== TRAIL_N) { t.mesh.visible = t.end.visible = false; continue; }
-                const pos = t.mesh.geometry.attributes.position.array;
-                let minD = Infinity;
-                for (let i = 0; i < TRAIL_N; i++) {
-                    const a = path[Math.max(0, i - 1)], b = path[Math.min(TRAIL_N - 1, i + 1)];
-                    let tx = b[0] - a[0], tz = b[1] - a[1];
-                    const tl = Math.hypot(tx, tz) || 1; tx /= tl; tz /= tl;
-                    const w = (TRAIL_W0 + (TRAIL_W1 - TRAIL_W0) * i / (TRAIL_N - 1)) / 2;
-                    const o = 6 * i;
-                    pos[o] = path[i][0] - tz * w; pos[o+1] = 0.014; pos[o+2] = path[i][1] + tx * w;
-                    pos[o+3] = path[i][0] + tz * w; pos[o+4] = 0.014; pos[o+5] = path[i][1] - tx * w;
-                    minD = Math.min(minD, Math.hypot(path[i][0], path[i][1]));
-                }
-                t.mesh.geometry.attributes.position.needsUpdate = true;
+                }) : null));
+                if (!path || (!curved && path.length !== TRAIL_N)) { t.mesh.visible = t.end.visible = false; continue; }
+                let pts = path, ws = widthsFor(path.length, curved ? p.sigma : null);
+                if (curved) [pts, ws] = splineResample(path, ws);
+                const minD = fillRibbon(t.mesh, pts, ws);
                 const hex = minD < CONFLICT_M ? TRAIL_COLORS.conflict : TRAIL_COLORS.normal;
                 t.color.value.setHex(hex);
                 t.end.material.uniforms.color.value.setHex(hex);
-                const e = path[TRAIL_N - 1];
+                const e = pts[pts.length - 1];
                 t.end.position.set(e[0], 0.016, e[1]);
                 t.mesh.visible = t.end.visible = true;
+                // Faint alternative turns when the server is unsure which way they go.
+                if (curved && Array.isArray(p.alts)) {
+                    let fanD = Infinity;
+                    p.alts.slice(0, FAN_N).forEach((alt, j) => {
+                        if (!alt || alt.length < 3) return;
+                        const [ap, aw] = splineResample(alt, widthsFor(alt.length, null).map(w => w * 0.6));
+                        fanD = Math.min(fanD, fillRibbon(t.fan[j], ap, aw));
+                        t.fan[j].visible = true;
+                    });
+                    t.fanColor.value.setHex(fanD < CONFLICT_M ? TRAIL_COLORS.conflict : TRAIL_COLORS.normal);
+                }
             }
             hideTrails(k);
         }
@@ -590,7 +670,7 @@ window.RealityMode = (() => {
 
         return {
             analyzeStructure,
-            // persons: [{x, z, sx, sz, path?}] in scene coordinates (m, m/s)
+            // persons: [{x, z, sx, sz, path?, curved?, sigma?, alts?}] in scene coordinates (m, m/s)
             update(enabled, d, nav, now, persons, structure = true) {
                 applyTheme(enabled);
                 cabinetButton.disabled = !(enabled && structure && roomKey && roomKey === nav?.roomMap && d.robotPoseMap);

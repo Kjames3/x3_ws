@@ -36,7 +36,10 @@ sys.path.insert(0, str(HERE.parent))
 import person_paths as pp  # noqa: E402
 import trajectory_baselines as tb  # noqa: E402
 
-MODEL = HERE.parents[3] / "config" / "traj_gru_deploy.npz"
+MODEL = HERE.parents[3] / "config" / "traj_gru_deploy.npz"           # OAK v3 tracks (2026-11-08)
+MODEL_PP = HERE.parents[3] / "config" / "traj_gru_person_paths.npz"  # lidar + C3 TUNE runs (2026-11-27)
+# eval mode name -> (PersonPaths mode, model)
+MODES = {"cv": ("cv", None), "ctrv": ("ctrv", None), "gru": ("gru", MODEL), "gru_pp": ("gru", MODEL_PP)}
 STEP_S = 0.1
 HORIZONS = (1.0, 2.0)
 MOVING_MPS = 0.3
@@ -97,14 +100,15 @@ def collect(paths, source):
     return runs
 
 
-def replay(runs, modes, ctrv=None):
+def replay(runs, modes, ctrv=None, smooth=None):
     """Rows of per-prediction records, with every mode's path on the same windows."""
     grid = np.arange(0.0, max(HORIZONS) + 1e-9, STEP_S)
     rows = []
     for ri, (name, date, tracks) in enumerate(runs):
         for tid, tr in tracks.items():
-            preds = {m: pp.PersonPaths(m, MODEL if m == "gru" else None, horizon_s=max(HORIZONS),
-                                       n_points=len(grid), ctrv=ctrv) for m in modes if m != "ctrv_base"}
+            preds = {m: pp.PersonPaths(MODES[m][0], MODES[m][1], horizon_s=max(HORIZONS),
+                                       n_points=len(grid), ctrv=ctrv, smooth_s=smooth)
+                     for m in modes if m != "ctrv_base"}
             ref = next(iter(preds.values()))
             for t, x, y, vx, vy in tr:
                 for p in preds.values():
@@ -253,9 +257,13 @@ def main():
     ap.add_argument("runs", nargs="+")
     ap.add_argument("--source", choices=("lidar", "c3", "fused"), default="lidar")
     ap.add_argument("--split", default="2026-11-10", help="runs dated before this are TUNE, the rest REPORT")
-    ap.add_argument("--modes", default="cv,ctrv_base,ctrv,gru")
+    ap.add_argument("--modes", default="cv,ctrv_base,ctrv,gru,gru_pp",
+                    help="gru = config/traj_gru_deploy.npz (OAK), gru_pp = config/traj_gru_person_paths.npz")
     ap.add_argument("--ctrv", default=None, help="JSON overrides for person_paths.CTRV")
     ap.add_argument("--grid", action="store_true", help="grid-search the CTRV gate on the TUNE runs")
+    ap.add_argument("--smooth", type=float, default=None,
+                    help="path-shape smoothing time constant for every mode (default: person_paths.SMOOTH_S)")
+    ap.add_argument("--only", choices=("TUNE", "REPORT", "ALL"), help="score one split only")
     ap.add_argument("--json")
     a = ap.parse_args()
     modes = a.modes.split(",")
@@ -277,9 +285,9 @@ def main():
         return
     allres = {}
     for tag, rs in (("TUNE", tune), ("REPORT", report), ("ALL", tune + report)):
-        if not rs:
+        if not rs or (a.only and tag != a.only):
             continue
-        rows = replay(rs, modes, ctrv)
+        rows = replay(rs, modes, ctrv, a.smooth)
         names = rs
         res = summarize(rows, names, modes)
         print_summary("%s (%d runs, %d scored predictions)" % (tag, len(rs), len(rows)), res, modes)

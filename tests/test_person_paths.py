@@ -160,3 +160,30 @@ def test_fan_alternatives_bend_both_ways():
     assert left[-1, 1] > 0.2 and right[-1, 1] < -0.2
     arc = np.linalg.norm(np.diff(left, axis=0), axis=1).sum()
     assert arc == pytest.approx(2.0, abs=1e-6)                         # bending keeps arc length
+
+
+def test_smoothing_is_per_observation_not_per_call():
+    paths = pp.PersonPaths("ctrv", smooth_s=0.3)
+    rows = walker(1.79e9, 15, 0.1, 1.0)
+    r1 = feed(paths, rows, POSE0)
+    # the 20 Hz telemetry loop re-reads the same tracker row: same path back
+    r2 = paths.annotate([rows[-1]], "lidar", POSE0, now=105.0, stamp_key="stamp")[0]
+    assert r1["path_rel"] == r2["path_rel"]
+    # a sudden heading change is followed only part of the way on the next observation
+    turned = dict(rows[-1], stamp=rows[-1]["stamp"] + 0.1, odom_x=rows[-1]["odom_x"] + 0.1,
+                  odom_vx=0.0, odom_vy=1.0)
+    r3 = paths.annotate([turned], "lidar", POSE0, now=105.1, stamp_key="stamp")[0]
+    end = np.array(r3["path_rel"])[-1]
+    raw = pp.PersonPaths("ctrv", smooth_s=0.0)
+    raw_end = np.array(feed(raw, rows + [turned], POSE0)["path_rel"])[-1]
+    assert 0.2 < end[1] < raw_end[1] and end[0] > raw_end[0]
+
+
+PP_MODEL = Path(__file__).resolve().parents[1] / "config" / "traj_gru_person_paths.npz"
+
+
+@pytest.mark.skipif(not PP_MODEL.exists(), reason="no person-path GRU")
+def test_person_path_gru_loads_with_a_2s_horizon():
+    p = pp.from_env(str(PP_MODEL), env="gru")
+    assert p.mode == "gru" and p.model.fut_n * p.dt >= pp.HORIZON_S - 1e-9
+    assert p.smooth_s == pp.SMOOTH_S["gru"]
