@@ -226,6 +226,36 @@ evidence either way.
   history, the true path, cv, ctrv and gru_pp, plus the gru_pp fan. In most of
   them the history gives no sign that the turn is coming.
 
+## Exploratory: a sustained-turn tier (`SUSTAINED_ON`, off)
+
+The goal is to draw a turn that is already under way at closer to its real
+rate. The gate fires when the turn has held for 1.5 s:
+- |w| > 0.3 rad/s and t > 3 on a 1.5 s heading fit;
+- both halves of that window turn the same way, each faster than 0.3 rad/s.
+
+When it fires, the path uses the full fitted rate with a 2 s decay instead of
+shrink 0.5 and tau 0.7, so it bends at most 0.63·w·2 rad over 2 s. The values
+are fixed, not tuned. **yard-circle, which is in REPORT, informed the design,**
+so these numbers are reported separately from the rule table and the tier
+ships off.
+
+- **Firing outside circling:** 1.7 % of moving TUNE windows and 2.4 % of
+  REPORT. The bend direction there is a coin flip, 43 % and 58 % right.
+- **Firing on yard-circle:** 16 % of moving windows. The realised 2 s turn
+  rate is 0.84x the fitted one (median), the same sign 100 % of the time.
+- **TUNE cost** (in-sample for the GRU): ctrv FDE@2 s moving +0.4 %, turning
+  +0.7 %; gru_pp moving +0.3 %, turning +0.9 %.
+- **REPORT turning @2 s:** gru_pp -10.4 % against gru_sus **-13.1 %**, with
+  per-run change -12.2 / -9.0 / -2.8 %. Without circles both are -13 %. On the
+  yard-circle turning windows alone (419), derived from the two subsets, FDE
+  is cv 0.856, gru_pp 0.799 and gru_sus 0.748 m.
+- **Synthetic 0.71 rad/s circle:** CTRV turns 48 deg of the true 82 deg,
+  against 12 deg without the tier.
+- **To try it live,** set `person_paths.SUSTAINED_ON = True`. The demo takes
+  `--sustained`.
+- **Screenshots:** in `gru_sustained_top.png` and `gru_sustained_chase.png`
+  the circling walker's ribbon visibly curves.
+
 ## Map / structure awareness (option c): feasibility only
 
 The test used static occupancy built from each run's `/scan` (cells hit in at
@@ -313,7 +343,8 @@ Doorway attraction was not attempted.
     Other agents editing these files will conflict on those two lines; keep
     the higher number.
 - **Tests**
-  - `tests/test_person_paths.py` has 24 tests: flag off; straight and
+  - `tests/test_person_paths.py` has 25 tests (the extra one covers the
+    sustained-turn gate): flag off; straight and
     left-turn walkers; base axes with the robot yawed 90 deg; coasting rows
     and C3 unmeasured rows; v3 re-reads, static and C3-active handling; stale
     tracks; GRU batching and per-source models; model fallback; the fan;
@@ -365,6 +396,9 @@ was rendered in headless Chrome.
   the turners.
 - `gru_top.png`, `gru_chase.png`: shorter ribbons, because the GRU predicts
   the constant-speed synthetic walkers slowing down.
+- `gru_sustained_top.png`, `gru_sustained_chase.png`: the same with the
+  off-by-default sustained-turn tier, where the circling walker's ribbon
+  curves.
 - `report_turning_examples.png`: real held-out windows.
 
 ## Needs a live check
@@ -378,7 +412,8 @@ was rendered in headless Chrome.
    - Expect mild bends. A sharp turn is not anticipated.
 2. Telemetry loop cost on the Orin with about 5 people: `person_paths.stats`
    `ms_last` and `ms_max`.
-3. Compare `X3_PERSON_PATH=ctrv`, and `GRU_BEND = True`. CTRV draws
+3. Compare `X3_PERSON_PATH=ctrv`, `GRU_BEND = True` and
+   `SUSTAINED_ON = True` (walk a circle and round a corner). CTRV draws
    full-length ribbons that bend only on sustained turns, and may read better
    even though it scores worse.
 4. Front (C3) people. In replay about half of moving C3 display time still

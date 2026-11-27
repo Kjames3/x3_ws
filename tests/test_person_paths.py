@@ -280,3 +280,20 @@ def test_learnable_matches_the_eval_loader():
     assert not pp.learnable({"lidar_age_s": 0.3})
     assert not pp.learnable({"measured": False})
     assert pp.learnable({"id": 3, "measured": True})            # C3 / v3 rows without lidar fields
+
+
+def test_sustained_tier_fires_on_held_turns_only():
+    def hist(wfun, n=16, dt=0.1, sp=1.0):
+        th, x, y, out = 0.0, 0.0, 0.0, []
+        for i in range(n):
+            out.append((x, y, sp * math.cos(th), sp * math.sin(th)))
+            th += wfun(i * dt) * dt
+            x += sp * math.cos(th) * dt
+            y += sp * math.sin(th) * dt
+        return np.array(out)
+    assert pp.sustained_rate(hist(lambda t: 0.7), 0.1) == pytest.approx(0.7, abs=0.05)
+    assert pp.sustained_rate(hist(lambda t: -0.7), 0.1) == pytest.approx(-0.7, abs=0.05)
+    assert pp.sustained_rate(hist(lambda t: 1.2 * math.sin(4 * t)), 0.1) == 0.0     # weave
+    assert pp.sustained_rate(hist(lambda t: 0.0), 0.1) == 0.0
+    assert pp.sustained_rate(hist(lambda t: 0.7, n=10), 0.1) == 0.0                # too short
+    assert pp.SUSTAINED_ON is False and pp.PersonPaths("ctrv").sustained is False

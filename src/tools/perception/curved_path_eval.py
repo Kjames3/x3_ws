@@ -40,7 +40,7 @@ MODEL = HERE.parents[3] / "config" / "traj_gru_deploy.npz"           # OAK v3 tr
 MODEL_PP = HERE.parents[3] / "config" / "traj_gru_person_paths.npz"  # lidar + C3 TUNE runs (2026-11-27)
 # eval mode name -> (PersonPaths mode, model)
 MODES = {"cv": ("cv", None), "ctrv": ("ctrv", None), "gru": ("gru", MODEL), "gru_pp": ("gru", MODEL_PP),
-         "gru_bend": ("gru", MODEL_PP)}
+         "gru_bend": ("gru", MODEL_PP), "ctrv_sus": ("ctrv", None), "gru_sus": ("gru", MODEL_PP)}
 STEP_S = 0.1
 HORIZONS = (1.0, 2.0)
 MOVING_MPS = 0.3
@@ -138,7 +138,7 @@ def replay(runs, modes, ctrv=None, smooth=None, poly=None):
         for tid, tr in tracks.items():
             preds = {m: pp.PersonPaths(MODES[m][0], MODES[m][1], horizon_s=max(HORIZONS),
                                        n_points=len(grid), ctrv=ctrv, smooth_s=smooth, poly_deg=poly,
-                                       bend=(m == "gru_bend"))
+                                       bend=(m == "gru_bend"), sustained=m.endswith("_sus"))
                      for m in modes if m != "ctrv_base"}
             ref = next(iter(preds.values()))
             for t, x, y, vx, vy in tr:

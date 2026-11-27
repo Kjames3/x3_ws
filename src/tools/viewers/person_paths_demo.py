@@ -111,9 +111,10 @@ def walkers():
     ]
 
 
-async def serve_ws(host, port, mode):
+async def serve_ws(host, port, mode, sustained=False):
     import websockets
-    paths = pp.PersonPaths(mode, MODEL if mode == "gru" else None) if mode != "off" else None
+    paths = (pp.PersonPaths(mode, MODEL if mode == "gru" else None, sustained=sustained)
+             if mode != "off" else None)
     people = walkers()
     scan = scan_points()
 
@@ -145,6 +146,7 @@ async def serve_ws(host, port, mode):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--mode", default="ctrv", choices=("off", "cv", "ctrv", "gru"))
+    ap.add_argument("--sustained", action="store_true", help="enable the off-by-default sustained-turn tier")
     ap.add_argument("--host", default="127.0.0.2")
     ap.add_argument("--http-port", type=int, default=8180)
     ap.add_argument("--ws-port", type=int, default=8081)
@@ -155,7 +157,7 @@ def main():
     httpd = http.server.ThreadingHTTPServer((a.host, a.http_port), handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     print("GUI: http://%s:%d/GUI.html?curvedIntent=1  (ws :%d, mode %s)" % (a.host, a.http_port, a.ws_port, a.mode))
-    asyncio.run(serve_ws(a.host, a.ws_port, a.mode))
+    asyncio.run(serve_ws(a.host, a.ws_port, a.mode, a.sustained))
 
 
 if __name__ == "__main__":

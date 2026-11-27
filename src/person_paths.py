@@ -58,6 +58,14 @@ CTRV = dict(
     shrink=0.5,         # multiply the fitted rate (outside sustained circling,
                         # recent turning barely predicts the next 2 s)
 )
+# Second tier, OFF by default (SUSTAINED_ON): a turn held for 1.5 s (both halves
+# turning the same way, |w| > 0.3 rad/s, t > 3) is drawn at its full rate with a
+# slow 2 s decay. Values fixed, not tuned. Outside circling it fires on 1.7 % of
+# moving TUNE windows (direction a coin flip there); on yard-circle (REPORT, so
+# it informed this design) it fires on 16 % and the realised 2 s turn rate is
+# 0.84x the fitted one, same sign 100 %.
+SUSTAINED = dict(fit_s=1.5, min_w=0.3, gate_t=3.0, tau_s=2.0)
+SUSTAINED_ON = False
 FAN_W = 0.4             # rad/s: show alternatives when the person is visibly turning (|fitted
                         # rate| above this) ... direction precision is ~50 % outside circling
 FAN_SE = 0.25           # ... or when the turn-rate std error exceeds this
@@ -104,6 +112,24 @@ def _slope(ang, dt):
     w = float((t * (ang - ang.mean())).sum() / sxx)
     res = ang - ang.mean() - w * t
     return w, math.sqrt(max(float((res * res).sum()) / max(len(ang) - 2, 1), 1e-12) / sxx)
+
+
+def sustained_rate(hist, dt, p=CTRV, s=SUSTAINED):
+    """Turn rate of a turn held over the whole of `hist` (>= s['fit_s'] long), else 0."""
+    n = int(round(s["fit_s"] / dt)) + 1
+    if hist is None or len(hist) < n:
+        return 0.0
+    h = hist[-n:]
+    q = dict(p, fit_s=s["fit_s"])
+    w, se = turn_rate(h, dt, q)
+    if not math.isfinite(se) or abs(w) < s["min_w"] or abs(w) < s["gate_t"] * se:
+        return 0.0
+    half = n // 2 + 1
+    w1 = turn_rate(h[:half], dt, dict(q, fit_s=(half - 1) * dt))[0]
+    w2 = turn_rate(h[-half:], dt, dict(q, fit_s=(half - 1) * dt))[0]
+    if w1 * w2 <= 0 or min(abs(w1), abs(w2)) < s["min_w"]:
+        return 0.0
+    return float(np.clip(w, -p["max_w"], p["max_w"]))
 
 
 def gated_rate(w, se, p=CTRV):
@@ -158,7 +184,7 @@ def learnable(tr):
 
 class PersonPaths:
     def __init__(self, mode, model_path=None, horizon_s=HORIZON_S, n_points=N_POINTS, ctrv=None,
-                 smooth_s=None, poly_deg=None, bend=None, source_models=None):
+                 smooth_s=None, poly_deg=None, bend=None, source_models=None, sustained=None):
         if mode not in MODES or mode == "off":
             raise ValueError("mode must be one of cv, ctrv, gru")
         self.mode = mode
@@ -167,6 +193,7 @@ class PersonPaths:
         # gru only: also apply the CTRV gated turn to the GRU path (its gain is
         # along-track, CTRV's is cross-track)
         self.bend = GRU_BEND if bend is None else bend
+        self.sustained = (SUSTAINED_ON if sustained is None else sustained) and mode != "cv"
         self._smooth = {}        # key -> (obs stamp, path relative to p0)
         self._cache = {}         # key -> last prediction (reused until a new observation)
         self.p = dict(CTRV, **(ctrv or {}))
@@ -192,6 +219,7 @@ class PersonPaths:
                 if m.rate == self.model.rate and m.hist_n == self.model.hist_n:
                     self._source_models[src] = m
         self.hist_n = int(round(self.span_s / self.dt)) + 1
+        self.keep_s = max(self.span_s, SUSTAINED["fit_s"]) if self.sustained else self.span_s
         self._obs = {}
         self._seen = {}          # key -> annotate() clock when last passed in
         self._last_sig = {}      # key -> raw values last observed (sources without stamps)
@@ -207,7 +235,7 @@ class PersonPaths:
         if q and t <= q[-1][0]:
             return False
         q.append((float(t), float(x), float(y), float(vx), float(vy)))
-        while len(q) > 2 and t - q[1][0] >= self.span_s:
+        while len(q) > 2 and t - q[1][0] >= self.keep_s:
             q.popleft()
         return True
 
@@ -222,12 +250,13 @@ class PersonPaths:
             self._cache.pop(k, None)
             self._last_sig.pop(k, None)
 
-    def history(self, key):
+    def history(self, key, span_s=None):
+        span = self.span_s if span_s is None else span_s
         q = self._obs.get(key)
-        if not q or q[-1][0] - q[0][0] < self.span_s - 1e-6:
+        if not q or q[-1][0] - q[0][0] < span - 1e-6:
             return None
         a = np.array(q)
-        g = a[-1, 0] - self.span_s + np.arange(self.hist_n) * self.dt
+        g = a[-1, 0] - span + np.arange(int(round(span / self.dt)) + 1) * self.dt
         return np.stack([np.interp(g, a[:, 0], a[:, c]) for c in range(1, 5)], 1)
 
     # ---- prediction --------------------------------------------------------
@@ -249,9 +278,15 @@ class PersonPaths:
             hist = self.history(key)
             w, se = turn_rate(hist, self.dt, self.p) if hist is not None else (0.0, math.inf)
             r = dict(p0=p0, speed=speed, w_fit=w, se=se, used_hist=hist is not None, w=0.0, t=q[-1][0], key=key)
+            r["w_sus"] = (sustained_rate(self.history(key, SUSTAINED["fit_s"]), self.dt, self.p)
+                          if self.sustained else 0.0)
             if self.mode == "ctrv":
                 r["w"] = gated_rate(w, se, self.p)
-            r["path"] = ctrv_path(p0, v0, r["w"], self.times, self.p["tau_s"])
+            if r["w_sus"] and self.mode == "ctrv":
+                r["w"] = r["w_sus"]
+                r["path"] = ctrv_path(p0, v0, r["w"], self.times, SUSTAINED["tau_s"])
+            else:
+                r["path"] = ctrv_path(p0, v0, r["w"], self.times, self.p["tau_s"])
             r["sigma"] = SIGMA0 + SIGMA_K * self.times * max(speed, 0.3)
             if self.mode == "gru" and hist is not None:
                 gru_keys.append(key)
@@ -279,7 +314,10 @@ class PersonPaths:
                                              np.interp(self.times, ft, fp[:, 1])])
                 if sig is not None:
                     r["sigma"] = np.interp(self.times, ft, np.concatenate([[sig[i, 0]], sig[i]]))
-                if self.bend:
+                if r["w_sus"]:
+                    r["w"] = r["w_sus"]
+                    r["path"] = bend_path(r["path"], self.times, r["w"], SUSTAINED["tau_s"])
+                elif self.bend:
                     r["w"] = gated_rate(r["w_fit"], r["se"], self.p)
                     if r["w"]:
                         r["path"] = bend_path(r["path"], self.times, r["w"], self.p["tau_s"])
