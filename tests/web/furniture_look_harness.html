@@ -1,0 +1,117 @@
+<!doctype html>
+<!--
+  Headless before/after harness for the Reality-view furniture stand-ins.
+  Runs the real RealityMode code path (reality-mode.js + reality-furniture.js)
+  with RealityStructure stubbed to return fixed boxes. Query:
+    ?furnitureLookV2=1|0   the real flag (also remembered in localStorage)
+    &view=overview|close|top|lineup
+    &freeze=MS             stop the clock MS after the objects appear (fade demo)
+  Renders by itself; tests/web/render_furniture_look.sh drives headless Chrome.
+-->
+<html><head><meta charset="utf-8"><title>Furniture look harness</title>
+<style>html,body{margin:0;background:#0b0f14;overflow:hidden}
+#stats{position:fixed;left:8px;bottom:6px;color:#8b98a5;font:12px monospace;white-space:pre}
+#tag{position:fixed;left:10px;top:8px;color:#d7dee6;font:600 15px sans-serif;letter-spacing:.02em}</style>
+<script src="../../src/web/vendor/three/three.min.js"></script>
+<script src="../../src/web/reality-lookalike.js"></script>
+<script src="../../src/web/reality-furniture.js"></script>
+<script src="../../src/web/reality-mode.js"></script>
+</head><body>
+<button id="reality-cabinet" style="display:none"></button>
+<div id="tag"></div><pre id="stats"></pre>
+<script>
+const q = new URLSearchParams(location.search);
+const view = q.get('view') || 'overview';
+const freeze = q.has('freeze') ? Number(q.get('freeze')) : null;
+const v2 = RealityFurniture.flagEnabled();
+document.getElementById('tag').textContent = (v2 ? 'furnitureLookV2 = 1' : 'current (flag off)') + '  ·  ' + view;
+
+// Base frame: x forward, y left (m). Chair/couch backs sit at yaw + 90 deg,
+// so yaw = -90 deg puts the back away from the robot (facing it).
+const R = Math.PI / 2;
+const ROOM = [
+    {id: 1, kind: 'table', x: 2.3, y: 1.0, yaw: 0, L: 1.40, D: 0.80, H: 0.74},
+    {id: 2, kind: 'chair', x: 1.62, y: 1.0, yaw: R, L: 0.45, D: 0.48, H: 0.90, seat: 0.46},      // back toward robot, at the table
+    {id: 3, kind: 'chair', x: 2.3, y: 0.32, yaw: Math.PI, L: 0.45, D: 0.48, H: 0.90, seat: 0.46},  // side of table
+    {id: 4, kind: 'table', x: 2.1, y: -1.1, yaw: 0.3, L: 0.90, D: 0.88, H: 0.72, round: true},
+    {id: 5, kind: 'couch', x: 3.9, y: 0.0, yaw: -R, L: 2.10, D: 0.92, H: 0.86, seat: 0.44},
+    {id: 6, kind: 'table', x: 3.05, y: -0.05, yaw: -R, L: 1.00, D: 0.55, H: 0.45, low: true},
+    {id: 7, kind: 'chair', x: 3.1, y: -1.55, yaw: -R + 0.6, L: 0.72, D: 0.74, H: 0.86, seat: 0.42}, // armchair
+    {id: 8, kind: 'couch', x: 1.35, y: -1.95, yaw: 0, L: 1.50, D: 0.86, H: 0.82},                // loveseat, no seat field
+    {id: 9, kind: 'tv', x: 4.7, y: -1.6, yaw: -R, L: 1.1, D: 0.12, H: 0.65, bottom: 0.45},
+];
+// One of each, side by side, all facing the camera.
+const LINEUP = [
+    {id: 1, kind: 'chair', x: 2.4, y: 2.1, yaw: -R, L: 0.45, D: 0.48, H: 0.90, seat: 0.46},
+    {id: 2, kind: 'chair', x: 2.4, y: 1.25, yaw: -R, L: 0.70, D: 0.72, H: 0.86, seat: 0.42},
+    {id: 3, kind: 'couch', x: 2.6, y: -0.25, yaw: -R, L: 1.90, D: 0.90, H: 0.85, seat: 0.44},
+    {id: 4, kind: 'table', x: 2.5, y: -2.0, yaw: 0, L: 1.20, D: 0.75, H: 0.74},
+    {id: 5, kind: 'table', x: 4.0, y: 1.6, yaw: 0, L: 0.85, D: 0.85, H: 0.72, round: true},
+    {id: 6, kind: 'table', x: 4.0, y: 0.0, yaw: -R, L: 1.0, D: 0.55, H: 0.45, low: true},
+    {id: 7, kind: 'couch', x: 4.2, y: -1.8, yaw: -R, L: 2.5, D: 0.95, H: 0.9, seat: 0.45},
+];
+const boxes = view === 'lineup' ? LINEUP : ROOM;
+
+window.RealityStructure = {
+    Tracker: function () { this.tracks = []; this.exportLandmarks = () => []; this.importLandmarks = () => {}; },
+    WallHistory: function () {},
+    Lookalike: {ready: () => false, create: () => ({}), ingest() {}, pack() {}, unpack() {}},
+    LANDMARK_HITS: 3,
+    analyze: () => ({walls: [], doorways: [], objects: boxes.map(o => ({...o}))}),
+};
+
+const W = 1280, H = 760;
+const renderer = new THREE.WebGLRenderer({antialias: true, preserveDrawingBuffer: true});
+renderer.setPixelRatio(1);
+renderer.setSize(W, H);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xdde3ea);
+scene.fog = new THREE.Fog(0xdde3ea, 8, 30);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x9aa3ad, 0.9));       // as scene-view.js
+const sun = new THREE.DirectionalLight(0xffffff, 0.5);
+sun.position.set(3, 6, 2); scene.add(sun);
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.MeshBasicMaterial({color: 0xe5e9ee}));
+floor.rotation.x = -Math.PI / 2; scene.add(floor);
+const ringMats = [];
+for (const r of [1, 2, 3, 4, 5]) {
+    const m = new THREE.MeshBasicMaterial({color: 0xc5ccd4});
+    ringMats.push(m);
+    const ring = new THREE.Mesh(new THREE.RingGeometry(r - 0.006, r + 0.006, 96), m);
+    ring.rotation.x = -Math.PI / 2; ring.position.y = 0.001; scene.add(ring);
+}
+const robot = new THREE.Mesh(new THREE.BoxGeometry(0.30, 0.2, 0.36), new THREE.MeshLambertMaterial({color: 0x9fb0c2}));
+robot.position.y = 0.1; scene.add(robot);
+
+const camera = new THREE.PerspectiveCamera(50, W / H, 0.05, 60);
+const CAMS = {
+    overview: [[0.9, 2.6, 1.9], [-0.1, 0.25, -2.6]],
+    close:    [[-0.9, 1.35, -0.55], [-0.7, 0.45, -2.15]],
+    top:      [[0.0, 6.2, -2.6], [0.0, 0, -2.65]],
+    lineup:   [[0.0, 1.7, 1.2], [0.0, 0.4, -3.0]],
+};
+const [cp, ct] = CAMS[view] || CAMS.overview;
+camera.position.set(...cp); camera.lookAt(...ct);
+
+const reality = RealityMode.create(THREE, scene, renderer, {floor, rings: ringMats, tinted: []});
+const d = {};
+let t0 = null, frames = 0;
+function frame(now) {
+    if (t0 === null) {
+        t0 = now;
+        reality.analyzeStructure([], [], d, null, [], now, null, null, []);
+    }
+    const clock = freeze !== null ? Math.min(now, t0 + freeze) : now;
+    if (freeze !== null) { const real = performance.now; performance.now = () => clock; reality.update(true, d, null, clock, [], true); performance.now = real; }
+    else reality.update(true, d, null, now, [], true);
+    renderer.render(scene, camera);
+    frames++;
+    let meshes = 0;
+    scene.traverse(o => { if (o.isMesh && o.visible) meshes++; });
+    document.getElementById('stats').textContent =
+        `objects ${boxes.length}  triangles ${renderer.info.render.triangles}  draw calls ${renderer.info.render.calls}  ` +
+        `visible meshes ${meshes}  programs ${renderer.info.programs.length}  frames ${frames}`;
+    requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script></body></html>

@@ -256,7 +256,11 @@ window.RealityMode = (() => {
         const unit = new THREE.BoxGeometry(1, 1, 1);
         const objects = new Map();   // id -> {group}
         const splatMaterial = new THREE.PointsMaterial({size:.037, color:0xcbd5df, vertexColors:true});
-        function removeObject(ob) {
+        // Furniture look V2 (reality-furniture.js), opt-in via ?furnitureLookV2=1.
+        const look = window.RealityFurniture && RealityFurniture.flagEnabled()
+            ? RealityFurniture.createRenderer(THREE) : null;
+        function removeObject(ob, instant) {
+            if (ob.v2) { look.retire(ob, scene, performance.now(), instant); return; }
             scene.remove(ob.group);
             ob.ring.geometry.dispose();
             if (ob.splats) ob.splats.geometry.dispose();
@@ -354,15 +358,23 @@ window.RealityMode = (() => {
             for (const o of st ? st.objects : []) {
                 seen.add(o.id);
                 let ob = objects.get(o.id);
-                const shape = o.kind === 'table' && o.round ? 'table_round' : o.kind;
+                // V2 lays round and square tops out in one object, so a
+                // flickering `round` never recreates (and re-fades) it.
+                const shape = look ? o.kind : o.kind === 'table' && o.round ? 'table_round' : o.kind;
                 if (!ob || ob.kind !== shape) {
                     if (ob) removeObject(ob);
-                    ob = makeObject(shape); ob.kind = shape; objects.set(o.id, ob);
+                    if (look) {
+                        ob = look.make(shape, scene, performance.now());
+                        const made = ob;
+                        made.onDispose = () => { if (made.splats) made.splats.geometry.dispose(); };
+                    } else { ob = makeObject(shape); ob.kind = shape; }
+                    objects.set(o.id, ob);
                 }
                 ob.group.position.set(-o.y, o.bottom || 0, -o.x);
                 ob.group.rotation.set(0, o.yaw + Math.PI / 2, 0);
-                ob.inner.scale.set(o.L, o.H, o.D);
-                if (o.kind === 'chair') {
+                if (ob.v2) look.fit(ob, o, PARTS);
+                else ob.inner.scale.set(o.L, o.H, o.D);
+                if (!ob.v2 && o.kind === 'chair') {
                     const seat = Number.isFinite(o.seat) ? Math.max(.30,Math.min(.72,o.seat/o.H)) : .46;
                     const [pad,back,...rest] = ob.inner.children;
                     pad.position.y = seat;
@@ -376,7 +388,7 @@ window.RealityMode = (() => {
                 updateModel(ob,o.model);
                 ob.group.visible = true;
             }
-            for (const [id, ob] of objects) if (!seen.has(id)) { removeObject(ob); objects.delete(id); }
+            for (const [id, ob] of objects) if (!seen.has(id)) { removeObject(ob, !st); objects.delete(id); }
         }
         const cabinets = new Map();
         try {
@@ -617,6 +629,7 @@ window.RealityMode = (() => {
             // persons: [{x, z, sx, sz, path?}] in scene coordinates (m, m/s)
             update(enabled, d, nav, now, persons, structure = true) {
                 applyTheme(enabled);
+                if (look) look.tick(scene, performance.now());
                 cabinetButton.disabled = !(enabled && structure && roomKey && roomKey === nav?.roomMap && d.robotPoseMap);
                 if ((!enabled || !structure) && structOn) { updateStructure(null); structOn = false; }
                 if (!enabled) { ribbon.visible = beacon.visible = shieldGroup.visible = false; hideTrails(0); return; }
