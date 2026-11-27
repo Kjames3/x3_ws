@@ -1,15 +1,21 @@
 import ast, pathlib, struct, subprocess, tempfile
+from array import array
 
 import pytest
-pytest.importorskip("sensor_msgs.msg")
-pytest.importorskip("rclpy.serialization")
 import numpy as np
-from sensor_msgs.msg import PointCloud2, PointField
-from rclpy.serialization import serialize_message
 from types import SimpleNamespace as NS
+
+
+@pytest.fixture
+def ros_cloud():
+    messages = pytest.importorskip('sensor_msgs.msg')
+    serialization = pytest.importorskip('rclpy.serialization')
+    return messages.PointCloud2, messages.PointField, serialization.serialize_message
+
+
 def _display_defs(tree):
     """Module-level display voxelizer (constants + helpers) for exec'd tests."""
-    names={'NEAR_RADIUS','NEAR_CELL','FAR_CELL','DISPLAY_CAP','_first_per_cell','display_voxels'}
+    names={'NEAR_RADIUS','NEAR_CELL','FAR_CELL','DISPLAY_CAP','_first_per_cell','display_voxels','_cloud_data'}
     out=[]
     for n in tree.body:
         if isinstance(n,ast.FunctionDef) and n.name in names: out.append(n)
@@ -20,7 +26,7 @@ def _display_defs(tree):
 
 def _display_ns():
     tree=ast.parse(pathlib.Path('src/yahboomcar_bringup/yahboomcar_bringup/livox_scan_node.py').read_text())
-    ns=dict(np=np); exec(compile(ast.Module(body=_display_defs(tree),type_ignores=[]),'dv','exec'),ns)
+    ns=dict(np=np, array=array); exec(compile(ast.Module(body=_display_defs(tree),type_ignores=[]),'dv','exec'),ns)
     return ns
 
 
@@ -37,15 +43,55 @@ def test_display_voxels_near_fine_far_coarse_and_capped():
     assert ns['DISPLAY_CAP']==12000
 
 
-def test_publisher_browser_roundtrip():
+@pytest.mark.parametrize('dtype', [np.float32, np.float64])
+def test_fast_voxelization_matches_original_bytes(dtype):
+    ns = _display_ns()
+    rng = np.random.default_rng(42)
+    # Distinct points in shared cells, including negative coordinates and
+    # sparse and dense regions. Reverse the inputs to vary the winning rows.
+    dense = rng.uniform(-.2, .2, (5_000, 3))
+    sparse = rng.uniform(-6, 6, (15_000, 3))
+    xyz = np.concatenate((dense, sparse)).astype(dtype)
+    rng.shuffle(xyz)
+    for points in (xyz, xyz[::-1], xyz[:0], xyz[:1], np.repeat(xyz[:1], 8, axis=0)):
+        for cell in (.025, .05, .2):
+            old = ns['_first_per_cell'](points, cell)
+            fast = ns['_first_per_cell'](points, cell, fast=True)
+            assert fast.shape == old.shape and fast.dtype == old.dtype
+            assert fast.tobytes() == old.tobytes()
+        for cap in (1000, 12000, 20000):
+            old = ns['display_voxels'](points, cap=cap)
+            fast = ns['display_voxels'](points, cap=cap, fast=True)
+            assert fast.shape == old.shape and fast.dtype == old.dtype
+            assert fast.tobytes() == old.tobytes()
+
+
+def test_fast_payload_matches_pointcloud2_serialization(ros_cloud):
+    PointCloud2, _, serialize_message = ros_cloud
+    ns = _display_ns()
+    xyz = np.random.default_rng(42).normal(size=(50, 3)).astype('<f4')
+    for rows in (xyz, xyz[:0], xyz[::-2], xyz.astype('>f4')):
+        old = PointCloud2()
+        fast = PointCloud2()
+        old.data = ns['_cloud_data'](rows)
+        payload = ns['_cloud_data'](rows, fast=True)
+        fast.data = payload
+        assert fast.data is payload and fast.data.typecode == 'B'
+        assert serialize_message(fast) == serialize_message(old)
+
+
+@pytest.mark.parametrize('fast', [False, True])
+def test_publisher_browser_roundtrip(fast, ros_cloud):
+    PointCloud2, PointField, serialize_message = ros_cloud
     path=pathlib.Path('src/yahboomcar_bringup/yahboomcar_bringup/livox_scan_node.py')
     tree=ast.parse(path.read_text()); cls=next(n for n in tree.body if isinstance(n,ast.ClassDef))
     method=next(n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name=='publish_surroundings')
-    ns=dict(np=np,struct=struct,PointCloud2=PointCloud2,PointField=PointField)
+    ns=dict(np=np,struct=struct,PointCloud2=PointCloud2,PointField=PointField,
+            array=array, FAST_CLOUD=fast)
     exec(compile(ast.Module(body=_display_defs(tree)+[method],type_ignores=[]),'cloud','exec'),ns)
     messages=[]
     clock=NS(now=lambda:NS(nanoseconds=1_000_000_000))
-    obj=NS(get_clock=lambda:clock, cloud_pub=NS(get_subscription_count=lambda:1,publish=messages.append),pose_at=lambda stamps: None,cloud_last_ns=0,cloud_R=np.eye(3),cloud_t=np.array([.0432,0,.31]))
+    obj=NS(get_clock=lambda:clock, cloud_pub=NS(get_subscription_count=lambda:1,publish=messages.append),pose_at=lambda stamps: None,cloud_last_ns=0,cloud_R=np.eye(3),cloud_t=np.array([.0432,0,.31]),display_cap=ns['DISPLAY_CAP'])
     rng=np.random.default_rng(1); pts=np.zeros(20000,dtype=[('x','f4'),('y','f4'),('z','f4'),('t','u4')]); xyz=rng.uniform(-4,4,(20000,3))
     for i,k in enumerate('xyz'):pts[k]=xyz[:,i]
     pts['x'][0]=float('nan');pts['x'][1]=pts['y'][1]=pts['z'][1]=0
@@ -69,13 +115,15 @@ def test_publisher_browser_roundtrip():
     assert len(messages) == 2
 
 
-def test_acquisition_pose_interpolation_and_cloud_deskew():
+def test_acquisition_pose_interpolation_and_cloud_deskew(ros_cloud):
+    PointCloud2, PointField, serialize_message = ros_cloud
     import math
     from geometry_msgs.msg import PoseStamped
     tree = ast.parse(pathlib.Path('src/yahboomcar_bringup/yahboomcar_bringup/livox_scan_node.py').read_text())
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
     methods = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in ('pose_at', 'publish_surroundings')]
-    ns = dict(np=np, struct=struct, math=math, PoseStamped=PoseStamped, PointCloud2=PointCloud2, PointField=PointField)
+    ns = dict(np=np, struct=struct, math=math, PoseStamped=PoseStamped, PointCloud2=PointCloud2,
+              PointField=PointField, array=array, FAST_CLOUD=False)
     exec(compile(ast.Module(body=_display_defs(tree) + methods, type_ignores=[]), 'cloud', 'exec'), ns)
     clouds, poses = [], []
     # A robot translating 1 m/s and turning 1 rad/s, with bracketing odometry.
@@ -83,7 +131,7 @@ def test_acquisition_pose_interpolation_and_cloud_deskew():
              get_clock=lambda: NS(now=lambda: NS(nanoseconds=11_000_000_000)),
              cloud_pub=NS(get_subscription_count=lambda: 1, publish=clouds.append),
              cloud_pose_pub=NS(publish=poses.append), cloud_last_ns=0,
-             cloud_R=np.eye(3), cloud_t=np.zeros(3))
+             cloud_R=np.eye(3), cloud_t=np.zeros(3), display_cap=ns['DISPLAY_CAP'])
     obj.pose_at = lambda stamps: ns['pose_at'](obj, stamps)
     middle = obj.pose_at(np.array([10.05]))
     np.testing.assert_allclose([v[0] for v in middle], [.05, 0, .05])

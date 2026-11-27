@@ -1,0 +1,5 @@
+Threads:	71
+12
+schedutil
+NV Power Mode: MAXN
+0

@@ -1,0 +1,62 @@
+ac47d9b Reality view: hold confirmed furniture still (no spin, no duplicate swapping)
+ M scripts/record_bag.sh
+ M scripts/record_fastlio_comparison.sh
+ M scripts/record_livox_drive.sh
+ M scripts/record_person_lidar.sh
+ M scripts/record_walk.sh
+ M src/teensy_battery.py
+ M src/tools/calibration/arducam_checker_headless.py
+ M src/tools/calibration/calib_capture.py
+ M src/tools/calibration/oak_checker_headless.py
+ M src/tools/calibration/oak_tv_charuco_capture.py
+# /etc/systemd/system/x3_server.service
+[Unit]
+Description=Yahboom X3 WebSocket Control Server
+After=network-online.target fastdds_discovery.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jetson
+Group=jetson
+SupplementaryGroups=plugdev
+
+WorkingDirectory=/home/jetson/x3_ws/src
+
+# ── Launch mode ────────────────────────────────────────────────────────────────
+# Default: ROS2 hardware bridge mode (launches x3_bringup, subscribes /scan + /cmd_vel)
+#
+# ROS2 Humble is sourced explicitly here because systemd does NOT read ~/.bashrc.
+# The workspace local_setup is sourced with || true so the service still starts
+# if the workspace hasn't been built yet (ROS2 base will still be available).
+ExecStart=/bin/bash -c '\
+  source /opt/ros/humble/setup.bash && \
+  source /home/jetson/x3_ws/install/local_setup.bash 2>/dev/null || true && \
+  export ROS_DISCOVERY_SERVER="127.0.0.1:11811" && \
+  exec python3 /home/jetson/x3_ws/src/server_x3.py $SERVER_ARGS'
+
+# To switch modes without editing this file, override SERVER_ARGS in
+#   /etc/systemd/system/x3_server.service.d/override.conf
+#
+# Simulation / no hardware:
+#   Environment=SERVER_ARGS=--sim
+#
+# Apply with:  sudo systemctl daemon-reload && sudo systemctl restart x3_server
+
+Environment="SERVER_ARGS=--domain-id 42"
+Environment=ROS_DOMAIN_ID=42
+# Point all ROS2 nodes to the local FastDDS discovery server instead of multicast.
+# This is required on school/enterprise WiFi which blocks UDP multicast and
+# client-to-client UDP.  The discovery server runs as fastdds_discovery.service.
+Environment="ROS_DISCOVERY_SERVER=127.0.0.1:11811"
+  blas:
+    detection method: pkgconfig
+    found: true
+    include directory: /usr/local/include
+--
+    name: openblas64
+    openblas configuration: USE_64BITINT=1 DYNAMIC_ARCH=1 DYNAMIC_OLDER= NO_CBLAS=
+      NO_LAPACK= NO_LAPACKE= NO_AFFINITY=1 USE_OPENMP= NEOVERSEN1 MAX_THREADS=80
+    pc file directory: /usr/local/lib/pkgconfig
+    version: 0.3.23.dev
+12

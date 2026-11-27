@@ -1,0 +1,9 @@
+WARNING: topic [/cmd_vel_safe] does not appear to be published yet
+average rate: 21.516
+	min: 0.034s max: 0.119s std dev: 0.01779s window: 23
+average rate: 19.846
+	min: 0.034s max: 0.183s std dev: 0.02604s window: 42
+average rate: 19.947
+	min: 0.034s max: 0.183s std dev: 0.02318s window: 63
+average rate: 19.184
+	min: 0.034s max: 0.199s std dev: 0.02728s window: 80

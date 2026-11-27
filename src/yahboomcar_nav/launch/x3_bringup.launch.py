@@ -195,15 +195,20 @@ def generate_launch_description():
     imu_arg = DeclareLaunchArgument(
         name='imu', default_value='livox', choices=['livox', 'icm'],
         description='imu/data_raw source: livox (Mid-360S IMU via livox_imu_relay) or icm')
+    imu_relay_impl_arg = DeclareLaunchArgument(
+        name='imu_relay_impl', default_value='py', choices=['py', 'cpp'],
+        description='Implementation of the Livox IMU relay')
     use_icm = IfCondition(PythonExpression(["'", LaunchConfiguration('imu'), "' == 'icm'"]))
     use_livox_imu = IfCondition(PythonExpression(["'", LaunchConfiguration('imu'), "' == 'livox'"]))
-    livox_imu_node = Node(
-        package='yahboomcar_bringup',
-        executable='livox_imu_relay',
-        name='livox_imu_relay',
-        output='screen',
-        condition=use_livox_imu,
-    )
+
+    def make_livox_imu_node(context):
+        package, executable = {
+            'py': ('yahboomcar_bringup', 'livox_imu_relay'),
+            'cpp': ('yahboomcar_imu_relay_cpp', 'livox_imu_relay_cpp'),
+        }[LaunchConfiguration('imu_relay_impl').perform(context)]
+        return [Node(package=package, executable=executable, name='livox_imu_relay', output='screen')]
+
+    livox_imu_node = OpaqueFunction(function=make_livox_imu_node, condition=use_livox_imu)
     icm_imu_node = Node(
         package='yahboomcar_bringup',
         executable='icm42688_node',
@@ -295,6 +300,7 @@ def generate_launch_description():
         driver_node,
         base_node,
         imu_arg,
+        imu_relay_impl_arg,
         icm_imu_node,
         livox_imu_node,
         imu_filter_node,

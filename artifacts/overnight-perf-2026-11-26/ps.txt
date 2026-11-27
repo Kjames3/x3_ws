@@ -1,0 +1,40 @@
+    PID %CPU %MEM   RSS     ELAPSED COMMAND
+  71081  505  2.6 1692676     32:58 python3 /home/jetson/x3_ws/src/server_x3.py --domain-id 42 --floor lab_carpet
+  71162 39.6  0.1 88684       32:52 /usr/bin/python3 /home/jetson/x3_ws/install/yahboomcar_bringup/lib/yahboomcar_bringup/livox_scan_node --ros-args -r __node:=livox_scan_node
+  71150 28.6  0.0 61540       32:52 /usr/bin/python3 /home/jetson/x3_ws/install/yahboomcar_bringup/lib/yahboomcar_bringup/Mcnamu_driver_X3 --ros-args --params-file /tmp/launch_params_inrdwu4f -r cmd_vel:=cmd_vel_safe
+  71154 19.8  0.0 61424       32:52 /usr/bin/python3 /home/jetson/x3_ws/install/yahboomcar_bringup/lib/yahboomcar_bringup/livox_imu_relay --ros-args -r __node:=livox_imu_relay
+  71160 14.5  0.0 42480       32:52 /home/jetson/ws_livox/install/livox_ros_driver2/lib/livox_ros_driver2/livox_ros_driver2_node --ros-args -r __node:=livox_lidar_publisher --params-file /tmp/launch_params_yky36jop
+  71158  6.1  0.0 27664       32:52 /opt/ros/humble/lib/robot_localization/ekf_node --ros-args -r __node:=ekf_filter_node --params-file /home/jetson/x3_ws/install/yahboomcar_nav/share/yahboomcar_nav/params/ekf_x3.yaml -r /odometry/filtered:=/odom
+  71156  4.1  0.0 24636       32:52 /opt/ros/humble/lib/imu_filter_madgwick/imu_filter_madgwick_node --ros-args --params-file /home/jetson/x3_ws/install/yahboomcar_bringup/share/yahboomcar_bringup/param/imu_filter_param.yaml -r /imu/data_raw:=/imu/data_raw
+   2935  2.2  0.1 95020    03:08:35 /opt/ros/humble/lib/foxglove_bridge/foxglove_bridge --ros-args --params-file /tmp/launch_params_z5tjn164 --params-file /tmp/launch_params_jl6ge_79 --params-file /tmp/launch_params_84zjkk3n --params-file /tmp/launch_params_p53wucl0 --params-file /tmp/launch_params_dkczevul --params-file /tmp/launch_params_07i89vsx --params-file /tmp/launch_params_b70bbg5j --params-file /tmp/launch_params_62bglrcc --params-file /tmp/launch_params_kiefvgic --params-file /tmp/launch_params_lk8o5suz --params-file /tmp/launch_params_7pdh81e6 --params-file /tmp/launch_params_jz0vgme2 --params-file /tmp/launch_params_pq9ca089 --params-file /tmp/launch_params__gj1_j0s --params-file /tmp/launch_params_lzr7_s97 --params-file /tmp/launch_params_txpkhaac --params-file /tmp/launch_params_nqyfmemx --params-file /tmp/launch_params_jpg7xpmp --params-file /tmp/launch_params_cribx16j --params-file /tmp/launch_params_mu_kdee3 --params-file /tmp/launch_params_5a8egrhs --params-file /tmp/launch_params_ax20txoq --params-file /tmp/launch_params_1z8tpbf1 --params-file /tmp/launch_params_eortzsbh --params-file /tmp/launch_params_vd0o7epr --params-file /tmp/launch_params_3o04dkio --params-file /tmp/launch_params_ivd6_rjk --params-file /tmp/launch_params_v07cq83f --params-file /tmp/launch_params_q6r64kel --params-file /tmp/launch_params_fkxmsjjs --params-file /tmp/launch_params_jdrdza77 --params-file /tmp/launch_params_vcin81e2
+    794  1.4  0.0 47464    03:09:02 /usr/sbin/tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock --port=41641
+  84659  1.0  0.0  9692       00:01 sshd: jetson [priv]
+    607  0.6  0.0 21456    03:09:02 /usr/sbin/NetworkManager --no-daemon
+    606  0.3  0.0  5632    03:09:02 @dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only
+  71152  0.3  0.0 23460       32:52 /home/jetson/x3_ws/install/yahboomcar_base_node/lib/yahboomcar_base_node/base_node_X3 --ros-args --params-file /tmp/launch_params_ka8wnc_p
+    627  0.2  0.0 12292    03:09:02 /usr/libexec/polkitd --no-debug
+  76389  0.2  0.0     0       20:23 [kworker/u25:2-uvcvideo]
+  78457  0.2  0.0     0       15:20 [kworker/u25:0-uvcvideo]
+  80504  0.2  0.0     0       10:13 [kworker/u25:1-uvcvideo]
+  82586  0.2  0.0     0       04:55 [kworker/u25:3-uvcvideo]
+     14  0.1  0.0     0    03:09:15 [ksoftirqd/0]
+    302  0.1  0.1 66952    03:09:06 /lib/systemd/systemd-journald
+    366  0.1  0.0  7340    03:09:06 /lib/systemd/systemd-udevd
+   2249  0.1  0.0 25812    03:08:53 /opt/ros/humble/bin/fast-discovery-server -i 0 -l 0.0.0.0 -p 11811 -t 0.0.0.0 -q 11811
+      1  0.0  0.0 12536    03:09:15 /sbin/init 2
+      2  0.0  0.0     0    03:09:15 [kthreadd]
+      3  0.0  0.0     0    03:09:15 [rcu_gp]
+      4  0.0  0.0     0    03:09:15 [rcu_par_gp]
+      5  0.0  0.0     0    03:09:15 [slub_flushwq]
+      6  0.0  0.0     0    03:09:15 [netns]
+      8  0.0  0.0     0    03:09:15 [kworker/0:0H-events_highpri]
+     10  0.0  0.0     0    03:09:15 [mm_percpu_wq]
+     11  0.0  0.0     0    03:09:15 [rcu_tasks_kthre]
+     12  0.0  0.0     0    03:09:15 [rcu_tasks_rude_]
+     13  0.0  0.0     0    03:09:15 [rcu_tasks_trace]
+     15  0.0  0.0     0    03:09:15 [rcu_preempt]
+     16  0.0  0.0     0    03:09:15 [migration/0]
+     17  0.0  0.0     0    03:09:15 [cpuhp/0]
+     18  0.0  0.0     0    03:09:15 [cpuhp/1]
+     19  0.0  0.0     0    03:09:15 [migration/1]
+     20  0.0  0.0     0    03:09:15 [ksoftirqd/1]

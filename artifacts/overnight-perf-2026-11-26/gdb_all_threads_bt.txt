@@ -1,0 +1,950 @@
+[New LWP 71118]
+[New LWP 71255]
+[New LWP 71256]
+[New LWP 71257]
+[New LWP 71258]
+[New LWP 71259]
+[New LWP 71260]
+[New LWP 71261]
+[New LWP 71262]
+[New LWP 71263]
+[New LWP 71264]
+[New LWP 71266]
+[New LWP 71267]
+[New LWP 71268]
+[New LWP 71281]
+[New LWP 71282]
+[New LWP 71283]
+[New LWP 71284]
+[New LWP 71285]
+[New LWP 71288]
+[New LWP 71289]
+[New LWP 71290]
+[New LWP 71291]
+[New LWP 71292]
+[New LWP 71293]
+[New LWP 71295]
+[New LWP 71296]
+[New LWP 71297]
+[New LWP 71298]
+[New LWP 71299]
+[New LWP 71300]
+[New LWP 71301]
+[New LWP 71302]
+[New LWP 71312]
+[New LWP 71352]
+[New LWP 71357]
+[New LWP 71359]
+[New LWP 71360]
+[New LWP 71411]
+[New LWP 71412]
+[New LWP 71413]
+[New LWP 71414]
+[New LWP 71415]
+[New LWP 71416]
+[New LWP 71417]
+[New LWP 71418]
+[New LWP 71419]
+[New LWP 71420]
+[New LWP 71421]
+[New LWP 71440]
+[New LWP 71467]
+[New LWP 71484]
+[New LWP 75391]
+[New LWP 85568]
+[New LWP 85574]
+[New LWP 85579]
+[New LWP 85580]
+[New LWP 85581]
+[New LWP 85582]
+[New LWP 85583]
+[New LWP 87407]
+[New LWP 87408]
+[New LWP 87410]
+[New LWP 87412]
+[New LWP 87413]
+[New LWP 87422]
+[New LWP 87423]
+[New LWP 87424]
+[New LWP 87430]
+[New LWP 87431]
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/aarch64-linux-gnu/libthread_db.so.1".
+0x0000ffffa960a03c in __GI_epoll_pwait (epfd=<optimized out>, events=0xfffebc177d20, maxevents=3, timeout=3, set=0x0) at ../sysdeps/unix/sysv/linux/epoll_pwait.c:40
+
+Thread 71 (Thread 0xfffe4776f120 (LWP 87431) "python3"):
+#0  __futex_abstimed_wait_common64 (private=<optimized out>, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xfffecc61d680 <schedulerState+51584>) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=<optimized out>, abstime=0x0, clockid=0, expected=0, futex_word=0xfffecc61d680 <schedulerState+51584>) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffecc61d680 <schedulerState+51584>, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=<optimized out>) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa95a8804 in do_futex_wait (sem=sem@entry=0xfffecc61d680 <schedulerState+51584>, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:111
+#4  0x0000ffffa95a88c4 in __new_sem_wait_slow64 (sem=0xfffecc61d680 <schedulerState+51584>, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:183
+#5  0x0000fffec8794488 in XLink_sem_wait () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#6  0x0000fffec878f5b0 in DispatcherWaitEventComplete () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#7  0x0000fffec8788200 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#8  0x0000fffec8789cb4 in XLinkReadMoveData () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#9  0x0000fffec75ea1d0 in dai::XLinkStream::read(std::vector<unsigned char, std::allocator<unsigned char> >&, long&, XLinkTimespec&) const () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#10 0x0000fffec75ea2fc in dai::XLinkStream::read(std::vector<unsigned char, std::allocator<unsigned char> >&, XLinkTimespec&) const () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#11 0x0000fffec75ea5e0 in dai::XLinkStream::read(std::vector<unsigned char, std::allocator<unsigned char> >&) const () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+
+Thread 70 (Thread 0xfffe47f7f120 (LWP 87430) "python3"):
+#0  __futex_abstimed_wait_common64 (private=<optimized out>, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xfffecc61d650 <schedulerState+51536>) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=<optimized out>, abstime=0x0, clockid=0, expected=0, futex_word=0xfffecc61d650 <schedulerState+51536>) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffecc61d650 <schedulerState+51536>, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=<optimized out>) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa95a8804 in do_futex_wait (sem=sem@entry=0xfffecc61d650 <schedulerState+51536>, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:111
+#4  0x0000ffffa95a88c4 in __new_sem_wait_slow64 (sem=0xfffecc61d650 <schedulerState+51536>, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:183
+#5  0x0000fffec8794488 in XLink_sem_wait () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#6  0x0000fffec878f5b0 in DispatcherWaitEventComplete () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#7  0x0000fffec8788200 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#8  0x0000fffec8789cb4 in XLinkReadMoveData () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#9  0x0000fffec75ea1d0 in dai::XLinkStream::read(std::vector<unsigned char, std::allocator<unsigned char> >&, long&, XLinkTimespec&) const () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#10 0x0000fffec75ea2fc in dai::XLinkStream::read(std::vector<unsigned char, std::allocator<unsigned char> >&, XLinkTimespec&) const () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#11 0x0000fffec75ea664 in dai::XLinkStream::read(XLinkTimespec&) const () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+
+Thread 69 (Thread 0xfffeb27cf120 (LWP 87424) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0xfffeb27ce7b0, op=393, expected=0, futex_word=0xfffea802a910) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0xfffeb27ce7b0, clockid=0, expected=0, futex_word=0xfffea802a910) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffea802a910, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0xfffeb27ce7b0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f9b4 in __pthread_cond_wait_common (abstime=0xfffeb27ce7b0, clockid=0, mutex=0xfffea802a918, cond=0xfffea802a8e8) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_timedwait64 (cond=0xfffea802a8e8, mutex=0xfffea802a918, abstime=0xfffeb27ce7b0) at ./nptl/pthread_cond_wait.c:652
+#5  0x0000fffec76374ac in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#6  0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#7  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#8  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 68 (Thread 0xfffe4878f120 (LWP 87423) "EventRead01Thr"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0xfffe4878e4d0, op=393, expected=0, futex_word=0xaaab06450fa4) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0xfffe4878e4d0, clockid=1, expected=0, futex_word=0xaaab06450fa4) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaaab06450fa4, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0xfffe4878e4d0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f9b4 in __pthread_cond_wait_common (abstime=0xfffe4878e4d0, clockid=0, mutex=0xaaab06450f48, cond=0xaaab06450f78) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_timedwait64 (cond=0xaaab06450f78, mutex=0xaaab06450f48, abstime=0xfffe4878e4d0) at ./nptl/pthread_cond_wait.c:652
+#5  0x0000ffff0746970c in usbi_cond_timedwait () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libusb1-56617abc.0.so
+#6  0x0000ffff07467928 in libusb_wait_for_event () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libusb1-56617abc.0.so
+#7  0x0000ffff07467eb4 in libusb_handle_events_timeout_completed () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libusb1-56617abc.0.so
+#8  0x0000ffff07468060 in libusb_handle_events_completed () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libusb1-56617abc.0.so
+#9  0x0000ffff07468c80 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libusb1-56617abc.0.so
+#10 0x0000fffec879de84 in usb_read(libusb_device_handle*, void*, unsigned long, unsigned char) () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#11 0x0000fffec879e030 in usbPlatformRead () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+
+Thread 67 (Thread 0xfffe667cf120 (LWP 87422) "Scheduler01Thr"):
+#0  __futex_abstimed_wait_common64 (private=<optimized out>, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xfffecc6174f0 <schedulerState+26608>) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=<optimized out>, abstime=0x0, clockid=0, expected=0, futex_word=0xfffecc6174f0 <schedulerState+26608>) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffecc6174f0 <schedulerState+26608>, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=<optimized out>) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa95a8804 in do_futex_wait (sem=sem@entry=0xfffecc6174f0 <schedulerState+26608>, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:111
+#4  0x0000ffffa95a88c4 in __new_sem_wait_slow64 (sem=0xfffecc6174f0 <schedulerState+26608>, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:183
+#5  0x0000fffec8794488 in XLink_sem_wait () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#6  0x0000fffec878e090 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#7  0x0000fffec8790164 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#8  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#9  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 66 (Thread 0xfffe58cf7120 (LWP 87413) "python3"):
+#0  __futex_abstimed_wait_common64 (private=<optimized out>, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xfffecc616f00 <schedulerState+25088>) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=<optimized out>, abstime=0x0, clockid=0, expected=0, futex_word=0xfffecc616f00 <schedulerState+25088>) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffecc616f00 <schedulerState+25088>, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=<optimized out>) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa95a8804 in do_futex_wait (sem=sem@entry=0xfffecc616f00 <schedulerState+25088>, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:111
+#4  0x0000ffffa95a88c4 in __new_sem_wait_slow64 (sem=0xfffecc616f00 <schedulerState+25088>, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:183
+#5  0x0000fffec8794488 in XLink_sem_wait () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#6  0x0000fffec878f5b0 in DispatcherWaitEventComplete () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#7  0x0000fffec8788200 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#8  0x0000fffec8789cb4 in XLinkReadMoveData () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#9  0x0000fffec75ea1d0 in dai::XLinkStream::read(std::vector<unsigned char, std::allocator<unsigned char> >&, long&, XLinkTimespec&) const () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#10 0x0000fffec75ea2fc in dai::XLinkStream::read(std::vector<unsigned char, std::allocator<unsigned char> >&, XLinkTimespec&) const () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#11 0x0000fffec75ea5e0 in dai::XLinkStream::read(std::vector<unsigned char, std::allocator<unsigned char> >&) const () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+
+Thread 65 (Thread 0xfffe66fdf120 (LWP 87412) "python3"):
+#0  __futex_abstimed_wait_common64 (private=<optimized out>, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xfffecc616ed0 <schedulerState+25040>) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=<optimized out>, abstime=0x0, clockid=0, expected=0, futex_word=0xfffecc616ed0 <schedulerState+25040>) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffecc616ed0 <schedulerState+25040>, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=<optimized out>) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa95a8804 in do_futex_wait (sem=sem@entry=0xfffecc616ed0 <schedulerState+25040>, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:111
+#4  0x0000ffffa95a88c4 in __new_sem_wait_slow64 (sem=0xfffecc616ed0 <schedulerState+25040>, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:183
+#5  0x0000fffec8794488 in XLink_sem_wait () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#6  0x0000fffec878f5b0 in DispatcherWaitEventComplete () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#7  0x0000fffec8788200 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#8  0x0000fffec8789cb4 in XLinkReadMoveData () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#9  0x0000fffec75ea1d0 in dai::XLinkStream::read(std::vector<unsigned char, std::allocator<unsigned char> >&, long&, XLinkTimespec&) const () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#10 0x0000fffec75ea2fc in dai::XLinkStream::read(std::vector<unsigned char, std::allocator<unsigned char> >&, XLinkTimespec&) const () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#11 0x0000fffec75ea664 in dai::XLinkStream::read(XLinkTimespec&) const () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+
+Thread 64 (Thread 0xfffe677ef120 (LWP 87410) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0xfffe677ee7b0, op=393, expected=0, futex_word=0xfffe4c001490) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0xfffe677ee7b0, clockid=0, expected=0, futex_word=0xfffe4c001490) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffe4c001490, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0xfffe677ee7b0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f9b4 in __pthread_cond_wait_common (abstime=0xfffe677ee7b0, clockid=0, mutex=0xfffe4c001498, cond=0xfffe4c001468) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_timedwait64 (cond=0xfffe4c001468, mutex=0xfffe4c001498, abstime=0xfffe677ee7b0) at ./nptl/pthread_cond_wait.c:652
+#5  0x0000fffec76374ac in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#6  0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#7  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#8  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 63 (Thread 0xfffe499a7120 (LWP 87408) "EventRead00Thr"):
+#0  0x0000ffffa95ffb60 in __GI___poll (fds=0xfffe18006e70, nfds=4, timeout=<optimized out>) at ../sysdeps/unix/sysv/linux/poll.c:41
+#1  0x0000ffff07469424 in usbi_wait_for_events () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libusb1-56617abc.0.so
+#2  0x0000ffff07466b74 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libusb1-56617abc.0.so
+#3  0x0000ffff07467da4 in libusb_handle_events_timeout_completed () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libusb1-56617abc.0.so
+#4  0x0000ffff07468060 in libusb_handle_events_completed () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libusb1-56617abc.0.so
+#5  0x0000ffff07468c80 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libusb1-56617abc.0.so
+#6  0x0000fffec879de84 in usb_read(libusb_device_handle*, void*, unsigned long, unsigned char) () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#7  0x0000fffec879e030 in usbPlatformRead () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#8  0x0000fffec87916a8 in dispatcherEventReceive () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#9  0x0000fffec878fb34 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#10 0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#11 0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 62 (Thread 0xfffdd57ef120 (LWP 87407) "Scheduler00Thr"):
+#0  __futex_abstimed_wait_common64 (private=<optimized out>, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xfffecc610d70 <schedulerState+112>) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=<optimized out>, abstime=0x0, clockid=0, expected=0, futex_word=0xfffecc610d70 <schedulerState+112>) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffecc610d70 <schedulerState+112>, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=<optimized out>) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa95a8804 in do_futex_wait (sem=sem@entry=0xfffecc610d70 <schedulerState+112>, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:111
+#4  0x0000ffffa95a88c4 in __new_sem_wait_slow64 (sem=0xfffecc610d70 <schedulerState+112>, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:183
+#5  0x0000fffec8794488 in XLink_sem_wait () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#6  0x0000fffec878e090 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#7  0x0000fffec8790164 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#8  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#9  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 61 (Thread 0xfffdc67cf120 (LWP 85583) "XLinkInHost(15)"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0xfffdc67ce340, op=393, expected=0, futex_word=0xfffea8026580) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0xfffdc67ce340, clockid=-1453343924, expected=0, futex_word=0xfffea8026580) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffea8026580, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0xfffdc67ce340, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f9b4 in __pthread_cond_wait_common (abstime=0xfffdc67ce340, clockid=0, mutex=0xfffea8026588, cond=0xfffea8026558) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_timedwait64 (cond=0xfffea8026558, mutex=0xfffea8026588, abstime=0xfffdc67ce340) at ./nptl/pthread_cond_wait.c:652
+#5  0x0000fffec7820e30 in dai::node::internal::XLinkInHost::parkUntilReconnect(std::shared_ptr<dai::XLinkConnection> const&, bool) () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#6  0x0000fffec7821be8 in dai::node::internal::XLinkInHost::run() () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#7  0x0000fffec7730d04 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#8  0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#9  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#10 0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 60 (Thread 0xfffdc6fdf120 (LWP 85582) "XLinkInHost(13)"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0xfffdc6fde340, op=393, expected=0, futex_word=0xfffea8020650) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0xfffdc6fde340, clockid=-1453343924, expected=0, futex_word=0xfffea8020650) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffea8020650, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0xfffdc6fde340, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f9b4 in __pthread_cond_wait_common (abstime=0xfffdc6fde340, clockid=0, mutex=0xfffea8020658, cond=0xfffea8020628) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_timedwait64 (cond=0xfffea8020628, mutex=0xfffea8020658, abstime=0xfffdc6fde340) at ./nptl/pthread_cond_wait.c:652
+#5  0x0000fffec7820e30 in dai::node::internal::XLinkInHost::parkUntilReconnect(std::shared_ptr<dai::XLinkConnection> const&, bool) () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#6  0x0000fffec7821be8 in dai::node::internal::XLinkInHost::run() () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#7  0x0000fffec7730d04 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#8  0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#9  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#10 0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 59 (Thread 0xfffdc77ef120 (LWP 85581) "XLinkInHost(11)"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0xfffdc77ee340, op=393, expected=0, futex_word=0xfffea8020d80) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0xfffdc77ee340, clockid=-1453343924, expected=0, futex_word=0xfffea8020d80) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffea8020d80, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0xfffdc77ee340, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f9b4 in __pthread_cond_wait_common (abstime=0xfffdc77ee340, clockid=0, mutex=0xfffea8020d88, cond=0xfffea8020d58) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_timedwait64 (cond=0xfffea8020d58, mutex=0xfffea8020d88, abstime=0xfffdc77ee340) at ./nptl/pthread_cond_wait.c:652
+#5  0x0000fffec7820e30 in dai::node::internal::XLinkInHost::parkUntilReconnect(std::shared_ptr<dai::XLinkConnection> const&, bool) () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#6  0x0000fffec7821be8 in dai::node::internal::XLinkInHost::run() () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#7  0x0000fffec7730d04 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#8  0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#9  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#10 0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 58 (Thread 0xfffdd4fdf120 (LWP 85580) "XLinkInHost(9)"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0xfffdd4fde340, op=393, expected=0, futex_word=0xfffea802a650) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0xfffdd4fde340, clockid=-1453343924, expected=0, futex_word=0xfffea802a650) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffea802a650, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0xfffdd4fde340, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f9b4 in __pthread_cond_wait_common (abstime=0xfffdd4fde340, clockid=0, mutex=0xfffea802a658, cond=0xfffea802a628) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_timedwait64 (cond=0xfffea802a628, mutex=0xfffea802a658, abstime=0xfffdd4fde340) at ./nptl/pthread_cond_wait.c:652
+#5  0x0000fffec7820e30 in dai::node::internal::XLinkInHost::parkUntilReconnect(std::shared_ptr<dai::XLinkConnection> const&, bool) () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#6  0x0000fffec7821be8 in dai::node::internal::XLinkInHost::run() () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#7  0x0000fffec7730d04 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#8  0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#9  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#10 0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 57 (Thread 0xfffe45b1f120 (LWP 85579) "XLinkInHost(7)"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0xfffe45b1e340, op=393, expected=0, futex_word=0xfffea80292f0) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0xfffe45b1e340, clockid=-1453343924, expected=0, futex_word=0xfffea80292f0) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffea80292f0, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0xfffe45b1e340, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f9b4 in __pthread_cond_wait_common (abstime=0xfffe45b1e340, clockid=0, mutex=0xfffea80292f8, cond=0xfffea80292c8) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_timedwait64 (cond=0xfffea80292c8, mutex=0xfffea80292f8, abstime=0xfffe45b1e340) at ./nptl/pthread_cond_wait.c:652
+#5  0x0000fffec7820e30 in dai::node::internal::XLinkInHost::parkUntilReconnect(std::shared_ptr<dai::XLinkConnection> const&, bool) () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#6  0x0000fffec7821be8 in dai::node::internal::XLinkInHost::run() () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#7  0x0000fffec7730d04 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#8  0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#9  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#10 0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 56 (Thread 0xfffe49197120 (LWP 85574) "python3"):
+#0  __futex_abstimed_wait_common64 (private=<optimized out>, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xfffecc61d620 <schedulerState+51488>) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=<optimized out>, abstime=0x0, clockid=0, expected=0, futex_word=0xfffecc61d620 <schedulerState+51488>) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffecc61d620 <schedulerState+51488>, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=<optimized out>) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa95a8804 in do_futex_wait (sem=sem@entry=0xfffecc61d620 <schedulerState+51488>, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:111
+#4  0x0000ffffa95a88c4 in __new_sem_wait_slow64 (sem=0xfffecc61d620 <schedulerState+51488>, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:183
+#5  0x0000fffec8794488 in XLink_sem_wait () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#6  0x0000fffec878f5b0 in DispatcherWaitEventComplete () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#7  0x0000fffec8788200 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#8  0x0000fffec8789cb4 in XLinkReadMoveData () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#9  0x0000fffec75ea1d0 in dai::XLinkStream::read(std::vector<unsigned char, std::allocator<unsigned char> >&, long&, XLinkTimespec&) const () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#10 0x0000fffec75ea2fc in dai::XLinkStream::read(std::vector<unsigned char, std::allocator<unsigned char> >&, XLinkTimespec&) const () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#11 0x0000fffec75ea5e0 in dai::XLinkStream::read(std::vector<unsigned char, std::allocator<unsigned char> >&) const () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+
+Thread 55 (Thread 0xfffe299f3120 (LWP 85568) "python3"):
+#0  0x0000ffffa95ffb60 in __GI___poll (fds=0xfffe299f13b0, nfds=2, timeout=<optimized out>) at ../sysdeps/unix/sysv/linux/poll.c:41
+#1  0x0000fffec8af7d7c in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#2  0x0000fffec8af0828 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#3  0x0000fffec8adece4 in curl_easy_perform () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#4  0x0000fffec8b7445c in cpr::Session::makeRequest() () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#5  0x0000fffec8b750c4 in cpr::Session::Post() () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#6  0x0000fffec7a19634 in dai::logCollection::sendLogsToServer(std::optional<dai::logCollection::FileWithSHA1> const&, std::optional<dai::logCollection::FileWithSHA1> const&, dai::DeviceInfo const&) () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#7  0x0000fffec7a1a864 in dai::logCollection::logCrashDump(std::optional<dai::PipelineSchema> const&, dai::CrashDump const&, dai::DeviceInfo const&) () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#8  0x0000fffec7638894 in dai::DeviceBase::collectAndLogCrashDump(dai::DeviceBase*) () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#9  0x0000fffec7660e00 in dai::DeviceBase::monitorCallback(std::chrono::duration<long, std::ratio<1l, 1000l> >, dai::DeviceBase::PrevInfo const&) () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#10 0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#11 0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+
+Thread 54 (Thread 0xfffdc7fff120 (LWP 75391) "python3"):
+#0  __futex_abstimed_wait_common64 (private=<optimized out>, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xaaab06eab480) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=<optimized out>, abstime=0x0, clockid=0, expected=0, futex_word=0xaaab06eab480) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaaab06eab480, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=<optimized out>) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa95a8804 in do_futex_wait (sem=sem@entry=0xaaab06eab480, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:111
+#4  0x0000ffffa95a88c4 in __new_sem_wait_slow64 (sem=0xaaab06eab480, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:183
+#5  0x0000aaaaccc91008 in PyThread_acquire_lock_timed ()
+#6  0x0000ffff6e601d40 in ?? () from /usr/lib/python3.10/lib-dynload/_queue.cpython-310-aarch64-linux-gnu.so
+#7  0x0000aaaaccd918d0 in ?? ()
+#8  0x0000aaaacccbd670 in _PyEval_EvalFrameDefault ()
+#9  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#10 0x0000aaaacccbe170 in _PyEval_EvalFrameDefault ()
+#11 0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+
+Thread 53 (Thread 0xfffddcf5f120 (LWP 71484) "python3"):
+#0  __futex_abstimed_wait_common64 (private=<optimized out>, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xaaab06eab480) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=<optimized out>, abstime=0x0, clockid=0, expected=0, futex_word=0xaaab06eab480) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaaab06eab480, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=<optimized out>) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa95a8804 in do_futex_wait (sem=sem@entry=0xaaab06eab480, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:111
+#4  0x0000ffffa95a88c4 in __new_sem_wait_slow64 (sem=0xaaab06eab480, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:183
+#5  0x0000aaaaccc91008 in PyThread_acquire_lock_timed ()
+#6  0x0000ffff6e601db0 in ?? () from /usr/lib/python3.10/lib-dynload/_queue.cpython-310-aarch64-linux-gnu.so
+#7  0x0000aaaaccd918d0 in ?? ()
+#8  0x0000aaaacccbd670 in _PyEval_EvalFrameDefault ()
+#9  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#10 0x0000aaaacccbe170 in _PyEval_EvalFrameDefault ()
+#11 0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+
+Thread 52 (Thread 0xfffdd7fff120 (LWP 71467) "python3"):
+#0  __futex_abstimed_wait_common64 (private=<optimized out>, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xaaab06eab480) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=<optimized out>, abstime=0x0, clockid=0, expected=0, futex_word=0xaaab06eab480) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaaab06eab480, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=<optimized out>) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa95a8804 in do_futex_wait (sem=sem@entry=0xaaab06eab480, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:111
+#4  0x0000ffffa95a88c4 in __new_sem_wait_slow64 (sem=0xaaab06eab480, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:183
+#5  0x0000aaaaccc91008 in PyThread_acquire_lock_timed ()
+#6  0x0000ffff6e601d40 in ?? () from /usr/lib/python3.10/lib-dynload/_queue.cpython-310-aarch64-linux-gnu.so
+#7  0x0000aaaaccd918d0 in ?? ()
+#8  0x0000aaaacccbd670 in _PyEval_EvalFrameDefault ()
+#9  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#10 0x0000aaaacccbe170 in _PyEval_EvalFrameDefault ()
+#11 0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+
+Thread 51 (Thread 0xfffddd76f120 (LWP 71440) "python3"):
+#0  __futex_abstimed_wait_common64 (private=<optimized out>, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xaaab06eab480) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=<optimized out>, abstime=0x0, clockid=0, expected=0, futex_word=0xaaab06eab480) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaaab06eab480, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=<optimized out>) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa95a8804 in do_futex_wait (sem=sem@entry=0xaaab06eab480, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:111
+#4  0x0000ffffa95a88c4 in __new_sem_wait_slow64 (sem=0xaaab06eab480, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:183
+#5  0x0000aaaaccc91008 in PyThread_acquire_lock_timed ()
+#6  0x0000ffff6e601d40 in ?? () from /usr/lib/python3.10/lib-dynload/_queue.cpython-310-aarch64-linux-gnu.so
+#7  0x0000aaaaccd918d0 in ?? ()
+#8  0x0000aaaacccbd670 in _PyEval_EvalFrameDefault ()
+#9  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#10 0x0000aaaacccbe170 in _PyEval_EvalFrameDefault ()
+#11 0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+
+Thread 50 (Thread 0xfffddff7f120 (LWP 71421) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xffffa7999de8 <thread_status+1384>) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0x0, clockid=0, expected=0, futex_word=0xffffa7999de8 <thread_status+1384>) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xffffa7999de8 <thread_status+1384>, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f694 in __pthread_cond_wait_common (abstime=0x0, clockid=0, mutex=0xffffa7999d90 <thread_status+1296>, cond=0xffffa7999dc0 <thread_status+1344>) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xffffa7999dc0 <thread_status+1344>, mutex=0xffffa7999d90 <thread_status+1296>) at ./nptl/pthread_cond_wait.c:627
+#5  0x0000ffffa65b5fb8 in blas_thread_server () from /home/jetson/.local/lib/python3.10/site-packages/numpy/core/../../numpy.libs/libopenblas64_p-r0-17488984.3.23.dev.so
+#6  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#7  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 49 (Thread 0xfffde078f120 (LWP 71420) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xffffa7999d6c <thread_status+1260>) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0x0, clockid=0, expected=0, futex_word=0xffffa7999d6c <thread_status+1260>) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xffffa7999d6c <thread_status+1260>, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f694 in __pthread_cond_wait_common (abstime=0x0, clockid=0, mutex=0xffffa7999d10 <thread_status+1168>, cond=0xffffa7999d40 <thread_status+1216>) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xffffa7999d40 <thread_status+1216>, mutex=0xffffa7999d10 <thread_status+1168>) at ./nptl/pthread_cond_wait.c:627
+#5  0x0000ffffa65b5fb8 in blas_thread_server () from /home/jetson/.local/lib/python3.10/site-packages/numpy/core/../../numpy.libs/libopenblas64_p-r0-17488984.3.23.dev.so
+#6  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#7  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 48 (Thread 0xfffde0f9f120 (LWP 71419) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xffffa7999cec <thread_status+1132>) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0x0, clockid=0, expected=0, futex_word=0xffffa7999cec <thread_status+1132>) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xffffa7999cec <thread_status+1132>, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f694 in __pthread_cond_wait_common (abstime=0x0, clockid=0, mutex=0xffffa7999c90 <thread_status+1040>, cond=0xffffa7999cc0 <thread_status+1088>) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xffffa7999cc0 <thread_status+1088>, mutex=0xffffa7999c90 <thread_status+1040>) at ./nptl/pthread_cond_wait.c:627
+#5  0x0000ffffa65b5fb8 in blas_thread_server () from /home/jetson/.local/lib/python3.10/site-packages/numpy/core/../../numpy.libs/libopenblas64_p-r0-17488984.3.23.dev.so
+#6  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#7  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 47 (Thread 0xfffde17af120 (LWP 71418) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xffffa7999c68 <thread_status+1000>) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0x0, clockid=0, expected=0, futex_word=0xffffa7999c68 <thread_status+1000>) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xffffa7999c68 <thread_status+1000>, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f694 in __pthread_cond_wait_common (abstime=0x0, clockid=0, mutex=0xffffa7999c10 <thread_status+912>, cond=0xffffa7999c40 <thread_status+960>) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xffffa7999c40 <thread_status+960>, mutex=0xffffa7999c10 <thread_status+912>) at ./nptl/pthread_cond_wait.c:627
+#5  0x0000ffffa65b5fb8 in blas_thread_server () from /home/jetson/.local/lib/python3.10/site-packages/numpy/core/../../numpy.libs/libopenblas64_p-r0-17488984.3.23.dev.so
+#6  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#7  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 46 (Thread 0xfffde1fbf120 (LWP 71417) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xffffa7999be8 <thread_status+872>) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0x0, clockid=0, expected=0, futex_word=0xffffa7999be8 <thread_status+872>) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xffffa7999be8 <thread_status+872>, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f694 in __pthread_cond_wait_common (abstime=0x0, clockid=0, mutex=0xffffa7999b90 <thread_status+784>, cond=0xffffa7999bc0 <thread_status+832>) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xffffa7999bc0 <thread_status+832>, mutex=0xffffa7999b90 <thread_status+784>) at ./nptl/pthread_cond_wait.c:627
+#5  0x0000ffffa65b5fb8 in blas_thread_server () from /home/jetson/.local/lib/python3.10/site-packages/numpy/core/../../numpy.libs/libopenblas64_p-r0-17488984.3.23.dev.so
+#6  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#7  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 45 (Thread 0xfffde27cf120 (LWP 71416) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xffffa7999b6c <thread_status+748>) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0x0, clockid=0, expected=0, futex_word=0xffffa7999b6c <thread_status+748>) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xffffa7999b6c <thread_status+748>, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f694 in __pthread_cond_wait_common (abstime=0x0, clockid=0, mutex=0xffffa7999b10 <thread_status+656>, cond=0xffffa7999b40 <thread_status+704>) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xffffa7999b40 <thread_status+704>, mutex=0xffffa7999b10 <thread_status+656>) at ./nptl/pthread_cond_wait.c:627
+#5  0x0000ffffa65b5fb8 in blas_thread_server () from /home/jetson/.local/lib/python3.10/site-packages/numpy/core/../../numpy.libs/libopenblas64_p-r0-17488984.3.23.dev.so
+#6  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#7  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 44 (Thread 0xfffde2fdf120 (LWP 71415) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xffffa7999ae8 <thread_status+616>) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0x0, clockid=0, expected=0, futex_word=0xffffa7999ae8 <thread_status+616>) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xffffa7999ae8 <thread_status+616>, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f694 in __pthread_cond_wait_common (abstime=0x0, clockid=0, mutex=0xffffa7999a90 <thread_status+528>, cond=0xffffa7999ac0 <thread_status+576>) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xffffa7999ac0 <thread_status+576>, mutex=0xffffa7999a90 <thread_status+528>) at ./nptl/pthread_cond_wait.c:627
+#5  0x0000ffffa65b5fb8 in blas_thread_server () from /home/jetson/.local/lib/python3.10/site-packages/numpy/core/../../numpy.libs/libopenblas64_p-r0-17488984.3.23.dev.so
+#6  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#7  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 43 (Thread 0xfffde37ef120 (LWP 71414) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xffffa7999a68 <thread_status+488>) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0x0, clockid=0, expected=0, futex_word=0xffffa7999a68 <thread_status+488>) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xffffa7999a68 <thread_status+488>, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f694 in __pthread_cond_wait_common (abstime=0x0, clockid=0, mutex=0xffffa7999a10 <thread_status+400>, cond=0xffffa7999a40 <thread_status+448>) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xffffa7999a40 <thread_status+448>, mutex=0xffffa7999a10 <thread_status+400>) at ./nptl/pthread_cond_wait.c:627
+#5  0x0000ffffa65b5fb8 in blas_thread_server () from /home/jetson/.local/lib/python3.10/site-packages/numpy/core/../../numpy.libs/libopenblas64_p-r0-17488984.3.23.dev.so
+#6  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#7  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 42 (Thread 0xfffde3fff120 (LWP 71413) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xffffa79999e8 <thread_status+360>) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0x0, clockid=0, expected=0, futex_word=0xffffa79999e8 <thread_status+360>) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xffffa79999e8 <thread_status+360>, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f694 in __pthread_cond_wait_common (abstime=0x0, clockid=0, mutex=0xffffa7999990 <thread_status+272>, cond=0xffffa79999c0 <thread_status+320>) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xffffa79999c0 <thread_status+320>, mutex=0xffffa7999990 <thread_status+272>) at ./nptl/pthread_cond_wait.c:627
+#5  0x0000ffffa65b5fb8 in blas_thread_server () from /home/jetson/.local/lib/python3.10/site-packages/numpy/core/../../numpy.libs/libopenblas64_p-r0-17488984.3.23.dev.so
+#6  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#7  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 41 (Thread 0xfffe289d3120 (LWP 71412) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xffffa7999968 <thread_status+232>) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0x0, clockid=0, expected=0, futex_word=0xffffa7999968 <thread_status+232>) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xffffa7999968 <thread_status+232>, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f694 in __pthread_cond_wait_common (abstime=0x0, clockid=0, mutex=0xffffa7999910 <thread_status+144>, cond=0xffffa7999940 <thread_status+192>) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xffffa7999940 <thread_status+192>, mutex=0xffffa7999910 <thread_status+144>) at ./nptl/pthread_cond_wait.c:627
+#5  0x0000ffffa65b5fb8 in blas_thread_server () from /home/jetson/.local/lib/python3.10/site-packages/numpy/core/../../numpy.libs/libopenblas64_p-r0-17488984.3.23.dev.so
+#6  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#7  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 40 (Thread 0xfffe291e3120 (LWP 71411) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xffffa79998e8 <thread_status+104>) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0x0, clockid=0, expected=0, futex_word=0xffffa79998e8 <thread_status+104>) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xffffa79998e8 <thread_status+104>, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f694 in __pthread_cond_wait_common (abstime=0x0, clockid=0, mutex=0xffffa7999890 <thread_status+16>, cond=0xffffa79998c0 <thread_status+64>) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xffffa79998c0 <thread_status+64>, mutex=0xffffa7999890 <thread_status+16>) at ./nptl/pthread_cond_wait.c:627
+#5  0x0000ffffa65b5fb8 in blas_thread_server () from /home/jetson/.local/lib/python3.10/site-packages/numpy/core/../../numpy.libs/libopenblas64_p-r0-17488984.3.23.dev.so
+#6  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#7  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 39 (Thread 0xfffe4632f120 (LWP 71360) "XLinkInHost(4)"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0xfffe4632e340, op=393, expected=0, futex_word=0xfffe4c0177f0) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0xfffe4632e340, clockid=-1453343924, expected=0, futex_word=0xfffe4c0177f0) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffe4c0177f0, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0xfffe4632e340, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f9b4 in __pthread_cond_wait_common (abstime=0xfffe4632e340, clockid=0, mutex=0xfffe4c0177f8, cond=0xfffe4c0177c8) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_timedwait64 (cond=0xfffe4c0177c8, mutex=0xfffe4c0177f8, abstime=0xfffe4632e340) at ./nptl/pthread_cond_wait.c:652
+#5  0x0000fffec7820e30 in dai::node::internal::XLinkInHost::parkUntilReconnect(std::shared_ptr<dai::XLinkConnection> const&, bool) () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#6  0x0000fffec7821be8 in dai::node::internal::XLinkInHost::run() () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#7  0x0000fffec7730d04 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#8  0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#9  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#10 0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 38 (Thread 0xfffe65fbf120 (LWP 71359) "XLinkInHost(2)"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0xfffe65fbe340, op=393, expected=0, futex_word=0xfffe4c01a230) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0xfffe65fbe340, clockid=-1453343924, expected=0, futex_word=0xfffe4c01a230) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffe4c01a230, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0xfffe65fbe340, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f9b4 in __pthread_cond_wait_common (abstime=0xfffe65fbe340, clockid=0, mutex=0xfffe4c01a238, cond=0xfffe4c01a208) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_timedwait64 (cond=0xfffe4c01a208, mutex=0xfffe4c01a238, abstime=0xfffe65fbe340) at ./nptl/pthread_cond_wait.c:652
+#5  0x0000fffec7820e30 in dai::node::internal::XLinkInHost::parkUntilReconnect(std::shared_ptr<dai::XLinkConnection> const&, bool) () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#6  0x0000fffec7821be8 in dai::node::internal::XLinkInHost::run() () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#7  0x0000fffec7730d04 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#8  0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#9  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#10 0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 37 (Thread 0xfffe46b3f120 (LWP 71357) "python3"):
+#0  __futex_abstimed_wait_common64 (private=<optimized out>, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xfffecc616ea0 <schedulerState+24992>) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=<optimized out>, abstime=0x0, clockid=0, expected=0, futex_word=0xfffecc616ea0 <schedulerState+24992>) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffecc616ea0 <schedulerState+24992>, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=<optimized out>) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa95a8804 in do_futex_wait (sem=sem@entry=0xfffecc616ea0 <schedulerState+24992>, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:111
+#4  0x0000ffffa95a88c4 in __new_sem_wait_slow64 (sem=0xfffecc616ea0 <schedulerState+24992>, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:183
+#5  0x0000fffec8794488 in XLink_sem_wait () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#6  0x0000fffec878f5b0 in DispatcherWaitEventComplete () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#7  0x0000fffec8788200 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#8  0x0000fffec8789cb4 in XLinkReadMoveData () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#9  0x0000fffec75ea1d0 in dai::XLinkStream::read(std::vector<unsigned char, std::allocator<unsigned char> >&, long&, XLinkTimespec&) const () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#10 0x0000fffec75ea2fc in dai::XLinkStream::read(std::vector<unsigned char, std::allocator<unsigned char> >&, XLinkTimespec&) const () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#11 0x0000fffec75ea5e0 in dai::XLinkStream::read(std::vector<unsigned char, std::allocator<unsigned char> >&) const () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+
+Thread 36 (Thread 0xfffe64f9f120 (LWP 71352) "python3"):
+#0  0x0000ffffa95ffb60 in __GI___poll (fds=0xfffe64f9d3b0, nfds=2, timeout=<optimized out>) at ../sysdeps/unix/sysv/linux/poll.c:41
+#1  0x0000fffec8af7d7c in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#2  0x0000fffec8af0828 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#3  0x0000fffec8adece4 in curl_easy_perform () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#4  0x0000fffec8b7445c in cpr::Session::makeRequest() () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#5  0x0000fffec8b750c4 in cpr::Session::Post() () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#6  0x0000fffec7a19634 in dai::logCollection::sendLogsToServer(std::optional<dai::logCollection::FileWithSHA1> const&, std::optional<dai::logCollection::FileWithSHA1> const&, dai::DeviceInfo const&) () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#7  0x0000fffec7a1a864 in dai::logCollection::logCrashDump(std::optional<dai::PipelineSchema> const&, dai::CrashDump const&, dai::DeviceInfo const&) () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#8  0x0000fffec7638894 in dai::DeviceBase::collectAndLogCrashDump(dai::DeviceBase*) () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#9  0x0000fffec7660e00 in dai::DeviceBase::monitorCallback(std::chrono::duration<long, std::ratio<1l, 1000l> >, dai::DeviceBase::PrevInfo const&) () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#10 0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#11 0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+
+Thread 35 (Thread 0xfffe657af120 (LWP 71312) "cuda-EvtHandlr"):
+#0  0x0000ffffa95ffb60 in __GI___poll (fds=0xfffe2c000c20, nfds=10, timeout=<optimized out>) at ../sysdeps/unix/sysv/linux/poll.c:41
+#1  0x0000fffea59af290 in ?? () from /usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1
+#2  0x0000fffea5a4c620 in ?? () from /usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1
+#3  0x0000fffea59ac0c4 in ?? () from /usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1
+#4  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#5  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 34 (Thread 0xfffeb2fdf120 (LWP 71302) "python3"):
+#0  __futex_abstimed_wait_common64 (private=<optimized out>, cancel=true, abstime=0xfffeb2fddb70, op=137, expected=0, futex_word=0xfffe4c032df0) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=<optimized out>, abstime=0xfffeb2fddb70, clockid=0, expected=0, futex_word=0xfffe4c032df0) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffe4c032df0, expected=expected@entry=0, clockid=clockid@entry=1, abstime=abstime@entry=0xfffeb2fddb70, private=<optimized out>) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa95a7a58 in do_futex_wait (sem=sem@entry=0xfffe4c032df0, clockid=clockid@entry=1, abstime=abstime@entry=0xfffeb2fddb70) at ./nptl/sem_waitcommon.c:111
+#4  0x0000ffffa95a7b38 in __new_sem_wait_slow64 (sem=0xfffe4c032df0, clockid=1, abstime=0xfffeb2fddb70) at ./nptl/sem_waitcommon.c:183
+#5  0x0000aaaaccc91060 in PyThread_acquire_lock_timed ()
+#6  0x0000aaaacccecc7c in ?? ()
+#7  0x0000aaaacccd565c in ?? ()
+#8  0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#9  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#10 0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#11 0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+
+Thread 33 (Thread 0xfffeb37ef120 (LWP 71301) "python3"):
+#0  0x0000ffffa9602920 in __GI___select (nfds=78, readfds=0xfffeb37ed7e0, writefds=0x0, exceptfds=0x0, timeout=0xfffeb37ed7d0) at ../sysdeps/unix/sysv/linux/select.c:69
+#1  0x0000ffff88e32c2c in ?? () from /home/jetson/.local/lib/python3.10/site-packages/cv2/cv2.abi3.so
+#2  0x0000ffff88e37b90 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/cv2/cv2.abi3.so
+#3  0x0000ffff88e02d44 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/cv2/cv2.abi3.so
+#4  0x0000ffff88e02b44 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/cv2/cv2.abi3.so
+#5  0x0000ffff883549b4 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/cv2/cv2.abi3.so
+#6  0x0000aaaacccd565c in ?? ()
+#7  0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#8  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#9  0x0000aaaacccbe170 in _PyEval_EvalFrameDefault ()
+#10 0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#11 0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+
+Thread 32 (Thread 0xfffeb3fff120 (LWP 71300) "python3"):
+#0  __futex_abstimed_wait_common64 (private=<optimized out>, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xaaab06eab480) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=<optimized out>, abstime=0x0, clockid=0, expected=0, futex_word=0xaaab06eab480) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaaab06eab480, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=<optimized out>) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa95a8804 in do_futex_wait (sem=sem@entry=0xaaab06eab480, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:111
+#4  0x0000ffffa95a88c4 in __new_sem_wait_slow64 (sem=0xaaab06eab480, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:183
+#5  0x0000aaaaccc91008 in PyThread_acquire_lock_timed ()
+#6  0x0000ffff6e601e28 in ?? () from /usr/lib/python3.10/lib-dynload/_queue.cpython-310-aarch64-linux-gnu.so
+#7  0x0000aaaaccd918d0 in ?? ()
+#8  0x0000aaaacccbd670 in _PyEval_EvalFrameDefault ()
+#9  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#10 0x0000aaaacccbe170 in _PyEval_EvalFrameDefault ()
+#11 0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+
+Thread 31 (Thread 0xfffe67fff120 (LWP 71299) "python3"):
+#0  0x0000ffffa9602920 in __GI___select (nfds=0, readfds=0x0, writefds=0x0, exceptfds=0x0, timeout=0xfffe67ffdfd0) at ../sysdeps/unix/sysv/linux/select.c:69
+#1  0x0000aaaacce069e0 in ?? ()
+#2  0x0000aaaacccd30c8 in ?? ()
+#3  0x0000aaaacccc0a3c in _PyEval_EvalFrameDefault ()
+#4  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#5  0x0000aaaacccbe170 in _PyEval_EvalFrameDefault ()
+#6  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#7  0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#8  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#9  0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#10 0x0000aaaaccce3824 in ?? ()
+#11 0x0000aaaacce43cec in ?? ()
+
+Thread 30 (Thread 0xfffe989ce120 (LWP 71298) "python3"):
+#0  0x0000ffffa9602920 in __GI___select (nfds=0, readfds=0x0, writefds=0x0, exceptfds=0x0, timeout=0xfffe989ccfd0) at ../sysdeps/unix/sysv/linux/select.c:69
+#1  0x0000aaaacce069e0 in ?? ()
+#2  0x0000aaaacccd30c8 in ?? ()
+#3  0x0000aaaacccc0a3c in _PyEval_EvalFrameDefault ()
+#4  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#5  0x0000aaaacccbe170 in _PyEval_EvalFrameDefault ()
+#6  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#7  0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#8  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#9  0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#10 0x0000aaaaccce3824 in ?? ()
+#11 0x0000aaaacce43cec in ?? ()
+
+Thread 29 (Thread 0xfffe991de120 (LWP 71297) "python3"):
+#0  0x0000ffffa9602920 in __GI___select (nfds=0, readfds=0x0, writefds=0x0, exceptfds=0x0, timeout=0xfffe991dcf70) at ../sysdeps/unix/sysv/linux/select.c:69
+#1  0x0000aaaacce069e0 in ?? ()
+#2  0x0000aaaacccd30c8 in ?? ()
+#3  0x0000aaaacccc0a3c in _PyEval_EvalFrameDefault ()
+#4  0x0000aaaaccce3824 in ?? ()
+#5  0x0000aaaacccbe170 in _PyEval_EvalFrameDefault ()
+#6  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#7  0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#8  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#9  0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#10 0x0000aaaaccce3824 in ?? ()
+#11 0x0000aaaacce43cec in ?? ()
+
+Thread 28 (Thread 0xfffe999ee120 (LWP 71296) "python3"):
+#0  0x0000ffffa9602920 in __GI___select (nfds=0, readfds=0x0, writefds=0x0, exceptfds=0x0, timeout=0xfffe999ecf70) at ../sysdeps/unix/sysv/linux/select.c:69
+#1  0x0000aaaacce069e0 in ?? ()
+#2  0x0000aaaacccd30c8 in ?? ()
+#3  0x0000aaaacccc0a3c in _PyEval_EvalFrameDefault ()
+#4  0x0000aaaaccce3824 in ?? ()
+#5  0x0000aaaacccbe170 in _PyEval_EvalFrameDefault ()
+#6  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#7  0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#8  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#9  0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#10 0x0000aaaaccce3824 in ?? ()
+#11 0x0000aaaacce43cec in ?? ()
+
+Thread 27 (Thread 0xfffe9a1fe120 (LWP 71295) "python3"):
+#0  0x0000ffffa9602920 in __GI___select (nfds=0, readfds=0x0, writefds=0x0, exceptfds=0x0, timeout=0xfffe9a1fcf70) at ../sysdeps/unix/sysv/linux/select.c:69
+#1  0x0000aaaacce069e0 in ?? ()
+#2  0x0000aaaacccd30c8 in ?? ()
+#3  0x0000aaaacccc0a3c in _PyEval_EvalFrameDefault ()
+#4  0x0000aaaaccce3824 in ?? ()
+#5  0x0000aaaacccbe170 in _PyEval_EvalFrameDefault ()
+#6  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#7  0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#8  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#9  0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#10 0x0000aaaaccce3824 in ?? ()
+#11 0x0000aaaacce43cec in ?? ()
+
+Thread 26 (Thread 0xfffea49df120 (LWP 71293) "cuda-EvtHandlr"):
+#0  0x0000ffffa95ffb60 in __GI___poll (fds=0xfffeac000c20, nfds=10, timeout=<optimized out>) at ../sysdeps/unix/sysv/linux/poll.c:41
+#1  0x0000fffea59af290 in ?? () from /usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1
+#2  0x0000fffea5a4c620 in ?? () from /usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1
+#3  0x0000fffea59ac0c4 in ?? () from /usr/lib/aarch64-linux-gnu/nvidia/libcuda.so.1
+#4  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#5  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 25 (Thread 0xfffeb1197120 (LWP 71292) "python3"):
+#0  __futex_abstimed_wait_common64 (private=<optimized out>, cancel=true, abstime=0xfffeb1195b10, op=137, expected=0, futex_word=0xaaab0825c890) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=<optimized out>, abstime=0xfffeb1195b10, clockid=0, expected=0, futex_word=0xaaab0825c890) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaaab0825c890, expected=expected@entry=0, clockid=clockid@entry=1, abstime=abstime@entry=0xfffeb1195b10, private=<optimized out>) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa95a7a58 in do_futex_wait (sem=sem@entry=0xaaab0825c890, clockid=clockid@entry=1, abstime=abstime@entry=0xfffeb1195b10) at ./nptl/sem_waitcommon.c:111
+#4  0x0000ffffa95a7b38 in __new_sem_wait_slow64 (sem=0xaaab0825c890, clockid=1, abstime=0xfffeb1195b10) at ./nptl/sem_waitcommon.c:183
+#5  0x0000aaaaccc91060 in PyThread_acquire_lock_timed ()
+#6  0x0000aaaacccecc7c in ?? ()
+#7  0x0000aaaacccd565c in ?? ()
+#8  0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#9  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#10 0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#11 0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+
+Thread 24 (Thread 0xfffeb19a7120 (LWP 71291) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0xfffeb19a5b50, op=393, expected=0, futex_word=0xfffdf0106eb4) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0xfffeb19a5b50, clockid=0, expected=0, futex_word=0xfffdf0106eb4) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffdf0106eb4, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0xfffeb19a5b50, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f9b4 in __pthread_cond_wait_common (abstime=0xfffeb19a5b50, clockid=0, mutex=0xfffdf0106e20, cond=0xfffdf0106e88) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_timedwait64 (cond=0xfffdf0106e88, mutex=0xfffdf0106e20, abstime=0xfffeb19a5b50) at ./nptl/pthread_cond_wait.c:652
+#5  0x0000ffff07c8096c in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.cpython-310-aarch64-linux-gnu.so
+#6  0x0000ffff0774d378 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.cpython-310-aarch64-linux-gnu.so
+#7  0x0000ffff076a45a0 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.cpython-310-aarch64-linux-gnu.so
+#8  0x0000aaaacccd3814 in ?? ()
+#9  0x0000aaaacccc9e30 in _PyObject_MakeTpCall ()
+#10 0x0000aaaaccce38cc in ?? ()
+#11 0x0000aaaacccc0a3c in _PyEval_EvalFrameDefault ()
+
+Thread 23 (Thread 0xfffebcfbd120 (LWP 71290) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0xfffebcfbc800, op=393, expected=0, futex_word=0xaaab06440ea0) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0xfffebcfbc800, clockid=0, expected=0, futex_word=0xaaab06440ea0) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaaab06440ea0, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0xfffebcfbc800, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f9b4 in __pthread_cond_wait_common (abstime=0xfffebcfbc800, clockid=0, mutex=0xaaab06440e18, cond=0xaaab06440e78) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_timedwait64 (cond=0xaaab06440e78, mutex=0xaaab06440e18, abstime=0xfffebcfbc800) at ./nptl/pthread_cond_wait.c:652
+#5  0x0000fffec7a029e0 in dai::utility::TelemetrySharedState::pingWorkerLoop() () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#6  0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#7  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#8  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 22 (Thread 0xfffebd7cd120 (LWP 71289) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0xfffebd7cc800, op=393, expected=0, futex_word=0xaaab06440ea4) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0xfffebd7cc800, clockid=30, expected=0, futex_word=0xaaab06440ea4) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaaab06440ea4, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0xfffebd7cc800, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f9b4 in __pthread_cond_wait_common (abstime=0xfffebd7cc800, clockid=0, mutex=0xaaab06440e18, cond=0xaaab06440e78) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_timedwait64 (cond=0xaaab06440e78, mutex=0xaaab06440e18, abstime=0xfffebd7cc800) at ./nptl/pthread_cond_wait.c:652
+#5  0x0000fffec7a09568 in dai::utility::TelemetrySharedState::workerLoop() () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#6  0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#7  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#8  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 21 (Thread 0xfffebdfdd120 (LWP 71288) "python3"):
+#0  0x0000ffffa95ffb60 in __GI___poll (fds=0xfffebdfdc830, nfds=2, timeout=<optimized out>) at ../sysdeps/unix/sysv/linux/poll.c:41
+#1  0x0000ffff07469ebc in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libusb1-56617abc.0.so
+#2  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#3  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 20 (Thread 0xfffec51ae120 (LWP 71285) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xaaab05f8ae28) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0x0, clockid=0, expected=0, futex_word=0xaaab05f8ae28) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaaab05f8ae28, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f694 in __pthread_cond_wait_common (abstime=0x0, clockid=0, mutex=0xaaab05f8add0, cond=0xaaab05f8ae00) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xaaab05f8ae00, mutex=0xaaab05f8add0) at ./nptl/pthread_cond_wait.c:627
+#5  0x0000ffff84440d3c in std::condition_variable::wait(std::unique_lock<std::mutex>&) () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#6  0x0000fffec878770c in spdlog::details::thread_pool::process_next_msg_() () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#7  0x0000fffec8787948 in spdlog::details::thread_pool::worker_loop_() () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#8  0x0000fffec878798c in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#9  0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#10 0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#11 0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 19 (Thread 0xfffec5cef120 (LWP 71284) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xaaab05ebf248) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0x0, clockid=0, expected=0, futex_word=0xaaab05ebf248) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaaab05ebf248, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f694 in __pthread_cond_wait_common (abstime=0x0, clockid=0, mutex=0xaaab05ebf1f0, cond=0xaaab05ebf220) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xaaab05ebf220, mutex=0xaaab05ebf1f0) at ./nptl/pthread_cond_wait.c:627
+#5  0x0000ffff84440d3c in std::condition_variable::wait(std::unique_lock<std::mutex>&) () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#6  0x0000fffec878770c in spdlog::details::thread_pool::process_next_msg_() () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#7  0x0000fffec8787948 in spdlog::details::thread_pool::worker_loop_() () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#8  0x0000fffec878798c in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdepthaicore-56617abc.so
+#9  0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#10 0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#11 0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 18 (Thread 0xfffec64ff120 (LWP 71283) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xfffed96de488) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0x0, clockid=0, expected=0, futex_word=0xfffed96de488) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffed96de488, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f694 in __pthread_cond_wait_common (abstime=0x0, clockid=0, mutex=0xfffed96de430, cond=0xfffed96de460) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xfffed96de460, mutex=0xfffed96de430) at ./nptl/pthread_cond_wait.c:627
+#5  0x0000ffff84440d3c in std::condition_variable::wait(std::unique_lock<std::mutex>&) () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#6  0x0000fffed8eceab4 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdynamic_calibration-56617abc.so
+#7  0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#8  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#9  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 17 (Thread 0xfffed8ddf120 (LWP 71282) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xfffed96de488) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0x0, clockid=0, expected=0, futex_word=0xfffed96de488) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffed96de488, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f694 in __pthread_cond_wait_common (abstime=0x0, clockid=0, mutex=0xfffed96de430, cond=0xfffed96de460) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xfffed96de460, mutex=0xfffed96de430) at ./nptl/pthread_cond_wait.c:627
+#5  0x0000ffff84440d3c in std::condition_variable::wait(std::unique_lock<std::mutex>&) () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#6  0x0000fffed8eceab4 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/depthai.libs/libdynamic_calibration-56617abc.so
+#7  0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#8  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#9  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 16 (Thread 0xffff0abcf120 (LWP 71281) "python3"):
+#0  0x0000ffffa9602920 in __GI___select (nfds=37, readfds=0xffff0abcd780, writefds=0x0, exceptfds=0x0, timeout=0xffff0abcd770) at ../sysdeps/unix/sysv/linux/select.c:69
+#1  0x0000ffff88e32c2c in ?? () from /home/jetson/.local/lib/python3.10/site-packages/cv2/cv2.abi3.so
+#2  0x0000ffff88e37b90 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/cv2/cv2.abi3.so
+#3  0x0000ffff88e02d44 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/cv2/cv2.abi3.so
+#4  0x0000ffff88e02b44 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/cv2/cv2.abi3.so
+#5  0x0000ffff883549b4 in ?? () from /home/jetson/.local/lib/python3.10/site-packages/cv2/cv2.abi3.so
+#6  0x0000aaaacccd565c in ?? ()
+#7  0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#8  0x0000aaaaccce3824 in ?? ()
+#9  0x0000aaaacccbe170 in _PyEval_EvalFrameDefault ()
+#10 0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#11 0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+
+Thread 15 (Thread 0xffff0fbef120 (LWP 71268) "python3"):
+#0  __futex_abstimed_wait_common64 (private=<optimized out>, cancel=true, abstime=0xffff0fbedb10, op=137, expected=0, futex_word=0xfffee00012a0) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=<optimized out>, abstime=0xffff0fbedb10, clockid=0, expected=0, futex_word=0xfffee00012a0) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffee00012a0, expected=expected@entry=0, clockid=clockid@entry=1, abstime=abstime@entry=0xffff0fbedb10, private=<optimized out>) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa95a7a58 in do_futex_wait (sem=sem@entry=0xfffee00012a0, clockid=clockid@entry=1, abstime=abstime@entry=0xffff0fbedb10) at ./nptl/sem_waitcommon.c:111
+#4  0x0000ffffa95a7b38 in __new_sem_wait_slow64 (sem=0xfffee00012a0, clockid=1, abstime=0xffff0fbedb10) at ./nptl/sem_waitcommon.c:183
+#5  0x0000aaaaccc91060 in PyThread_acquire_lock_timed ()
+#6  0x0000aaaacccecc7c in ?? ()
+#7  0x0000aaaacccd565c in ?? ()
+#8  0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#9  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#10 0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#11 0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+
+Thread 14 (Thread 0xffff123ff120 (LWP 71267) "python3"):
+#0  0x0000ffffa95ffb60 in __GI___poll (fds=0xfffebeef9020, nfds=1, timeout=<optimized out>) at ../sysdeps/unix/sysv/linux/poll.c:41
+#1  0x0000aaaacce471d8 in ?? ()
+#2  0x0000aaaaccce4d44 in ?? ()
+#3  0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#4  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#5  0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#6  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#7  0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#8  0x0000aaaaccce35d8 in ?? ()
+#9  0x0000aaaacccbd670 in _PyEval_EvalFrameDefault ()
+#10 0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#11 0x0000aaaaccce4304 in PyObject_Call ()
+
+Thread 13 (Thread 0xffff14c0f120 (LWP 71266) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0xffff14c0cce8, op=137, expected=0, futex_word=0xfffee4003358) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0xffff14c0cce8, clockid=0, expected=0, futex_word=0xfffee4003358) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffee4003358, expected=expected@entry=0, clockid=clockid@entry=1, abstime=abstime@entry=0xffff14c0cce8, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959fc9c in __pthread_cond_wait_common (abstime=0xffff14c0cce8, clockid=1, mutex=0xfffee4003300, cond=0xfffee4003330) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_clockwait64 (abstime=0xffff14c0cce8, clockid=1, mutex=0xfffee4003300, cond=0xfffee4003330) at ./nptl/pthread_cond_wait.c:691
+#5  ___pthread_cond_clockwait64 (cond=0xfffee4003330, mutex=0xfffee4003300, clockid=1, abstime=0xffff14c0cce8) at ./nptl/pthread_cond_wait.c:679
+#6  0x0000ffffa2d3cc14 in eprosima::fastdds::dds::detail::WaitSetImpl::wait(std::vector<eprosima::fastdds::dds::Condition*, std::allocator<eprosima::fastdds::dds::Condition*> >&, eprosima::fastrtps::Time_t const&) () from /opt/ros/humble/lib/libfastrtps.so.2.6
+#7  0x0000ffffa2d3ce28 in eprosima::fastdds::dds::WaitSet::wait(std::vector<eprosima::fastdds::dds::Condition*, std::allocator<eprosima::fastdds::dds::Condition*> >&, eprosima::fastrtps::Time_t) const () from /opt/ros/humble/lib/libfastrtps.so.2.6
+#8  0x0000ffffa5405bd4 in rmw_fastrtps_shared_cpp::__rmw_wait(char const*, rmw_subscriptions_s*, rmw_guard_conditions_s*, rmw_services_s*, rmw_clients_s*, rmw_events_s*, rmw_wait_set_s*, rmw_time_s const*) () from /opt/ros/humble/lib/librmw_fastrtps_shared_cpp.so
+#9  0x0000fffefafe6330 in rcl_wait () from /opt/ros/humble/lib/librcl.so
+#10 0x0000fffefb09aa50 in ?? () from /opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/_rclpy_pybind11.cpython-310-aarch64-linux-gnu.so
+#11 0x0000fffefb098578 in ?? () from /opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/_rclpy_pybind11.cpython-310-aarch64-linux-gnu.so
+
+Thread 12 (Thread 0xffff19c2f120 (LWP 71264) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xfffef0000c0c) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0x0, clockid=0, expected=0, futex_word=0xfffef0000c0c) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffef0000c0c, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f694 in __pthread_cond_wait_common (abstime=0x0, clockid=0, mutex=0xfffef0000bb0, cond=0xfffef0000be0) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xfffef0000be0, mutex=0xfffef0000bb0) at ./nptl/pthread_cond_wait.c:627
+#5  0x0000ffffa2d3cd74 in eprosima::fastdds::dds::detail::WaitSetImpl::wait(std::vector<eprosima::fastdds::dds::Condition*, std::allocator<eprosima::fastdds::dds::Condition*> >&, eprosima::fastrtps::Time_t const&) () from /opt/ros/humble/lib/libfastrtps.so.2.6
+#6  0x0000ffffa2d3ce28 in eprosima::fastdds::dds::WaitSet::wait(std::vector<eprosima::fastdds::dds::Condition*, std::allocator<eprosima::fastdds::dds::Condition*> >&, eprosima::fastrtps::Time_t) const () from /opt/ros/humble/lib/libfastrtps.so.2.6
+#7  0x0000ffffa5405bd4 in rmw_fastrtps_shared_cpp::__rmw_wait(char const*, rmw_subscriptions_s*, rmw_guard_conditions_s*, rmw_services_s*, rmw_clients_s*, rmw_events_s*, rmw_wait_set_s*, rmw_time_s const*) () from /opt/ros/humble/lib/librmw_fastrtps_shared_cpp.so
+#8  0x0000ffffa53f2b74 in ?? () from /opt/ros/humble/lib/librmw_fastrtps_shared_cpp.so
+#9  0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#10 0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#11 0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 11 (Thread 0xffff1c43f120 (LWP 71263) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xaaab054965f0) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0x0, clockid=0, expected=0, futex_word=0xaaab054965f0) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaaab054965f0, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959f694 in __pthread_cond_wait_common (abstime=0x0, clockid=0, mutex=0xaaab05496660, cond=0xaaab054965c8) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_wait (cond=0xaaab054965c8, mutex=0xaaab05496660) at ./nptl/pthread_cond_wait.c:627
+#5  0x0000ffffa2d8d980 in eprosima::fastdds::rtps::FlowControllerImpl<eprosima::fastdds::rtps::FlowControllerSyncPublishMode, eprosima::fastdds::rtps::FlowControllerFifoSchedule>::run() () from /opt/ros/humble/lib/libfastrtps.so.2.6
+#6  0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#7  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#8  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 10 (Thread 0xffff1cc4f120 (LWP 71262) "python3"):
+#0  0x0000ffffa960bde4 in __libc_recvfrom (fd=26, buf=0xaaab055b0ef0, len=65500, flags=0, addr=..., addrlen=0xffff1cc4e368) at ../sysdeps/unix/sysv/linux/recvfrom.c:27
+#1  0x0000ffffa2c78960 in eprosima::fastdds::rtps::UDPChannelResource::Receive(unsigned char*, unsigned int, unsigned int&, eprosima::fastrtps::rtps::Locator_t&) () from /opt/ros/humble/lib/libfastrtps.so.2.6
+#2  0x0000ffffa2c78e10 in eprosima::fastdds::rtps::UDPChannelResource::perform_listen_operation(eprosima::fastrtps::rtps::Locator_t) () from /opt/ros/humble/lib/libfastrtps.so.2.6
+#3  0x0000ffffa2c73ec8 in ?? () from /opt/ros/humble/lib/libfastrtps.so.2.6
+#4  0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#5  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#6  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 9 (Thread 0xffff9910f120 (LWP 71261) "python3"):
+#0  __futex_abstimed_wait_common64 (private=<optimized out>, cancel=true, abstime=0xffff9910e038, op=265, expected=0, futex_word=0xffffa6068120) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=<optimized out>, abstime=0xffff9910e038, clockid=0, expected=0, futex_word=0xffffa6068120) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xffffa6068120, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0xffff9910e038, private=<optimized out>) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa95a8544 in do_futex_wait (sem=sem@entry=0xffffa6068120, abstime=abstime@entry=0xffff9910e038, clockid=0) at ./nptl/sem_waitcommon.c:111
+#4  0x0000ffffa95a8614 in __new_sem_wait_slow64 (sem=0xffffa6068120, abstime=0xffff9910e038, clockid=0) at ./nptl/sem_waitcommon.c:183
+#5  0x0000ffffa2bc8370 in ?? () from /opt/ros/humble/lib/libfastrtps.so.2.6
+#6  0x0000ffffa2e17bf8 in ?? () from /opt/ros/humble/lib/libfastrtps.so.2.6
+#7  0x0000ffffa2e1ed20 in ?? () from /opt/ros/humble/lib/libfastrtps.so.2.6
+#8  0x0000ffffa2e1e550 in eprosima::fastdds::rtps::SharedMemChannelResource::perform_listen_operation(eprosima::fastrtps::rtps::Locator_t) () from /opt/ros/humble/lib/libfastrtps.so.2.6
+#9  0x0000ffffa2e19b5c in ?? () from /opt/ros/humble/lib/libfastrtps.so.2.6
+#10 0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#11 0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+
+Thread 8 (Thread 0xffff9b91f120 (LWP 71260) "python3"):
+#0  0x0000ffffa960bde4 in __libc_recvfrom (fd=24, buf=0xaaab054ce770, len=65500, flags=0, addr=..., addrlen=0xffff9b91e368) at ../sysdeps/unix/sysv/linux/recvfrom.c:27
+#1  0x0000ffffa2c78960 in eprosima::fastdds::rtps::UDPChannelResource::Receive(unsigned char*, unsigned int, unsigned int&, eprosima::fastrtps::rtps::Locator_t&) () from /opt/ros/humble/lib/libfastrtps.so.2.6
+#2  0x0000ffffa2c78e10 in eprosima::fastdds::rtps::UDPChannelResource::perform_listen_operation(eprosima::fastrtps::rtps::Locator_t) () from /opt/ros/humble/lib/libfastrtps.so.2.6
+#3  0x0000ffffa2c73ec8 in ?? () from /opt/ros/humble/lib/libfastrtps.so.2.6
+#4  0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#5  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#6  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 7 (Thread 0xffff9e12f120 (LWP 71259) "python3"):
+#0  0x0000ffffa960bde4 in __libc_recvfrom (fd=23, buf=0xaaab054a4620, len=65500, flags=0, addr=..., addrlen=0xffff9e12e368) at ../sysdeps/unix/sysv/linux/recvfrom.c:27
+#1  0x0000ffffa2c78960 in eprosima::fastdds::rtps::UDPChannelResource::Receive(unsigned char*, unsigned int, unsigned int&, eprosima::fastrtps::rtps::Locator_t&) () from /opt/ros/humble/lib/libfastrtps.so.2.6
+#2  0x0000ffffa2c78e10 in eprosima::fastdds::rtps::UDPChannelResource::perform_listen_operation(eprosima::fastrtps::rtps::Locator_t) () from /opt/ros/humble/lib/libfastrtps.so.2.6
+#3  0x0000ffffa2c73ec8 in ?? () from /opt/ros/humble/lib/libfastrtps.so.2.6
+#4  0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#5  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#6  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 6 (Thread 0xffff968ff120 (LWP 71258) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0xffff968fe7a8, op=137, expected=0, futex_word=0xaaab054ba0b0) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0xffff968fe7a8, clockid=0, expected=0, futex_word=0xaaab054ba0b0) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaaab054ba0b0, expected=expected@entry=0, clockid=clockid@entry=1, abstime=abstime@entry=0xffff968fe7a8, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959fc9c in __pthread_cond_wait_common (abstime=0xffff968fe7a8, clockid=1, mutex=0xaaab0549aef0, cond=0xaaab054ba088) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_clockwait64 (abstime=0xffff968fe7a8, clockid=1, mutex=0xaaab0549aef0, cond=0xaaab054ba088) at ./nptl/pthread_cond_wait.c:691
+#5  ___pthread_cond_clockwait64 (cond=0xaaab054ba088, mutex=0xaaab0549aef0, clockid=1, abstime=0xffff968fe7a8) at ./nptl/pthread_cond_wait.c:679
+#6  0x0000ffffa2b9be00 in eprosima::fastrtps::rtps::ResourceEvent::event_service() () from /opt/ros/humble/lib/libfastrtps.so.2.6
+#7  0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#8  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#9  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 5 (Thread 0xffff940ef120 (LWP 71257) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0xffff940ee7a8, op=137, expected=0, futex_word=0xaaab04057738) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0xffff940ee7a8, clockid=0, expected=0, futex_word=0xaaab04057738) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaaab04057738, expected=expected@entry=0, clockid=clockid@entry=1, abstime=abstime@entry=0xffff940ee7a8, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959fc9c in __pthread_cond_wait_common (abstime=0xffff940ee7a8, clockid=1, mutex=0xaaab04057740, cond=0xaaab04057710) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_clockwait64 (abstime=0xffff940ee7a8, clockid=1, mutex=0xaaab04057740, cond=0xaaab04057710) at ./nptl/pthread_cond_wait.c:691
+#5  ___pthread_cond_clockwait64 (cond=0xaaab04057710, mutex=0xaaab04057740, clockid=1, abstime=0xffff940ee7a8) at ./nptl/pthread_cond_wait.c:679
+#6  0x0000ffffa2e08fe8 in eprosima::fastdds::rtps::SharedMemWatchdog::run() () from /opt/ros/humble/lib/libfastrtps.so.2.6
+#7  0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#8  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#9  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 4 (Thread 0xffff938df120 (LWP 71256) "python3"):
+#0  __futex_abstimed_wait_common64 (private=<optimized out>, cancel=true, abstime=0x0, op=393, expected=0, futex_word=0xfffefb0ed570) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=<optimized out>, abstime=0x0, clockid=0, expected=0, futex_word=0xfffefb0ed570) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xfffefb0ed570, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=<optimized out>) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa95a8804 in do_futex_wait (sem=sem@entry=0xfffefb0ed570, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:111
+#4  0x0000ffffa95a88c4 in __new_sem_wait_slow64 (sem=0xfffefb0ed570, abstime=0x0, clockid=0) at ./nptl/sem_waitcommon.c:183
+#5  0x0000fffefb0902b8 in ?? () from /opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/_rclpy_pybind11.cpython-310-aarch64-linux-gnu.so
+#6  0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#7  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#8  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 3 (Thread 0xffff8f0cf120 (LWP 71255) "python3"):
+#0  __futex_abstimed_wait_common64 (private=0, cancel=true, abstime=0xffff8f0ce808, op=137, expected=0, futex_word=0xaaab04f6e088) at ./nptl/futex-internal.c:57
+#1  __futex_abstimed_wait_common (cancel=true, private=0, abstime=0xffff8f0ce808, clockid=0, expected=0, futex_word=0xaaab04f6e088) at ./nptl/futex-internal.c:87
+#2  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0xaaab04f6e088, expected=expected@entry=0, clockid=clockid@entry=1, abstime=abstime@entry=0xffff8f0ce808, private=private@entry=0) at ./nptl/futex-internal.c:139
+#3  0x0000ffffa959fc9c in __pthread_cond_wait_common (abstime=0xffff8f0ce808, clockid=1, mutex=0xaaab04f6e030, cond=0xaaab04f6e060) at ./nptl/pthread_cond_wait.c:503
+#4  ___pthread_cond_clockwait64 (abstime=0xffff8f0ce808, clockid=1, mutex=0xaaab04f6e030, cond=0xaaab04f6e060) at ./nptl/pthread_cond_wait.c:691
+#5  ___pthread_cond_clockwait64 (cond=0xaaab04f6e060, mutex=0xaaab04f6e030, clockid=1, abstime=0xffff8f0ce808) at ./nptl/pthread_cond_wait.c:679
+#6  0x0000fffefa745b28 in ?? () from /lib/aarch64-linux-gnu/libspdlog.so.1
+#7  0x0000ffff844729cc in ?? () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#8  0x0000ffffa95a0398 in start_thread (arg=0x80e960) at ./nptl/pthread_create.c:442
+#9  0x0000ffffa9609e9c in thread_start () at ../sysdeps/unix/sysv/linux/aarch64/clone.S:79
+
+Thread 2 (Thread 0xfffef8d2f120 (LWP 71118) "python3"):
+#0  0x0000ffffa95ffb60 in __GI___poll (fds=0xfffefa3c1460, nfds=1, timeout=<optimized out>) at ../sysdeps/unix/sysv/linux/poll.c:41
+#1  0x0000aaaacce471d8 in ?? ()
+#2  0x0000aaaaccce4d44 in ?? ()
+#3  0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#4  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#5  0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#6  0x0000aaaaccce3824 in ?? ()
+#7  0x0000aaaacccbe170 in _PyEval_EvalFrameDefault ()
+#8  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#9  0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#10 0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#11 0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+
+Thread 1 (Thread 0xffffa9845860 (LWP 71081) "python3"):
+#0  0x0000ffffa960a03c in __GI_epoll_pwait (epfd=<optimized out>, events=0xfffebc177d20, maxevents=3, timeout=3, set=0x0) at ../sysdeps/unix/sysv/linux/epoll_pwait.c:40
+#1  0x0000aaaacce4f2c4 in ?? ()
+#2  0x0000aaaacccf776c in ?? ()
+#3  0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#4  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#5  0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#6  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#7  0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#8  0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#9  0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+#10 0x0000aaaacccd44b8 in _PyFunction_Vectorcall ()
+#11 0x0000aaaacccbc750 in _PyEval_EvalFrameDefault ()
+[Inferior 1 (process 71081) detached]

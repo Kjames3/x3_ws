@@ -1,0 +1,11 @@
+WARNING: topic [/livox/obstacles] does not appear to be published yet
+average rate: 9.758
+	min: 0.044s max: 0.162s std dev: 0.03895s window: 11
+average rate: 9.876
+	min: 0.044s max: 0.162s std dev: 0.03926s window: 22
+average rate: 9.582
+	min: 0.044s max: 0.170s std dev: 0.04175s window: 31
+average rate: 9.659
+	min: 0.044s max: 0.170s std dev: 0.04002s window: 41
+average rate: 9.723
+	min: 0.044s max: 0.170s std dev: 0.04045s window: 52

@@ -5,6 +5,84 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-26 — On-demand camera decode prototype
+
+**Problem**
+
+On the robot the Arducam capture thread used about 14% CPU. It decoded every 1280x800 MJPEG frame with `cap.read()`, but the side person detector samples it at 5 Hz. The left camera also read and rotated every frame.
+
+**Potential solution**
+
+Call `grab()` on every frame to keep the buffer fresh, and call `retrieve()` (plus the rotate) only at a capped rate or when a consumer asks for a frame.
+
+**Work done**
+
+Added `X3_CAM_DECODE_ON_DEMAND=1` and `X3_CAM_DECODE_HZ` (default 10) on `t3/camera-decode-on-demand` (`src/cam_decode.py`). The flag is off by default, which keeps the old behaviour. `AstraCamera.get_frame*`, the side detector and the GUI feed loop request decodes. Frames are stamped at grab time. Both cameras now log their capture backend, FOURCC and fps when opened. Added 15 tests that use a fake capture to count calls, and `src/tools/perf/cam_decode_bench.py`.
+
+**Results**
+
+These are laptop numbers for 300 synthetic 1280x800 MJPEG frames at 30 fps with a 10 Hz cap. The V4L2 model (raw packets plus `imdecode`) dropped from 2.12 to 0.71 ms of CPU per frame, 3.0x less. The FFmpeg file backend decodes inside `grab()`, so it saved only 1.5x. The full suite went from 992 to 1007 passing tests and kept the same 4 failures and 8 URDF errors. The change has not been deployed or tested on the robot. The saving needs the V4L2 backend (check the open log line) and applies only when no GUI is connected, because `broadcast_loop` requests a frame on every cycle while a client is connected.
+
+## 2026-11-26 — Server event-loop performance prototypes
+
+**Problem**
+
+The parked AGX Orin journal captured a 150 ms stall during the OLED network lookup and a 220 ms stall while the standalone test scanner started a thread. The server also checks the CBF override file on every motion command.
+
+**Potential solution**
+
+Skip network lookups for an absent OLED, move connected-display lookups to the executor, reuse one process scanner thread, and cache CBF override checks for one second.
+
+**Work done**
+
+Added three independent, default-off flags on `t3/server-perf-prototypes`. `X3_OLED_GUARD=1` skips absent-display updates and runs the two network commands off the loop for a connected display. `X3_PSUTIL_SCAN_THREAD=1` starts the daemon at startup and keeps the same process matching. `X3_CBF_FLAG_CACHE=1` caches override creation and removal for up to one second.
+
+**Results**
+
+The full laptop suite went from 992 to 1,000 passing tests with the same four failures and eight URDF errors. On the i9-14900HX, median OLED first-turn time fell from 1,526 to 14 µs unplugged and from 1,492 to 41 µs connected. The due standalone check fell from 212 to 0.64 µs, and the warm CBF override check fell from 0.803 to 0.084 µs per call. Run `python3 src/tools/perf/server_loop_bench.py` to repeat the isolated measurements. Robot checks are pending.
+
+---
+
+## 2026-11-26 — Livox point cloud processing prototype
+
+**Problem**
+
+The parked AGX Orin profile put 21% of samples in the PointCloud2 data setter and 15% in first-point-per-cell selection. The Livox node used about 40% of one core.
+
+**Potential solution**
+
+Send a byte array through Humble's typed setter and use a stable NumPy sort to pick the original first point in each voxel.
+
+**Work done**
+
+Added `X3_LIVOX_FAST_CLOUD=1` on `overnight/perf-proto`. The fast path handles display, obstacle, and person-candidate payloads and preserves voxel output order. The laptop benchmark uses 20,000-point clouds at 10 Hz and the installed Humble message type.
+
+**Results**
+
+Laptop medians were 6,824 to 13 µs for payload creation and assignment, 9,027 to 2,561 µs for single-grid voxelization, and 15,856 to 2,940 µs for display voxelization plus payload assignment. ROS-sourced focused tests passed 48 checks, including byte parity and browser decoding. The standard full suite retained the same four failures and eight URDF errors and increased from 985 to 992 passing tests. The profile suggests a saving of roughly 0.12 core at the sampled load, pending Jetson measurement.
+
+---
+
+## 2026-11-26 — Server OpenBLAS thread limit prototype
+
+**Problem**
+
+The parked AGX Orin server profile showed 11 OpenBLAS workers using roughly 3.6 cores.
+
+**Potential solution**
+
+Cap the pool before NumPy loads and preserve any explicit OpenBLAS or OpenMP limits.
+
+**Work done**
+
+Added `X3_BLAS_THREADS` and a commented systemd setting on `overnight/perf-proto`. The benchmark sets the environment in fresh processes and measures process CPU and call latency under a periodic NumPy workload.
+
+**Results**
+
+On the i9-14900HX laptop with OpenBLAS 0.3.29, small calls used 0.96% of a core with the default pool and 1.24% with one thread. Adding a 512 × 512 multiply at 10 Hz reproduced spin, taking 30.27 cores with the default pool and 0.055 cores with one thread. Four startup tests passed. Robot deployment and measurement are pending.
+
+---
+
 ## 2026-11-26 — Reality view: furniture models hold still
 
 **Problem:** Live in the apartment the chair/table models kept rotating, or appeared and disappeared. Causes: the ~78 cm square dining table's "length" side flipped with noise (90 degree turns); every new fit moved confirmed furniture 25% toward it; an off-centre fit started a duplicate, and the most recently seen duplicate was drawn, so they swapped.

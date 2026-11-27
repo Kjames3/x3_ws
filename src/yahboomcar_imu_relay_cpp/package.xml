@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>yahboomcar_imu_relay_cpp</name>
+  <version>0.0.0</version>
+  <description>C++ relay for the Yahboom X3 Livox IMU</description>
+  <maintainer email="nx-ros2@todo.todo">nx-ros2</maintainer>
+  <license>TODO: License declaration</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -1,0 +1,2 @@
+WARNING: topic [/livox/lidar] does not appear to be published yet
+The message type 'livox_ros_driver2/msg/CustomMsg' is invalid

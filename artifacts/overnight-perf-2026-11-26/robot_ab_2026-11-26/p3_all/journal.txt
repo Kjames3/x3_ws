@@ -1,0 +1,245 @@
+Nov 26 23:25:20 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:20 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.01, y=-0.73, z=3.57)m | Vel=(vx=0.01, vy=-0.08)m/s | Speed=0.08m/s | cat=static age=0 pf=0 jump=1058
+Nov 26 23:25:20 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:20 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.03, y=-0.78, z=3.58)m | Vel=(vx=0.06, vy=-0.11)m/s | Speed=0.13m/s | cat=static age=0 pf=0 jump=1064
+Nov 26 23:25:21 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:21 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.02, y=-0.78, z=3.56)m | Vel=(vx=0.24, vy=-0.04)m/s | Speed=0.25m/s | cat=static age=0 pf=0 jump=1069
+Nov 26 23:25:21 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:21 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.04, y=-0.63, z=3.58)m | Vel=(vx=0.02, vy=0.34)m/s | Speed=0.34m/s | cat=static age=0 pf=0 jump=1075
+Nov 26 23:25:22 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:22 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.01, y=-0.76, z=3.57)m | Vel=(vx=-0.06, vy=-0.07)m/s | Speed=0.09m/s | cat=static age=0 pf=0 jump=1079
+Nov 26 23:25:22 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:22 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.01, y=-0.77, z=3.59)m | Vel=(vx=0.03, vy=-0.00)m/s | Speed=0.03m/s | cat=static age=0 pf=0 jump=1085
+Nov 26 23:25:23 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:23 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.01, y=-0.77, z=3.58)m | Vel=(vx=0.07, vy=-0.17)m/s | Speed=0.18m/s | cat=static age=0 pf=0 jump=1090
+Nov 26 23:25:23 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:23 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.03, y=-0.73, z=3.53)m | Vel=(vx=-0.02, vy=0.04)m/s | Speed=0.04m/s | cat=static age=0 pf=0 jump=1096
+Nov 26 23:25:24 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:24 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.02, y=-0.73, z=3.56)m | Vel=(vx=-0.02, vy=0.05)m/s | Speed=0.06m/s | cat=static age=0 pf=0 jump=1101
+Nov 26 23:25:24 ubuntu x3_server[22382]: 23:25:24 - x3_server - INFO - OakDCamera: depth 27.4 fps (USB SUPER, mono 80 req)
+Nov 26 23:25:24 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:24 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.00, y=-0.70, z=3.59)m | Vel=(vx=0.05, vy=0.09)m/s | Speed=0.11m/s | cat=static age=0 pf=0 jump=1106
+Nov 26 23:25:25 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:25 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.00, y=-0.75, z=3.57)m | Vel=(vx=-0.02, vy=-0.08)m/s | Speed=0.08m/s | cat=static age=0 pf=0 jump=1111
+Nov 26 23:25:26 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:26 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.01, y=-0.72, z=3.58)m | Vel=(vx=0.04, vy=-0.05)m/s | Speed=0.06m/s | cat=static age=0 pf=0 jump=1117
+Nov 26 23:25:26 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:26 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.02, y=-0.74, z=3.55)m | Vel=(vx=-0.02, vy=-0.02)m/s | Speed=0.03m/s | cat=static age=0 pf=0 jump=1122
+Nov 26 23:25:27 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:27 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.01, y=-0.75, z=3.55)m | Vel=(vx=-0.06, vy=-0.04)m/s | Speed=0.07m/s | cat=static age=0 pf=0 jump=1128
+Nov 26 23:25:27 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:27 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.02, y=-0.75, z=3.58)m | Vel=(vx=0.14, vy=0.14)m/s | Speed=0.19m/s | cat=static age=0 pf=0 jump=1133
+Nov 26 23:25:28 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:28 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.03, y=-0.77, z=3.59)m | Vel=(vx=0.05, vy=-0.16)m/s | Speed=0.17m/s | cat=static age=0 pf=0 jump=1139
+Nov 26 23:25:28 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:28 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.08, y=-0.62, z=3.58)m | Vel=(vx=-0.04, vy=0.44)m/s | Speed=0.44m/s | cat=static age=0 pf=0 jump=1144
+Nov 26 23:25:28 ubuntu x3_server[22382]: 23:25:28 - __main__ - INFO - [side-persons] last 60 s: left 281 frames, 0 boxes, 0 rays, 9.1 ms/detect, right 281 frames, 0 boxes, 0 rays, 10.5 ms/detect, rear 281 frames, 0 boxes, 0 rays, 10.1 ms/detect
+Nov 26 23:25:29 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:29 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.01, y=-0.77, z=3.59)m | Vel=(vx=0.00, vy=0.02)m/s | Speed=0.02m/s | cat=static age=0 pf=0 jump=1150
+Nov 26 23:25:29 ubuntu x3_server[22382]: 23:25:29 - x3_server - INFO - OakDCamera: depth 27.3 fps (USB SUPER, mono 80 req)
+Nov 26 23:25:29 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:29 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.01, y=-0.77, z=3.57)m | Vel=(vx=0.05, vy=-0.08)m/s | Speed=0.09m/s | cat=static age=0 pf=0 jump=1155
+Nov 26 23:25:30 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:30 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.01, y=-0.72, z=3.53)m | Vel=(vx=-0.04, vy=-0.03)m/s | Speed=0.05m/s | cat=static age=0 pf=0 jump=1160
+Nov 26 23:25:30 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:30 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.01, y=-0.76, z=3.59)m | Vel=(vx=0.01, vy=-0.05)m/s | Speed=0.05m/s | cat=static age=0 pf=0 jump=1165
+Nov 26 23:25:31 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:31 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.00, y=-0.74, z=3.59)m | Vel=(vx=0.06, vy=-0.07)m/s | Speed=0.10m/s | cat=static age=0 pf=0 jump=1170
+Nov 26 23:25:31 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:31 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.01, y=-0.76, z=3.59)m | Vel=(vx=0.04, vy=0.06)m/s | Speed=0.07m/s | cat=static age=0 pf=0 jump=1175
+Nov 26 23:25:32 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:32 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.01, y=-0.77, z=3.58)m | Vel=(vx=-0.00, vy=0.04)m/s | Speed=0.04m/s | cat=static age=0 pf=0 jump=1180
+Nov 26 23:25:33 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:33 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.04, y=-0.74, z=3.56)m | Vel=(vx=-0.06, vy=0.09)m/s | Speed=0.11m/s | cat=static age=0 pf=0 jump=1186
+Nov 26 23:25:33 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:33 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.02, y=-0.74, z=3.58)m | Vel=(vx=-0.02, vy=-0.05)m/s | Speed=0.06m/s | cat=static age=0 pf=0 jump=1191
+Nov 26 23:25:34 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:34 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.02, y=-0.74, z=3.58)m | Vel=(vx=-0.07, vy=0.13)m/s | Speed=0.15m/s | cat=static age=0 pf=0 jump=1196
+Nov 26 23:25:34 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:34 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.04, y=-0.73, z=3.57)m | Vel=(vx=-0.02, vy=0.11)m/s | Speed=0.11m/s | cat=static age=0 pf=0 jump=1201
+Nov 26 23:25:34 ubuntu x3_server[22382]: 23:25:34 - x3_server - INFO - OakDCamera: depth 27.9 fps (USB SUPER, mono 80 req)
+Nov 26 23:25:34 ubuntu x3_server[22382]: 23:25:34 - oak_floor_obstacles - INFO - oak floor obstacles: 3 voxels; floor h p1/p50/p99 -0.007/-0.000/0.012 m; plane a,b,c (-0.028, -0.068, 0.076)
+Nov 26 23:25:35 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:35 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.01, y=-0.77, z=3.58)m | Vel=(vx=0.10, vy=-0.18)m/s | Speed=0.21m/s | cat=static age=0 pf=0 jump=1206
+Nov 26 23:25:35 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:35 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.04, y=-0.72, z=3.57)m | Vel=(vx=-0.01, vy=0.17)m/s | Speed=0.17m/s | cat=static age=0 pf=0 jump=1212
+Nov 26 23:25:36 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:36 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.01, y=-0.76, z=3.57)m | Vel=(vx=-0.03, vy=0.03)m/s | Speed=0.04m/s | cat=static age=0 pf=0 jump=1218
+Nov 26 23:25:36 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:36 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.02, y=-0.74, z=3.54)m | Vel=(vx=-0.07, vy=0.04)m/s | Speed=0.08m/s | cat=static age=0 pf=0 jump=1224
+Nov 26 23:25:37 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:37 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.03, y=-0.67, z=3.59)m | Vel=(vx=0.07, vy=0.09)m/s | Speed=0.11m/s | cat=static age=0 pf=0 jump=1229
+Nov 26 23:25:37 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:37 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.03, y=-0.78, z=3.58)m | Vel=(vx=0.04, vy=-0.11)m/s | Speed=0.12m/s | cat=static age=0 pf=0 jump=1234
+Nov 26 23:25:38 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:38 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.01, y=-0.75, z=3.58)m | Vel=(vx=-0.02, vy=-0.04)m/s | Speed=0.04m/s | cat=static age=0 pf=0 jump=1239
+Nov 26 23:25:38 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:38 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.03, y=-0.73, z=3.59)m | Vel=(vx=0.01, vy=0.33)m/s | Speed=0.33m/s | cat=static age=0 pf=0 jump=1245
+Nov 26 23:25:39 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:39 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.00, y=-0.77, z=3.57)m | Vel=(vx=0.06, vy=0.07)m/s | Speed=0.09m/s | cat=static age=0 pf=0 jump=1250
+Nov 26 23:25:39 ubuntu x3_server[22382]: 23:25:39 - x3_server - INFO - OakDCamera: depth 26.4 fps (USB SUPER, mono 80 req)
+Nov 26 23:25:39 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:39 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.09, y=-0.68, z=3.55)m | Vel=(vx=-0.14, vy=0.07)m/s | Speed=0.16m/s | cat=static age=0 pf=0 jump=1255
+Nov 26 23:25:40 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:40 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.02, y=-0.69, z=3.58)m | Vel=(vx=0.12, vy=0.12)m/s | Speed=0.17m/s | cat=static age=0 pf=0 jump=1260
+Nov 26 23:25:40 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:40 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.01, y=-0.76, z=3.59)m | Vel=(vx=-0.00, vy=0.13)m/s | Speed=0.13m/s | cat=static age=0 pf=0 jump=1265
+Nov 26 23:25:41 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:41 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.02, y=-0.65, z=3.57)m | Vel=(vx=0.08, vy=0.24)m/s | Speed=0.25m/s | cat=static age=0 pf=0 jump=1270
+Nov 26 23:25:42 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:42 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.01, y=-0.77, z=3.59)m | Vel=(vx=0.05, vy=0.07)m/s | Speed=0.09m/s | cat=static age=0 pf=0 jump=1276
+Nov 26 23:25:42 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:42 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.00, y=-0.75, z=3.58)m | Vel=(vx=-0.06, vy=0.16)m/s | Speed=0.17m/s | cat=static age=0 pf=0 jump=1281
+Nov 26 23:25:43 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:43 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.03, y=-0.74, z=3.58)m | Vel=(vx=0.04, vy=-0.01)m/s | Speed=0.05m/s | cat=static age=0 pf=0 jump=1286
+Nov 26 23:25:43 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:43 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.02, y=-0.76, z=3.59)m | Vel=(vx=0.01, vy=0.13)m/s | Speed=0.13m/s | cat=static age=0 pf=0 jump=1291
+Nov 26 23:25:44 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:44 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.03, y=-0.77, z=3.59)m | Vel=(vx=-0.01, vy=-0.05)m/s | Speed=0.05m/s | cat=static age=0 pf=0 jump=1296
+Nov 26 23:25:44 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:44 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.03, y=-0.71, z=3.58)m | Vel=(vx=0.01, vy=0.02)m/s | Speed=0.02m/s | cat=static age=0 pf=0 jump=1301
+Nov 26 23:25:44 ubuntu x3_server[22382]: 23:25:44 - x3_server - INFO - OakDCamera: depth 27.7 fps (USB SUPER, mono 80 req)
+Nov 26 23:25:45 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:45 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.02, y=-0.67, z=3.56)m | Vel=(vx=-0.02, vy=0.05)m/s | Speed=0.06m/s | cat=static age=0 pf=0 jump=1307
+Nov 26 23:25:45 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:45 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.03, y=-0.77, z=3.56)m | Vel=(vx=-0.03, vy=-0.00)m/s | Speed=0.03m/s | cat=static age=0 pf=0 jump=1312
+Nov 26 23:25:46 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:46 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.03, y=-0.69, z=3.57)m | Vel=(vx=-0.10, vy=-0.03)m/s | Speed=0.10m/s | cat=static age=0 pf=0 jump=1317
+Nov 26 23:25:46 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:46 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.02, y=-0.74, z=3.59)m | Vel=(vx=0.00, vy=0.00)m/s | Speed=0.00m/s | cat=static age=0 pf=0 jump=1323
+Nov 26 23:25:47 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:47 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.00, y=-0.76, z=3.58)m | Vel=(vx=-0.03, vy=0.10)m/s | Speed=0.11m/s | cat=static age=0 pf=0 jump=1328
+Nov 26 23:25:47 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:47 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.03, y=-0.64, z=3.58)m | Vel=(vx=-0.04, vy=0.24)m/s | Speed=0.24m/s | cat=static age=0 pf=0 jump=1334
+Nov 26 23:25:48 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:48 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.01, y=-0.77, z=3.59)m | Vel=(vx=0.01, vy=-0.01)m/s | Speed=0.02m/s | cat=static age=0 pf=0 jump=1339
+Nov 26 23:25:48 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:48 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.02, y=-0.76, z=3.59)m | Vel=(vx=0.03, vy=0.00)m/s | Speed=0.03m/s | cat=static age=0 pf=0 jump=1344
+Nov 26 23:25:49 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:49 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.02, y=-0.75, z=3.59)m | Vel=(vx=0.00, vy=0.10)m/s | Speed=0.10m/s | cat=static age=0 pf=0 jump=1349
+Nov 26 23:25:49 ubuntu x3_server[22382]: 23:25:49 - x3_server - INFO - OakDCamera: depth 26.1 fps (USB SUPER, mono 80 req)
+Nov 26 23:25:50 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:50 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.02, y=-0.73, z=3.58)m | Vel=(vx=0.01, vy=0.13)m/s | Speed=0.13m/s | cat=static age=0 pf=0 jump=1355
+Nov 26 23:25:50 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:50 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.02, y=-0.78, z=3.58)m | Vel=(vx=0.04, vy=-0.01)m/s | Speed=0.04m/s | cat=static age=0 pf=0 jump=1360
+Nov 26 23:25:51 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:51 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.02, y=-0.75, z=3.50)m | Vel=(vx=-0.25, vy=-0.05)m/s | Speed=0.26m/s | cat=static age=0 pf=0 jump=1365
+Nov 26 23:25:51 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:51 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.01, y=-0.72, z=3.56)m | Vel=(vx=-0.07, vy=0.03)m/s | Speed=0.07m/s | cat=static age=0 pf=0 jump=1371
+Nov 26 23:25:52 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:52 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.03, y=-0.77, z=3.56)m | Vel=(vx=-0.08, vy=-0.09)m/s | Speed=0.12m/s | cat=static age=0 pf=0 jump=1376
+Nov 26 23:25:52 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:52 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.03, y=-0.78, z=3.59)m | Vel=(vx=-0.05, vy=-0.13)m/s | Speed=0.14m/s | cat=static age=0 pf=0 jump=1381
+Nov 26 23:25:53 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:53 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.02, y=-0.77, z=3.58)m | Vel=(vx=-0.03, vy=0.06)m/s | Speed=0.06m/s | cat=static age=0 pf=0 jump=1386
+Nov 26 23:25:53 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:53 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.02, y=-0.69, z=3.58)m | Vel=(vx=0.06, vy=-0.27)m/s | Speed=0.28m/s | cat=static age=0 pf=0 jump=1391
+Nov 26 23:25:54 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:54 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.01, y=-0.75, z=3.52)m | Vel=(vx=-0.10, vy=-0.08)m/s | Speed=0.12m/s | cat=static age=0 pf=0 jump=1396
+Nov 26 23:25:54 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:54 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.03, y=-0.73, z=3.54)m | Vel=(vx=-0.10, vy=0.14)m/s | Speed=0.17m/s | cat=static age=0 pf=0 jump=1401
+Nov 26 23:25:54 ubuntu x3_server[22382]: 23:25:54 - x3_server - INFO - OakDCamera: depth 25.7 fps (USB SUPER, mono 80 req)
+Nov 26 23:25:55 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:55 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.01, y=-0.77, z=3.57)m | Vel=(vx=0.12, vy=-0.01)m/s | Speed=0.13m/s | cat=static age=0 pf=0 jump=1406
+Nov 26 23:25:55 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:55 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.00, y=-0.77, z=3.59)m | Vel=(vx=0.01, vy=-0.02)m/s | Speed=0.02m/s | cat=static age=0 pf=0 jump=1411
+Nov 26 23:25:56 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:56 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.04, y=-0.65, z=3.57)m | Vel=(vx=-0.01, vy=0.07)m/s | Speed=0.07m/s | cat=static age=0 pf=0 jump=1416
+Nov 26 23:25:56 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:56 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.02, y=-0.73, z=3.59)m | Vel=(vx=0.03, vy=0.03)m/s | Speed=0.04m/s | cat=static age=0 pf=0 jump=1421
+Nov 26 23:25:57 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:57 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.03, y=-0.69, z=3.58)m | Vel=(vx=-0.02, vy=0.13)m/s | Speed=0.14m/s | cat=static age=0 pf=0 jump=1426
+Nov 26 23:25:57 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:57 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.01, y=-0.77, z=3.57)m | Vel=(vx=0.07, vy=-0.19)m/s | Speed=0.20m/s | cat=static age=0 pf=0 jump=1430
+Nov 26 23:25:58 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:58 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.02, y=-0.77, z=3.57)m | Vel=(vx=-0.03, vy=0.01)m/s | Speed=0.03m/s | cat=static age=0 pf=0 jump=1435
+Nov 26 23:25:58 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:58 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.02, y=-0.74, z=3.54)m | Vel=(vx=0.07, vy=-0.14)m/s | Speed=0.16m/s | cat=static age=0 pf=0 jump=1441
+Nov 26 23:25:59 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:59 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.01, y=-0.72, z=3.59)m | Vel=(vx=0.01, vy=0.17)m/s | Speed=0.17m/s | cat=static age=0 pf=0 jump=1446
+Nov 26 23:25:59 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:25:59 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.03, y=-0.66, z=3.59)m | Vel=(vx=-0.03, vy=0.08)m/s | Speed=0.08m/s | cat=static age=0 pf=0 jump=1451
+Nov 26 23:25:59 ubuntu x3_server[22382]: 23:25:59 - x3_server - INFO - OakDCamera: depth 26.3 fps (USB SUPER, mono 80 req)
+Nov 26 23:26:00 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:00 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.05, y=-0.72, z=3.59)m | Vel=(vx=-0.02, vy=0.34)m/s | Speed=0.34m/s | cat=static age=0 pf=0 jump=1457
+Nov 26 23:26:00 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:00 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.03, y=-0.73, z=3.55)m | Vel=(vx=-0.09, vy=0.06)m/s | Speed=0.10m/s | cat=static age=0 pf=0 jump=1462
+Nov 26 23:26:01 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:01 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.01, y=-0.76, z=3.56)m | Vel=(vx=0.04, vy=0.01)m/s | Speed=0.04m/s | cat=static age=0 pf=0 jump=1467
+Nov 26 23:26:01 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:01 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.02, y=-0.74, z=3.58)m | Vel=(vx=-0.09, vy=0.22)m/s | Speed=0.24m/s | cat=static age=0 pf=0 jump=1472
+Nov 26 23:26:02 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:02 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.00, y=-0.73, z=3.57)m | Vel=(vx=0.09, vy=-0.00)m/s | Speed=0.09m/s | cat=static age=0 pf=0 jump=1477
+Nov 26 23:26:02 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:02 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.01, y=-0.74, z=3.51)m | Vel=(vx=-0.17, vy=-0.03)m/s | Speed=0.17m/s | cat=static age=0 pf=0 jump=1482
+Nov 26 23:26:03 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:03 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.05, y=-0.72, z=3.58)m | Vel=(vx=0.07, vy=0.16)m/s | Speed=0.18m/s | cat=static age=0 pf=0 jump=1487
+Nov 26 23:26:04 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:04 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.02, y=-0.77, z=3.56)m | Vel=(vx=-0.07, vy=-0.11)m/s | Speed=0.13m/s | cat=static age=0 pf=0 jump=1493
+Nov 26 23:26:04 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:04 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.01, y=-0.75, z=3.58)m | Vel=(vx=0.04, vy=-0.03)m/s | Speed=0.05m/s | cat=static age=0 pf=0 jump=1498
+Nov 26 23:26:04 ubuntu x3_server[22382]: 23:26:04 - oak_floor_obstacles - INFO - oak floor obstacles: 0 voxels; floor h p1/p50/p99 -0.007/-0.000/0.012 m; plane a,b,c (-0.028, -0.068, 0.077)
+Nov 26 23:26:04 ubuntu x3_server[22382]: 23:26:04 - x3_server - INFO - OakDCamera: depth 27.8 fps (USB SUPER, mono 80 req)
+Nov 26 23:26:05 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:05 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.02, y=-0.77, z=3.57)m | Vel=(vx=0.08, vy=0.04)m/s | Speed=0.09m/s | cat=static age=0 pf=0 jump=1504
+Nov 26 23:26:05 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:05 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.03, y=-0.73, z=3.59)m | Vel=(vx=-0.04, vy=0.08)m/s | Speed=0.09m/s | cat=static age=0 pf=0 jump=1510
+Nov 26 23:26:06 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:06 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.01, y=-0.73, z=3.58)m | Vel=(vx=0.04, vy=-0.05)m/s | Speed=0.07m/s | cat=static age=0 pf=0 jump=1515
+Nov 26 23:26:06 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:06 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.02, y=-0.77, z=3.58)m | Vel=(vx=0.03, vy=-0.01)m/s | Speed=0.04m/s | cat=static age=0 pf=0 jump=1521
+Nov 26 23:26:07 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:07 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.02, y=-0.69, z=3.59)m | Vel=(vx=0.04, vy=-0.10)m/s | Speed=0.11m/s | cat=static age=0 pf=0 jump=1526
+Nov 26 23:26:07 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:07 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.04, y=-0.67, z=3.54)m | Vel=(vx=-0.06, vy=0.14)m/s | Speed=0.15m/s | cat=static age=0 pf=0 jump=1532
+Nov 26 23:26:08 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:08 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.01, y=-0.75, z=3.58)m | Vel=(vx=0.03, vy=0.10)m/s | Speed=0.10m/s | cat=static age=0 pf=0 jump=1537
+Nov 26 23:26:08 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:08 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.01, y=-0.72, z=3.60)m | Vel=(vx=0.08, vy=-0.01)m/s | Speed=0.08m/s | cat=static age=0 pf=0 jump=1542
+Nov 26 23:26:09 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:09 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.02, y=-0.75, z=3.57)m | Vel=(vx=0.01, vy=0.06)m/s | Speed=0.06m/s | cat=static age=0 pf=0 jump=1547
+Nov 26 23:26:09 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:09 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.03, y=-0.72, z=3.57)m | Vel=(vx=0.01, vy=0.11)m/s | Speed=0.11m/s | cat=static age=0 pf=0 jump=1552
+Nov 26 23:26:10 ubuntu x3_server[22382]: 23:26:10 - x3_server - INFO - OakDCamera: depth 27.0 fps (USB SUPER, mono 80 req)
+Nov 26 23:26:10 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:10 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.01, y=-0.77, z=3.58)m | Vel=(vx=0.06, vy=-0.03)m/s | Speed=0.06m/s | cat=static age=0 pf=0 jump=1558
+Nov 26 23:26:11 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:11 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.01, y=-0.77, z=3.58)m | Vel=(vx=-0.00, vy=-0.07)m/s | Speed=0.07m/s | cat=static age=0 pf=0 jump=1563
+Nov 26 23:26:11 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:11 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.02, y=-0.74, z=3.58)m | Vel=(vx=-0.02, vy=0.02)m/s | Speed=0.02m/s | cat=static age=0 pf=0 jump=1569
+Nov 26 23:26:12 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:12 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.00, y=-0.75, z=3.57)m | Vel=(vx=0.13, vy=-0.23)m/s | Speed=0.26m/s | cat=static age=0 pf=0 jump=1574
+Nov 26 23:26:12 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:12 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.02, y=-0.68, z=3.57)m | Vel=(vx=0.01, vy=-0.23)m/s | Speed=0.24m/s | cat=static age=0 pf=0 jump=1578
+Nov 26 23:26:13 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:13 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.01, y=-0.75, z=3.56)m | Vel=(vx=0.06, vy=-0.06)m/s | Speed=0.09m/s | cat=static age=0 pf=0 jump=1584
+Nov 26 23:26:13 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:13 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.02, y=-0.77, z=3.59)m | Vel=(vx=0.04, vy=-0.02)m/s | Speed=0.04m/s | cat=static age=0 pf=0 jump=1589
+Nov 26 23:26:14 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:14 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.03, y=-0.77, z=3.59)m | Vel=(vx=0.03, vy=-0.13)m/s | Speed=0.14m/s | cat=static age=0 pf=0 jump=1594
+Nov 26 23:26:14 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:14 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.00, y=-0.75, z=3.53)m | Vel=(vx=-0.05, vy=0.03)m/s | Speed=0.06m/s | cat=static age=0 pf=0 jump=1599
+Nov 26 23:26:15 ubuntu x3_server[22382]: 23:26:15 - x3_server - INFO - OakDCamera: depth 27.5 fps (USB SUPER, mono 80 req)
+Nov 26 23:26:15 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:15 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.01, y=-0.74, z=3.59)m | Vel=(vx=-0.02, vy=0.13)m/s | Speed=0.13m/s | cat=static age=0 pf=0 jump=1603
+Nov 26 23:26:15 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:15 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.03, y=-0.74, z=3.59)m | Vel=(vx=0.12, vy=0.08)m/s | Speed=0.15m/s | cat=static age=0 pf=0 jump=1608
+Nov 26 23:26:16 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:16 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.01, y=-0.75, z=3.57)m | Vel=(vx=0.06, vy=-0.06)m/s | Speed=0.09m/s | cat=static age=0 pf=0 jump=1614
+Nov 26 23:26:16 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:16 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.09, y=-0.66, z=3.58)m | Vel=(vx=-0.05, vy=0.41)m/s | Speed=0.41m/s | cat=static age=0 pf=0 jump=1619
+Nov 26 23:26:17 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:17 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.01, y=-0.72, z=3.58)m | Vel=(vx=0.04, vy=-0.07)m/s | Speed=0.08m/s | cat=static age=0 pf=0 jump=1625
+Nov 26 23:26:17 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:17 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.00, y=-0.76, z=3.59)m | Vel=(vx=0.01, vy=-0.07)m/s | Speed=0.07m/s | cat=static age=0 pf=0 jump=1630
+Nov 26 23:26:18 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:18 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.02, y=-0.78, z=3.60)m | Vel=(vx=0.04, vy=-0.12)m/s | Speed=0.13m/s | cat=static age=0 pf=0 jump=1635
+Nov 26 23:26:18 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:18 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=-0.02, y=-0.75, z=3.59)m | Vel=(vx=0.09, vy=0.18)m/s | Speed=0.20m/s | cat=static age=0 pf=0 jump=1640
+Nov 26 23:26:19 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:19 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.01, y=-0.75, z=3.59)m | Vel=(vx=0.06, vy=0.08)m/s | Speed=0.10m/s | cat=static age=0 pf=0 jump=1645
+Nov 26 23:26:20 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:20 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.00, y=-0.66, z=3.58)m | Vel=(vx=0.03, vy=0.04)m/s | Speed=0.05m/s | cat=static age=0 pf=0 jump=1651
+Nov 26 23:26:20 ubuntu x3_server[22382]: 23:26:20 - x3_server - INFO - OakDCamera: depth 28.6 fps (USB SUPER, mono 80 req)
+Nov 26 23:26:20 ubuntu x3_server[22382]: [Estimator] Calculated 1 velocity estimate(s):
+Nov 26 23:26:20 ubuntu x3_server[22382]:   - ID 2: Centroid=(x=0.03, y=-0.76, z=3.59)m | Vel=(vx=0.07, vy=-0.02)m/s | Speed=0.07m/s | cat=static age=0 pf=0 jump=1656

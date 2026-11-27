@@ -76,10 +76,13 @@ class TRTDetector:
         Confidence threshold for detections.
     iou_thres : float
         IoU threshold for NMS.
+    fast : bool
+        Use blocking CUDA waits and reusable CPU preprocessing buffers.
     """
 
     def __init__(self, engine_path: str, pt_path: str | None = None,
-                 conf_thres: float = 0.25, iou_thres: float = 0.45):
+                 conf_thres: float = 0.25, iou_thres: float = 0.45, *,
+                 fast: bool = False):
         try:
             import pycuda.driver as cuda
             import tensorrt as trt
@@ -88,6 +91,7 @@ class TRTDetector:
 
         self.conf_thres = conf_thres
         self.iou_thres  = iou_thres
+        self.fast = fast
         self.names: dict = {}
         import threading
         self._lock = threading.Lock()
@@ -114,7 +118,11 @@ class TRTDetector:
         # ── CUDA context (explicit management for thread-pool safety) ──────
         cuda.init()
         self._cuda = cuda
-        self._ctx  = cuda.Device(0).make_context()   # now current
+        device = cuda.Device(0)
+        if self.fast:
+            self._ctx = device.make_context(flags=cuda.ctx_flags.SCHED_BLOCKING_SYNC)
+        else:
+            self._ctx = device.make_context()
 
         # All engine/context/buffer creation must happen while self._ctx is the
         # current context, so those resources bind to THIS context (see above).
@@ -161,6 +169,8 @@ class TRTDetector:
         # Pre-allocated host buffers — reused every inference call to avoid per-frame allocation
         self._h_input  = np.empty(in_shape,  dtype=np.float32)   # (1,3,H,W) — P5
         self._h_output = np.empty(out_shape, dtype=np.float32)
+        if self.fast:
+            self._resized = np.empty((self.input_h, self.input_w, 3), dtype=np.uint8)
 
         logger.info(
             f"TRTDetector: ready — {self.num_classes} classes, "
@@ -170,12 +180,15 @@ class TRTDetector:
     # ── Internal helpers ───────────────────────────────────────────────────
 
     def _preprocess(self, frame: np.ndarray) -> np.ndarray:
-        """BGR uint8 → normalised NCHW float32 written into the pre-allocated host buffer.
+        """Write normalized RGB NCHW floats into the reusable host input."""
+        if self.fast and frame.dtype == np.uint8 and frame.ndim == 3 and frame.shape[2] == 3:
+            # Match blobFromImage(crop=False): stretch both axes with linear
+            # interpolation. The RGB CHW view only changes strides.
+            cv2.resize(frame, (self.input_w, self.input_h), dst=self._resized)
+            rgb_chw = self._resized[:, :, ::-1].transpose(2, 0, 1)
+            np.multiply(rgb_chw, np.float32(1 / 255), out=self._h_input[0])
+            return self._h_input
 
-        cv2.dnn.blobFromImage does resize + BGR→RGB + /255 normalisation in a
-        single optimised C++ pass (replaces resize → cvtColor → astype → transpose
-        → ascontiguousarray chain that caused 3-4 intermediate allocations).
-        """
         blob = cv2.dnn.blobFromImage(
             frame, 1 / 255.0, (self.input_w, self.input_h), swapRB=True, crop=False
         )
@@ -187,6 +200,8 @@ class TRTDetector:
         raw: np.ndarray,
         orig_w: int,
         orig_h: int,
+        *,
+        class_zero_only: bool = False,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Decode engine output [1, 4+C, A] → filtered xyxy boxes.
@@ -199,6 +214,8 @@ class TRTDetector:
             pred  = raw[0]                                       # [N, 6]
             confs = pred[:, 4]
             keep  = confs >= self.conf_thres
+            if class_zero_only:
+                keep &= pred[:, 5] == 0
             pred  = pred[keep]
             if len(pred) == 0:
                 return np.empty((0, 4)), np.empty(0), np.empty(0, dtype=float)
@@ -212,11 +229,21 @@ class TRTDetector:
         pred     = raw[0].T                                      # [A, 4+C]
         boxes    = pred[:, :4]                                   # cx cy w h
         cls_sc   = pred[:, 4:]                                   # [A, C]
-        cls_ids  = np.argmax(cls_sc, axis=1)
-        confs    = cls_sc[np.arange(len(cls_sc)), cls_ids]
+        if class_zero_only:
+            person_scores = cls_sc[:, 0]
+            if not np.any(person_scores >= self.conf_thres):
+                return np.empty((0, 4)), np.empty(0), np.empty(0, dtype=float)
+            # Other classes can suppress class 0 in the shared NMS. Keep their
+            # winning scores, but only compute whether class 0 won each anchor.
+            # It wins ties, just as the first index returned by argmax does.
+            confs = np.max(raw[0, 4:], axis=0)
+            classes = person_scores == confs
+        else:
+            classes = np.argmax(cls_sc, axis=1)
+            confs = cls_sc[np.arange(len(cls_sc)), classes]
 
         mask  = confs >= self.conf_thres
-        boxes = boxes[mask]; confs = confs[mask]; cls_ids = cls_ids[mask]
+        boxes = boxes[mask]; confs = confs[mask]; classes = classes[mask]
         if len(boxes) == 0:
             return np.empty((0, 4)), np.empty(0), np.empty(0, dtype=float)
 
@@ -239,7 +266,10 @@ class TRTDetector:
             return np.empty((0, 4)), np.empty(0), np.empty(0, dtype=float)
 
         idx = np.array(idx).flatten()
-        return xyxy[idx], confs[idx], cls_ids[idx].astype(float)
+        if class_zero_only:
+            idx = idx[classes[idx]]
+            return xyxy[idx], confs[idx], np.zeros(len(idx), dtype=float)
+        return xyxy[idx], confs[idx], classes[idx].astype(float)
 
     # ── Public interface ───────────────────────────────────────────────────
 
@@ -249,10 +279,13 @@ class TRTDetector:
         verbose: bool = False,
         conf: float | None = None,
         imgsz: int | None = None,
+        *,
+        class_zero_only: bool = False,
     ) -> list[_TRTResult]:
         """
         Run inference on a single BGR frame.
         Signature matches: model(frame, verbose=False, conf=..., imgsz=...)
+        class_zero_only limits the returned boxes to class 0 after NMS.
         """
         with self._lock:
             if getattr(self, "_ctx", None) is None:
@@ -275,7 +308,9 @@ class TRTDetector:
             finally:
                 self._ctx.pop()
 
-            xyxy, confs, cls_ids = self._postprocess(self._h_output, orig_w, orig_h)
+            xyxy, confs, cls_ids = self._postprocess(
+                self._h_output, orig_w, orig_h, class_zero_only=class_zero_only,
+            )
             return [_TRTResult(_TRTBoxes(xyxy, confs, cls_ids))]
 
     def cleanup(self):

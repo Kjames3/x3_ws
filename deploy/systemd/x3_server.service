@@ -49,6 +49,8 @@ ExecStartPre=/bin/sleep 10
 
 # Environment
 Environment=PYTHONUNBUFFERED=1
+# Opt in to the single-threaded BLAS prototype.
+# Environment=X3_BLAS_THREADS=1
 
 # Logging — view with: journalctl -u x3_server -f
 StandardOutput=journal

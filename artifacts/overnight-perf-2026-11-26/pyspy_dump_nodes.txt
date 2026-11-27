@@ -1,0 +1,28 @@
+Process 71162: /usr/bin/python3 /home/jetson/x3_ws/install/yahboomcar_bringup/lib/yahboomcar_bringup/livox_scan_node --ros-args -r __node:=livox_scan_node
+Python v3.10.12 (/usr/bin/python3.10)
+
+Thread 71162 (idle): "MainThread"
+    _wait_for_ready_callbacks (rclpy/executors.py:682)
+    wait_for_ready_callbacks (rclpy/executors.py:784)
+    _spin_once_impl (rclpy/executors.py:801)
+    spin_once (rclpy/executors.py:812)
+    spin (rclpy/__init__.py:229)
+    main (yahboomcar_bringup/livox_scan_node.py:565)
+    <module> (livox_scan_node:33)
+Process 71150: /usr/bin/python3 /home/jetson/x3_ws/install/yahboomcar_bringup/lib/yahboomcar_bringup/Mcnamu_driver_X3 --ros-args --params-file /tmp/launch_params_inrdwu4f -r cmd_vel:=cmd_vel_safe
+Python v3.10.12 (/usr/bin/python3.10)
+
+Thread 71150 (idle): "MainThread"
+    _wait_for_ready_callbacks (rclpy/executors.py:682)
+    wait_for_ready_callbacks (rclpy/executors.py:784)
+    _spin_once_impl (rclpy/executors.py:801)
+    spin_once (rclpy/executors.py:812)
+    spin (rclpy/__init__.py:229)
+    main (yahboomcar_bringup/Mcnamu_driver_X3.py:559)
+    <module> (Mcnamu_driver_X3:33)
+Thread 71252 (idle): "task_serial_receive"
+    read (serial/serialposix.py:565)
+    __receive_data (yahboomcar_bringup/Rosmaster_Lib.py:261)
+    run (threading.py:953)
+    _bootstrap_inner (threading.py:1016)
+    _bootstrap (threading.py:973)

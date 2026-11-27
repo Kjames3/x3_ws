@@ -1,0 +1,40 @@
+== /scan
+average delay: 0.027
+	min: 0.007s max: 0.054s std dev: 0.01972s window: 9
+average delay: 0.028
+	min: 0.007s max: 0.063s std dev: 0.02055s window: 19
+average delay: 0.027
+	min: 0.007s max: 0.063s std dev: 0.02017s window: 29
+average delay: 0.027
+	min: 0.007s max: 0.063s std dev: 0.01993s window: 39
+average delay: 0.027
+	min: 0.007s max: 0.077s std dev: 0.02158s window: 49
+average delay: 0.027
+	min: 0.007s max: 0.077s std dev: 0.02121s window: 59
+== /livox/obstacles
+WARNING: topic [/livox/obstacles] does not appear to be published yet
+average delay: 0.049
+	min: 0.026s max: 0.090s std dev: 0.02550s window: 9
+average delay: 0.049
+	min: 0.025s max: 0.090s std dev: 0.02401s window: 19
+average delay: 0.048
+	min: 0.025s max: 0.090s std dev: 0.02312s window: 29
+average delay: 0.050
+	min: 0.025s max: 0.090s std dev: 0.02314s window: 39
+average delay: 0.050
+	min: 0.025s max: 0.090s std dev: 0.02190s window: 49
+average delay: 0.051
+	min: 0.025s max: 0.090s std dev: 0.02321s window: 59
+== /odom
+average delay: 0.004
+	min: 0.002s max: 0.013s std dev: 0.00293s window: 49
+average delay: 0.004
+	min: 0.002s max: 0.013s std dev: 0.00247s window: 99
+average delay: 0.004
+	min: 0.002s max: 0.019s std dev: 0.00265s window: 149
+average delay: 0.004
+	min: 0.002s max: 0.024s std dev: 0.00318s window: 199
+average delay: 0.004
+	min: 0.002s max: 0.024s std dev: 0.00314s window: 249
+average delay: 0.004
+	min: 0.001s max: 0.024s std dev: 0.00294s window: 299

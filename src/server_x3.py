@@ -10,6 +10,13 @@ Features:
 - YOLOv11 Detection
 """
 
+import os
+
+# Apply before importing NumPy or anything else that may initialize BLAS.
+if 'X3_BLAS_THREADS' in os.environ:
+    os.environ.setdefault('OPENBLAS_NUM_THREADS', os.environ['X3_BLAS_THREADS'])
+    os.environ.setdefault('OMP_NUM_THREADS', os.environ['X3_BLAS_THREADS'])
+
 import asyncio
 import time
 import json
@@ -30,7 +37,6 @@ import numpy as np
 import cv2
 import websockets
 import sys
-import os
 import signal
 import threading
 import socket
@@ -95,6 +101,7 @@ LOG_PUSH_INTERVAL_S = 0.3
 LOG_BACKLOG_LINES = 500
 
 # Import X3 specific drivers
+import cam_decode
 from drivers_x3 import (
     Rosmaster, MecanumDrive, YDLidarDriver, AstraCamera, OLEDDisplay, SERIAL_PORT,
     INA226BatteryMonitor, TeensyToFArrays, TEENSY_TOF_PORT, tof_valid_mask,
@@ -738,6 +745,22 @@ LIDAR_X_M = float(os.environ.get('X3_LIDAR_X_M', -0.0025))
 # While this file exists the CBF is bypassed for manual driving (calibration
 # runs). Remove it to re-arm; nothing else changes.
 CBF_OFF_FILE = os.environ.get('X3_CBF_OFF_FILE', '/tmp/x3_cbf_off')
+CBF_FLAG_CACHE = os.environ.get('X3_CBF_FLAG_CACHE', '0') == '1'
+_cbf_off_cache = (False, float('-inf'))  # (file_exists, last_check_monotonic)
+
+
+def _cbf_off() -> bool:
+    global _cbf_off_cache
+    if not CBF_FLAG_CACHE:
+        return os.path.exists(CBF_OFF_FILE)
+    off, checked_at = _cbf_off_cache
+    now = time.monotonic()
+    if now - checked_at >= 1.0:
+        off = os.path.exists(CBF_OFF_FILE)
+        _cbf_off_cache = (off, now)
+    return off
+
+
 # Clearance kept round that outline. 0.05 (was 0.10): at 0.10 the CBF needed
 # 0.79 m of clear width, leaving +-4.5 cm of centring in the 0.88 m apartment
 # doorway (2026-11-22).
@@ -1047,8 +1070,15 @@ class ROS2Bridge:
         rclpy.init(args=None)
         from rclpy.parameter import Parameter
         from tf2_ros import Buffer, TransformListener
-        self._node = Node('x3_ws_bridge',
-                          parameter_overrides=[Parameter('use_sim_time', value=SIM_MODE)])
+        lean_rclpy = os.environ.get('X3_RCLPY_LEAN') == '1'
+        node_type = Node
+        if lean_rclpy:
+            from lean_rclpy import LeanNode
+            node_type = LeanNode
+        self._node = node_type('x3_ws_bridge',
+                               parameter_overrides=[Parameter('use_sim_time', value=SIM_MODE)])
+        # Exploration needs the dynamic map->odom transform. OAK floor
+        # obstacles also use this buffer for camera/base transforms into odom.
         self._explore_tf = Buffer(node=self._node)
         self._explore_tf_listener = TransformListener(self._explore_tf, self._node)
         self._lock = threading.Lock()
@@ -1145,8 +1175,7 @@ class ROS2Bridge:
         self._node.create_subscription(Image,          '/camera/depth_image', self._depth_cb, 1)
         self._node.create_subscription(Image,          '/camera/depth/image_raw', self._depth_cb, 1)
         self._velocity_pose_history = PoseHistory()
-        self._node.create_subscription(Odometry,       '/odom',             self._odom_cb,  10)
-        self._node.create_subscription(Odometry,       '/odom_raw',         lambda msg: self._odom_cb(msg, fused=False),  10)
+        self._init_odom_subscriptions(Odometry, lean_rclpy)
         self._node.create_subscription(Float32,        '/voltage',          self._voltage_cb, 10)
         self._node.create_subscription(OccupancyGrid,  '/map',              self._map_cb,    _map_qos)
         from rclpy.qos import qos_profile_sensor_data
@@ -1383,6 +1412,44 @@ class ROS2Bridge:
         if self._last_depth_write_time == 0.0:
             return float('inf')
         return time.monotonic() - self._last_depth_write_time
+
+    def _init_odom_subscriptions(self, odom_type, lean):
+        self._raw_odom_watch_enabled = lean
+        if not lean:
+            self._node.create_subscription(odom_type, '/odom', self._odom_cb, 10)
+            self._subscribe_raw_odom(odom_type)
+            return
+
+        self._odom_type = odom_type
+        self._raw_odom_sub = None
+        self._fused_odom_stamp = time.monotonic()  # Give the EKF one second at startup.
+        self._node.create_subscription(odom_type, '/odom', self._lean_fused_odom_cb, 10)
+        if SIM_MODE:
+            # The people-cloud timer follows ROS time, which can pause in sim.
+            from rclpy.clock import Clock, ClockType
+            self._node.create_timer(
+                PEOPLE_CLOUD_PERIOD_S, self._check_raw_odom,
+                clock=Clock(clock_type=ClockType.STEADY_TIME))
+
+    def _subscribe_raw_odom(self, odom_type):
+        return self._node.create_subscription(
+            odom_type, '/odom_raw', lambda msg: self._odom_cb(msg, fused=False), 10)
+
+    def _check_raw_odom(self):
+        # The timer and /odom callbacks share the executor thread. The lock
+        # prevents subscription changes once cleanup starts on the main thread.
+        with self._lock:
+            if (self._raw_odom_watch_enabled and self._raw_odom_sub is None
+                    and time.monotonic() - self._fused_odom_stamp > 1.0):
+                self._raw_odom_sub = self._subscribe_raw_odom(self._odom_type)
+
+    def _lean_fused_odom_cb(self, msg):
+        self._odom_cb(msg)
+        if self._raw_odom_sub is not None:
+            with self._lock:
+                if self._raw_odom_watch_enabled:
+                    self._node.destroy_subscription(self._raw_odom_sub)
+                    self._raw_odom_sub = None
 
     def _odom_cb(self, msg, fused=True):
         """Extract position (metres), yaw (radians), and body twist from nav_msgs/Odometry."""
@@ -2020,6 +2087,9 @@ class ROS2Bridge:
         """Timer: keep /people/obstacles going while no drive command arrives (parked,
         or before Nav2's first command), so the first plan already routes round people.
         Commands publish it themselves; this only fills the gaps."""
+        # On hardware the existing 10 Hz tick also checks odometry freshness.
+        if self._raw_odom_watch_enabled and not SIM_MODE:
+            self._check_raw_odom()
         if not PEOPLE_COSTMAP_ENABLED:
             return
         now = time.monotonic()
@@ -2064,9 +2134,9 @@ class ROS2Bridge:
             # scanning station anyway, and every step-and-stare guarantee depends
             # on it not moving. Hold still, rotation included.
             safe_vx, safe_vy, omega = 0.0, 0.0, 0.0
-        elif os.path.exists(CBF_OFF_FILE):
+        elif _cbf_off():
             # Operator override for calibration drives (touch the file, rm to
-            # re-arm; checked every command). Same pass-through as blind.
+            # re-arm). With caching enabled, either change can take 1 s to apply.
             safe_vx, safe_vy = vx, vy
             if (vx or vy) and not getattr(self, '_warned_cbf_off', False):
                 self._warned_cbf_off = True
@@ -2255,6 +2325,8 @@ class ROS2Bridge:
         import rclpy
         import time
         try:
+            with self._lock:
+                self._raw_odom_watch_enabled = False
             logger.info("ROS2Bridge: sending stop command before shutdown...")
             self.stop()
             time.sleep(0.2)  # Allow DDS to flush stop packet
@@ -5150,6 +5222,13 @@ def _rear_preview(device_id, stop, latest):
 # X3_LEFT_CAM overrides the device ("none" disables it).
 LEFT_CAM_GLOB = '/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB_2.0_Camera_SN0001-video-index0'
 LEFT_CAM_ROTATE = cv2.ROTATE_180   # landscape mount is upside down
+# X3_CAM_DECODE_ON_DEMAND=1: grab() every frame, decode + rotate only at X3_CAM_DECODE_HZ
+# or while the GUI feed has viewers (cam_decode.py). None = read() + rotate every frame.
+_left_decode_gate = cam_decode.gate_from_env()
+
+
+def _left_rotate(frame):
+    return frame if LEFT_CAM_ROTATE is None else cv2.rotate(frame, LEFT_CAM_ROTATE)
 
 
 def _left_capture(stop, latest):
@@ -5166,15 +5245,19 @@ def _left_capture(stop, latest):
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 400)
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            logger.info("Left camera opened: %s", dev)
+            logger.info("Left camera opened: %s (backend %s, %s, %.0f fps, decode %s)", dev,
+                        cap.getBackendName(), cam_decode.fourcc_str(cap),
+                        cap.get(cv2.CAP_PROP_FPS),
+                        'on demand' if _left_decode_gate is not None else 'every frame')
             while not stop.is_set():
-                ok, frame = cap.read()
-                t_cap = time.monotonic()
+                ok, frame, t_cap = cam_decode.next_frame(cap, _left_decode_gate, post=_left_rotate)
                 if not ok:
                     logger.warning("Left camera: read failed, reopening")
                     break
-                latest[0] = frame if LEFT_CAM_ROTATE is None else cv2.rotate(frame, LEFT_CAM_ROTATE)
-                _side_frames['left'] = (latest[0], t_cap)
+                if frame is None:      # grabbed, not decoded (on-demand mode)
+                    continue
+                latest[0] = frame
+                _side_frames['left'] = (frame, t_cap)
         except Exception as exc:
             logger.warning("Left camera unavailable: %s", exc)
         finally:
@@ -5201,6 +5284,8 @@ async def oak_camera_feed_loop():
         while not _shutting_down:
             targets = _camera_targets()
             if targets:
+                if _left_decode_gate is not None:
+                    _left_decode_gate.request()   # viewers: decode left frames at full rate
                 front = oak.get_stereo_frames()[0] if oak is not None else None
                 now = time.monotonic()
                 for role, image in (('front', front), ('rear', rear[0]), ('left', left[0])):
@@ -5253,8 +5338,9 @@ def _load_side_detector():
         return None
     try:
         from trt_detector import TRTDetector
-        det = TRTDetector(engine, pt_path=YOLO_MODEL, conf_thres=SIDE_PERSON_CONF)
-        logger.info("[side-persons] TensorRT detector ready (%s)", engine)
+        det = TRTDetector(engine, pt_path=YOLO_MODEL, conf_thres=SIDE_PERSON_CONF,
+                          fast=os.environ.get("X3_TRT_FAST") == "1")
+        logger.info("[side-persons] TensorRT detector ready (%s, fast=%s)", engine, det.fast)
         return det
     except Exception as e:
         logger.error("[side-persons] detector init failed, side-camera people OFF: %s", e)
@@ -5266,8 +5352,13 @@ def _side_detect(det, img):
     if img.ndim == 2 or img.shape[2] == 1:
         img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     names = det.names or {}
+    # Custom checkpoints can put "person" at another index.
+    options = {}
+    if det.fast and isinstance(names, dict) and names.get(0) == 'person':
+        if all(c == 0 or name != 'person' for c, name in names.items()):
+            options["class_zero_only"] = True
     out = []
-    for r in det(img, verbose=False, conf=SIDE_PERSON_CONF):
+    for r in det(img, verbose=False, conf=SIDE_PERSON_CONF, **options):
         for b in r.boxes:
             c = int(b.cls[0])
             name = names[c] if isinstance(names, (list, tuple)) and c < len(names) else (
@@ -5350,6 +5441,8 @@ async def side_person_loop():
             due[role] = now + 1.0 / SIDE_PERSON_HZ
             try:
                 if role in ('left', 'rear'):
+                    if role == 'left' and _left_decode_gate is not None:
+                        _left_decode_gate.request()   # on-demand: decode the next left frame
                     got = _side_frames.get(role)
                 elif camera is not None:
                     got = camera.get_frame_stamped()
@@ -5817,6 +5910,7 @@ _standalone_test_cache = (False, 0.0)   # (last_result, last_scan_monotonic)
 _STANDALONE_TEST_SCAN_INTERVAL = 1.0    # seconds between full /proc scans
 _STANDALONE_TESTS = ('ab_comparison_test.py', 'point_to_point_test.py', 'strafe_drift_test.py',
                      'base_speed_test.py', 'footprint_measure.py', 'lidar_yaw_calib.py')
+PSUTIL_SCAN_THREAD = os.environ.get('X3_PSUTIL_SCAN_THREAD', '0') == '1'
 
 _standalone_scan_busy = False
 
@@ -5844,7 +5938,17 @@ def _scan_standalone_tests():
     _standalone_scan_busy = False
 
 
+def _standalone_test_scan_loop():
+    """Refresh the process cache on a single daemon thread."""
+    while not _shutting_down:
+        _scan_standalone_tests()
+        time.sleep(_STANDALONE_TEST_SCAN_INTERVAL)
+
+
 def _is_standalone_test_running() -> bool:
+    if PSUTIL_SCAN_THREAD:
+        return _standalone_test_cache[0]
+
     # Scanning every process' cmdline costs 150-200 ms on the Orin (~260 /proc
     # reads). motion_loop calls this at ~30 Hz from the event loop, so the scan
     # runs on a worker thread about once a second and callers get the last
@@ -6064,15 +6168,20 @@ async def tof_loop():
         await asyncio.sleep(0.02)
 
 
+OLED_GUARD = os.environ.get('X3_OLED_GUARD', '0') == '1'
+
+
 async def oled_loop():
     """Refresh OLED with WiFi SSID and IP every 5 seconds."""
     while True:
         if _shutting_down:
             break
         try:
-            if oled:
-                ssid    = _get_ssid()
-                ip      = _get_ip()
+            if oled and (not OLED_GUARD or oled.has_device):
+                if OLED_GUARD:
+                    ssid, ip = await asyncio.to_thread(lambda: (_get_ssid(), _get_ip()))
+                else:
+                    ssid, ip = _get_ssid(), _get_ip()
                 clients = len(connected_clients)
                 oled.show([
                     f"WiFi:{ssid[:16]}",
@@ -6626,6 +6735,9 @@ async def lidar_scan_loop():
 
 async def main():
     global motion_queue
+    if PSUTIL_SCAN_THREAD:
+        threading.Thread(target=_standalone_test_scan_loop, name='standalone_scan',
+                         daemon=True).start()
     _start_http_server()
     initialize_hardware()
     motion_queue = asyncio.Queue(maxsize=2)
