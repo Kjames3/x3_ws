@@ -43,13 +43,16 @@ MIN_SPEED_MPS = 0.15   # reality-mode.js MOVING_MPS: slower tracks get no path
 # CTRV turn-rate fit (tuned on the TUNE runs, see
 # notes/plans/curved_person_trajectories_2026-11-27.md).
 CTRV = dict(
-    fit_s=0.8,          # heading series length used for the turn-rate fit
+    hist_s=1.0,         # history kept for the fit (cv / ctrv; the GRU's is its own)
+    fit_s=0.5,          # heading series length used for the turn-rate fit
+    halves=False,       # also require both halves of the fit window to turn the same way
     min_fit_speed=0.25, # every velocity sample in the fit must be faster than this
     gate_t=2.0,         # |slope| / standard error must exceed this, else straight
     min_w=0.15,         # rad/s; smaller fitted turn rates are treated as straight
     max_w=1.2,          # rad/s clamp
-    tau_s=1.0,          # turn rate decays as exp(-t / tau)
-    shrink=0.8,         # multiply the fitted rate (fits over-read noisy turns)
+    tau_s=0.7,          # turn rate decays as exp(-t / tau): total bend <= w * tau
+    shrink=0.5,         # multiply the fitted rate (outside sustained circling,
+                        # recent turning barely predicts the next 2 s)
 )
 FAN_SE = 0.25           # rad/s: show alternatives when the turn-rate std error exceeds this
 FAN_DW = 0.6            # rad/s: alternative bends at +-FAN_DW around the main path
@@ -72,13 +75,22 @@ def turn_rate(hist, dt, p=CTRV):
     if len(v) < 3 or sp.min() < p["min_fit_speed"]:
         return 0.0, math.inf
     ang = np.unwrap(np.arctan2(v[:, 1], v[:, 0]))
+    w, se = _slope(ang, dt)
+    if p.get("halves") and len(ang) >= 6:
+        h = len(ang) // 2
+        w1, w2 = _slope(ang[:h + 1], dt)[0], _slope(ang[h:], dt)[0]
+        if w1 * w2 <= 0 or min(abs(w1), abs(w2)) < p["min_w"]:
+            return w, math.inf          # a weave, not a turn: the gate keeps it straight
+    return w, se
+
+
+def _slope(ang, dt):
     t = np.arange(len(ang)) * dt
     t = t - t.mean()
     sxx = float((t * t).sum())
     w = float((t * (ang - ang.mean())).sum() / sxx)
     res = ang - ang.mean() - w * t
-    se = math.sqrt(max(float((res * res).sum()) / max(len(ang) - 2, 1), 1e-12) / sxx)
-    return w, se
+    return w, math.sqrt(max(float((res * res).sum()) / max(len(ang) - 2, 1), 1e-12) / sxx)
 
 
 def gated_rate(w, se, p=CTRV):
@@ -122,7 +134,7 @@ class PersonPaths:
         self.p = dict(CTRV, **(ctrv or {}))
         self.times = np.linspace(0.0, horizon_s, n_points)
         self.dt = 1.0 / RATE_HZ
-        self.span_s = (HIST_N - 1) * self.dt
+        self.span_s = self.p["hist_s"] if mode != "gru" else (HIST_N - 1) * self.dt
         self.model = None
         if mode == "gru":
             from traj_predictor import NumpyTrajGRU
@@ -133,12 +145,14 @@ class PersonPaths:
             self._fut_t = np.arange(1, self.model.fut_n + 1) * self.dt
         self.hist_n = int(round(self.span_s / self.dt)) + 1
         self._obs = {}
+        self._seen = {}          # key -> annotate() clock when last passed in
         self.stats = {"ticks": 0, "paths": 0, "curved": 0, "fans": 0, "ms_last": 0.0, "ms_max": 0.0}
 
     # ---- history ---------------------------------------------------------
     def observe(self, key, t, x, y, vx, vy):
         q = self._obs.get(key)
-        if q is None or (q and t - q[-1][0] > GAP_S):
+        # a hole, or a clock jump backwards (a source switching stamp clocks), restarts it
+        if q is None or (q and (t - q[-1][0] > GAP_S or t < q[-1][0] - 1.0)):
             q = self._obs[key] = deque()
         if q and t <= q[-1][0]:
             return False
@@ -148,8 +162,12 @@ class PersonPaths:
         return True
 
     def forget_stale(self, now):
-        for k in [k for k, q in self._obs.items() if not q or now - q[-1][0] > STALE_S]:
+        """Drop tracks not passed to annotate() for STALE_S (on annotate()'s clock).
+        Offline callers that only observe() pass their stamp clock as now."""
+        for k in [k for k, q in self._obs.items()
+                  if not q or now - self._seen.get(k, q[-1][0]) > STALE_S]:
             del self._obs[k]
+            self._seen.pop(k, None)
 
     def history(self, key):
         q = self._obs.get(key)
@@ -216,8 +234,12 @@ class PersonPaths:
                 rows.append((None, tr))
                 continue
             key = (source, tr.get("id"))
-            ts = tr.get(stamp_key) if stamp_key else None
-            self.observe(key, float(ts) if ts is not None else now, x, y, vx, vy)
+            self._seen[key] = now
+            # The lidar tracker's coasting rows are its own constant-velocity
+            # extrapolation: drawing from them is fine, learning a turn from them is not.
+            if tr.get("mode") != "coasting":
+                ts = tr.get(stamp_key) if stamp_key else None
+                self.observe(key, float(ts) if ts is not None else now, x, y, vx, vy)
             keys.append(key)
             rows.append((key, tr))
         preds = self.predict_many([k for k in keys if k in self._obs]) if pose is not None else {}
@@ -237,6 +259,8 @@ class PersonPaths:
             self.stats["paths"] += 1
             self.stats["curved"] += bool(self.mode == "gru" and r["used_hist"] or r["w"])
             self.stats["fans"] += bool(r["alts"])
+            # Offsets from the newest OBSERVED position (a coasting track has moved on
+            # since; the GUI anchors the offsets at the avatar, so this is display-exact).
             out.append(dict(tr, path_rel=rel(r["path"], r["p0"]),
                             path_sigma=[round(float(v), 3) for v in r["sigma"]],
                             path_alts=[rel(a, r["p0"]) for a in r["alts"]]))
@@ -246,3 +270,56 @@ class PersonPaths:
         self.stats["ms_last"] = round(ms, 3)
         self.stats["ms_max"] = round(max(self.stats["ms_max"], ms), 3)
         return out
+
+
+# ---- server_x3 glue ----------------------------------------------------------
+
+def from_env(model_path, env=None, log=None):
+    """PersonPaths for X3_PERSON_PATH (cv | ctrv | gru), or None when unset / 'off'.
+    A missing GRU model logs and falls back to ctrv rather than taking the server down."""
+    import os
+    mode = (env if env is not None else os.environ.get("X3_PERSON_PATH", "off")).strip().lower()
+    if mode in ("", "off", "0", "none"):
+        return None
+    if mode not in MODES:
+        if log:
+            log.warning("X3_PERSON_PATH=%r unknown (cv|ctrv|gru|off): person paths off", mode)
+        return None
+    try:
+        return PersonPaths(mode, model_path)
+    except Exception as e:  # noqa: BLE001
+        if log:
+            log.warning("X3_PERSON_PATH=gru: model %s failed (%s); using ctrv", model_path, e)
+        return PersonPaths("ctrv")
+
+
+def estimates_with_odom(estimates, pose):
+    """velocity_estimator estimates (camera: x right, z forward; vx fwd, vy left in base
+    axes) with odom_x/odom_y/odom_vx/odom_vy added, the same transform traj_shadow uses."""
+    c, s = math.cos(pose["theta"]), math.sin(pose["theta"])
+    out = []
+    for e in estimates:
+        px, py = float(e.get("z", 1.0)), -float(e.get("x", 0.0))
+        vx, vy = float(e.get("vx", 0.0)), float(e.get("vy", 0.0))
+        out.append(dict(e, odom_x=pose["x"] + c * px - s * py, odom_y=pose["y"] + s * px + c * py,
+                        odom_vx=c * vx - s * vy, odom_vy=s * vx + c * vy))
+    return out
+
+
+_ODOM_KEYS = ("odom_x", "odom_y", "odom_vx", "odom_vy")
+
+
+def annotate_telemetry(paths, pose, c3_tracks, lidar_persons, velocity_estimates):
+    """(c3_tracks, lidar_persons, velocity_estimates) with paths added, or the same
+    objects untouched when paths is None (X3_PERSON_PATH off) or there is no pose."""
+    if paths is None or pose is None:
+        return c3_tracks, lidar_persons, velocity_estimates
+    c3 = paths.annotate(c3_tracks, "c3", pose, stamp_key="state_stamp_s") if c3_tracks else c3_tracks
+    lp = paths.annotate(lidar_persons, "lidar", pose, stamp_key="stamp") if lidar_persons else lidar_persons
+    ve = velocity_estimates
+    if velocity_estimates:
+        ann = paths.annotate(estimates_with_odom(velocity_estimates, pose), "v3", pose)
+        # hand back the original dicts plus the path fields only (no odom_* leak into the payload)
+        ve = [dict(e, **{k: v for k, v in a.items() if k.startswith("path_")})
+              if "path_rel" in a else e for e, a in zip(velocity_estimates, ann)]
+    return c3, lp, ve

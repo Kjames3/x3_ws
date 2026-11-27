@@ -349,6 +349,7 @@ _shutting_down  = False  # set on SIGINT/SIGTERM/cleanup so motion_loop stops pu
 velocity_estimator = None  # VelocityEstimator instance (EE244 project)
 c3_live = None             # diagnostic C3 person tracker (src/c3_live.py), GUI only
 traj_shadow = None         # traj_shadow.TrajShadow: GRU predictions logged, never acted on
+person_paths = None        # person_paths.PersonPaths (X3_PERSON_PATH): GUI path ribbons, display only
 foot_diagnostic = None     # isolated shadow evaluator; NEVER passed to drive/CBF
 active_velocity_model_name = "velocity_mlp_v3"  # currently loaded torchscript velocity model
 # v3 deployed 2026-09-04. Measured against v1 on one recorded capture replayed
@@ -3267,6 +3268,19 @@ def initialize_hardware():
         except Exception as e:
             logger.error(f"Trajectory shadow mode failed to start: {e}")
 
+    # X3_PERSON_PATH=cv|ctrv|gru: predicted walking paths for the GUI's Reality view
+    # (display only; default off leaves the payload unchanged). See src/person_paths.py.
+    global person_paths
+    try:
+        import person_paths as _pp_mod
+        person_paths = _pp_mod.from_env(args.traj_model or str(
+            Path(__file__).resolve().parent.parent / 'config' / 'traj_gru_deploy.npz'), log=logger)
+        if person_paths is not None:
+            logger.info("Person paths for the GUI: %s", person_paths.mode)
+    except Exception as e:
+        logger.error(f"Person paths failed to start: {e}")
+        person_paths = None
+
     # Diagnostic C3 tracker: OAK person boxes -> torso depth -> CV Kalman.
     # GUI/telemetry only; nothing here reaches the CBF.
     global c3_live
@@ -5538,7 +5552,7 @@ async def broadcast_loop():
     global depth_enabled, lidar_enabled
     global _batt_cache_v, _batt_cache_time, _batt_cache_a, _batt_cache_w  # P9
     global _batt_cache_a_time
-    global _ab_test_mode, stereo_enabled
+    global _ab_test_mode, stereo_enabled, person_paths
 
     loop = asyncio.get_event_loop()
     _depth_cycle = 0  # throttle depth to ~10 fps (every other 20fps cycle)
@@ -5745,6 +5759,16 @@ async def broadcast_loop():
             lidar_persons, lidar_person_stats = (
                 ros_bridge.lidar_person_tracks()
                 if LIDAR_PERSONS_ENABLED and ROS2_MODE and ros_bridge is not None else ([], None))
+            if person_paths is not None and ros_bridge is not None:
+                try:
+                    import person_paths as _pp_mod
+                    c3_tracks, lidar_persons, velocity_estimates = _pp_mod.annotate_telemetry(
+                        person_paths, ros_bridge.get_pose_m(), c3_tracks, lidar_persons,
+                        velocity_estimates)
+                except Exception as e:
+                    # display only: never let it take the telemetry loop down
+                    logger.warning(f"Person paths disabled: {e}")
+                    person_paths = None
 
             # P3: send camera frame as a binary WebSocket message (raw JPEG, no base64)
             if img_bytes:

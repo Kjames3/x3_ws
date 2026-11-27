@@ -64,18 +64,25 @@ def heading(a, b):
     return math.atan2(d[1], d[0]), math.hypot(d[0], d[1])
 
 
+XT_M = 0.4            # robust turning: the future also ends this far off the t0 heading line
+
+
 def label(tr, t0, gt, grid, h):
-    """(moving, turning) for the prediction at t0 over horizon h."""
+    """(moving, turning, turning_xt) for the prediction at t0 over horizon h."""
     k = int(round(h / STEP_S))
     p0 = gt[0]
     moving = np.hypot(*(gt[k] - p0)) / h > MOVING_MPS
     if not moving or t0 - HEAD_S < tr[0, 0]:
-        return moving, False
-    a0, s0 = heading(track_at(tr, t0 - HEAD_S), p0)
+        return moving, False, False
+    q = track_at(tr, t0 - HEAD_S)
+    a0, s0 = heading(q, p0)
     j = int(round((h - HEAD_S) / STEP_S))
     a1, s1 = heading(gt[j], gt[k])
     ok = s0 / HEAD_S > MOVING_MPS and s1 / HEAD_S > MOVING_MPS
-    return moving, bool(ok and abs(pp.wrap(a1 - a0)) > math.radians(TURN_DEG))
+    turning = bool(ok and abs(pp.wrap(a1 - a0)) > math.radians(TURN_DEG))
+    e = gt[k] - p0
+    xt = abs(math.cos(a0) * e[1] - math.sin(a0) * e[0])
+    return moving, turning, turning and xt > XT_M
 
 
 def collect(paths, source):
@@ -145,8 +152,8 @@ def wag(rows, mode, h=2.0):
 def subset(rows, h, kind, runs=None, exclude=None):
     out = []
     for r in rows:
-        mv, tn = r["lab"][h]
-        if (kind == "moving" and mv) or (kind == "turning" and tn):
+        mv, tn, tx = r["lab"][h]
+        if (kind == "moving" and mv) or (kind == "turning" and tn) or (kind == "turning_xt" and tx):
             name = runs[r["run"]][0] if runs else ""
             if exclude and re.search(exclude, name):
                 continue
@@ -157,7 +164,7 @@ def subset(rows, h, kind, runs=None, exclude=None):
 def summarize(rows, runs, modes, exclude_circle=False):
     res = {}
     for h in HORIZONS:
-        for kind in ("moving", "turning"):
+        for kind in ("moving", "turning", "turning_xt"):
             sub = subset(rows, h, kind, runs, "circle" if exclude_circle else None)
             key = "%s@%.0fs" % (kind, h)
             if not sub:
@@ -179,7 +186,7 @@ def summarize(rows, runs, modes, exclude_circle=False):
                 if per:
                     d[m]["per_run_pct"] = [round(float(np.percentile(per, q)), 1) for q in (25, 50, 75)]
                     d[m]["per_run_n"] = len(per)
-                if h == 2.0 and kind == "turning":
+                if h == 2.0 and kind != "moving":
                     alts = [r for r in sub if r["alts"][m]]
                     if alts:
                         k = int(round(h / STEP_S))
