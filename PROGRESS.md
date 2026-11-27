@@ -5,6 +5,27 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-26 — Perf flags and omni-direct Nav2 tested on the robot
+
+**Problem**
+
+At idle `server_x3.py` used about 4.7 cores, mostly numpy's OpenBLAS pool spinning. Nav2 would not strafe: the RotationShimController turned the robot to face side goals first.
+
+**Potential solution**
+
+Opt-in prototype flags (see `notes/plans/overnight_prototypes_2026-11-26.md`), and `X3_NAV2_PARAMS=omni_direct` (plain Omni MPPI, no shim).
+
+**Work done**
+
+A/B on the AGX in the apartment (idle, Nav2 off), restarting x3_server per phase. Strafe and rear-goal tests on newApartment1 with AMCL localized, recorded to `~/bags/strafe_2026-11-26/` on the robot. Merged to main.
+
+**Results**
+
+- server_x3 CPU 465% baseline, 98% with `X3_BLAS_THREADS=1`, 96% with the stall flags, 76% with all flags. `/cmd_vel_safe` 27.6 to 28.6 Hz, max gap 89 to 39 ms. No stalls in any phase, so the stall flags are unproven.
+- Default params reproduce the bug (1.4 s turn in place, 86° excursion, 8.2 s). omni_direct strafes 0.8 m in 3.9-4.6 s at 0.23-0.26 m/s, 3/3, still yawing 36-51° mid-move.
+- Rear goals 1.0 m on omni_direct both succeed (15 s, 26 s), moving within 0.4 s; no DiffDrive-era stall. MPPI turns around rather than reversing.
+- Follow-up lab/courtyard tests: `notes/plans/lab_followup_perf_strafe_2026-11-27.md`.
+
 ## 2026-11-26 — On-demand camera decode prototype
 
 **Problem**
