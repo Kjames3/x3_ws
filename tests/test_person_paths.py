@@ -228,3 +228,30 @@ def test_v3_tracks_use_the_oak_gru():
         out = pp.annotate_telemetry(p, POSE0, [], [], est)[2]
     path = np.array(out[0]["path_rel"])
     assert path.shape == (pp.N_POINTS, 2) and np.isfinite(path).all() and path[-1, 0] > 0.8
+
+
+def _plain(o):
+    """Only builtin JSON types, as orjson (server_x3's encoder) requires."""
+    if isinstance(o, dict):
+        return all(isinstance(k, str) and _plain(v) for k, v in o.items())
+    if isinstance(o, (list, tuple)):
+        return all(_plain(v) for v in o)
+    return o is None or type(o) in (bool, int, float, str)
+
+
+@pytest.mark.parametrize("mode", ["cv", "ctrv", "gru"])
+def test_annotated_payload_survives_the_server_encoder(mode):
+    paths = pp.from_env(str(PP_MODEL), env=mode) if PP_MODEL.exists() or mode != "gru" else None
+    if paths is None:
+        pytest.skip("no person-path GRU")
+    rows = walker(1.79e9, 20, 0.1, 1.0, w=0.8)
+    est = None
+    for i, r in enumerate(rows):
+        c3 = [dict(r, id=5, measured=True, state_stamp_s=r["stamp"])]
+        est = [{"id": 7, "z": 2.0 + 0.1 * i, "x": 0.3 * math.sin(0.5 * i), "vx": 1.0, "vy": 0.1}]
+        out = pp.annotate_telemetry(paths, {"x": 0.2, "y": 0.1, "theta": 0.4}, c3, [r], est)
+    for lst in out:
+        assert any("path_rel" in t for t in lst)
+        assert all(_plain({k: v for k, v in t.items() if k.startswith("path_")}) for t in lst)
+    orjson = pytest.importorskip("orjson")
+    orjson.dumps({"c3_tracks": out[0], "lidar_persons": out[1], "velocity_estimates": out[2]})

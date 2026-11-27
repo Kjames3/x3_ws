@@ -338,7 +338,8 @@ class PersonPaths:
 
         def rel(path, p0):
             d = path - p0
-            return [[round(c * a + s * b, 3), round(-s * a + c * b, 3)] for a, b in d]
+            # plain floats: server_x3 encodes with orjson, which rejects numpy scalars
+            return [[round(float(c * a + s * b), 3), round(float(-s * a + c * b), 3)] for a, b in d]
 
         out = []
         for key, tr in rows:
