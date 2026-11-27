@@ -1,0 +1,76 @@
+/* =================================================================
+   Motion layer (motion.js). Loaded last; everything here is additive.
+   Budget: every animation finishes inside the 400 ms Doherty threshold,
+   and press feedback starts on pointerdown (< 1 frame).
+   ================================================================= */
+
+/* 1. Pulse to confirm a press. `scale` is its own property, so it never
+   fights the translateY(-1px) hover transforms on .btn-primary etc. */
+@keyframes m-press {
+    0%   { scale: 1; }
+    35%  { scale: 0.94; }
+    100% { scale: 1; }
+}
+@keyframes m-ring {
+    0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent-cyan, #22d3ee) 55%, transparent); }
+    100% { box-shadow: 0 0 0 7px transparent; }
+}
+.m-pulse { animation: m-press 220ms cubic-bezier(.3,.7,.4,1), m-ring 380ms ease-out; }
+
+/* 2. Expand the same element: one ink bar slides between tabs instead of
+   each tab drawing its own underline. */
+.m-has-ink { position: relative; }
+.m-has-ink > .tab.active { border-bottom-color: transparent; }
+.m-ink {
+    position: absolute; left: 0; bottom: -1px; height: 2px; width: 0;
+    background: var(--accent-cyan); border-radius: 2px; pointer-events: none;
+    transition: translate 300ms cubic-bezier(.2,.8,.2,1), width 300ms cubic-bezier(.2,.8,.2,1), opacity 150ms;
+}
+/* The Navigate/Map toggle gets a sliding pill behind the buttons. */
+.nav-mode-toggle.m-has-ink > .nav-mode-btn { position: relative; z-index: 1; background: transparent; transition: color 200ms; }
+.nav-mode-toggle.m-has-ink > .nav-mode-btn.active { background: transparent; }
+.nav-mode-toggle.m-has-ink { background: var(--bg-tertiary); }
+.nav-mode-toggle > .m-ink { top: 0; bottom: 0; height: auto; border-radius: inherit; background: var(--accent-bg); opacity: 1; }
+
+/* The shutdown dialog grows out of the button that opened it. */
+@keyframes m-grow {
+    from { translate: var(--m-from-x, 0) var(--m-from-y, 0); scale: 0.2; opacity: 0; }
+    to   { translate: 0 0; scale: 1; opacity: 1; }
+}
+dialog[open].m-grow { animation: m-grow 280ms cubic-bezier(.2,.9,.25,1); }
+
+/* 3. Crossfade a button's label/icon with a blur when it changes
+   (Start -> Stop, badge LOCALIZED -> LOST, ...). */
+@keyframes m-swap {
+    0%   { filter: blur(4px); opacity: 0.25; }
+    100% { filter: blur(0);   opacity: 1; }
+}
+.m-swap { animation: m-swap 240ms ease-out; }
+
+/* 4. Rubber band: motion.js sets --m-rb (px) on the scroller. */
+.m-rb-on > * { translate: 0 var(--m-rb, 0px); }  /* only while stretched: translate makes a containing block for fixed children */
+.m-rb-on.m-rb-release > * { transition: translate 380ms cubic-bezier(.2,1.4,.4,1); }
+
+/* 5 + 6. Masked reveal, staged: the cards of a newly opened tab wipe in
+   top-down one after another, so the first (key) card lands first. */
+@keyframes m-reveal {
+    from { clip-path: inset(0 0 100% 0 round 12px); translate: 0 8px; opacity: 0.4; }
+    to   { clip-path: inset(0 0 0 0 round 12px);   translate: 0 0;   opacity: 1; }
+}
+.m-enter > * { animation: m-reveal 260ms cubic-bezier(.2,.8,.2,1) both; animation-delay: calc(var(--m-i, 0) * 35ms); }
+details[open] > :not(summary) { animation: m-reveal 220ms cubic-bezier(.2,.8,.2,1); }
+
+/* 6. Stage focus on the dialog: dim AND blur everything behind it. */
+dialog::backdrop { backdrop-filter: blur(3px); }
+
+/* 7. Fitts's law: small controls get bigger targets. */
+.btn-nav-sm { min-height: 30px; }
+.nav-view-controls button { min-width: 36px; height: 34px; font-size: 0.95rem; }
+.tab { min-height: 36px; }
+body.touch-ui .btn-nav-sm, body.touch-ui .nav-view-controls button { min-height: 44px; min-width: 44px; }
+
+@media (prefers-reduced-motion: reduce) {
+    .m-pulse, .m-swap, .m-enter > *, details[open] > :not(summary), dialog[open].m-grow { animation: none; }
+    .m-ink { transition: none; }
+    .m-rb-on > * { translate: none; }
+}
