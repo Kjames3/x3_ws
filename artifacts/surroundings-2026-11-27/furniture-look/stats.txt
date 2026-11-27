@@ -1,9 +1,9 @@
 before_overview: objects 9  triangles 1844  draw calls 58  visible meshes 60  programs 2  frames 3
-after_overview: objects 9  triangles 2336  draw calls 93  visible meshes 95  programs 5  frames 3
+after_overview: objects 9  triangles 2240  draw calls 93  visible meshes 95  programs 5  frames 3
 before_close: objects 9  triangles 1616  draw calls 54  visible meshes 60  programs 2  frames 3
-after_close: objects 9  triangles 1892  draw calls 78  visible meshes 95  programs 4  frames 3
-before_top: objects 9  triangles 1844  draw calls 58  visible meshes 60  programs 2  frames 4
-after_top: objects 9  triangles 2336  draw calls 93  visible meshes 95  programs 5  frames 3
-before_lineup: objects 7  triangles 1720  draw calls 46  visible meshes 49  programs 2  frames 3
-after_lineup: objects 7  triangles 2188  draw calls 79  visible meshes 82  programs 4  frames 3
-after_fade_250ms: objects 9  triangles 2336  draw calls 93  visible meshes 95  programs 5  frames 3
+after_close: objects 9  triangles 1796  draw calls 78  visible meshes 95  programs 4  frames 3
+before_top: objects 9  triangles 1844  draw calls 58  visible meshes 60  programs 2  frames 3
+after_top: objects 9  triangles 2240  draw calls 93  visible meshes 95  programs 5  frames 3
+before_lineup: objects 7  triangles 1720  draw calls 46  visible meshes 49  programs 2  frames 4
+after_lineup: objects 7  triangles 2092  draw calls 79  visible meshes 82  programs 4  frames 3
+after_fade_250ms: objects 9  triangles 2240  draw calls 93  visible meshes 95  programs 5  frames 3

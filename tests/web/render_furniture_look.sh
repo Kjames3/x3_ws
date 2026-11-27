@@ -24,4 +24,14 @@ for view in overview close top lineup; do
     shot "after_$view" "furnitureLookV2=1&view=$view"
 done
 shot "after_fade_250ms" "furnitureLookV2=1&view=overview&freeze=250"
+python3 - "$OUT" <<'PY'
+import sys
+from PIL import Image
+out = sys.argv[1]
+for v in ['overview', 'close', 'top', 'lineup']:
+    a, b = Image.open(f'{out}/before_{v}.png'), Image.open(f'{out}/after_{v}.png')
+    w, h = a.size
+    sheet = Image.new('RGB', (w, 2 * h)); sheet.paste(a, (0, 0)); sheet.paste(b, (0, h))
+    sheet.resize((w * 3 // 4, h * 3 // 2)).save(f'{out}/compare_{v}.png')
+PY
 cat "$OUT/stats.txt"

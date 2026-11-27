@@ -323,7 +323,7 @@
             const L = Math.max(0.05, b.L), D = Math.max(0.05, b.D);
             const w = round ? (L + D) / 2 : L, d = round ? (L + D) / 2 : D;
             ob.ring.scale.set(w + 2 * SHADOW_MARGIN, d + 2 * SHADOW_MARGIN, 1);
-            ob.ring.position.set(0, 0.002 - (b.bottom || 0), 0);
+            ob.ring.position.set(0, 0.003 - (b.bottom || 0), 0);   // range rings sit at 0.002
             ob.mats.shadow.uniforms.round.value = round ? 1 : 0;
             // Open furniture (legs) casts a lighter blob than a solid couch.
             ob.mats.shadow.uniforms.strength.value = ob.kind === 'couch' || ob.kind === 'cabinet' ? 1 : 0.75;

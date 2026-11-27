@@ -18,7 +18,7 @@ def _node_major():
     return int(m.group(1)) if m else 0
 
 
-# reality-structure.js (required by the check) uses optional chaining.
-@pytest.mark.skipif(_node_major() < 16, reason='needs node >= 16')
+# The fitter cross-check inside needs node >= 14 and skips itself on older node.
+@pytest.mark.skipif(_node_major() < 10, reason='needs node >= 10')
 def test_reality_furniture_look_check():
     subprocess.run(['node', 'tests/web/reality_furniture_look_check.cjs'], cwd=ROOT, check=True)

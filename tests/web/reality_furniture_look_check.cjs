@@ -1,7 +1,7 @@
 // Furniture look V2 (src/web/reality-furniture.js): metric layouts stay in the
 // measured box, put backs on the convention side, keep discrete choices
 // stable, and the renderer reuses/disposes what it creates.
-const assert = require('node:assert/strict');
+const assert = require('assert').strict;
 const F = require('../../src/web/reality-furniture');
 const THREE = require('../../src/web/vendor/three/three.min.js');
 
@@ -119,7 +119,10 @@ console.log('V2 layouts stay inside the box, stand on the floor, reach H, <= 400
     }
     // And the real fitter puts a chair's backrest there: raised returns on the
     // -Y edge of a seat (fixture from reality_furniture_check.cjs).
-    const {furnitureSurfaces} = require('../../src/web/reality-structure');
+    // reality-structure.js uses optional chaining (node >= 14); skip only this part on older node.
+    let furnitureSurfaces = null;
+    try { ({furnitureSurfaces} = require('../../src/web/reality-structure')); }
+    catch (e) { if (!(e instanceof SyntaxError)) throw e; console.log('SKIP fitter cross-check: node too old'); }
     const cells = [];
     for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
         const x = 3.6 + i * .12 + .01, y = j * .12 + .01;
@@ -127,9 +130,11 @@ console.log('V2 layouts stay inside the box, stand on the floor, reach H, <= 400
         if ((i === 0 || i === 3) && (j === 0 || j === 3)) cells.push({x, y, z: .2});
         if (j === 0) cells.push({x, y, z: .62}, {x, y, z: .82});
     }
-    const chair = furnitureSurfaces(cells).find(o => o.kind === 'chair');
-    const back = [Math.cos(chair.yaw + Math.PI / 2), Math.sin(chair.yaw + Math.PI / 2)];
-    assert.ok(back[1] < -.95, `fitted chair back should point to -Y, got ${back}`);
+    if (furnitureSurfaces) {
+        const chair = furnitureSurfaces(cells).find(o => o.kind === 'chair');
+        const back = [Math.cos(chair.yaw + Math.PI / 2), Math.sin(chair.yaw + Math.PI / 2)];
+        assert.ok(back[1] < -.95, `fitted chair back should point to -Y, got ${back}`);
+    }
 }
 console.log('Tables, chairs, couches, legacy fallback and the back-side convention passed');
 

@@ -18,8 +18,9 @@ page reload applies a change. The pattern copies `navKeepYaw` in `main.js`.
     frame. The legacy code stretched a unit box by L x H x D, so legs, tops and cushions changed
     thickness with box size. In V2 a 2.2 m table still has a 3 cm top and 4 cm legs.
   - **Rectangular table:** thin top (2.4 to 3.6 cm) with a small overhang and four square legs.
-    Dining and desk heights get a 7 cm apron. Low or coffee tables (`low` set, or H < 0.55) get
-    chunkier legs and a lower shelf.
+    Dining and desk heights get a 7 cm apron. Low or coffee tables get chunkier legs and a lower
+    shelf. In live data only H < 0.55 selects this: the box emitted by `reality-structure.js`
+    has no `low` field (the harness passes `low: true`, which gives the same result there).
   - **Round table:** disc top with diameter = mean(L, D), a collar, a column, and a foot plate
     with a hub. reality-structure only marks a top round when D > 0.85 L, so the disc overhangs
     D by at most (L-D)/4.
@@ -43,8 +44,9 @@ page reload applies a change. The pattern copies `navKeepYaw` in `main.js`.
   - **Contact shadow:** one plane per object with a rounded-rect or disc SDF, giving a dark core
     under the footprint plus a faint light halo just outside it. A dark blob alone was invisible
     on the #111820 floor; the halo is what makes the footprint read. It replaces the cyan
-    footprint plate in V2. It sits at local y = 0.002 - bottom with `depthWrite: false`; the
-    other floor layers sit at 0.004 to 0.016.
+    footprint plate in V2. It sits at world y = 0.003 with `depthWrite: false`. The range rings
+    in `scene-view.js` are at 0.002 and the floor plane at 0; the other Reality floor layers
+    are at 0.004 to 0.016. The AO term assumes the floor is at world y = 0, which it is.
   - **Appear and disappear:** 650 ms fade-in with a 4 cm rise, and a 400 ms fade-out on removal
     or kind change. The fade runs from `RealityMode.update()` every frame. Turning the structure
     toggle or the Reality view off removes objects instantly. While translucent, an object reads
@@ -107,9 +109,9 @@ Render counts from `renderer.info` (headless fps means nothing, so none is quote
 | scene | look | triangles | draw calls |
 |---|---|---|---|
 | room (9 objects) | current | 1844 | 58 |
-| room (9 objects) | V2 | 2336 | 93 |
+| room (9 objects) | V2 | 2240 | 93 |
 | lineup (7 objects) | current | 1720 | 46 |
-| lineup (7 objects) | V2 | 2188 | 79 |
+| lineup (7 objects) | V2 | 2092 | 79 |
 
 Each part is one draw call: about 10 per object, plus one for the shadow. A busy room of 15
 pieces is about 170 calls, which a laptop handles easily at 30+ fps. If it ever matters, the
@@ -130,10 +132,10 @@ parts of one object can be merged into one geometry per refit, or instanced per 
   - the renderer lifecycle with the real three r128 in node: shared geometries, mesh reuse on
     refit, the fade-in/solid/fade-out sequence, material disposal, and instant removal.
 - The existing `tests/web/reality_*.cjs` checks all still pass.
-- `pytest tests/` from an unsourced shell gives 4 failed and 8 errors, the same as the baseline.
-  The unsourced shell's `/usr/bin/node` is v12, which cannot parse the optional chaining in
-  `reality-structure.js`, so the wrapper skips there (it needs node >= 16). With the nvm node
-  (v22) it passes. `reality-furniture.js` itself loads on node 12.
+- The check also runs on node 12 (the unsourced `/usr/bin/node`). There, only the fitter
+  cross-check skips itself, because `reality-structure.js` uses optional chaining.
+- `pytest tests/` from an unsourced shell gives 4 failed and 8 errors, the same as the baseline,
+  and the new test passes.
 
 ## Open / next
 
@@ -141,3 +143,8 @@ parts of one object can be merged into one geometry per refit, or instanced per 
   `http://orin:8080/GUI.html?furnitureLookV2=1` with Reality on in a furnished room.
 - Chair arms are inferred from width only. If the fitter ever reports arm returns, use those.
 - The TV, bed and plant still use the legacy part lists, with the new shading only.
+- The OAK lookalike hand-off was not rendered: the harness stubs `Lookalike.ready` to false.
+  Reading the code, `updateModel` hides the V2 body group and keeps the shadow, as it did with
+  the legacy children.
+- Round tops: the rim highlight measures distance to a true circle while the disc is a 24-gon,
+  so the line thins at mid-facet on large (> ~1.2 m) tops. It is not visible in the renders.
