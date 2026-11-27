@@ -1,0 +1,115 @@
+average rate: 28.568
+	min: 0.034s max: 0.036s std dev: 0.00047s window: 30
+average rate: 28.304
+	min: 0.034s max: 0.038s std dev: 0.00101s window: 59
+average rate: 28.286
+	min: 0.034s max: 0.040s std dev: 0.00115s window: 88
+average rate: 28.327
+	min: 0.034s max: 0.040s std dev: 0.00106s window: 117
+average rate: 28.348
+	min: 0.034s max: 0.040s std dev: 0.00101s window: 146
+average rate: 28.385
+	min: 0.034s max: 0.040s std dev: 0.00096s window: 175
+average rate: 28.374
+	min: 0.034s max: 0.040s std dev: 0.00102s window: 204
+average rate: 28.382
+	min: 0.034s max: 0.040s std dev: 0.00102s window: 233
+average rate: 28.402
+	min: 0.034s max: 0.040s std dev: 0.00099s window: 262
+average rate: 28.403
+	min: 0.034s max: 0.040s std dev: 0.00099s window: 291
+average rate: 28.410
+	min: 0.034s max: 0.040s std dev: 0.00101s window: 320
+average rate: 28.422
+	min: 0.034s max: 0.040s std dev: 0.00099s window: 349
+average rate: 28.401
+	min: 0.034s max: 0.040s std dev: 0.00103s window: 378
+average rate: 28.400
+	min: 0.034s max: 0.040s std dev: 0.00104s window: 407
+average rate: 28.405
+	min: 0.034s max: 0.040s std dev: 0.00103s window: 436
+average rate: 28.396
+	min: 0.034s max: 0.040s std dev: 0.00105s window: 465
+average rate: 28.408
+	min: 0.034s max: 0.040s std dev: 0.00103s window: 494
+average rate: 28.402
+	min: 0.034s max: 0.040s std dev: 0.00103s window: 523
+average rate: 28.402
+	min: 0.034s max: 0.040s std dev: 0.00103s window: 552
+average rate: 28.406
+	min: 0.034s max: 0.040s std dev: 0.00102s window: 581
+average rate: 28.401
+	min: 0.034s max: 0.040s std dev: 0.00103s window: 610
+average rate: 28.401
+	min: 0.034s max: 0.040s std dev: 0.00103s window: 639
+average rate: 28.390
+	min: 0.034s max: 0.040s std dev: 0.00104s window: 668
+average rate: 28.386
+	min: 0.034s max: 0.040s std dev: 0.00105s window: 697
+average rate: 28.385
+	min: 0.034s max: 0.040s std dev: 0.00105s window: 726
+average rate: 28.394
+	min: 0.034s max: 0.040s std dev: 0.00104s window: 755
+average rate: 28.386
+	min: 0.034s max: 0.040s std dev: 0.00105s window: 784
+average rate: 28.381
+	min: 0.034s max: 0.040s std dev: 0.00105s window: 813
+average rate: 28.376
+	min: 0.034s max: 0.040s std dev: 0.00105s window: 842
+average rate: 28.377
+	min: 0.034s max: 0.040s std dev: 0.00105s window: 871
+average rate: 28.364
+	min: 0.034s max: 0.040s std dev: 0.00107s window: 899
+average rate: 28.363
+	min: 0.034s max: 0.040s std dev: 0.00107s window: 928
+average rate: 28.362
+	min: 0.034s max: 0.040s std dev: 0.00107s window: 957
+average rate: 28.366
+	min: 0.034s max: 0.040s std dev: 0.00107s window: 986
+average rate: 28.365
+	min: 0.034s max: 0.040s std dev: 0.00107s window: 1015
+average rate: 28.370
+	min: 0.034s max: 0.040s std dev: 0.00106s window: 1044
+average rate: 28.367
+	min: 0.034s max: 0.040s std dev: 0.00106s window: 1073
+average rate: 28.365
+	min: 0.034s max: 0.040s std dev: 0.00106s window: 1102
+average rate: 28.368
+	min: 0.034s max: 0.040s std dev: 0.00106s window: 1131
+average rate: 28.373
+	min: 0.034s max: 0.040s std dev: 0.00105s window: 1160
+average rate: 28.376
+	min: 0.034s max: 0.040s std dev: 0.00105s window: 1189
+average rate: 28.375
+	min: 0.034s max: 0.040s std dev: 0.00105s window: 1218
+average rate: 28.373
+	min: 0.034s max: 0.040s std dev: 0.00106s window: 1247
+average rate: 28.375
+	min: 0.034s max: 0.040s std dev: 0.00105s window: 1276
+average rate: 28.376
+	min: 0.034s max: 0.040s std dev: 0.00105s window: 1305
+average rate: 28.376
+	min: 0.034s max: 0.040s std dev: 0.00105s window: 1334
+average rate: 28.373
+	min: 0.034s max: 0.040s std dev: 0.00105s window: 1363
+average rate: 28.368
+	min: 0.034s max: 0.040s std dev: 0.00106s window: 1392
+average rate: 28.369
+	min: 0.034s max: 0.040s std dev: 0.00106s window: 1421
+average rate: 28.370
+	min: 0.034s max: 0.040s std dev: 0.00106s window: 1450
+average rate: 28.370
+	min: 0.033s max: 0.040s std dev: 0.00106s window: 1479
+average rate: 28.370
+	min: 0.033s max: 0.040s std dev: 0.00106s window: 1508
+average rate: 28.366
+	min: 0.033s max: 0.042s std dev: 0.00107s window: 1537
+average rate: 28.360
+	min: 0.033s max: 0.042s std dev: 0.00108s window: 1566
+average rate: 28.358
+	min: 0.033s max: 0.042s std dev: 0.00109s window: 1595
+average rate: 28.357
+	min: 0.033s max: 0.042s std dev: 0.00109s window: 1624
+average rate: 28.358
+	min: 0.033s max: 0.042s std dev: 0.00108s window: 1653
+failed to shutdown: rcl_shutdown already called on the given context, at ./src/rcl/init.c:241
