@@ -34,11 +34,22 @@ here feeds the CBF or Nav2. Nothing was run on the robot.
   - **So expect mild bends on the robot, not paths that swing around corners.**
     When a turn is likely but its direction is not, the faint fan of
     alternatives is the honest display.
-- **Front people (C3) are the least supported.** C3 updates at 3 to 6 Hz.
-  After dropping repeated states, the held-out C3 evaluation has only 74
-  moving windows at 1 s and 50 at 2 s. That is too thin to say anything, and
-  about a quarter of C3 histories break on gaps over 0.35 s and fall back to a
-  straight line.
+- **Front people (C3) are the least supported.**
+  - The GUI draws the C3 avatar in front of the robot and hides the
+    co-located lidar track.
+  - C3 updates at 3 to 6 Hz. After dropping repeated states, the held-out C3
+    evaluation has only 74 moving windows at 1 s and 50 at 2 s, too thin to
+    say anything.
+  - Replaying the REPORT ndjson through the runtime, only **34 %** of moving
+    C3 display time has the 1 s history a model path needs. The rest is the
+    straight fallback with no fan. For Livox tracks it is 86 %.
+  - **Fix shipped:** a C3 track now borrows the path of the lidar track
+    seeded from it (`borrow_lidar_paths`), which raises this to **48 %**.
+  - **Knob, untested:** a 0.5 s gap tolerance for C3
+    (`person_paths.SOURCE_GAP_S = {"c3": 0.5}`) would reach 68 %. It is off,
+    because its accuracy was not scored.
+  - Front people with no linked lidar track and a broken history stay
+    straight.
 - **Map awareness (option c) was checked for feasibility, then dropped.** The
   straight-line path runs into a static obstacle in 30 % of turning windows
   and 23 % of straight ones. That difference is too small to bend paths on.
@@ -243,6 +254,9 @@ Doorway attraction was not attempted.
       not a new observation.
     - Stale tracks are forgotten on the monotonic `annotate()` clock, because
       track stamps are wall clock.
+  - **Which rows are learned from:** `learnable()` applies the same filter as
+    the evaluation's loader. Lidar rows need confirmed, not coasting, and
+    `lidar_age_s < 0.15`; C3 rows need `measured` not false.
   - **Per tick:** tracks slower than 0.15 m/s skip prediction entirely. A
     prediction is cached until its track has a new observation, so the 20 Hz
     telemetry loop runs the GRU once per tracker update.
@@ -250,6 +264,12 @@ Doorway attraction was not attempted.
     - `path_rel`: 16 points over 2 s, as base-axes offsets `[dfwd, dleft]`
       from the person at the robot's current yaw.
     - `path_sigma`: the spread at each point.
+    - `path_model`: false when the path is the straight fallback.
+    - All of these are plain Python floats. **server_x3 encodes the readout
+      with orjson, which rejects numpy scalars.** The first version shipped
+      numpy floats, which would have made `orjson_dumps(msg)` raise in
+      `broadcast_loop` with the flag on. Caught in review; a test now runs the
+      payload through orjson.
     - `path_alts`: 0 or 2 alternatives at ±0.6 rad/s, damped by tau 0.7. The
       fan shows when |fitted turn| > 0.4 rad/s or the turn-rate std error >
       0.25, on about 35 % of moving people on TUNE.
@@ -264,6 +284,9 @@ Doorway attraction was not attempted.
     - v3 is annotated only when C3 is not running, because that is the only
       time the GUI draws v3 people.
     - Static blobs and `is_person: false` estimates get no path.
+  - **C3 borrowing:** C3 tracks then borrow the path of their linked lidar
+    track. The link is a lidar `camera_id` equal to the C3 id; side cameras
+    are `left:N`, `right:N` and `rear:N` and never match.
   - **Failure handling:** any exception disables the feature and is logged;
     the loop keeps running.
   - **Flag off:** the same objects pass through unchanged (tested).
@@ -290,11 +313,12 @@ Doorway attraction was not attempted.
     Other agents editing these files will conflict on those two lines; keep
     the higher number.
 - **Tests**
-  - `tests/test_person_paths.py` has 19 tests: flag off; straight and
+  - `tests/test_person_paths.py` has 24 tests: flag off; straight and
     left-turn walkers; base axes with the robot yawed 90 deg; coasting rows
     and C3 unmeasured rows; v3 re-reads, static and C3-active handling; stale
     tracks; GRU batching and per-source models; model fallback; the fan;
-    smoothing idempotence; the slow-track skip.
+    smoothing idempotence; the slow-track skip; C3 borrowing; the
+    `learnable` filter; the payload through orjson in all three modes.
   - `tests/web/reality_curved_intent_check.cjs` checks the offset-to-scene
     signs and spline fidelity: it passes through every control point, stays
     within 5 mm of a 1.5 m arc, keeps a straight line straight and stays
@@ -357,9 +381,9 @@ was rendered in headless Chrome.
 3. Compare `X3_PERSON_PATH=ctrv`, and `GRU_BEND = True`. CTRV draws
    full-length ribbons that bend only on sustained turns, and may read better
    even though it scores worse.
-4. Front (C3) people. Check whether their ribbons often fall back to
-   straight. By estimate (6 % of C3 intervals exceed 0.35 s) about a quarter
-   of 1 s histories break. If they do, try a larger gap for the `c3` source.
+4. Front (C3) people. In replay about half of moving C3 display time still
+   falls back to straight. If it looks that way live, try
+   `SOURCE_GAP_S = {"c3": 0.5}`.
 5. If GRU ribbons look too short for steady walkers, the model is predicting
    the stop-and-go common in these recordings. Retraining on moving windows
    only is the next thing to try.

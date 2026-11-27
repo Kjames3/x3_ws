@@ -255,3 +255,28 @@ def test_annotated_payload_survives_the_server_encoder(mode):
         assert all(_plain({k: v for k, v in t.items() if k.startswith("path_")}) for t in lst)
     orjson = pytest.importorskip("orjson")
     orjson.dumps({"c3_tracks": out[0], "lidar_persons": out[1], "velocity_estimates": out[2]})
+
+
+def test_c3_borrows_the_linked_lidar_path():
+    lidar = {"id": "L71", "camera_id": "453", "confirmed": True, "mode": "camera + lidar",
+             "path_rel": [[0, 0], [1, 1]], "path_sigma": [0.1, 0.2], "path_alts": [], "path_model": True}
+    side = dict(lidar, id="L72", camera_id="left:453", path_rel=[[0, 0], [9, 9]])
+    straight = {"id": 453, "path_rel": [[0, 0], [2, 0]], "path_sigma": [0.1, 0.2], "path_alts": [],
+                "path_model": False}
+    out = pp.borrow_lidar_paths([straight, {"id": 454}], [side, lidar])
+    assert out[0]["path_rel"] == [[0, 0], [1, 1]] and out[0]["path_model"] is True
+    assert "path_rel" not in out[1]                          # no linked track: untouched
+    assert straight["path_rel"] == [[0, 0], [2, 0]]          # input not modified
+    # a coasting lidar track does not lend its path; a C3 model path is kept over a lidar fallback
+    assert pp.borrow_lidar_paths([straight], [dict(lidar, mode="coasting")])[0]["path_rel"] == [[0, 0], [2, 0]]
+    own = dict(straight, path_model=True)
+    assert pp.borrow_lidar_paths([own], [dict(lidar, path_model=False)])[0] is own
+
+
+def test_learnable_matches_the_eval_loader():
+    assert pp.learnable({"mode": "lidar", "confirmed": True, "lidar_age_s": 0.0})
+    assert not pp.learnable({"mode": "coasting"})
+    assert not pp.learnable({"confirmed": False})
+    assert not pp.learnable({"lidar_age_s": 0.3})
+    assert not pp.learnable({"measured": False})
+    assert pp.learnable({"id": 3, "measured": True})            # C3 / v3 rows without lidar fields

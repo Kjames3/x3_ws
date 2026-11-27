@@ -40,6 +40,7 @@ N_POINTS = 16          # = reality-mode.js TRAIL_N, one point per 2/15 s
 RATE_HZ = 10.0         # history resample rate (the GRU's)
 HIST_N = 11            # 1.0 s of history at RATE_HZ
 GAP_S = 0.35           # a hole longer than this restarts the history
+SOURCE_GAP_S = {}      # per-source override, e.g. {"c3": 0.7} (C3 updates at 3-6 Hz); untested live
 STALE_S = 2.0
 MIN_SPEED_MPS = 0.15   # reality-mode.js MOVING_MPS: slower tracks get no path
 
@@ -146,6 +147,15 @@ def bend_path(path, times, dw, tau):
     return np.vstack([path[:1], path[:1] + np.cumsum(rot, 0)])
 
 
+def learnable(tr):
+    """Rows that are measurements, the same filter the evaluation's loader applies
+    (trajectory_baselines.tracks_from_ndjson): not the lidar tracker's coasting
+    rows, not unconfirmed lidar tracks, not lidar rows without a fresh lidar hit
+    (lidar_age_s >= 0.15), not C3's unmeasured (predicted) rows."""
+    return (tr.get("mode") != "coasting" and tr.get("confirmed") is not False
+            and tr.get("lidar_age_s", 0.0) < 0.15 and tr.get("measured") is not False)
+
+
 class PersonPaths:
     def __init__(self, mode, model_path=None, horizon_s=HORIZON_S, n_points=N_POINTS, ctrv=None,
                  smooth_s=None, poly_deg=None, bend=None, source_models=None):
@@ -190,8 +200,9 @@ class PersonPaths:
     # ---- history ---------------------------------------------------------
     def observe(self, key, t, x, y, vx, vy):
         q = self._obs.get(key)
+        gap = SOURCE_GAP_S.get(key[0], GAP_S) if isinstance(key, tuple) else GAP_S
         # a hole, or a clock jump backwards (a source switching stamp clocks), restarts it
-        if q is None or (q and (t - q[-1][0] > GAP_S or t < q[-1][0] - 1.0)):
+        if q is None or (q and (t - q[-1][0] > gap or t < q[-1][0] - 1.0)):
             q = self._obs[key] = deque()
         if q and t <= q[-1][0]:
             return False
@@ -323,7 +334,7 @@ class PersonPaths:
             # by the 20 Hz loop is not a new observation.
             sig = tr.get("_sig")
             fresh = sig is None or self._last_sig.get(key) != sig
-            if tr.get("mode") != "coasting" and tr.get("measured") is not False and fresh:
+            if learnable(tr) and fresh:
                 ts = tr.get(stamp_key) if stamp_key else None
                 self.observe(key, float(ts) if ts is not None else now, x, y, vx, vy)
                 if sig is not None:
@@ -354,7 +365,9 @@ class PersonPaths:
             # since; the GUI anchors the offsets at the avatar, so this is display-exact).
             out.append(dict(tr, path_rel=rel(r["path"], r["p0"]),
                             path_sigma=[round(float(v), 3) for v in r["sigma"]],
-                            path_alts=[rel(a, r["p0"]) for a in r["alts"]]))
+                            path_alts=[rel(a, r["p0"]) for a in r["alts"]],
+                            # False: too little history, the straight fallback
+                            path_model=bool(r["used_hist"])))
         self.forget_stale(now)
         ms = (time.perf_counter() - t_start) * 1e3
         self.stats["ticks"] += 1
@@ -404,6 +417,36 @@ def estimates_with_odom(estimates, pose):
 _ODOM_KEYS = ("odom_x", "odom_y", "odom_vx", "odom_vy")
 
 
+_PATH_KEYS = ("path_rel", "path_sigma", "path_alts", "path_model")
+
+
+def borrow_lidar_paths(c3_tracks, lidar_tracks):
+    """C3 tracks (the front avatars) take the path of the lidar track seeded from them.
+
+    C3 updates at 3-6 Hz with gaps, so only ~35 % of moving C3 display time has
+    the 1 s history a model path needs (the rest is the straight fallback); the
+    Livox tracks have it ~86 % of the time (REPORT ndjson replay, 2026-11-27).
+    The GUI draws the C3 avatar and hides the co-located lidar one, so the
+    better path would otherwise never be seen. Linked = a confirmed, measured
+    (not coasting) lidar track whose camera_id is this C3 id (side cameras are
+    'left:N' / 'right:N' / 'rear:N' and never match). Offsets are
+    person-relative, so they transplant onto the C3 avatar."""
+    linked = {}
+    for t in lidar_tracks:
+        cid = t.get("camera_id")
+        if (cid is not None and "path_rel" in t and t.get("confirmed", True)
+                and t.get("mode") != "coasting"):
+            linked[str(cid)] = t
+    out = []
+    for c in c3_tracks:
+        l = linked.get(str(c.get("id")))
+        if l is not None and (l.get("path_model") or "path_rel" not in c):
+            if not c.get("path_model") or l.get("path_model"):
+                c = dict(c, **{k: l[k] for k in _PATH_KEYS if k in l})
+        out.append(c)
+    return out
+
+
 def annotate_telemetry(paths, pose, c3_tracks, lidar_persons, velocity_estimates, c3_active=False):
     """(c3_tracks, lidar_persons, velocity_estimates) with paths added, or the same
     objects untouched when paths is None (X3_PERSON_PATH off) or there is no pose.
@@ -415,6 +458,8 @@ def annotate_telemetry(paths, pose, c3_tracks, lidar_persons, velocity_estimates
         return c3_tracks, lidar_persons, velocity_estimates
     c3 = paths.annotate(c3_tracks, "c3", pose, stamp_key="state_stamp_s") if c3_tracks else c3_tracks
     lp = paths.annotate(lidar_persons, "lidar", pose, stamp_key="stamp") if lidar_persons else lidar_persons
+    if c3 and lp:
+        c3 = borrow_lidar_paths(c3, lp)
     ve = velocity_estimates
     people = [e for e in velocity_estimates or []
               if e.get("category") != "static" and e.get("is_person") is not False]
