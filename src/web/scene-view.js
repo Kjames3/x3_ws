@@ -26,6 +26,12 @@
     const GHOST_S = 1.0;          // prediction horizon for the faded ghost
     const LASER_X = -0.0025;      // base_link -> laser_link x (m); = server LIDAR_X_M, x3_v2 URDF (old X3: 0.044)
     const SCAN_STALE_MS = 1000;   // hide walls when /scan stops (e.g. 3D sweep gate)
+    // ?curvedIntent=1: draw the server's predicted person paths (X3_PERSON_PATH) as
+    // curves in the Reality view; otherwise the straight constant-velocity trail.
+    const CURVED_INTENT = (() => {
+        try { return new URLSearchParams(location.search).get('curvedIntent') === '1'; }
+        catch (e) { return false; }
+    })();
 
     let lastPts = null, lastPtsAt = 0;
     let reality = null, realityOn = false;           // reality-mode.js (dark FSD-style theme + path/CBF overlays)
@@ -947,7 +953,8 @@
             for (const t of d.c3Tracks || []) {
                 out.push({ id: 'c3-' + t.id, x: -t.left, z: t.fwd - OAK_MOUNT_X, fwdBase: t.fwd,
                            vx: t.vx, vy: t.vy, category: 'person',
-                           horizon: t.predict_s, measured: t.measured });
+                           horizon: t.predict_s, measured: t.measured,
+                           path_rel: t.path_rel, path_sigma: t.path_sigma, path_alts: t.path_alts });
             }
             for (const e of d.velocityEstimates || []) {
                 if (e.category === 'dynamic') out.push(Object.assign({}, e, { id: 'v3-' + e.id }));
@@ -963,7 +970,8 @@
                     Math.hypot((e.fwdBase ?? e.z + OAK_MOUNT_X) - t.fwd, -e.x - t.left) < 0.7)) continue;
             out.push({ id: 'lp-' + t.id, x: -t.left, z: t.fwd - OAK_MOUNT_X, fwdBase: t.fwd,
                        vx: t.vx || 0, vy: t.vy || 0, category: 'person', measured: true,
-                       camera: t.camera_id });
+                       camera: t.camera_id,
+                       path_rel: t.path_rel, path_sigma: t.path_sigma, path_alts: t.path_alts });
         }
         return out;
     }
@@ -1055,6 +1063,10 @@
             p.prediction.animate(speed, dt);
             if (p.prediction.pose) p.prediction.pose(bodyPose, dt);
             p.vel = { sx, sz };
+            // Server-predicted path (X3_PERSON_PATH): offsets [dfwd, dleft] from this person.
+            p.pathRel = Array.isArray(est.path_rel) ? est.path_rel : null;
+            p.pathSigma = est.path_sigma || null;
+            p.pathAlts = est.path_alts || null;
             // Reality view draws its own intent trail in place of the arrow/ghost.
             p.ghost.visible = moving && !realityOn;
             p.arrow.visible = moving && !realityOn;
@@ -1296,8 +1308,17 @@
             const persons = [];
             for (const p of people.values()) {
                 if (p.kind !== 'person' || !p.group.visible) continue;
-                persons.push({ x: p.group.position.x, z: p.group.position.z,
-                               sx: p.vel ? p.vel.sx : 0, sz: p.vel ? p.vel.sz : 0 });
+                const entry = { x: p.group.position.x, z: p.group.position.z,
+                                sx: p.vel ? p.vel.sx : 0, sz: p.vel ? p.vel.sz : 0 };
+                if (CURVED_INTENT && p.pathRel && p.pathRel.length >= 3) {
+                    // base offsets (fwd, left) -> scene (x = -left, z = -fwd), anchored at the avatar
+                    const toScene = rel => RealityMode.relToScene(entry.x, entry.z, rel);
+                    entry.path = toScene(p.pathRel);
+                    entry.curved = true;
+                    entry.sigma = p.pathSigma;
+                    entry.alts = (p.pathAlts || []).map(toScene);
+                }
+                persons.push(entry);
             }
             const structToggle = document.getElementById('surroundings-reality-structure');
             reality.update(realityOn, d, state.nav, now, persons,
