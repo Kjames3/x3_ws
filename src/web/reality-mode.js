@@ -41,6 +41,39 @@ window.RealityMode = (() => {
     const DARK = { bg: 0x0b0f14, floor: 0x111820, ring: 0x1e2a36,
                    tint: 0x8fb4d9, emissive: 0x0a1622 };
 
+    // Centripetal Catmull-Rom through pts (each [x, z]), `sub` samples per
+    // span; widths (one per point) interpolated linearly. Ends are extended by
+    // reflection so the curve starts at the person and ends at the last point.
+    function splineResample(pts, widths, sub = 3) {
+        const n = pts.length, out = [], ow = [];
+        const P = i => i < 0 ? [2 * pts[0][0] - pts[1][0], 2 * pts[0][1] - pts[1][1]]
+            : i >= n ? [2 * pts[n-1][0] - pts[n-2][0], 2 * pts[n-1][1] - pts[n-2][1]] : pts[i];
+        const knot = (a, b) => Math.max(Math.sqrt(Math.hypot(b[0] - a[0], b[1] - a[1])), 1e-4);
+        for (let i = 0; i < n - 1; i++) {
+            const p0 = P(i - 1), p1 = P(i), p2 = P(i + 1), p3 = P(i + 2);
+            const t1 = knot(p0, p1), t2 = t1 + knot(p1, p2), t3 = t2 + knot(p2, p3);
+            for (let j = 0; j < sub; j++) {
+                const f = j / sub, t = t1 + (t2 - t1) * f, pt = [0, 0];
+                for (let c = 0; c < 2; c++) {
+                    const a1 = ((t1 - t) * p0[c] + t * p1[c]) / t1;
+                    const a2 = ((t2 - t) * p1[c] + (t - t1) * p2[c]) / (t2 - t1);
+                    const a3 = ((t3 - t) * p2[c] + (t - t2) * p3[c]) / (t3 - t2);
+                    const b1 = ((t2 - t) * a1 + t * a2) / t2;
+                    const b2 = ((t3 - t) * a2 + (t - t1) * a3) / (t3 - t1);
+                    pt[c] = ((t2 - t) * b1 + (t - t1) * b2) / (t2 - t1);
+                }
+                out.push(pt); ow.push(widths[i] + (widths[i + 1] - widths[i]) * f);
+            }
+        }
+        out.push(pts[n - 1]); ow.push(widths[n - 1]);
+        return [out, ow];
+    }
+    // Server path offsets [dfwd, dleft] (base axes, person-relative) -> scene [x, z]
+    // points anchored at the avatar (scene: x = -left, z = -fwd).
+    function relToScene(x, z, rel) {
+        return rel.map(([f, l]) => [x - l, z - f]);
+    }
+
     function create(THREE, scene, renderer, refs) {
         const time = { value: 0 };
 
@@ -195,33 +228,6 @@ window.RealityMode = (() => {
                 for (const f of t.fan) f.visible = false;
             }
         }
-        // Centripetal Catmull-Rom through pts (each [x, z]), TRAIL_SUB samples per
-        // span; widths (one per point) interpolated linearly. Ends are extended by
-        // reflection so the curve starts at the person and ends at the last point.
-        function splineResample(pts, widths) {
-            const n = pts.length, out = [], ow = [];
-            const P = i => i < 0 ? [2 * pts[0][0] - pts[1][0], 2 * pts[0][1] - pts[1][1]]
-                : i >= n ? [2 * pts[n-1][0] - pts[n-2][0], 2 * pts[n-1][1] - pts[n-2][1]] : pts[i];
-            const knot = (a, b) => Math.max(Math.sqrt(Math.hypot(b[0] - a[0], b[1] - a[1])), 1e-4);
-            for (let i = 0; i < n - 1; i++) {
-                const p0 = P(i - 1), p1 = P(i), p2 = P(i + 1), p3 = P(i + 2);
-                const t1 = knot(p0, p1), t2 = t1 + knot(p1, p2), t3 = t2 + knot(p2, p3);
-                for (let j = 0; j < TRAIL_SUB; j++) {
-                    const f = j / TRAIL_SUB, t = t1 + (t2 - t1) * f, pt = [0, 0];
-                    for (let c = 0; c < 2; c++) {
-                        const a1 = ((t1 - t) * p0[c] + t * p1[c]) / t1;
-                        const a2 = ((t2 - t) * p1[c] + (t - t1) * p2[c]) / (t2 - t1);
-                        const a3 = ((t3 - t) * p2[c] + (t - t2) * p3[c]) / (t3 - t2);
-                        const b1 = ((t2 - t) * a1 + t * a2) / t2;
-                        const b2 = ((t3 - t) * a2 + (t - t1) * a3) / (t3 - t1);
-                        pt[c] = ((t2 - t) * b1 + (t - t1) * b2) / (t2 - t1);
-                    }
-                    out.push(pt); ow.push(widths[i] + (widths[i + 1] - widths[i]) * f);
-                }
-            }
-            out.push(pts[n - 1]); ow.push(widths[n - 1]);
-            return [out, ow];
-        }
         // Write a ribbon through pts (scene [x, z]) with full widths ws; returns the
         // closest approach to the robot (scene origin).
         function fillRibbon(mesh, pts, ws) {
@@ -276,7 +282,7 @@ window.RealityMode = (() => {
                 }) : null));
                 if (!path || (!curved && path.length !== TRAIL_N)) { t.mesh.visible = t.end.visible = false; continue; }
                 let pts = path, ws = widthsFor(path.length, curved ? p.sigma : null);
-                if (curved) [pts, ws] = splineResample(path, ws);
+                if (curved) [pts, ws] = splineResample(path, ws, TRAIL_SUB);
                 const minD = fillRibbon(t.mesh, pts, ws);
                 const hex = minD < CONFLICT_M ? TRAIL_COLORS.conflict : TRAIL_COLORS.normal;
                 t.color.value.setHex(hex);
@@ -289,7 +295,7 @@ window.RealityMode = (() => {
                     let fanD = Infinity;
                     p.alts.slice(0, FAN_N).forEach((alt, j) => {
                         if (!alt || alt.length < 3) return;
-                        const [ap, aw] = splineResample(alt, widthsFor(alt.length, null).map(w => w * 0.6));
+                        const [ap, aw] = splineResample(alt, widthsFor(alt.length, null).map(w => w * 0.6), TRAIL_SUB);
                         fanD = Math.min(fanD, fillRibbon(t.fan[j], ap, aw));
                         t.fan[j].visible = true;
                     });
@@ -690,5 +696,5 @@ window.RealityMode = (() => {
             },
         };
     }
-    return { create };
+    return { create, splineResample, relToScene };
 })();

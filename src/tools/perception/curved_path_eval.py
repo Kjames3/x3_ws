@@ -39,7 +39,8 @@ import trajectory_baselines as tb  # noqa: E402
 MODEL = HERE.parents[3] / "config" / "traj_gru_deploy.npz"           # OAK v3 tracks (2026-11-08)
 MODEL_PP = HERE.parents[3] / "config" / "traj_gru_person_paths.npz"  # lidar + C3 TUNE runs (2026-11-27)
 # eval mode name -> (PersonPaths mode, model)
-MODES = {"cv": ("cv", None), "ctrv": ("ctrv", None), "gru": ("gru", MODEL), "gru_pp": ("gru", MODEL_PP)}
+MODES = {"cv": ("cv", None), "ctrv": ("ctrv", None), "gru": ("gru", MODEL), "gru_pp": ("gru", MODEL_PP),
+         "gru_bend": ("gru", MODEL_PP)}
 STEP_S = 0.1
 HORIZONS = (1.0, 2.0)
 MOVING_MPS = 0.3
@@ -88,6 +89,18 @@ def label(tr, t0, gt, grid, h):
     return moving, turning, turning and xt > XT_M
 
 
+def drop_repeats(track):
+    """Drop rows that repeat the previous row's state. lidar_persons.ndjson writes the
+    newest C3 state on every lidar tick, so about half the C3 rows are the same
+    state under a later stamp (2026-11-27 check); the runtime keys C3 on
+    state_stamp_s and never sees them."""
+    if len(track) < 2:
+        return track
+    keep = np.ones(len(track), bool)
+    keep[1:] = np.any(np.diff(track[:, 1:5], axis=0) != 0, axis=1)
+    return track[keep]
+
+
 def collect(paths, source):
     runs = []
     for p in paths:
@@ -96,8 +109,25 @@ def collect(paths, source):
         except Exception as e:  # noqa: BLE001
             print("skip %s: %s" % (p, e), file=sys.stderr)
             continue
-        runs.append((Path(p).name, run_date(p), tb.dedupe(tracks)))
+        runs.append((Path(p).name, run_date(p), {k: drop_repeats(v) for k, v in tb.dedupe(tracks).items()}))
     return runs
+
+
+def export_windows(runs, path, hist_s=1.0, fut_s=2.0, tag=""):
+    """trajectory_baselines-style training windows (hist [N, 11, 4], fut [N, 20, 2]) from
+    collect() runs, so training sees the same de-repeated tracks the evaluation does."""
+    hist_n, fut_n = int(round(hist_s * tb.RATE_HZ)) + 1, int(round(fut_s * tb.RATE_HZ))
+    H, F, R = [], [], []
+    for ri, (name, date, tracks) in enumerate(runs):
+        for tr in tracks.values():
+            for seg in tb.segments(tr):
+                for h, f in tb.windows(seg, hist_n, fut_n):
+                    H.append(h)
+                    F.append(f)
+                    R.append(ri)
+    np.savez_compressed(path, hist=np.array(H), fut=np.array(F), run=np.array(R),
+                        runs=np.array([tag + r[0] for r in runs]), rate=tb.RATE_HZ)
+    return len(H)
 
 
 def replay(runs, modes, ctrv=None, smooth=None, poly=None):
@@ -107,7 +137,8 @@ def replay(runs, modes, ctrv=None, smooth=None, poly=None):
     for ri, (name, date, tracks) in enumerate(runs):
         for tid, tr in tracks.items():
             preds = {m: pp.PersonPaths(MODES[m][0], MODES[m][1], horizon_s=max(HORIZONS),
-                                       n_points=len(grid), ctrv=ctrv, smooth_s=smooth, poly_deg=poly)
+                                       n_points=len(grid), ctrv=ctrv, smooth_s=smooth, poly_deg=poly,
+                                       bend=(m == "gru_bend"))
                      for m in modes if m != "ctrv_base"}
             ref = next(iter(preds.values()))
             for t, x, y, vx, vy in tr:
@@ -266,6 +297,7 @@ def main():
     ap.add_argument("--poly", type=int, default=None, help="GRU path polynomial degree (default person_paths.POLY_DEG)")
     ap.add_argument("--only", choices=("TUNE", "REPORT", "ALL"), help="score one split only")
     ap.add_argument("--json")
+    ap.add_argument("--export-tune", help="write the TUNE runs' training windows (.npz) and exit")
     a = ap.parse_args()
     modes = a.modes.split(",")
     ctrv = json.loads(a.ctrv) if a.ctrv else None
@@ -274,6 +306,10 @@ def main():
     tune = [r for r in runs if r[1] < a.split]
     report = [r for r in runs if r[1] >= a.split]
     print("source %s: %d TUNE runs (< %s), %d REPORT runs" % (a.source, len(tune), a.split, len(report)))
+    if a.export_tune:
+        print("exported %d TUNE windows -> %s" % (export_windows(tune, a.export_tune, tag=a.source + ":"),
+                                                  a.export_tune))
+        return
     if a.grid:
         rows = replay(tune, ["cv"], ctrv)
         out, nm, nt = grid_search(rows)

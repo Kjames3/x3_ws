@@ -5764,7 +5764,7 @@ async def broadcast_loop():
                     import person_paths as _pp_mod
                     c3_tracks, lidar_persons, velocity_estimates = _pp_mod.annotate_telemetry(
                         person_paths, ros_bridge.get_pose_m(), c3_tracks, lidar_persons,
-                        velocity_estimates)
+                        velocity_estimates, c3_active=c3_stats is not None)
                 except Exception as e:
                     # display only: never let it take the telemetry loop down
                     logger.warning(f"Person paths disabled: {e}")

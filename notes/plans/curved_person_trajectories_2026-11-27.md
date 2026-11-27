@@ -8,26 +8,40 @@ here feeds the CBF or Nav2. Nothing was run on the robot.
 - **Shipped behind two flags, both off by default.** The server flag is
   `X3_PERSON_PATH=cv|ctrv|gru|off` and the GUI flag is `?curvedIntent=1`.
   With either one off, the Reality view draws exactly what it draws today.
-- **Recommended live setting: `X3_PERSON_PATH=gru` with `?curvedIntent=1`.**
-  This uses a new GRU, `config/traj_gru_person_paths.npz`, trained tonight on
-  Livox and C3 tracks from the runs before 2026-11-10. On the held-out runs it
-  beats a straight line on every source and subset. On the source the GUI
-  actually shows (`fused`, lidar plus camera-only tracks) it passes all three
-  rules declared below before any numbers were looked at. On lidar alone the
-  run-to-run clause of rule 2 is borderline: the upper quartile of per-run
-  change is +0.0 %.
-- **The honest catch: nothing here can predict that a person is about to
-  turn.** The GRU's gain is almost all along-track: it predicts slowing and
-  stopping. On held-out turning windows outside circling runs, its bends go
-  the right way 54 % of the time, and CTRV's 55 %. A history-based curve
-  reliably points the right way only when someone is already in a sustained
-  turn (93 % on yard-circle). The fan of alternative turns is the honest
-  picture for everything else: on turning windows, the better fan arm cuts
-  the 2 s endpoint error from 0.84 m to 0.65 m.
+- **Recommended for the live look: `X3_PERSON_PATH=gru` with
+  `?curvedIntent=1`.** It uses a new GRU, `config/traj_gru_person_paths.npz`,
+  trained tonight on Livox and C3 tracks from runs before 2026-11-10. On
+  held-out Livox tracks it beats today's straight line:
+  - FDE@2 s is -5.3 % on moving windows and -10.4 % on turning windows.
+  - ADE@1 s is -8.5 % on moving windows.
+  - Frame-to-frame wag is 1.09x cv's.
+  - Rules 1 and 3 below pass. Rule 2 passes only under a per-run reading of
+    "beyond the run-to-run spread", and that reading was fixed after looking
+    (see the Rule check).
+  - These REPORT runs were scored about five times while the method changed.
+    Every change was tuned on TUNE, but REPORT is no longer a clean, look-once
+    holdout.
+- **Nothing here reliably predicts a turn that has not started.** Most of the
+  GRU's gain is along-track: it predicts slowing and stopping.
+  - On held-out turning windows outside circling, it bends more than 0.1 m in
+    30 % of windows, and 68 % of those bend the right way. CTRV bends in 38 %,
+    55 % right.
+  - A curve points the right way reliably only during a turn that is already
+    under way: yard-circle gives 97 % for the GRU and 93 % for CTRV.
+  - Even there, both models under-bend. On a synthetic 0.71 rad/s circle CTRV
+    turns 12 deg of the true 82 deg over 2 s, and the GRU does not curve at
+    all.
+  - **So expect mild bends on the robot, not paths that swing around corners.**
+    When a turn is likely but its direction is not, the faint fan of
+    alternatives is the honest display.
+- **Front people (C3) are the least supported.** C3 updates at 3 to 6 Hz.
+  After dropping repeated states, the held-out C3 evaluation has only 74
+  moving windows at 1 s and 50 at 2 s. That is too thin to say anything, and
+  about a quarter of C3 histories break on gaps over 0.35 s and fall back to a
+  straight line.
 - **Map awareness (option c) was checked for feasibility, then dropped.** The
-  straight-line path runs into a static obstacle in 30 % of turning windows,
-  against 23 % of straight ones. That is too small a difference to bend paths
-  on.
+  straight-line path runs into a static obstacle in 30 % of turning windows
+  and 23 % of straight ones. That difference is too small to bend paths on.
 
 ## Selection rule (written before any numbers were looked at)
 
@@ -56,15 +70,31 @@ Definitions:
   history displacement and heading at t0+h is the direction of the last 0.3 s
   of future displacement. Both segments must be faster than 0.3 m/s, so
   standing jitter cannot count as a turn.
-- TURNING_XT (added later as a sensitivity check, see below): TURNING, and
-  the 2 s endpoint is also more than 0.4 m off the t0 heading line.
+- TURNING_XT (added later as a sensitivity check): TURNING, and the 2 s
+  endpoint is also more than 0.4 m off the t0 heading line. The TURNING label
+  is real, not jitter: its median cross-track offset at 2 s is 0.64 m, against
+  0.25 m for moving non-turning windows.
 
-Two things were added after the first REPORT look, and both were tuned on
-TUNE only. One is path-shape smoothing (GRU time constant 0.15 s), because the
-unsmoothed lidar-trained GRU failed rule 3 (wag 0.147 m against cv's 0.091,
-1.62x). The other is a cubic-in-time fit of the GRU path, because the raw GRU
-path wiggles step to step. Each choice and its TUNE cost is stated where it
-is made.
+## What changed after the first REPORT look (all tuned on TUNE)
+
+1. **A new GRU trained on TUNE Livox and C3 tracks.** The OAK GRU did not
+   transfer (below).
+2. **Path-shape smoothing for the GRU, time constant 0.15 s.** The unsmoothed
+   GRU wagged 1.62x cv on REPORT. 0.15 s is the smallest value whose TUNE wag
+   is under 1.4x cv.
+3. **A cubic-in-time fit of the GRU path.** The raw path wiggles step to step;
+   the fit cost +0.5 % FDE@2 s on TUNE.
+4. **De-repeated C3 rows in evaluation and training.**
+   `lidar_persons.ndjson` writes the newest C3 state on every lidar tick, so
+   about half the C3 rows repeat a state under a later stamp. The first model
+   was trained on those stair-stepped C3 tracks. The shipped model is the
+   retrain on de-repeated tracks; the runtime never saw the repeats, because
+   it keys C3 on `state_stamp_s`.
+5. **`gru_bend` tried and not adopted.** This is the GRU path plus CTRV's
+   gated bend. On TUNE it was slightly worse than plain GRU: moving FDE@2 s
+   0.611 against 0.600, turning 0.865 against 0.858. On REPORT it would have
+   scored better, because of yard-circle: -13.1 % against -10.4 % on turning.
+   It stays as `person_paths.GRU_BEND = False`, available for a live A/B.
 
 ## Data and protocol
 
@@ -72,11 +102,11 @@ is made.
   `~/x3_ws/artifacts/person-lidar-2026-1*` (2026-10-30 to 2026-11-24). They
   are loaded the `trajectory_baselines.tracks_from_ndjson` way: `lidar` is the
   Livox tracker with coasting rows dropped, `c3` is measured camera tracks,
-  and `fused` is lidar plus camera tracks with no lidar track within 0.5 m.
+  and `fused` is lidar plus camera tracks with no lidar track within 0.5 m. In
+  the evaluation tool, rows that repeat the previous state are then dropped.
 - The split is by date. TUNE is the 33 runs before 2026-11-10 (Oct 30 to
-  Nov 9: circle, cross, walkup, goal-on, busy, group, apt-*). REPORT is the 29
-  runs from Nov 20 to Nov 24 (yard-*, crowd-r1..4, seeded*-walk, left-check,
-  and others). REPORT was never used for tuning or training.
+  Nov 9). REPORT is the 29 runs from Nov 20 to Nov 24 (yard-*, crowd-r1..4,
+  seeded*-walk, left-check, and others). REPORT was never used to fit or tune.
 - Scoring replays every track through the runtime class
   (`person_paths.PersonPaths`) at the tracker's own stamps, one instance per
   mode, and scores each prediction against the track's own future
@@ -84,93 +114,103 @@ is made.
   every mode had a full 1 s history are scored, so all modes see the same
   windows. Windows are stride-1 and overlap heavily, so the effective n is
   the track and run counts given with each table.
-- The deployed OAK GRU (`config/traj_gru_deploy.npz`, labelled `gru` below)
-  has never seen Livox or C3 tracks, so all of these runs are out-of-sample
-  for it.
+- **`fused` is not a second confirmation.** It is lidar plus about 10 extra
+  windows, and its numbers match lidar to within 0.3 %. It is also the
+  opposite of the GUI's priority: `avatarEntries` draws C3 first and adds a
+  lidar track only where no C3 avatar is within 0.7 m. The GUI's mix is lidar
+  for side, rear and distant people and C3 in front. Only lidar is
+  well-measured here.
 - Tool: `src/tools/perception/curved_path_eval.py`. Example:
   `python3 src/tools/perception/curved_path_eval.py ~/x3_ws/artifacts/person-lidar-2026-1*/* --source lidar`
 
-## Numbers (REPORT runs, final configuration)
+## Numbers: REPORT runs, final configuration, Livox (`lidar`) tracks
 
-FDE and ADE are in metres. The percentage is the FDE change against cv. "Per
-run" is the 25th, 50th and 75th percentile of the per-run FDE change, over
-runs with at least 10 windows.
+29 runs, 18 526 scored predictions. FDE and ADE are in metres. The percentage
+is the FDE change against cv. "Per run" is the 25th, 50th and 75th percentile
+of the per-run FDE change, over runs with at least 10 windows. `gru` is the
+old OAK model and `gru_pp` is the new one.
 
-### lidar (Livox tracker): 29 runs, 18 526 scored predictions
+| subset | n (tracks, runs) | cv ADE / FDE | ctrv | gru (OAK) | **gru_pp (shipped)** | gru_bend (not adopted) |
+|---|---|---|---|---|---|---|
+| moving @1 s | 2671 (40, 13) | 0.165 / 0.326 | 0.162 / 0.318 (-2.5 %) | 0.182 / 0.356 (+9.3 %) | **0.151 / 0.305 (-6.5 %)** | 0.150 / 0.300 (-7.9 %) |
+| turning @1 s | 401 (24, 9) | 0.186 / 0.388 | -0.6 % | +3.5 % | **0.171 / 0.360 (-7.1 %)** | -8.3 % |
+| moving @2 s | 2655 (35, 12) | 0.377 / 0.844 | 0.366 / 0.817 (-3.2 %), per run -1.4 / -0.3 / +1.2 | 0.407 / 0.894 (+5.9 %) | **0.352 / 0.799 (-5.3 %)**, per run -2.7 / -0.0 / +9.4 | 0.345 / 0.783 (-7.2 %) |
+| turning @2 s | 876 (23, 9) | 0.404 / 0.933 | 0.390 / 0.900 (-3.5 %), per run -3.3 / -0.4 / +2.1 | 0.457 / 1.019 (+9.2 %) | **0.363 / 0.837 (-10.4 %)**, per run **-9.7 / -8.6 / -2.0** | 0.352 / 0.811 (-13.1 %) |
+| turning_xt @2 s | 709 (20, 9) | 0.407 / 0.934 | -3.7 % | +13.4 % | **0.375 / 0.865 (-7.3 %)** | -10.4 % |
+| wag, 2 s endpoint (median / p90) | | 0.091 / 0.171 | 0.109 / 0.213 (1.20x) | 0.055 / 0.140 | **0.099 / 0.209 (1.09x)** | 0.111 / 0.222 |
 
-| subset | n (tracks, runs) | cv ADE / FDE | ctrv | gru (OAK) | **gru_pp (new)** |
-|---|---|---|---|---|---|
-| moving @1 s | 2671 (40, 13) | 0.165 / 0.326 | 0.162 / 0.318 (-2.5 %) | 0.182 / 0.356 (+9.3 %) | **0.152 / 0.305 (-6.3 %)** |
-| turning @1 s | 401 (24, 9) | 0.186 / 0.388 | 0.184 / 0.386 (-0.6 %) | 0.198 / 0.401 (+3.5 %) | **0.170 / 0.358 (-7.8 %)** |
-| moving @2 s | 2655 (35, 12) | 0.377 / 0.844 | 0.366 / 0.817 (-3.2 %) | 0.407 / 0.894 (+5.9 %) | **0.353 / 0.802 (-5.0 %)**, per run -2.2 / -0.1 / +14.2 % |
-| turning @2 s | 876 (23, 9) | 0.404 / 0.933 | 0.390 / 0.900 (-3.5 %), per run -3.3 / -0.4 / +2.1 % | 0.457 / 1.019 (+9.2 %) | **0.365 / 0.844 (-9.5 %)**, per run -12.9 / -5.0 / +0.0 % |
-| turning_xt @2 s | 709 (20, 9) | 0.407 / 0.934 | 0.393 / 0.899 (-3.7 %) | 0.473 / 1.059 (+13.4 %) | **0.379 / 0.874 (-6.3 %)** |
-| wag, 2 s endpoint (median / p90) | | 0.091 / 0.171 | 0.109 / 0.213 (1.20x) | 0.055 / 0.140 | **0.104 / 0.216 (1.14x)** |
+Without the circle runs:
+- Moving @2 s: ctrv -0.6 % and gru_pp -5.2 % (per run -2.2 / +0.7 / +10.0).
+- Turning @2 s, 457 windows (20 tracks, 8 runs): ctrv -0.1 % and gru_pp
+  **-13.1 %**, per run -10.0 / -8.8 / +0.0.
+- Turning_xt @2 s, 321 windows: gru_pp -7.7 %.
 
-Without the circle runs: moving @2 s gives ctrv -0.6 % and gru_pp -5.4 %.
-Turning @2 s (457 windows, 20 tracks, 8 runs) gives ctrv -0.1 % and gru_pp
-**-13.0 %**, with per-run change -14.3 / -6.9 / +1.8 %.
+The old `trajectory_baselines` ctrv (its two-half heading fit) is +12.3 % on
+moving @2 s. It wags 0.278 m, so it is not usable for display.
 
-The existing `trajectory_baselines` ctrv (its two-half heading fit) is +12.3 %
-on moving @2 s and +1.1 % on turning. Its wag is 0.278 m, so it is not usable
-for display.
+**Fan.** The two alternative bends show on 29 % of turning windows. Where they
+show, picking the best of the main path and the two arms after the fact (an
+oracle, not something the display can do) gives an FDE@2 s of 0.65 m against
+0.85 m for the main path alone. That measures how well the fan covers where
+people actually went, not a prediction.
 
-### fused (lidar plus camera-only tracks, closest to what the GUI draws)
+**C3, de-repeated.** C3 is too thin to judge. Moving @1 s, 74 windows: cv
+0.516, gru_pp 0.473 (-8.2 %), old OAK gru 0.454 (-12.0 %). Moving @2 s, 50
+windows: gru_pp 0.921 against cv 0.922. Turning @2 s has 2 windows.
 
-| subset | n | cv FDE | ctrv | **gru_pp** |
-|---|---|---|---|---|
-| moving @1 s | 2732 (48 tracks, 17 runs) | 0.330 (ADE 0.168) | -2.4 % | **-6.7 % (ADE 0.154)** |
-| moving @2 s | 2673 | 0.843 | -3.2 % | **-5.0 %** |
-| turning @2 s | 878 (25, 10) | 0.934 | -3.5 % | **-9.6 %**, per run **-12.9 / -5.0 / -1.3 %** |
-| wag | | 0.090 | 1.20x | **1.14x** |
+**OAK v3 windows, held-out run walk-g-r7** (the OAK GRU was trained on every
+other run). Moving @2 s, 361 windows: cv 0.709, OAK gru 0.537, gru_pp **0.808
+(+14 %)**. Turning @2 s, 33 windows: cv 1.017, OAK gru 0.641, gru_pp 0.843.
+Each model wins only on its own trackers. The runtime therefore uses the OAK
+model for v3 tracks (`source_models={"v3": traj_gru_deploy.npz}`), which the
+GUI draws only when C3 is off.
 
-### c3 (camera tracks; thin)
+### Rule check (lidar, final configuration)
 
-Moving @2 s has 374 windows (21 tracks, 8 runs): gru_pp -3.8 %, ctrv +0.3 %.
-Turning @2 s has 62 windows (13 tracks, 5 runs, only 2 with 10 or more
-windows): gru_pp -27.6 %, ctrv -0.6 %. C3 has only about 550 moving windows
-in total. C3's cv wag median is 0.000, because consecutive ndjson rows repeat
-the same C3 state, so the wag rule cannot be applied to C3.
+| rule | ctrv | gru_pp |
+|---|---|---|
+| 1. moving: FDE@2 s and ADE@1 s within +3 % | pass (-3.2 %, -1.8 %) | pass (-5.3 %, -8.5 %) |
+| 2. lowest turning FDE@2 s; gain beyond the per-run spread | fail (IQR crosses 0) | lowest of the TUNE-chosen candidates; upper per-run quartile -2.0 % (without circles +0.0 %) |
+| 3. wag <= 1.5x cv | pass (1.20x) | pass (1.09x) |
 
-### OAK v3 windows (traj-baselines-2026-11-08), held-out run walk-g-r7 only
-
-The deployed OAK GRU was trained on every other run, so only this run is
-out-of-sample: 529 windows. Moving @2 s, 361 windows: cv FDE 0.709, ctrv
-0.715, gru 0.532 (-25 %). Turning @2 s, 33 windows: cv 1.017, ctrv 1.014, gru
-0.640. The OAK GRU works on the camera tracks it was trained on and does not
-transfer to Livox tracks (+5.9 % on lidar moving @2 s above). That is why a
-new model was trained.
-
-### Rule check
-
-| rule | ctrv (lidar) | gru_pp (lidar) | gru_pp (fused) |
-|---|---|---|---|
-| 1. moving: FDE@2 s and ADE@1 s within +3 % | pass (-3.2 %, -1.8 %) | pass (-5.0 %, -7.9 %) | pass (-5.0 %, -8.3 %) |
-| 2. lowest turning FDE@2 s, gain beyond the per-run spread | fail (per-run IQR crosses 0) | lowest; IQR upper quartile **+0.0 %** (borderline) | pass (IQR -12.9 / -5.0 / -1.3 %) |
-| 3. wag <= 1.5x cv | pass (1.20x) | pass (1.14x) | pass (1.14x) |
+**What "beyond the run-to-run spread" was taken to mean.** It was
+operationalised as "the upper quartile of the per-run change is below 0". That
+reading was chosen after the numbers were seen. With 7 runs, it is weak
+evidence either way.
 
 ## What the curve can and cannot show (diagnostics)
 
 - **Recent turning does not predict the next 2 s, except in sustained
   circles.** These checks used lidar tracks, all runs, and moving windows.
   The correlation between the past turn rate (position chords over the last
-  0.6 s) and the future turn rate is 0.14. The least-squares gain is 0.09, so
-  the best constant-turn model keeps 9 % of the turn it sees. In circle runs
-  the correlation is 0.34 to 0.50. C3 tracks show about 0.
-- **When ctrv bends, how often is it the right way?** On TUNE runs outside
+  0.6 s) and the future turn rate is 0.14. The least-squares gain is 0.09. In
+  circle runs the correlation is 0.34 to 0.50. C3 tracks show about 0.
+- **When CTRV bends, how often is it the right way?** On TUNE runs outside
   circling it is 36 to 51 % across the gates tried, and a longer 1.5 to 2 s
-  history or a two-half consistency check did not raise it above 54 %. On
-  REPORT turning windows outside circling, ctrv bends more than 0.1 m in 38 %
-  of windows and 55 % of those go the right way; gru_pp is 38 % and 54 %. On
-  yard-circle both are 93 %.
-- **The GRU's gain is along-track.** On REPORT non-circle turning windows the
-  along-track error is cv 0.63 m, ctrv 0.63 m and gru_pp 0.48 m, while the
-  cross-track error is 0.58, 0.58 and 0.57 m.
+  history or a two-half consistency check did not raise it above 54 %.
+- **Final models on REPORT turning windows:**
+  - Outside circling, ctrv bends more than 0.1 m in 38 % of windows (55 %
+    right); gru_pp bends in 30 % (68 % right).
+  - On yard-circle, ctrv bends in 46 % (93 % right); gru_pp in 33 % (97 %
+    right).
+  - The gain is along-track. Outside circling the along-track error is cv
+    0.63 m, ctrv 0.63 m and gru_pp 0.48 m, while the cross-track error is
+    0.58, 0.58 and 0.57 m.
+- **On a clean synthetic circle (1 m/s, r = 1.4 m, true heading change 82 deg
+  over 2 s)** CTRV turns +12 deg. The GRU turns 0 deg on noise-free input and
+  -21 deg with 3 cm noise, and predicts 0.9 to 1.6 m of travel instead of
+  2 m.
+  - **Why the GRU does this:** constant-speed synthetic walking is unlike the
+    stop-and-go recordings it was trained on.
+  - **Why CTRV under-bends:** its shrink 0.5 and tau 0.7 s were tuned on TUNE,
+    which has only about 19 circling windows with full history (circle-r1).
+    In the regime where the bend direction is right 93 % of the time, it
+    bends about a seventh of the real turn.
+  - A circling-aware gate would need circling data that is not in REPORT, for
+    example yard-circle split by track for tuning. That was not done.
 - The CTRV gate that came out of TUNE is fit 0.5 s, gate t > 2, |w| > 0.15
-  rad/s, shrink 0.5, tau 0.7 s, clamp 1.2 rad/s. At most it bends w·0.5·0.7
-  rad over 2 s, about 20 deg at 1 rad/s. Every looser setting was worse than
-  cv on TUNE turning windows. The best grid point was still +0.3 %, because
-  TUNE has almost no sustained circling.
+  rad/s, shrink 0.5, tau 0.7 s, clamp 1.2 rad/s. Every looser setting was
+  worse than cv on TUNE turning windows.
 - `report_turning_examples.png` shows eight REPORT turning windows with
   history, the true path, cv, ctrv and gru_pp, plus the gru_pp fan. In most of
   them the history gives no sign that the turn is coming.
@@ -195,65 +235,98 @@ Doorway attraction was not attempted.
 ## Implementation
 
 - **`src/person_paths.py`** handles prediction and server glue.
-  - Histories are odom positions keyed by (source, id), observed at each
-    tracker's own stamp: lidar `stamp`, C3 `state_stamp_s`. Lidar `coasting`
-    rows are drawn but not learned from.
-  - Stale tracks are forgotten on the monotonic `annotate()` clock, because
-    track stamps are wall clock.
-  - Predictions are cached per observation. The 20 Hz telemetry loop re-reads
-    10 to 15 Hz trackers, so the GRU runs once per tracker update, not once
-    per loop. Smoothing is also applied once per observation.
-  - Each track gets `path_rel` (16 points over 2 s as base-axes offsets
-    `[dfwd, dleft]` from the person, at the robot's current yaw),
-    `path_sigma` and `path_alts` (0 or 2 alternatives at ±0.6 rad/s, damped
-    by tau 0.7). The fan shows when |fitted turn| > 0.4 rad/s or the
-    turn-rate std error > 0.25. On TUNE that is about 35 % of moving people
-    and 44 % of turning windows.
-  - In GRU mode the forward pass is batched. The path is fit with a cubic in
-    time; on TUNE that costs +0.5 % FDE@2 s and removes the step-to-step
-    wiggle. The path shape is smoothed with a 0.15 s time constant; on TUNE
-    that takes wag from 0.124 to 0.083 m, against cv's 0.081, at +3 %
-    FDE@2 s.
-  - A missing GRU model logs a warning and falls back to ctrv.
-- **`src/server_x3.py`** reads `X3_PERSON_PATH` (and `X3_PERSON_PATH_MODEL` to
-  override the model) at startup. In `broadcast_loop` it runs
-  `annotate_telemetry` on `c3_tracks`, `lidar_persons` and
-  `velocity_estimates`. v3 estimates get odom fields only internally; the
-  `odom_*` fields are not added to the payload. Any exception disables the
-  feature and is logged; the loop keeps running. With the flag off, the same
-  objects pass through unchanged (tested).
-- **Cost per telemetry tick**, measured on the laptop CPU with no caching:
-  ctrv 0.19 / 0.73 / 1.49 ms and gru 0.51 / 1.65 / 2.81 ms for 1 / 4 / 8
-  tracks. With the per-observation cache, about half of the ticks are a dict
-  lookup. **Not measured on the Orin.** Check it live, since this loop has
-  stalled `/cmd_vel` before.
-- **`src/web/scene-view.js`** reads `?curvedIntent=1`. It copies
-  `path_rel`, `path_sigma` and `path_alts` through `avatarEntries` (C3,
-  lidar-held, and v3 when C3 is off) and anchors the offsets at each avatar:
-  scene `x = avatar.x - dleft`, `z = avatar.z - dfwd`.
-- **`src/web/reality-mode.js`** (intent block only) draws a curved entry as a
-  centripetal Catmull-Rom through its points, three samples per span.
+  - **Histories:** odom positions keyed by (source, id) at each tracker's own
+    stamp: lidar `stamp`, C3 `state_stamp_s`.
+    - Not learned from (they are the trackers' own extrapolation): lidar
+      `coasting` rows and C3 `measured: false` rows.
+    - v3 estimates have no stamp, so a re-read of an unchanged estimate is
+      not a new observation.
+    - Stale tracks are forgotten on the monotonic `annotate()` clock, because
+      track stamps are wall clock.
+  - **Per tick:** tracks slower than 0.15 m/s skip prediction entirely. A
+    prediction is cached until its track has a new observation, so the 20 Hz
+    telemetry loop runs the GRU once per tracker update.
+  - **Output per track:**
+    - `path_rel`: 16 points over 2 s, as base-axes offsets `[dfwd, dleft]`
+      from the person at the robot's current yaw.
+    - `path_sigma`: the spread at each point.
+    - `path_alts`: 0 or 2 alternatives at ±0.6 rad/s, damped by tau 0.7. The
+      fan shows when |fitted turn| > 0.4 rad/s or the turn-rate std error >
+      0.25, on about 35 % of moving people on TUNE.
+  - **GRU mode:** the forward pass is batched per model, with v3 tracks sent
+    to the OAK GRU. The path gets the cubic fit and the 0.15 s shape
+    smoothing. A missing model logs a warning and falls back to ctrv.
+- **`src/server_x3.py`**
+  - **Startup:** reads `X3_PERSON_PATH`, and `X3_PERSON_PATH_MODEL` to
+    override the model.
+  - **`broadcast_loop`:** runs `annotate_telemetry` on `c3_tracks`,
+    `lidar_persons` and `velocity_estimates`.
+    - v3 is annotated only when C3 is not running, because that is the only
+      time the GUI draws v3 people.
+    - Static blobs and `is_person: false` estimates get no path.
+  - **Failure handling:** any exception disables the feature and is logged;
+    the loop keeps running.
+  - **Flag off:** the same objects pass through unchanged (tested).
+- **Cost per tick.** On the laptop CPU, before the cache and the slow-track
+  skip: ctrv 0.19 / 0.73 / 1.49 ms and gru 0.51 / 1.65 / 2.81 ms for 1 / 4 / 8
+  moving tracks. **Not measured on the Orin.** `person_paths.stats` keeps
+  `ms_last` and `ms_max`. Check them live, since this loop has stalled
+  `/cmd_vel` before.
+- **`src/web/scene-view.js`** reads `?curvedIntent=1` and copies `path_*`
+  through `avatarEntries`. It anchors the offsets at each avatar with
+  `RealityMode.relToScene`: scene `x = avatar.x - dleft`,
+  `z = avatar.z - dfwd`.
+- **`src/web/reality-mode.js`** (intent block plus two exported pure helpers)
+  draws a curved entry as a centripetal Catmull-Rom through its points, three
+  samples per span.
   - Width uses today's 0.22 to 0.55 m widening as a floor, wider when
     `sigma` is larger.
   - The tangent is held where a path stalls or steps back, so a predicted
-    stop cannot fold the ribbon.
+    stop does not fold the ribbon.
   - The amber/red conflict colour and the end ring are kept. The fan is two
     extra ribbons at 0.45 strength.
   - Without the flag, the straight trail is vertex-for-vertex the old one.
   - `GUI.html` cache-busts `reality-mode.js?v=15` and `scene-view.js?v=45`.
     Other agents editing these files will conflict on those two lines; keep
     the higher number.
-- **`config/traj_gru_person_paths.npz`** was trained with
-  `train_traj_gru.py --hidden 128 --layers 1 --nll --deploy` on 17 479 TUNE
-  windows (8379 lidar and 9100 c3). Its 5-fold grouped cross-validation on
-  TUNE gave moving FDE@2 s of cv 0.725 against GRU 0.659 (-9 %). A variant
-  that added the OAK windows (-10 % on a mixed set) was not chosen, so the
-  model stays matched to the sources the GUI draws.
-- **Tests:** `tests/test_person_paths.py` has 15 tests. They cover the flag
-  off, straight and left-turn walkers, base axes with the robot yawed 90 deg,
-  coasting, stale tracks on the wall-clock/monotonic split, the v3 transform,
-  GRU batching, model fallback, the fan and smoothing idempotence. The full
-  suite gives 4 failed, 1110 passed, 8 errors, the same 4 + 8 as the baseline.
+- **Tests**
+  - `tests/test_person_paths.py` has 19 tests: flag off; straight and
+    left-turn walkers; base axes with the robot yawed 90 deg; coasting rows
+    and C3 unmeasured rows; v3 re-reads, static and C3-active handling; stale
+    tracks; GRU batching and per-source models; model fallback; the fan;
+    smoothing idempotence; the slow-track skip.
+  - `tests/web/reality_curved_intent_check.cjs` checks the offset-to-scene
+    signs and spline fidelity: it passes through every control point, stays
+    within 5 mm of a 1.5 m arc, keeps a straight line straight and stays
+    bounded through a stop.
+  - The full pytest suite gives 4 failed and 8 errors, the same as the
+    baseline.
+
+### Reproducing the model
+
+```bash
+S=/tmp/pp; mkdir -p $S
+for s in lidar c3; do
+  python3 src/tools/perception/curved_path_eval.py ~/x3_ws/artifacts/person-lidar-2026-1*/* \
+      --source $s --export-tune $S/tune_$s.npz          # TUNE runs only (< 2026-11-10), de-repeated
+done
+python3 - <<'EOF'
+import numpy as np
+H, F, R, names = [], [], [], []
+for tag in ('lidar', 'c3'):
+    d = np.load('/tmp/pp/tune_%s.npz' % tag)
+    H.append(d['hist']); F.append(d['fut']); R.append(d['run'] + len(names)); names += list(d['runs'])
+np.savez_compressed('/tmp/pp/train.npz', hist=np.concatenate(H), fut=np.concatenate(F),
+                    run=np.concatenate(R), runs=np.array(names), rate=10.0)
+EOF
+python3 src/tools/perception/train_traj_gru.py $S/train.npz --out $S/cv  --hidden 128 --layers 1 --nll           # 5-fold CV
+python3 src/tools/perception/train_traj_gru.py $S/train.npz --out $S/dep --hidden 128 --layers 1 --nll --deploy
+cp $S/dep/gru_deploy.npz config/traj_gru_person_paths.npz
+```
+
+The training set is 16 825 windows (8379 lidar and 8446 c3). Five-fold grouped
+cross-validation on TUNE gave moving FDE@2 s of cv 0.720 against GRU 0.665
+(-7.6 %).
 
 ## Screenshots
 
@@ -266,21 +339,27 @@ was rendered in headless Chrome.
 - `flag_off_top.png`: today's straight trails.
 - `ctrv_top.png`, `ctrv_chase.png`: full-length ribbons, mild bends, fans on
   the turners.
-- `gru_top.png`, `gru_chase.png`: the GRU predicts the constant-speed demo
-  walkers slowing down, so these ribbons are shorter than on real tracks.
+- `gru_top.png`, `gru_chase.png`: shorter ribbons, because the GRU predicts
+  the constant-speed synthetic walkers slowing down.
 - `report_turning_examples.png`: real held-out windows.
 
 ## Needs a live check
 
-1. With `X3_PERSON_PATH=gru` and the GUI at `?curvedIntent=1`, walk past the
-   robot, turn a corner and walk a circle. Check that the ribbons start at the
-   feet and point the right way while the robot is yawed and while it is
-   driving; the odom-to-base rotation is exercised in tests only. Check that
-   ribbons do not flicker between fan and no fan.
-2. Telemetry loop cost on the Orin with about 5 people: log
-   `person_paths.stats` (`ms_last`, `ms_max`).
-3. Compare `X3_PERSON_PATH=ctrv`. It draws longer ribbons that bend only on
-   sustained turns, and it may read better even though it scores worse.
-4. If GRU ribbons look too short for people walking steadily, the model is
-   predicting slowdowns that are common in these recordings (stop-and-go,
-   seated runs). Retraining on moving windows only is the next thing to try.
+1. Set `X3_PERSON_PATH=gru` and open the GUI at `?curvedIntent=1`, then walk
+   past the robot, turn a corner and walk a circle.
+   - Ribbons start at the feet and point the right way while the robot is
+     yawed and while it is driving. The odom-to-base rotation is exercised in
+     tests only.
+   - Fans do not flicker on and off.
+   - Expect mild bends. A sharp turn is not anticipated.
+2. Telemetry loop cost on the Orin with about 5 people: `person_paths.stats`
+   `ms_last` and `ms_max`.
+3. Compare `X3_PERSON_PATH=ctrv`, and `GRU_BEND = True`. CTRV draws
+   full-length ribbons that bend only on sustained turns, and may read better
+   even though it scores worse.
+4. Front (C3) people. Check whether their ribbons often fall back to
+   straight. By estimate (6 % of C3 intervals exceed 0.35 s) about a quarter
+   of 1 s histories break. If they do, try a larger gap for the `c3` source.
+5. If GRU ribbons look too short for steady walkers, the model is predicting
+   the stop-and-go common in these recordings. Retraining on moving windows
+   only is the next thing to try.

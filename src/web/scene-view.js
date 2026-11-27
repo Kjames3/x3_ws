@@ -1311,7 +1311,7 @@
                                 sx: p.vel ? p.vel.sx : 0, sz: p.vel ? p.vel.sz : 0 };
                 if (CURVED_INTENT && p.pathRel && p.pathRel.length >= 3) {
                     // base offsets (fwd, left) -> scene (x = -left, z = -fwd), anchored at the avatar
-                    const toScene = rel => rel.map(([f, l]) => [entry.x - l, entry.z - f]);
+                    const toScene = rel => RealityMode.relToScene(entry.x, entry.z, rel);
                     entry.path = toScene(p.pathRel);
                     entry.curved = true;
                     entry.sigma = p.pathSigma;

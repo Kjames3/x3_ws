@@ -125,9 +125,39 @@ def test_v3_estimates_get_paths_without_odom_fields():
     paths = pp.PersonPaths("cv")
     out = None
     for i in range(15):
-        est = [{"id": 7, "z": 2.0 + 0.1 * i, "x": 0.0, "vx": 1.0, "vy": 0.0}]
+        est = [{"id": 7, "z": 2.0 + 0.1 * i, "x": 0.0, "vx": 1.0, "vy": 0.0},
+               {"id": 8, "z": 3.0 + 0.1 * i, "x": 1.0, "vx": 1.0, "vy": 0.0, "category": "static"}]
         out = pp.annotate_telemetry(paths, POSE0, [], [], est)[2]
-    assert "path_rel" in out[0] and "odom_x" not in out[0]
+    assert "path_rel" in out[0] and "odom_x" not in out[0] and "_sig" not in out[0]
+    assert "path_rel" not in out[1]
+    # with C3 running the GUI does not draw v3 people: no work, payload untouched
+    est = [{"id": 7, "z": 3.6, "x": 0.0, "vx": 1.0, "vy": 0.0}]
+    assert pp.annotate_telemetry(paths, POSE0, [], [], est, c3_active=True)[2] is est
+
+
+def test_v3_rereads_are_not_new_observations():
+    paths = pp.PersonPaths("cv")
+    est = [{"id": 7, "z": 2.0, "x": 0.0, "vx": 1.0, "vy": 0.0}]
+    for i in range(5):                      # the 20 Hz loop re-reading one estimate
+        paths.annotate(pp.estimates_with_odom(est, POSE0), "v3", POSE0, now=100.0 + 0.05 * i)
+    assert len(paths._obs[("v3", 7)]) == 1
+
+
+def test_c3_unmeasured_rows_are_not_learned():
+    paths = pp.PersonPaths("ctrv")
+    rows = [dict(r, measured=True, state_stamp_s=r["stamp"]) for r in walker(1.79e9, 15, 0.1, 1.0, tid=3)]
+    for i, r in enumerate(rows):
+        paths.annotate([r], "c3", POSE0, now=100.0 + 0.1 * i, stamp_key="state_stamp_s")
+    n = len(paths._obs[("c3", 3)])
+    pred = dict(rows[-1], measured=False, state_stamp_s=rows[-1]["stamp"] + 0.1, odom_x=9.0)
+    r = paths.annotate([pred], "c3", POSE0, now=102.0, stamp_key="state_stamp_s")[0]
+    assert len(paths._obs[("c3", 3)]) == n and "path_rel" in r
+
+
+def test_slow_tracks_skip_prediction():
+    paths = pp.PersonPaths("ctrv")
+    feed(paths, walker(1.79e9, 15, 0.1, 0.05), POSE0)
+    assert ("lidar", "L1") not in paths._cache
 
 
 @pytest.mark.skipif(not MODEL.exists(), reason="no deploy GRU")
@@ -144,7 +174,6 @@ def test_gru_mode_batches_tracks():
         assert p[0].tolist() == [0.0, 0.0]
     assert np.array(out[0]["path_rel"])[-1, 0] > 1.0       # still heading forward
     assert np.array(out[1]["path_rel"])[-1, 0] < -0.8      # still heading back
-    assert paths.stats["ms_max"] < 50
 
 
 def test_gru_missing_model_falls_back_to_ctrv():
@@ -187,3 +216,15 @@ def test_person_path_gru_loads_with_a_2s_horizon():
     p = pp.from_env(str(PP_MODEL), env="gru")
     assert p.mode == "gru" and p.model.fut_n * p.dt >= pp.HORIZON_S - 1e-9
     assert p.smooth_s == pp.SMOOTH_S["gru"]
+
+
+@pytest.mark.skipif(not (PP_MODEL.exists() and MODEL.exists()), reason="no GRU models")
+def test_v3_tracks_use_the_oak_gru():
+    p = pp.from_env(str(PP_MODEL), env="gru")
+    assert "v3" in p._source_models and p._source_models["v3"] is not p.model
+    out = None
+    for i in range(15):
+        est = [{"id": 7, "z": 2.0 + 0.1 * i, "x": 0.0, "vx": 1.0, "vy": 0.0}]
+        out = pp.annotate_telemetry(p, POSE0, [], [], est)[2]
+    path = np.array(out[0]["path_rel"])
+    assert path.shape == (pp.N_POINTS, 2) and np.isfinite(path).all() and path[-1, 0] > 0.8

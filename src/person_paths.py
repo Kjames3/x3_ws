@@ -65,6 +65,7 @@ FAN_DW = 0.6            # rad/s: alternative bends at +-FAN_DW around the main p
 # runs as the smallest value bringing its frame-to-frame wag of the 2 s endpoint
 # under 1.4x unsmoothed cv's (0.124 -> 0.083 m vs cv 0.081; FDE@2s +3 %).
 SMOOTH_S = {"gru": 0.15}
+GRU_BEND = False
 POLY_DEG = 3            # GRU path: cubic in time through the person (0 = raw). On TUNE it
                         # costs +0.5 % FDE@2s and removes the step-to-step wiggle
 SIGMA0, SIGMA_K = 0.08, 0.22   # heuristic spread for cv / ctrv: s0 + k * t * speed
@@ -147,12 +148,15 @@ def bend_path(path, times, dw, tau):
 
 class PersonPaths:
     def __init__(self, mode, model_path=None, horizon_s=HORIZON_S, n_points=N_POINTS, ctrv=None,
-                 smooth_s=None, poly_deg=None):
+                 smooth_s=None, poly_deg=None, bend=None, source_models=None):
         if mode not in MODES or mode == "off":
             raise ValueError("mode must be one of cv, ctrv, gru")
         self.mode = mode
         self.smooth_s = SMOOTH_S.get(mode, 0.0) if smooth_s is None else smooth_s
         self.poly_deg = POLY_DEG if poly_deg is None else poly_deg
+        # gru only: also apply the CTRV gated turn to the GRU path (its gain is
+        # along-track, CTRV's is cross-track)
+        self.bend = GRU_BEND if bend is None else bend
         self._smooth = {}        # key -> (obs stamp, path relative to p0)
         self._cache = {}         # key -> last prediction (reused until a new observation)
         self.p = dict(CTRV, **(ctrv or {}))
@@ -160,16 +164,27 @@ class PersonPaths:
         self.dt = 1.0 / RATE_HZ
         self.span_s = self.p["hist_s"] if mode != "gru" else (HIST_N - 1) * self.dt
         self.model = None
+        self._source_models = {}
         if mode == "gru":
             from traj_predictor import NumpyTrajGRU
             self.model = NumpyTrajGRU(model_path)   # raises if missing: the caller logs and falls back
             self.dt = 1.0 / self.model.rate
             self.hist_n = self.model.hist_n
             self.span_s = (self.hist_n - 1) * self.dt
-            self._fut_t = np.arange(1, self.model.fut_n + 1) * self.dt
+            # A source whose tracks look like another model's training data gets that
+            # model (v3 estimates: the OAK GRU, config/traj_gru_deploy.npz). Same
+            # rate and history length required; a model that fails to load is skipped.
+            for src, path in (source_models or {}).items():
+                try:
+                    m = NumpyTrajGRU(path)
+                except (OSError, KeyError, ValueError):
+                    continue
+                if m.rate == self.model.rate and m.hist_n == self.model.hist_n:
+                    self._source_models[src] = m
         self.hist_n = int(round(self.span_s / self.dt)) + 1
         self._obs = {}
         self._seen = {}          # key -> annotate() clock when last passed in
+        self._last_sig = {}      # key -> raw values last observed (sources without stamps)
         self.stats = {"ticks": 0, "paths": 0, "curved": 0, "fans": 0, "ms_last": 0.0, "ms_max": 0.0}
 
     # ---- history ---------------------------------------------------------
@@ -194,6 +209,7 @@ class PersonPaths:
             self._seen.pop(k, None)
             self._smooth.pop(k, None)
             self._cache.pop(k, None)
+            self._last_sig.pop(k, None)
 
     def history(self, key):
         q = self._obs.get(key)
@@ -230,15 +246,21 @@ class PersonPaths:
                 gru_keys.append(key)
                 gru_hist.append(hist)
             out[key] = r
-        if gru_keys:
+        groups = {}
+        for key, hist in zip(gru_keys, gru_hist):
+            groups.setdefault(self._source_models.get(key[0], self.model) if isinstance(key, tuple)
+                              else self.model, []).append((key, hist))
+        for model, items in groups.items():
             from traj_predictor import features
-            H = np.stack(gru_hist)
-            res, sig = self.model(features(H, self.dt))
-            for i, key in enumerate(gru_keys):
+            keys_m = [k for k, _ in items]
+            H = np.stack([h for _, h in items])
+            res, sig = model(features(H, self.dt))
+            fut_t = np.arange(1, model.fut_n + 1) * self.dt
+            for i, key in enumerate(keys_m):
                 r = out[key]
                 v0 = H[i, -1, 2:4]
-                fut = H[i, -1, :2] + v0 * self._fut_t[:, None] + res[i]
-                ft = np.concatenate([[0.0], self._fut_t])
+                fut = H[i, -1, :2] + v0 * fut_t[:, None] + res[i]
+                ft = np.concatenate([[0.0], fut_t])
                 fp = np.vstack([H[i, -1, :2], fut])
                 if self.poly_deg:
                     fp = poly_shape(ft, fp, self.poly_deg)
@@ -246,6 +268,10 @@ class PersonPaths:
                                              np.interp(self.times, ft, fp[:, 1])])
                 if sig is not None:
                     r["sigma"] = np.interp(self.times, ft, np.concatenate([[sig[i, 0]], sig[i]]))
+                if self.bend:
+                    r["w"] = gated_rate(r["w_fit"], r["se"], self.p)
+                    if r["w"]:
+                        r["path"] = bend_path(r["path"], self.times, r["w"], self.p["tau_s"])
         for key in fresh:
             r = out[key]
             self._cache[key] = r
@@ -290,14 +316,23 @@ class PersonPaths:
                 continue
             key = (source, tr.get("id"))
             self._seen[key] = now
-            # The lidar tracker's coasting rows are its own constant-velocity
-            # extrapolation: drawing from them is fine, learning a turn from them is not.
-            if tr.get("mode") != "coasting":
+            # The lidar tracker's coasting rows and C3's unmeasured (predicted) rows
+            # are the trackers' own constant-velocity extrapolation: drawing from them
+            # is fine, learning a turn from them is not. A source without stamps
+            # (v3) passes a `_sig` of its raw values: an unchanged estimate re-read
+            # by the 20 Hz loop is not a new observation.
+            sig = tr.get("_sig")
+            fresh = sig is None or self._last_sig.get(key) != sig
+            if tr.get("mode") != "coasting" and tr.get("measured") is not False and fresh:
                 ts = tr.get(stamp_key) if stamp_key else None
                 self.observe(key, float(ts) if ts is not None else now, x, y, vx, vy)
+                if sig is not None:
+                    self._last_sig[key] = sig
             keys.append(key)
             rows.append((key, tr))
-        preds = self.predict_many([k for k in keys if k in self._obs]) if pose is not None else {}
+        # Slow tracks get no path, so skip their fit / GRU pass entirely.
+        moving = [k for k in keys if k in self._obs and math.hypot(*self._obs[k][-1][3:5]) >= MIN_SPEED_MPS]
+        preds = self.predict_many(moving) if pose is not None else {}
         th = float(pose["theta"]) if pose is not None else 0.0
         c, s = math.cos(th), math.sin(th)
 
@@ -341,7 +376,11 @@ def from_env(model_path, env=None, log=None):
             log.warning("X3_PERSON_PATH=%r unknown (cv|ctrv|gru|off): person paths off", mode)
         return None
     try:
-        return PersonPaths(mode, model_path)
+        from pathlib import Path
+        # v3 (camera-only, C3 off) tracks are the OAK GRU's own domain; the Livox/C3
+        # model is 14 % worse than cv there (walk-g-r7, 2026-11-27).
+        return PersonPaths(mode, model_path,
+                           source_models={"v3": str(Path(model_path).with_name("traj_gru_deploy.npz"))})
     except Exception as e:  # noqa: BLE001
         if log:
             log.warning("X3_PERSON_PATH=gru: model %s failed (%s); using ctrv", model_path, e)
@@ -357,24 +396,30 @@ def estimates_with_odom(estimates, pose):
         px, py = float(e.get("z", 1.0)), -float(e.get("x", 0.0))
         vx, vy = float(e.get("vx", 0.0)), float(e.get("vy", 0.0))
         out.append(dict(e, odom_x=pose["x"] + c * px - s * py, odom_y=pose["y"] + s * px + c * py,
-                        odom_vx=c * vx - s * vy, odom_vy=s * vx + c * vy))
+                        odom_vx=c * vx - s * vy, odom_vy=s * vx + c * vy, _sig=(px, py, vx, vy)))
     return out
 
 
 _ODOM_KEYS = ("odom_x", "odom_y", "odom_vx", "odom_vy")
 
 
-def annotate_telemetry(paths, pose, c3_tracks, lidar_persons, velocity_estimates):
+def annotate_telemetry(paths, pose, c3_tracks, lidar_persons, velocity_estimates, c3_active=False):
     """(c3_tracks, lidar_persons, velocity_estimates) with paths added, or the same
-    objects untouched when paths is None (X3_PERSON_PATH off) or there is no pose."""
+    objects untouched when paths is None (X3_PERSON_PATH off) or there is no pose.
+
+    v3 estimates are annotated only when C3 is not running (c3_active False): the
+    GUI draws v3 people only then (scene-view.js avatarEntries). Static blobs and
+    is_person False estimates never get a path."""
     if paths is None or pose is None:
         return c3_tracks, lidar_persons, velocity_estimates
     c3 = paths.annotate(c3_tracks, "c3", pose, stamp_key="state_stamp_s") if c3_tracks else c3_tracks
     lp = paths.annotate(lidar_persons, "lidar", pose, stamp_key="stamp") if lidar_persons else lidar_persons
     ve = velocity_estimates
-    if velocity_estimates:
-        ann = paths.annotate(estimates_with_odom(velocity_estimates, pose), "v3", pose)
+    people = [e for e in velocity_estimates or []
+              if e.get("category") != "static" and e.get("is_person") is not False]
+    if people and not c3_active:
+        ann = {id(e): a for e, a in zip(people, paths.annotate(estimates_with_odom(people, pose), "v3", pose))}
         # hand back the original dicts plus the path fields only (no odom_* leak into the payload)
-        ve = [dict(e, **{k: v for k, v in a.items() if k.startswith("path_")})
-              if "path_rel" in a else e for e, a in zip(velocity_estimates, ann)]
+        ve = [dict(e, **{k: v for k, v in ann[id(e)].items() if k.startswith("path_")})
+              if id(e) in ann and "path_rel" in ann[id(e)] else e for e in velocity_estimates]
     return c3, lp, ve
