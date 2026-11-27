@@ -65,6 +65,8 @@ FAN_DW = 0.6            # rad/s: alternative bends at +-FAN_DW around the main p
 # runs as the smallest value bringing its frame-to-frame wag of the 2 s endpoint
 # under 1.4x unsmoothed cv's (0.124 -> 0.083 m vs cv 0.081; FDE@2s +3 %).
 SMOOTH_S = {"gru": 0.15}
+POLY_DEG = 3            # GRU path: cubic in time through the person (0 = raw). On TUNE it
+                        # costs +0.5 % FDE@2s and removes the step-to-step wiggle
 SIGMA0, SIGMA_K = 0.08, 0.22   # heuristic spread for cv / ctrv: s0 + k * t * speed
 
 
@@ -108,6 +110,14 @@ def gated_rate(w, se, p=CTRV):
     return float(np.clip(w * p["shrink"], -p["max_w"], p["max_w"]))
 
 
+def poly_shape(t, path, deg):
+    """Least-squares polynomial in time through path[0] (degree deg, no constant term):
+    keeps the GRU's speed profile and bend, drops its step-to-step wiggle."""
+    A = np.column_stack([t ** k for k in range(1, deg + 1)])
+    coef, *_ = np.linalg.lstsq(A, path - path[0], rcond=None)
+    return path[0] + A @ coef
+
+
 def bend(t, w0, tau):
     """Heading change at times t for turn rate w0 decaying with tau."""
     return w0 * tau * (1.0 - np.exp(-t / tau)) if tau > 0 else w0 * t
@@ -137,12 +147,14 @@ def bend_path(path, times, dw, tau):
 
 class PersonPaths:
     def __init__(self, mode, model_path=None, horizon_s=HORIZON_S, n_points=N_POINTS, ctrv=None,
-                 smooth_s=None):
+                 smooth_s=None, poly_deg=None):
         if mode not in MODES or mode == "off":
             raise ValueError("mode must be one of cv, ctrv, gru")
         self.mode = mode
         self.smooth_s = SMOOTH_S.get(mode, 0.0) if smooth_s is None else smooth_s
+        self.poly_deg = POLY_DEG if poly_deg is None else poly_deg
         self._smooth = {}        # key -> (obs stamp, path relative to p0)
+        self._cache = {}         # key -> last prediction (reused until a new observation)
         self.p = dict(CTRV, **(ctrv or {}))
         self.times = np.linspace(0.0, horizon_s, n_points)
         self.dt = 1.0 / RATE_HZ
@@ -181,6 +193,7 @@ class PersonPaths:
             del self._obs[k]
             self._seen.pop(k, None)
             self._smooth.pop(k, None)
+            self._cache.pop(k, None)
 
     def history(self, key):
         q = self._obs.get(key)
@@ -193,11 +206,16 @@ class PersonPaths:
     # ---- prediction --------------------------------------------------------
     def predict_many(self, keys):
         """{key: dict(path [n,2] odom, sigma [n], alts list, w, used_hist)} for keys with history."""
-        out, gru_keys, gru_hist = {}, [], []
+        out, gru_keys, gru_hist, fresh = {}, [], [], []
         for key in keys:
             q = self._obs.get(key)
             if not q:
                 continue
+            c = self._cache.get(key)
+            if c is not None and c["t"] == q[-1][0]:
+                out[key] = c            # no new observation since: the telemetry loop
+                continue                # runs faster than the trackers
+            fresh.append(key)
             _, x, y, vx, vy = q[-1]
             p0, v0 = np.array([x, y]), np.array([vx, vy])
             speed = math.hypot(vx, vy)
@@ -222,11 +240,15 @@ class PersonPaths:
                 fut = H[i, -1, :2] + v0 * self._fut_t[:, None] + res[i]
                 ft = np.concatenate([[0.0], self._fut_t])
                 fp = np.vstack([H[i, -1, :2], fut])
+                if self.poly_deg:
+                    fp = poly_shape(ft, fp, self.poly_deg)
                 r["path"] = np.column_stack([np.interp(self.times, ft, fp[:, 0]),
                                              np.interp(self.times, ft, fp[:, 1])])
                 if sig is not None:
                     r["sigma"] = np.interp(self.times, ft, np.concatenate([[sig[i, 0]], sig[i]]))
-        for r in out.values():
+        for key in fresh:
+            r = out[key]
+            self._cache[key] = r
             self._smooth_path(r)
             r["alts"] = []
             if self.mode != "cv" and r["used_hist"] and r["speed"] > 0.3 and (

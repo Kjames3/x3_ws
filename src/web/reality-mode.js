@@ -227,11 +227,17 @@ window.RealityMode = (() => {
         function fillRibbon(mesh, pts, ws) {
             const n = Math.min(pts.length, TRAIL_R);
             const g = mesh.geometry, pos = g.attributes.position.array, u = g.attributes.u.array;
-            let minD = Infinity;
+            let minD = Infinity, px = 0, pz = 0;
             for (let i = 0; i < n; i++) {
                 const a = pts[Math.max(0, i - 1)], b = pts[Math.min(n - 1, i + 1)];
                 let tx = b[0] - a[0], tz = b[1] - a[1];
-                const tl = Math.hypot(tx, tz) || 1; tx /= tl; tz /= tl;
+                const tl = Math.hypot(tx, tz);
+                // A path that stalls or steps back (a predicted stop) must not flip
+                // the ribbon over: keep the previous direction there.
+                if (tl < 1e-4 || (i && tx * px + tz * pz < 0)) { tx = px; tz = pz; }
+                else { tx /= tl; tz /= tl; }
+                if (!tx && !tz) tz = -1;
+                px = tx; pz = tz;
                 const w = ws[i] / 2;
                 const o = 6 * i;
                 pos[o] = pts[i][0] - tz * w; pos[o+1] = 0.014; pos[o+2] = pts[i][1] + tx * w;
@@ -244,14 +250,15 @@ window.RealityMode = (() => {
             g.setDrawRange(0, (n - 1) * 6);
             return minD;
         }
-        // Width from the server's sigma (1-sigma spread, m) when given: the same
-        // TRAIL_W0..TRAIL_W1 widening at a typical 2 s spread of 0.44 m, more or
-        // less as the prediction is less or more sure.
+        // Width from the server's sigma (1-sigma spread, m) when given: today's
+        // TRAIL_W0..TRAIL_W1 widening as a floor, wider (up to 1.8x the widening)
+        // when the 2 s spread exceeds 0.44 m.
         function widthsFor(n, sigma) {
             return Array.from({ length: n }, (_, i) => {
-                if (sigma && sigma.length === n)
-                    return TRAIL_W0 + (TRAIL_W1 - TRAIL_W0) * Math.min(1.8, Math.max(0, (sigma[i] - sigma[0]) / 0.44));
-                return TRAIL_W0 + (TRAIL_W1 - TRAIL_W0) * i / (n - 1);
+                const base = TRAIL_W0 + (TRAIL_W1 - TRAIL_W0) * i / (n - 1);
+                if (!sigma || sigma.length !== n) return base;
+                // never narrower than today's trail; wider where the spread is larger
+                return Math.max(base, TRAIL_W0 + (TRAIL_W1 - TRAIL_W0) * Math.min(1.8, Math.max(0, (sigma[i] - sigma[0]) / 0.44)));
             });
         }
         function updateIntent(persons) {

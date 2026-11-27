@@ -100,14 +100,14 @@ def collect(paths, source):
     return runs
 
 
-def replay(runs, modes, ctrv=None, smooth=None):
+def replay(runs, modes, ctrv=None, smooth=None, poly=None):
     """Rows of per-prediction records, with every mode's path on the same windows."""
     grid = np.arange(0.0, max(HORIZONS) + 1e-9, STEP_S)
     rows = []
     for ri, (name, date, tracks) in enumerate(runs):
         for tid, tr in tracks.items():
             preds = {m: pp.PersonPaths(MODES[m][0], MODES[m][1], horizon_s=max(HORIZONS),
-                                       n_points=len(grid), ctrv=ctrv, smooth_s=smooth)
+                                       n_points=len(grid), ctrv=ctrv, smooth_s=smooth, poly_deg=poly)
                      for m in modes if m != "ctrv_base"}
             ref = next(iter(preds.values()))
             for t, x, y, vx, vy in tr:
@@ -263,6 +263,7 @@ def main():
     ap.add_argument("--grid", action="store_true", help="grid-search the CTRV gate on the TUNE runs")
     ap.add_argument("--smooth", type=float, default=None,
                     help="path-shape smoothing time constant for every mode (default: person_paths.SMOOTH_S)")
+    ap.add_argument("--poly", type=int, default=None, help="GRU path polynomial degree (default person_paths.POLY_DEG)")
     ap.add_argument("--only", choices=("TUNE", "REPORT", "ALL"), help="score one split only")
     ap.add_argument("--json")
     a = ap.parse_args()
@@ -287,7 +288,7 @@ def main():
     for tag, rs in (("TUNE", tune), ("REPORT", report), ("ALL", tune + report)):
         if not rs or (a.only and tag != a.only):
             continue
-        rows = replay(rs, modes, ctrv, a.smooth)
+        rows = replay(rs, modes, ctrv, a.smooth, a.poly)
         names = rs
         res = summarize(rows, names, modes)
         print_summary("%s (%d runs, %d scored predictions)" % (tag, len(rs), len(rows)), res, modes)
