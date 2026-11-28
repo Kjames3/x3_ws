@@ -5,6 +5,42 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-28 — Room inventory from a parked 10 s scan (steps 1-2)
+
+Branch `overnight/surroundings-combined-2026-11-27` (a9ccaea, ea2cd29, d1700d2).
+
+**Problem**
+
+The live furniture tracker places objects from one depth point per camera box plus the nearest lidar cluster. So the couch and armchair land slightly off and face the wrong way.
+
+**Potential solution**
+
+Park, capture 10 s of raw Livox plus every camera, segment the frames, project the lidar into the masks through the camera-lidar calibration, and fit each object from its own points.
+
+**Work done**
+
+- `src/tools/perception/room_capture.py` saves the camera frames from the GUI websocket. Its header holds the paired raw-Livox bag command.
+- First capture: `~/bags/room_inventory_2026-11-28/cap_0328` (apartment, 128 scans, all four cameras).
+- `config/oak_front_eeprom_calib.json` holds the front OAK factory calibration. The GUI "front" stream is the left mono camera (CAM_B), and it needs that camera's transform to the colour camera (CAM_A).
+- `src/tools/perception/room_inventory.py`:
+  - segmentation with yolo11x-seg (nano models score these mono frames at 0.25-0.4, the x model at 0.55-0.8);
+  - the nearest connected lidar piece per mask, merged across frames;
+  - a lidar table search, chairs seated at tables, a 0.15 couch floor, and duplicate-label removal.
+
+**Results**
+
+- The inventory has 7 objects that match the user's description:
+  - the dining table, found by the lidar;
+  - its two chairs, at its ends and facing it;
+  - the sofa, back to the table's wall;
+  - the armchair, back to its wall and facing the robot;
+  - the TV;
+  - the round table, in the right place.
+- The round table is still fitted as a 1.18x0.75 rectangle, because one viewpoint sees only its near half. The sofa length is a default.
+- Next: load `inventory.json` into the GUI as saved room furniture behind a flag; a second viewpoint or the right camera; lab and courtyard captures.
+
+---
+
 ## 2026-11-28 — Overnight surroundings branch: first live walk, fan hold
 
 Branch `overnight/surroundings-combined-2026-11-27` (7a454e8, then f40e8f0), deployed on the robot.
