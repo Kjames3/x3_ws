@@ -5,6 +5,31 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ---
 
+## 2026-11-28 — Overnight surroundings branch: first live walk, fan hold
+
+Branch `overnight/surroundings-combined-2026-11-27` (7a454e8), deployed on the robot.
+
+**Problem**
+
+The overnight furniture and curved-path work had only been tested offline.
+
+**Potential solution**
+
+Deploy behind its flags (`X3_PERSON_PATH=gru`, `?furnitureYawV2=1&furnitureLookV2=1&curvedIntent=1`) and record a walk.
+
+**Work done**
+
+- Recorded a 5 min walk: bag plus full GUI telemetry in `~/bags/surroundings_walk_2026-11-28/` (robot and laptop). `/livox/lidar` is missing: no `livox_ros_driver2` msgs in the robot's ROS env.
+- Added fan hysteresis behind `X3_PERSON_PATH_FAN_HOLD=1` (0.5 s on, 1.0 s off) and a 30 s `person_paths stats` log line.
+
+**Results**
+
+- 1,236 lidar and 389 C3 rows had paths, 88% of the lidar ones from the GRU. While moving >0.3 m/s: median bend 2.9°, 12% bend >15°.
+- The fan toggled 113 times in about 155 s. Replaying the walk with the hold: lidar toggles 82→15 and fan rows 359→354. Path cost 0.15 ms/tick on the laptop.
+- x3_server at ~112% CPU with a person in view. Furniture orientation and look not yet judged by eye.
+
+---
+
 ## 2026-11-26 — Perf flags and omni-direct Nav2 tested on the robot
 
 **Problem**
