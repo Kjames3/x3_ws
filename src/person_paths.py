@@ -69,6 +69,8 @@ SUSTAINED_ON = False
 FAN_W = 0.4             # rad/s: show alternatives when the person is visibly turning (|fitted
                         # rate| above this) ... direction precision is ~50 % outside circling
 FAN_SE = 0.25           # ... or when the turn-rate std error exceeds this
+FAN_HOLD_ON_S = 0.5     # fan_hold: the fan condition must hold this long before the fan appears
+FAN_HOLD_OFF_S = 1.0    # ... and be gone this long before it disappears (live walk 11-28: 113 toggles/155 s)
 FAN_DW = 0.6            # rad/s: alternative bends at +-FAN_DW around the main path
 # Per mode: path-shape smoothing time constant (s). 0.15 for the GRU, chosen on the TUNE
 # runs as the smallest value bringing its frame-to-frame wag of the 2 s endpoint
@@ -184,10 +186,13 @@ def learnable(tr):
 
 class PersonPaths:
     def __init__(self, mode, model_path=None, horizon_s=HORIZON_S, n_points=N_POINTS, ctrv=None,
-                 smooth_s=None, poly_deg=None, bend=None, source_models=None, sustained=None):
+                 smooth_s=None, poly_deg=None, bend=None, source_models=None, sustained=None,
+                 fan_hold=False):
         if mode not in MODES or mode == "off":
             raise ValueError("mode must be one of cv, ctrv, gru")
         self.mode = mode
+        self.fan_hold = bool(fan_hold)
+        self._fan = {}           # key -> (shown, obs time the raw condition last changed, raw)
         self.smooth_s = SMOOTH_S.get(mode, 0.0) if smooth_s is None else smooth_s
         self.poly_deg = POLY_DEG if poly_deg is None else poly_deg
         # gru only: also apply the CTRV gated turn to the GRU path (its gain is
@@ -223,7 +228,7 @@ class PersonPaths:
         self._obs = {}
         self._seen = {}          # key -> annotate() clock when last passed in
         self._last_sig = {}      # key -> raw values last observed (sources without stamps)
-        self.stats = {"ticks": 0, "paths": 0, "curved": 0, "fans": 0, "ms_last": 0.0, "ms_max": 0.0}
+        self.stats = {"ticks": 0, "paths": 0, "curved": 0, "fans": 0, "ms_last": 0.0, "ms_max": 0.0, "ms_sum": 0.0}
 
     # ---- history ---------------------------------------------------------
     def observe(self, key, t, x, y, vx, vy):
@@ -249,6 +254,7 @@ class PersonPaths:
             self._smooth.pop(k, None)
             self._cache.pop(k, None)
             self._last_sig.pop(k, None)
+            self._fan.pop(k, None)
 
     def history(self, key, span_s=None):
         span = self.span_s if span_s is None else span_s
@@ -326,10 +332,24 @@ class PersonPaths:
             self._cache[key] = r
             self._smooth_path(r)
             r["alts"] = []
-            if self.mode != "cv" and r["used_hist"] and r["speed"] > 0.3 and (
-                    abs(r["w_fit"]) > FAN_W or r["se"] > FAN_SE):
+            want = bool(self.mode != "cv" and r["used_hist"] and r["speed"] > 0.3 and (
+                    abs(r["w_fit"]) > FAN_W or r["se"] > FAN_SE))
+            if self.fan_hold:
+                want = self._held_fan(key, r["t"], want)
+            if want:
                 r["alts"] = [bend_path(r["path"], self.times, d, self.p["tau_s"]) for d in (FAN_DW, -FAN_DW)]
         return out
+
+    def _held_fan(self, key, t, raw):
+        """Fan shown/hidden with hysteresis: the raw condition has to persist for
+        FAN_HOLD_ON_S (to show) or FAN_HOLD_OFF_S (to hide) of observation time."""
+        shown, since, last_raw = self._fan.get(key, (False, t, False))
+        if raw != last_raw:
+            since = t
+        if raw != shown and t - since >= (FAN_HOLD_ON_S if raw else FAN_HOLD_OFF_S):
+            shown = raw
+        self._fan[key] = (shown, since, raw)
+        return shown
 
     def _smooth_path(self, r):
         """Exponential smoothing of the path shape (relative to the person) over
@@ -410,6 +430,7 @@ class PersonPaths:
         ms = (time.perf_counter() - t_start) * 1e3
         self.stats["ticks"] += 1
         self.stats["ms_last"] = round(ms, 3)
+        self.stats["ms_sum"] = round(self.stats["ms_sum"] + ms, 3)
         self.stats["ms_max"] = round(max(self.stats["ms_max"], ms), 3)
         return out
 
@@ -427,16 +448,18 @@ def from_env(model_path, env=None, log=None):
         if log:
             log.warning("X3_PERSON_PATH=%r unknown (cv|ctrv|gru|off): person paths off", mode)
         return None
+    # X3_PERSON_PATH_FAN_HOLD=1: hysteresis on the uncertain-turn fan (default off)
+    fan_hold = os.environ.get("X3_PERSON_PATH_FAN_HOLD", "0").strip().lower() in ("1", "true", "on")
     try:
         from pathlib import Path
         # v3 (camera-only, C3 off) tracks are the OAK GRU's own domain; the Livox/C3
         # model is 14 % worse than cv there (walk-g-r7, 2026-11-27).
-        return PersonPaths(mode, model_path,
+        return PersonPaths(mode, model_path, fan_hold=fan_hold,
                            source_models={"v3": str(Path(model_path).with_name("traj_gru_deploy.npz"))})
     except Exception as e:  # noqa: BLE001
         if log:
             log.warning("X3_PERSON_PATH=gru: model %s failed (%s); using ctrv", model_path, e)
-        return PersonPaths("ctrv")
+        return PersonPaths("ctrv", fan_hold=fan_hold)
 
 
 def estimates_with_odom(estimates, pose):

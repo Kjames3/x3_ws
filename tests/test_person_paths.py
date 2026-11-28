@@ -297,3 +297,28 @@ def test_sustained_tier_fires_on_held_turns_only():
     assert pp.sustained_rate(hist(lambda t: 0.0), 0.1) == 0.0
     assert pp.sustained_rate(hist(lambda t: 0.7, n=10), 0.1) == 0.0                # too short
     assert pp.SUSTAINED_ON is False and pp.PersonPaths("ctrv").sustained is False
+
+
+def test_fan_hold_hysteresis():
+    import person_paths as pp
+    P = pp.PersonPaths("ctrv", fan_hold=True)
+    k = ("lidar", 1)
+    # a single raw blip shorter than FAN_HOLD_ON_S never shows the fan
+    assert P._held_fan(k, 0.0, True) is False
+    assert P._held_fan(k, 0.2, False) is False
+    # sustained: shows once held ON_S
+    assert P._held_fan(k, 1.0, True) is False
+    assert P._held_fan(k, 1.0 + pp.FAN_HOLD_ON_S, True) is True
+    # a short dropout keeps it shown, a long one hides it
+    assert P._held_fan(k, 2.0, False) is True
+    assert P._held_fan(k, 2.5, True) is True
+    assert P._held_fan(k, 3.0, False) is True
+    assert P._held_fan(k, 3.0 + pp.FAN_HOLD_OFF_S, False) is False
+
+
+def test_fan_hold_from_env(monkeypatch):
+    import person_paths as pp
+    monkeypatch.setenv("X3_PERSON_PATH_FAN_HOLD", "1")
+    assert pp.from_env("missing.npz", env="ctrv").fan_hold is True
+    monkeypatch.delenv("X3_PERSON_PATH_FAN_HOLD")
+    assert pp.from_env("missing.npz", env="ctrv").fan_hold is False

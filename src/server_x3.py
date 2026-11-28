@@ -5765,6 +5765,11 @@ async def broadcast_loop():
                     c3_tracks, lidar_persons, velocity_estimates = _pp_mod.annotate_telemetry(
                         person_paths, ros_bridge.get_pose_m(), c3_tracks, lidar_persons,
                         velocity_estimates, c3_active=c3_stats is not None)
+                    _pp_now = time.monotonic()
+                    if _pp_now - getattr(person_paths, "_logged_at", 0.0) >= 30.0:
+                        person_paths._logged_at = _pp_now
+                        logger.info("person_paths stats: %s", person_paths.stats)
+                        person_paths.stats["ms_max"] = 0.0
                 except Exception as e:
                     # display only: never let it take the telemetry loop down
                     logger.warning(f"Person paths disabled: {e}")
