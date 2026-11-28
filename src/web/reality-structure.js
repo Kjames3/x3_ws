@@ -29,6 +29,15 @@
     const SIDE_MAX_FILL = 0.5;     // ... at least one must be this empty (else: inside a blob)
     const OBJ_RADIUS = 0.9;        // voxels considered for a detection (m)
     const OBJ_HOLD_S = 3.0;
+    const ROUND_LATCH = 3;          // yaw v2: round views needed before a table is drawn round ...
+    const ROUND_SHARE = .08;        // ... and their share of all its shape views (walk 11-28: round table 17%, rectangular 1%)
+    const TURN_BIRTH_DPS = 15;      // yaw v2: no new detection-born tracks while turning faster
+    const WALL_BACK_M = .9;
+    const UNMAPPED_KEEP_S = 60;
+    const VACATED_MAX_M = 2.5;
+    const CHAIR_TABLE_M = .04;      // yaw v2: a chair overlapping a table by more than this is moved out
+    const COUCH_MIN_L = .75;        // yaw v2: shortest measured couch (armchair)
+    const CHAIR_GAP_M = .15;        // yaw v2: a chair this close to a table edge faces the table      // yaw v2: no vacated (delete) judgement beyond this range     // yaw v2: unseen confirmed furniture kept this long without a map         // yaw v2: a couch this close to a wall backs onto it
     const OBJ_SMOOTH = 0.3;
     const OBJ_MATCH_M = 0.7;
     const LIDAR_CONFIRM_HITS = 10, LIDAR_CONFIRM_S = 3.0, INFERRED_GAP_S = 4.0;
@@ -708,9 +717,89 @@
         return selected;
     }
 
+    // A chair at a table: chair and table voxels merge, so a chair fit can
+    // sit inside the table and its seat heading is unobservable. A chair whose
+    // centre is inside the top is the table's own voxels: drop it. One that
+    // only overlaps is put outside the edge its centre is past, facing the
+    // table (mesh back on +depth). Yaw v2.
+    function seatAtTables(tracks) {
+        const tables = tracks.filter(t => t.kind === 'table' && !t.inferred && t.hits >= 2);
+        for (const ch of tracks) {
+            if (ch.kind !== 'chair' || ch.inferred) continue;
+            for (const tb of tables) {
+                const c = Math.cos(tb.yaw), s = Math.sin(tb.yaw);
+                const dx = ch.X - tb.X, dy = ch.Y - tb.Y;
+                const u = c*dx + s*dy, v = -s*dx + c*dy;
+                const half = ch.D / 2;
+                const ou = Math.abs(u) - tb.L/2, ov = Math.abs(v) - tb.D/2;   // > 0: centre past that edge
+                if (ou >= half + CHAIR_GAP_M || ov >= half + CHAIR_GAP_M) continue;   // not at this table
+                if (ou < 0 && ov < 0) { ch.drop = true; break; }
+                const alongL = ou >= ov;
+                const nu = alongL ? Math.sign(u) : 0, nv = alongL ? 0 : Math.sign(v);
+                if ((alongL ? ou : ov) < half - CHAIR_TABLE_M) {   // overlapping: move it out
+                    const pu = alongL ? nu*(tb.L/2+half+.02) : u, pv = alongL ? v : nv*(tb.D/2+half+.02);
+                    ch.X = tb.X + c*pu - s*pv; ch.Y = tb.Y + s*pu + c*pv;
+                }
+                const nx = c*nu - s*nv, ny = s*nu + c*nv;
+                ch.yaw = Math.atan2(-nx, ny);
+                ch.atTable = tb.id;
+                break;
+            }
+        }
+    }
+
+    // Couches and armchairs stand with their back to a wall. When a measured
+    // wall runs near and roughly parallel, turn the back (+depth) toward it
+    // and its position is left alone. Chairs at a table are left to
+    // seatAtTables. Walls arrive in the base frame. Yaw v2.
+    function backToWalls(tracks, walls, toOdomXY) {
+        const segs = (walls || []).map(w => {
+            const [x0,y0] = toOdomXY(w.x0, w.y0), [x1,y1] = toOdomXY(w.x1, w.y1);
+            return {x0,y0,x1,y1,len:Math.hypot(x1-x0,y1-y0)};
+        }).filter(w => w.len >= .8);
+        for (const t of tracks) {
+            if (t.inferred || !(t.kind === 'couch' || (t.kind === 'chair' && !t.atTable))) continue;
+            let best = null;
+            for (const w of segs) {
+                const dx = w.x1-w.x0, dy = w.y1-w.y0;
+                const k = ((t.X-w.x0)*dx + (t.Y-w.y0)*dy) / (w.len*w.len);
+                if (k < -.1 || k > 1.1) continue;
+                const px = w.x0 + k*dx, py = w.y0 + k*dy, dist = Math.hypot(t.X-px, t.Y-py);
+                if (dist > WALL_BACK_M || (best && dist >= best.dist)) continue;
+                best = {dist, px, py, wyaw: Math.atan2(dy, dx)};
+            }
+            if (!best || best.dist < .05) continue;
+            const nx = (best.px - t.X) / best.dist, ny = (best.py - t.Y) / best.dist;   // toward the wall
+            const yaw = Math.atan2(-nx, ny);                     // +depth (back) toward the wall
+            // Only when the object's long side lies along the wall (or it is square-ish).
+            if (t.L > 1.15*t.D && Math.abs(angleDelta(t.yaw, best.wyaw, 2)) > 25*Math.PI/180) continue;
+            if (t.wallBack) {
+                const d = angleDelta(yaw, t.wallBack.yaw);
+                // Something backed onto a wall does not acquire one in front of it:
+                // a fit along its own front edge must not flip it. In a corner, move
+                // to the other wall only when it is clearly closer.
+                if (Math.abs(d) > Math.PI/3 || (Math.abs(d) > .2 && best.dist > .6*t.wallBack.dist)) {
+                    t.yaw = t.wallBack.yaw;
+                    continue;
+                }
+                t.wallBack = {yaw: t.wallBack.yaw + .2*d, dist: best.dist};   // smooth fit jitter
+            } else t.wallBack = {yaw, dist: best.dist};
+            t.yaw = t.wallBack.yaw;
+        }
+    }
+
     // Object tracks persist across calls (odom frame).
     function Tracker({furnitureYawV2 = false} = {}) {
         this.tracks = []; this.nextId = 1; this.furnitureYawV2 = furnitureYawV2;
+    }
+
+    // A partly seen round top can fit a rectangle, but a rectangle rarely
+    // fits a circle. Latch round after a few round views (yaw v2).
+    function voteRound(track, round) {
+        track.shapeVotes = (track.shapeVotes || 0) + 1;
+        if (round) track.roundVotes = (track.roundVotes || 0) + 1;
+        const votes = track.roundVotes || 0;
+        track.round = votes >= ROUND_LATCH && votes >= ROUND_SHARE * track.shapeVotes;
     }
 
     function observeFurnitureYaw(track, fit, pose, nowS) {
@@ -759,6 +848,16 @@
         const low = cells.filter(q => q.z > 0.03 && !wallUsed.has(colKey(q.x, q.y)) &&
                                      (cols.get(colKey(q.x, q.y))?.top ?? 0) < WALL_TOP + 0.4);
         const matched = new Set();
+        // Camera detections lag the pose; while turning they land off target
+        // (chairs in walls). Yaw v2 starts no new camera-only track then.
+        let turning = false;
+        if (this.furnitureYawV2) {
+            const prev = this.turnPose, dt = prev ? nowS - prev.t : 0;
+            turning = dt > 0 && dt < 1 && Math.abs(angleDelta(pose.theta, prev.theta)) / dt * 180 / Math.PI > TURN_BIRTH_DPS;
+            if (!prev || dt > 0) this.turnPose = {t: nowS, theta: pose.theta};
+            if (turning) this.turnUntil = nowS + .5;
+            turning = turning || nowS < (this.turnUntil || 0);
+        }
         const newHeadingCloud = this.furnitureYawV2 && frame.observationPose !== null
             && frame.xyz && frame.xyz !== this.lastHeadingCloud;
         const surfaces = frame.xyz ? furnitureSurfaces(cells,newHeadingCloud ? frame.walls || [] : null) : [];
@@ -788,7 +887,10 @@
                 L = a1 - a0 + .05; D = b1 - b0 + .05; H = top + .03;
                 if (D > L) { [L, D] = [D, L]; yaw += Math.PI / 2; }
             }
-            L = clamp(L, sz.l); D = clamp(D, sz.d); H = clamp(H, sz.h);
+            // Yaw v2: an armchair often comes back as "couch"; a measured footprint
+            // may be armchair-sized instead of being stretched to a sofa.
+            const lRange = this.furnitureYawV2 && kind === 'couch' && near.length >= 4 ? [COUCH_MIN_L, sz.l[1]] : sz.l;
+            L = clamp(L, lRange); D = clamp(D, sz.d); H = clamp(H, sz.h);
             if (kind === 'tv') {
                 // Use the tangent of a nearby measured wall for a wall-mounted screen.
                 let closest = .45;
@@ -818,10 +920,11 @@
             const [X, Y] = toOdom(cx, cy), Yaw = yaw + pose.theta;
             let t = this.tracks.filter(t => !matched.has(t) && t.kind === kind && Math.hypot(t.X - X, t.Y - Y) < OBJ_MATCH_M)
                 .sort((a,b) => Math.hypot(a.X-X,a.Y-Y) - Math.hypot(b.X-X,b.Y-Y))[0];
+            if (!t && turning && !surface) continue;
             if (!t) { t = { id: this.nextId++, kind, X, Y, yaw: Yaw, L, D, H, seen: nowS, hits: 0 }; this.tracks.push(t); }
             t.inferred = false;
             if (surface) t.seat = surface.seat;
-            if (yawV2 && surface && kind === 'table') t.round = surface.round;
+            if (yawV2 && surface && kind === 'table') voteRound(t, surface.round);
             matched.add(t);
             if (yawV2 && newHeadingCloud) observeFurnitureYaw(t,yawFit,pose,nowS);
             if (frame.detectionStamp != null && t.stamp === frame.detectionStamp) continue;
@@ -892,7 +995,10 @@
                 t.X += k*(X-t.X); t.Y += k*(Y-t.Y);
                 const measured = {...o, L:mL, D:mD};
                 for (const key of ['H','L','D','seat']) if (Number.isFinite(measured[key])) t[key]+=k*(measured[key]-t[key]);
-                if (o.kind==='table') t.round = o.round;
+                if (o.kind==='table') {
+                    if (this.furnitureYawV2) voteRound(t, o.round);
+                    else t.round = o.round;
+                }
                 if (t.inferred && !this.furnitureYawV2) {
                     // Remember each fit's heading (folded onto the track's) so the
                     // heading at confirmation is the average, not the last noisy fit.
@@ -931,14 +1037,23 @@
             // Surface fits come and go between clouds; keep the candidate long
             // enough to accumulate hits toward promotion. Candidates are not drawn.
             if (t.inferred) return nowS-t.seen < INFERRED_GAP_S;
-            if (!frame.mapped || t.hits < 2) return nowS - t.seen < OBJ_HOLD_S;
+            // Without a map, yaw v2 still keeps confirmed furniture until the lidar
+            // sees through it (odom drift caps it): a 3 s expiry re-created tables
+            // out of view with a new heading and round/square guess.
+            const keepUnmapped = this.furnitureYawV2 && t.hits >= LANDMARK_HITS && nowS - t.seen < UNMAPPED_KEEP_S;
+            if ((!frame.mapped && !keepUnmapped) || t.hits < 2) return nowS - t.seen < OBJ_HOLD_S;
             if (!matched.has(t) && frame.xyz && this.lastCloud !== frame.xyz && nowS - t.seen > OBJ_HOLD_S) {
                 const [x, y] = toBase(t.X, t.Y);
-                if (vacated(frame.xyz, x, y, t)) t.misses++;
+                if (vacated(frame.xyz, x, y, t, this.furnitureYawV2)) t.misses++;
                 else t.misses = 0;
             }
             return !(t.misses >= 3);
         });
+        if (this.furnitureYawV2) {
+            seatAtTables(this.tracks);
+            backToWalls(this.tracks, frame.walls, toOdom);
+            this.tracks = this.tracks.filter(t => !t.drop);
+        }
         this.lastCloud = frame.xyz;
         if (newHeadingCloud) this.lastHeadingCloud = frame.xyz;
         const candidates = this.tracks.filter(t => !t.inferred && t.hits >= 2).map(t => {
@@ -998,12 +1113,18 @@
 
     // Require several returns beyond the central footprint at seat/body height.
     // A return inside that region vetoes clearing, including when partly occluded.
-    function vacated(xyz, x, y, t) {
+    function vacated(xyz, x, y, t, solidLevel = false) {
         const sx = .0432, sz = .31;
         const dx = x - sx, range = Math.hypot(dx, y);
         if (range < .3) return false;
+        // Beyond ~2.5 m a low top is a few sparse returns: no grounds to delete it.
+        if (solidLevel && range > VACATED_MAX_M) return false;
         const radius = Math.min(t.L, t.D) * .32;
-        const level = (t.bottom || 0) + .48 * t.H;
+        // Half height is open space under a table (and under a seat): lidar
+        // passing below it deleted the table. Yaw v2 probes the solid part.
+        let level = (t.bottom || 0) + .48 * t.H;
+        if (solidLevel && t.kind === 'table') level = (t.bottom || 0) + t.H - .04;
+        else if (solidLevel && (t.kind === 'chair' || t.kind === 'couch')) level = (t.bottom || 0) + (t.seat || .44);
         let through = 0;
         for (let i = 0; i < xyz.length; i += 3) {
             const rx = xyz[i] - sx, ry = xyz[i+1], z = xyz[i+2];
@@ -1059,7 +1180,7 @@
         };
     }
 
-    const api = { Lookalike, LANDMARK_HITS, furnitureOverlap, furnitureSurfaces, analyze, Tracker, WallHistory, fitWalls, columns, KINDS, WALL_TOP };
+    const api = { Lookalike, LANDMARK_HITS, furnitureOverlap, seatAtTables, backToWalls, voteRound, furnitureSurfaces, analyze, Tracker, WallHistory, fitWalls, columns, KINDS, WALL_TOP };
     if (typeof module !== 'undefined' && module.exports) module.exports = api;
     else root.RealityStructure = api;
 })(typeof window !== 'undefined' ? window : globalThis);
