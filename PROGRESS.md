@@ -7,7 +7,7 @@ Dates are when the work happened. Commits are on `main` unless a branch is named
 
 ## 2026-11-28 — Overnight surroundings branch: first live walk, fan hold
 
-Branch `overnight/surroundings-combined-2026-11-27` (7a454e8), deployed on the robot.
+Branch `overnight/surroundings-combined-2026-11-27` (7a454e8, then f40e8f0), deployed on the robot.
 
 **Problem**
 
@@ -26,7 +26,13 @@ Deploy behind its flags (`X3_PERSON_PATH=gru`, `?furnitureYawV2=1&furnitureLookV
 
 - 1,236 lidar and 389 C3 rows had paths, 88% of the lidar ones from the GRU. While moving >0.3 m/s: median bend 2.9°, 12% bend >15°.
 - The fan toggled 113 times in about 155 s. Replaying the walk with the hold: lidar toggles 82→15 and fan rows 359→354. Path cost 0.15 ms/tick on the laptop.
-- x3_server at ~112% CPU with a person in view. Furniture orientation and look not yet judged by eye.
+- x3_server at ~112% CPU with a person in view.
+- Furniture judged by eye: tables in the right places and the right table correct; chairs inside the table and facing wrong; the round table flipping to square; the couch facing the wall; chairs briefly in walls while turning.
+- Replay tools: `src/tools/viewers/export_surroundings_frames.py` and `furniture_replay.cjs` (frames in `frames_0140.ndjson`). The replay reproduced each problem. Fixes are in f40e8f0, behind `?furnitureYawV2=1`; with the flag off, output is byte-identical:
+  - The left table had been re-created 6 times, because without a map furniture is deleted 3 s after leaving view. Now it is one track, round in 100% of frames.
+  - The two chairs at the right table sit at its ends, facing it.
+  - The armchair keeps its back to the wall for the whole replay.
+  - The couch never passes the 0.5 camera confidence cutoff (peak 0.40), so its wall rule is untested offline.
 
 ---
 
