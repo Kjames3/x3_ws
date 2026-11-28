@@ -36,7 +36,8 @@
     const UNMAPPED_KEEP_S = 60;
     const VACATED_MAX_M = 2.5;
     const CHAIR_TABLE_M = .04;      // yaw v2: a chair overlapping a table by more than this is moved out
-    const COUCH_MIN_L = .75;        // yaw v2: shortest measured couch (armchair)
+    const COUCH_MIN_L = .75;
+    const COUCH_MIN_CONF = .3;      // yaw v2: camera "couch" confidence accepted        // yaw v2: shortest measured couch (armchair)
     const CHAIR_GAP_M = .15;        // yaw v2: a chair this close to a table edge faces the table      // yaw v2: no vacated (delete) judgement beyond this range     // yaw v2: unseen confirmed furniture kept this long without a map         // yaw v2: a couch this close to a wall backs onto it
     const OBJ_SMOOTH = 0.3;
     const OBJ_MATCH_M = 0.7;
@@ -863,12 +864,21 @@
         const surfaces = frame.xyz ? furnitureSurfaces(cells,newHeadingCloud ? frame.walls || [] : null) : [];
         const claimed = new Set();
         for (const det of dets || []) {
-            const kind = KINDS[String(det.label || '').toLowerCase()];
+            let kind = KINDS[String(det.label || '').toLowerCase()];
             const p = det.xyz_base_m;
-            if (!kind || !p || !(det.conf >= 0.5) || !isFinite(p.x) || !isFinite(p.y)) continue;
+            // Yaw v2: the walk's sofa never reached 0.5 as "couch" (peak 0.40).
+            const minConf = this.furnitureYawV2 && kind === 'couch' ? COUCH_MIN_CONF : 0.5;
+            if (!kind || !p || !(det.conf >= minConf) || !isFinite(p.x) || !isFinite(p.y)) continue;
             // Lidar cells of the connected low-column cluster nearest the detection
             // give footprint, heading and height.
             const near = cluster(low, cols, p, wallUsed);
+            // Yaw v2: a "chair" whose lidar cluster is sofa-length is the sofa.
+            if (this.furnitureYawV2 && kind === 'chair' && near.length >= 12) {
+                let lo = Infinity, hi = -Infinity;
+                const c0 = Math.cos(Math.atan2(p.y, p.x) + Math.PI/2), s0 = Math.sin(Math.atan2(p.y, p.x) + Math.PI/2);
+                for (const q of near) { const a = c0*q.x + s0*q.y; lo = Math.min(lo, a); hi = Math.max(hi, a); }
+                if (hi - lo >= SIZE.couch.l[0]) kind = 'couch';
+            }
             const sz = SIZE[kind];
             let cx = p.x, cy = p.y, yaw = Math.atan2(p.y, p.x) + Math.PI / 2, L = sz.l[0], D = sz.d[0], H = sz.h[0];
             if (near.length >= 4) {
