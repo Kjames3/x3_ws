@@ -110,6 +110,7 @@ from drivers_x3 import (
 import tof_exempt_zones
 from nav2_client import Nav2Client
 from frontier_explorer import FrontierExplorer
+from marker_patrol import MarkerPatrol
 from velocity_estimator import VelocityEstimator
 from velocity_timing import PoseHistory, ros_stamp_ns
 from person_memory import PersonMemory
@@ -336,6 +337,7 @@ model = None
 oled = None
 nav2_client = None    # Nav2Client instance (ROS2/sim modes only)
 frontier_explorer = None  # FrontierExplorer instance (ROS2/sim modes)
+marker_patrol = None      # MarkerPatrol instance (ROS2/sim modes)
 _gazebo_proc    = None   # subprocess handle when --sim auto-launches Gazebo
 _ros2_stack_proc = None  # subprocess handle for x3_bringup (launched by default in ROS2 mode)
 _mediamtx_proc = None    # subprocess handle for mediamtx (WebRTC camera, --webrtc-camera)
@@ -949,6 +951,8 @@ def _tilt_nav_conflict():
         return "auto-drive is running"
     if frontier_explorer is not None and frontier_explorer.is_exploring():
         return "frontier exploration is running"
+    if marker_patrol is not None and marker_patrol.is_active():
+        return "marker patrol is running"
     if time.monotonic() - _last_teleop_motion_t < TELEOP_TILT_LOCKOUT_S:
         return "the robot is being driven manually"
     return None
@@ -2970,7 +2974,7 @@ def _encode_mapu(grid: dict) -> bytes | None:
 def initialize_hardware():
     global ros_board, ros_bridge, drive, lidar, camera, oak, ina226, teensy_batt, oak_ros_pub, oak_surroundings, model, oled, _gazebo_proc
     global tof_array
-    global nav2_client, _ros2_stack_proc, frontier_explorer
+    global nav2_client, _ros2_stack_proc, frontier_explorer, marker_patrol
     global velocity_estimator, active_velocity_model_name
     global _shared_bgr_shm, _shared_depth_shm, _shared_bgr_array, _shared_depth_array
 
@@ -3014,6 +3018,7 @@ def initialize_hardware():
         camera = bridge   # bridge provides get_frame() from /camera/image_raw
         nav2_client = Nav2Client(bridge._node)
         frontier_explorer = FrontierExplorer(nav2_client, bridge)
+        marker_patrol = MarkerPatrol(nav2_client)
         logger.info("Nav2Client + FrontierExplorer initialized (sim mode) — click 🚀 Gazebo in GUI to start simulation")
     elif ROS2_MODE:
         # ROS2 bridge mode: subscribe to /odom, /map, /camera, /voltage; publish /cmd_vel.
@@ -3033,6 +3038,7 @@ def initialize_hardware():
         # camera intentionally left unset — falls through to AstraCamera init below
         nav2_client = Nav2Client(bridge._node)
         frontier_explorer = FrontierExplorer(nav2_client, bridge)
+        marker_patrol = MarkerPatrol(nav2_client)
         frontier_explorer.drive_fn = _enqueue_motion
         frontier_explorer.get_nav_cmd = bridge.get_nav_cmd
         frontier_explorer.add_keepout = bridge.add_keepout
@@ -4070,6 +4076,8 @@ def _stop_all_motion():
     _publish_motion_stop()
     if frontier_explorer is not None:
         frontier_explorer.stop()
+    if marker_patrol is not None:
+        marker_patrol.abort()
     if nav2_client is not None:
         nav2_client.cancel()
     for kind, proc in (('p2p', _p2p_proc), ('ab', _ab_test_proc)):
@@ -4101,6 +4109,8 @@ def _start_frontier_exploration():
         return False, "Turn off the 3D tilt scan before starting Auto-Explore"
     if frontier_explorer is None:
         return False, "Frontier exploration requires ROS2 or simulation mode"
+    if marker_patrol is not None and marker_patrol.is_active():
+        return False, "Stop marker patrol before starting Auto-Explore"
     if nav2_client is not None and nav2_client.is_busy():
         return False, "Wait for the current navigation goal before starting Auto-Explore"
     if ros_bridge is not None and hasattr(ros_bridge, 'clear_keepout'):
@@ -4483,6 +4493,8 @@ async def handle_client(websocket):
                     if nav2_client:
                         if frontier_explorer is not None:
                             frontier_explorer.stop()
+                        if marker_patrol is not None:
+                            marker_patrol.abort()
                         # Off the event loop: a clean Nav2 shutdown takes seconds
                         # (up to 15 s before the process group is killed).
                         await asyncio.get_running_loop().run_in_executor(
@@ -4507,6 +4519,8 @@ async def handle_client(websocket):
                             "reason": "3D tilt scan in progress",
                         }))
                     elif nav2_client:
+                        if marker_patrol is not None and marker_patrol.is_active():
+                            marker_patrol.abort()
                         goal_id = nav2_client.navigate_to(
                             float(data.get("x", 0.0)),
                             float(data.get("y", 0.0)),
@@ -4523,8 +4537,48 @@ async def handle_client(websocket):
                 elif msg_type == "cancel_nav":
                     if frontier_explorer is not None and frontier_explorer.is_exploring():
                         frontier_explorer.stop()
-                    if nav2_client:
+                    if marker_patrol is not None and marker_patrol.is_active():
+                        marker_patrol.stop()
+                    elif nav2_client:
                         nav2_client.cancel()
+
+                elif msg_type == "start_patrol":
+                    if not motors_enabled:
+                        ok, msg_text = False, "Enable Movement before starting patrol"
+                    elif lidar_3d_scan_enabled:
+                        ok, msg_text = False, "Turn off the 3D tilt scan before starting patrol"
+                    elif marker_patrol is None or nav2_client is None:
+                        ok, msg_text = False, "Patrol requires ROS2 or simulation mode"
+                    elif frontier_explorer is not None and frontier_explorer.is_exploring():
+                        ok, msg_text = False, "Stop Auto-Explore before starting patrol"
+                    else:
+                        ok, msg_text = marker_patrol.start(
+                            data.get("markers", []),
+                            return_to_first=bool(data.get("return_to_first", False)),
+                            mode=str(data.get("mode", "ping_pong")),
+                        )
+                    await websocket.send(json.dumps({
+                        "type": "patrol_result", "success": ok, "msg": msg_text,
+                    }))
+
+                elif msg_type == "stop_patrol":
+                    if marker_patrol is not None:
+                        rtf = data.get("return_to_first")
+                        ok, msg_text = marker_patrol.stop(
+                            None if rtf is None else bool(rtf)
+                        )
+                    else:
+                        ok, msg_text = False, "Patrol requires ROS2 or simulation mode"
+                    await websocket.send(json.dumps({
+                        "type": "patrol_result", "success": ok, "msg": msg_text,
+                    }))
+
+                elif msg_type == "set_patrol_options":
+                    if marker_patrol is not None:
+                        if "return_to_first" in data:
+                            marker_patrol.set_return_to_first(bool(data["return_to_first"]))
+                        if "mode" in data:
+                            marker_patrol.set_mode(str(data["mode"]))
 
                 elif msg_type == "auto_initial_pose":
                     if nav2_client:
@@ -5876,6 +5930,7 @@ async def broadcast_loop():
                     "slam_active": _slam_running(),
                     "slam_3d_active": _octomap_proc is not None and _octomap_proc.poll() is None,
                     "frontier": frontier_explorer.status() if frontier_explorer else None,
+                    "patrol": marker_patrol.status() if marker_patrol else None,
                     "active_model_name": active_model_name,
                     "active_velocity_model_name": active_velocity_model_name,
                     "p2p_test_running": ((_p2p_proc is not None and _p2p_proc.poll() is None)

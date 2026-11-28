@@ -101,7 +101,9 @@ const state = {
         goal: null, // {x, y, theta} in metres (map frame)
         path: [], // [[x, y], ...] in metres
         distRemaining: null,
-        mapMode: 'navigate', // 'navigate' | 'set_pose'
+        mapMode: 'navigate', // 'navigate' | 'set_pose' | 'add_markers'
+        markers: [], // [{x, y, theta}, ...] in metres (map frame)
+        patrol: { state: 'IDLE', activeIndex: null, legCount: 0, returnToFirst: false, mode: 'ping_pong', reason: null },
         // View on top of the fitted map: zoom about the canvas centre, then pan (canvas px).
         view: { zoom: 1, panX: 0, panY: 0, follow: false },
         drag: null, // in-progress goal/pose heading drag {wx, wy, sx, sy, ex, ey}
@@ -300,6 +302,14 @@ const elements = {
     setPoseBtn: document.getElementById('set-pose-btn'),
     autoPoseBtn: document.getElementById('auto-pose-btn'),
     cancelNavBtn: document.getElementById('cancel-nav-btn'),
+    addMarkersBtn: document.getElementById('add-markers-btn'),
+    startPatrolBtn: document.getElementById('start-patrol-btn'),
+    stopPatrolBtn: document.getElementById('stop-patrol-btn'),
+    undoMarkerBtn: document.getElementById('undo-marker-btn'),
+    clearMarkersBtn: document.getElementById('clear-markers-btn'),
+    patrolModeSelect: document.getElementById('patrol-mode-select'),
+    patrolReturnHomeCheck: document.getElementById('patrol-return-home-check'),
+    patrolStatusText: document.getElementById('patrol-status-text'),
     mapSelect: document.getElementById('map-select'),
     loadMapBtn: document.getElementById('load-map-btn'),
     slamModeCheck: document.getElementById('slam-mode-check'),
@@ -574,7 +584,83 @@ function initNavPanel() {
         elements.setPoseBtn.addEventListener('click', () => {
             state.nav.mapMode = state.nav.mapMode === 'set_pose' ? 'navigate' : 'set_pose';
             elements.setPoseBtn.classList.toggle('active', state.nav.mapMode === 'set_pose');
+            if (elements.addMarkersBtn) elements.addMarkersBtn.classList.remove('active');
             updateNavHint();
+        });
+    }
+
+    if (elements.addMarkersBtn) {
+        elements.addMarkersBtn.addEventListener('click', () => {
+            state.nav.mapMode = state.nav.mapMode === 'add_markers' ? 'navigate' : 'add_markers';
+            elements.addMarkersBtn.classList.toggle('active', state.nav.mapMode === 'add_markers');
+            if (elements.setPoseBtn) elements.setPoseBtn.classList.remove('active');
+            updateNavHint();
+        });
+    }
+
+    if (elements.startPatrolBtn) {
+        elements.startPatrolBtn.addEventListener('click', () => {
+            if (state.nav.markers.length < 2) return;
+            if (state.nav.mapMode === 'add_markers') {
+                state.nav.mapMode = 'navigate';
+                if (elements.addMarkersBtn) elements.addMarkersBtn.classList.remove('active');
+                updateNavHint();
+            }
+            sendMessage({
+                type: 'start_patrol',
+                markers: state.nav.markers,
+                return_to_first: !!elements.patrolReturnHomeCheck?.checked,
+                mode: elements.patrolModeSelect?.value || 'ping_pong',
+            });
+        });
+    }
+
+    if (elements.stopPatrolBtn) {
+        elements.stopPatrolBtn.addEventListener('click', () => {
+            sendMessage({
+                type: 'stop_patrol',
+                return_to_first: !!elements.patrolReturnHomeCheck?.checked,
+            });
+        });
+    }
+
+    if (elements.undoMarkerBtn) {
+        elements.undoMarkerBtn.addEventListener('click', () => {
+            if (state.nav.patrol.state === 'PATROLLING' || state.nav.patrol.state === 'RETURNING_FIRST') return;
+            state.nav.markers.pop();
+            updatePatrolUI();
+            drawNavMap();
+        });
+    }
+
+    if (elements.clearMarkersBtn) {
+        elements.clearMarkersBtn.addEventListener('click', () => {
+            if (state.nav.patrol.state === 'PATROLLING' || state.nav.patrol.state === 'RETURNING_FIRST') return;
+            state.nav.markers = [];
+            updatePatrolUI();
+            drawNavMap();
+        });
+    }
+
+    if (elements.patrolModeSelect) {
+        elements.patrolModeSelect.addEventListener('change', () => {
+            const mode = elements.patrolModeSelect.value || 'ping_pong';
+            state.nav.patrol.mode = mode;
+            if (state.nav.patrol.state === 'PATROLLING' || state.nav.patrol.state === 'RETURNING_FIRST') {
+                sendMessage({ type: 'set_patrol_options', mode });
+            }
+            drawNavMap();
+        });
+    }
+
+    if (elements.patrolReturnHomeCheck) {
+        elements.patrolReturnHomeCheck.addEventListener('change', () => {
+            const enabled = !!elements.patrolReturnHomeCheck.checked;
+            state.nav.patrol.returnToFirst = enabled;
+            if (state.nav.patrol.state === 'PATROLLING' || state.nav.patrol.state === 'RETURNING_FIRST') {
+                sendMessage({ type: 'set_patrol_options', return_to_first: enabled });
+            }
+            drawNavMap();
         });
     }
 
@@ -599,6 +685,7 @@ function initNavPanel() {
 
     drawNavMap();
     updateNavHint();
+    updatePatrolUI();
 }
 
 function updateNavHint() {
@@ -608,6 +695,8 @@ function updateNavHint() {
         hint.textContent = 'Connect in --ros2 or --sim mode to enable navigation';
     } else if (state.nav.mapMode === 'set_pose') {
         hint.textContent = 'Click the robot\'s position (drag to set its heading) for AMCL';
+    } else if (state.nav.mapMode === 'add_markers') {
+        hint.textContent = 'Click (or drag for heading) on the map to add patrol markers';
     } else if (state.nav.mapImage) {
         hint.textContent = 'Click = goal, drag = goal + heading · scroll = zoom · right-drag = pan';
     } else {
@@ -847,6 +936,10 @@ function commitNavMapPoint(x, y, theta) {
         state.nav.mapMode = 'navigate';
         if (elements.setPoseBtn) elements.setPoseBtn.classList.remove('active');
         updateNavHint();
+    } else if (state.nav.mapMode === 'add_markers') {
+        state.nav.markers.push({ x, y, theta });
+        console.log(`Patrol marker #${state.nav.markers.length} (${x.toFixed(2)}, ${y.toFixed(2)}, ${deg}°)`);
+        updatePatrolUI();
     } else {
         state.nav.goal = { x, y, theta };
         sendMessage({ type: 'set_nav_goal', x, y, theta });
@@ -959,9 +1052,75 @@ function drawNavMap() {
     if (state.nav.goal && state.nav.goal.theta && state.nav.mapMeta) {
         drawHeading(state.nav.goal.x, state.nav.goal.y, state.nav.goal.theta, '#ef4444');
     }
+
+    // 3.3 Patrol markers & path
+    const markers = state.nav.markers;
+    if (markers && markers.length > 0 && state.nav.mapMeta) {
+        const pts = markers.map(m => worldToCanvasPx(m.x, m.y));
+        if (pts.length > 1) {
+            ctx.save();
+            ctx.setLineDash([6, 4]);
+            ctx.strokeStyle = 'rgba(168, 85, 247, 0.75)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            let started = false;
+            let firstPt = null;
+            for (const p of pts) {
+                if (!p) continue;
+                if (!started) { ctx.moveTo(p.x, p.y); firstPt = p; started = true; }
+                else ctx.lineTo(p.x, p.y);
+            }
+            const patrolMode = elements.patrolModeSelect?.value || state.nav.patrol.mode || 'ping_pong';
+            if (started && patrolMode === 'loop' && markers.length >= 3 && firstPt) {
+                ctx.lineTo(firstPt.x, firstPt.y);
+            }
+            if (started) ctx.stroke();
+            ctx.restore();
+        }
+        const activeIdx = state.nav.patrol.activeIndex;
+        const returnHome = !!elements.patrolReturnHomeCheck?.checked;
+        for (let i = 0; i < markers.length; i++) {
+            const p = pts[i];
+            if (!p) continue;
+            const isActive = activeIdx === i;
+            const isFirst = i === 0;
+            if (markers[i].theta) {
+                drawHeading(markers[i].x, markers[i].y, markers[i].theta, '#a855f7');
+            }
+            ctx.save();
+            if (isActive) {
+                ctx.strokeStyle = '#22d3ee';
+                ctx.lineWidth = 2.5;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 14, 0, Math.PI * 2);
+                ctx.stroke();
+            } else if (isFirst && returnHome) {
+                ctx.strokeStyle = '#4ade80';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 13, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+            ctx.fillStyle = isActive ? '#22d3ee' : '#a855f7';
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 9, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#09090b';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 10px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(String(i + 1), p.x, p.y + 0.5);
+            ctx.restore();
+        }
+    }
+
     const dr = state.nav.drag;
     if (dr) {
-        const col = state.nav.mapMode === 'set_pose' ? '#f59e0b' : '#ef4444';
+        const col = state.nav.mapMode === 'set_pose' ? '#f59e0b'
+            : (state.nav.mapMode === 'add_markers' ? '#a855f7' : '#ef4444');
         ctx.strokeStyle = col; ctx.lineWidth = 2;
         ctx.beginPath(); ctx.arc(dr.sx, dr.sy, 6, 0, Math.PI * 2); ctx.stroke();
         if (Math.hypot(dr.ex - dr.sx, dr.ey - dr.sy) >= 12) {
@@ -1436,6 +1595,70 @@ function updateFrontierStatus(frontier) {
         } else {
             frontierStatusText.textContent = '';
         }
+    }
+}
+
+function updatePatrolUI() {
+    const {
+        addMarkersBtn, startPatrolBtn, stopPatrolBtn,
+        undoMarkerBtn, clearMarkersBtn, patrolStatusText,
+    } = elements;
+    const p = state.nav.patrol;
+    const pstate = p.state || 'IDLE';
+    const active = pstate === 'PATROLLING' || pstate === 'RETURNING_FIRST';
+    const count = state.nav.markers.length;
+
+    if (addMarkersBtn) {
+        addMarkersBtn.disabled = active;
+        if (active && state.nav.mapMode === 'add_markers') {
+            state.nav.mapMode = 'navigate';
+            addMarkersBtn.classList.remove('active');
+            updateNavHint();
+        }
+    }
+    if (startPatrolBtn) {
+        startPatrolBtn.style.display = active ? 'none' : '';
+        startPatrolBtn.disabled = active || count < 2 || state.nav.status === 'UNAVAILABLE';
+    }
+    if (stopPatrolBtn) {
+        stopPatrolBtn.style.display = active ? '' : 'none';
+        stopPatrolBtn.textContent = pstate === 'RETURNING_FIRST' ? ' Force Stop' : ' Stop Patrol';
+    }
+    if (undoMarkerBtn) undoMarkerBtn.disabled = active || count === 0;
+    if (clearMarkersBtn) clearMarkersBtn.disabled = active || count === 0;
+
+    if (patrolStatusText) {
+        patrolStatusText.style.color = pstate === 'FAILED' ? 'var(--bad-bright)' : 'var(--text-muted)';
+        if (pstate === 'PATROLLING') {
+            const idx = (p.activeIndex ?? 0) + 1;
+            patrolStatusText.textContent = `Patrolling → #${idx}/${p.markerCount || count} (leg ${p.legCount || 1})`;
+        } else if (pstate === 'RETURNING_FIRST') {
+            patrolStatusText.textContent = 'Returning to marker #1…';
+        } else if (pstate === 'FAILED') {
+            patrolStatusText.textContent = p.reason || 'Patrol failed';
+        } else {
+            patrolStatusText.textContent = count === 0
+                ? 'No markers'
+                : `${count} marker${count === 1 ? '' : 's'} placed`;
+        }
+    }
+}
+
+function updatePatrolStatus(patrol) {
+    const prevActive = state.nav.patrol.activeIndex;
+    const prevState = state.nav.patrol.state;
+    state.nav.patrol = {
+        state: patrol.state || 'IDLE',
+        activeIndex: patrol.active_index ?? null,
+        markerCount: patrol.marker_count ?? 0,
+        legCount: patrol.leg_count ?? 0,
+        returnToFirst: !!patrol.return_to_first,
+        mode: patrol.mode || 'ping_pong',
+        reason: patrol.reason || null,
+    };
+    updatePatrolUI();
+    if (prevActive !== state.nav.patrol.activeIndex || prevState !== state.nav.patrol.state) {
+        drawNavMap();
     }
 }
 
@@ -2692,6 +2915,15 @@ function handleMessage(data) {
         return;
     }
 
+    if (data.type === "patrol_result") {
+        const { patrolStatusText } = elements;
+        if (patrolStatusText) {
+            patrolStatusText.textContent = data.msg || '';
+            patrolStatusText.style.color = data.success ? 'var(--text-secondary)' : 'var(--bad-bright)';
+        }
+        return;
+    }
+
     if (data.type === "map_data") {
         if (data.error) {
             console.warn(`[nav] Map load error: ${data.error}`);
@@ -2847,6 +3079,7 @@ function handleMessage(data) {
         if (data.slam_active !== undefined) updateSlamStatus(data.slam_active);
         if ('nav_health' in data) updateNavHealth(data.nav_health, !!data.slam_active, data.nav_phase);
         if (data.frontier) updateFrontierStatus(data.frontier);
+        if (data.patrol) updatePatrolStatus(data.patrol);
 
         state.needsUIUpdate = true; // refresh nav-metrics / fps text
 

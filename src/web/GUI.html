@@ -740,6 +740,28 @@
                     </label>
                 </div>
 
+                <!-- Patrol marker controls -->
+                <div class="nav-controls" style="margin-top: 0.45rem;">
+                    <button id="add-markers-btn" class="btn-nav" title="Click on the map to place patrol markers"> Add Markers</button>
+                    <button id="start-patrol-btn" class="btn-nav" disabled title="Move back and forth between placed markers"> Start Patrol</button>
+                    <button id="stop-patrol-btn" class="btn-nav btn-nav-danger" style="display:none;"> Stop Patrol</button>
+                    <button id="undo-marker-btn" class="btn-nav-sm" disabled title="Remove last marker">Undo</button>
+                    <button id="clear-markers-btn" class="btn-nav-sm" disabled title="Clear all markers">Clear</button>
+                </div>
+                <div class="nav-map-row" style="margin-top: 0.35rem; justify-content: space-between; flex-wrap: wrap; gap: 0.4rem;">
+                    <select id="patrol-mode-select" class="btn" title="Patrol route order"
+                        style="padding:0.2rem 0.4rem; font-size:0.75rem; background:var(--bg-tertiary);
+                               color:var(--text-primary); border:1px solid var(--border-color); outline:none;">
+                        <option value="ping_pong">Back &amp; Forth (1→2→3→2→1)</option>
+                        <option value="loop">Loop (1→2→3→1)</option>
+                    </select>
+                    <label style="display:flex; align-items:center; gap:0.3rem; font-size:0.75rem; color:var(--text-secondary); cursor:pointer;">
+                        <input type="checkbox" id="patrol-return-home-check">
+                        Return to #1 on stop
+                    </label>
+                    <span id="patrol-status-text" style="font-size:0.75rem; color:var(--text-muted);">No markers</span>
+                </div>
+
                 <!-- Stats row -->
                 <div class="nav-stats" style="margin-top: 0.4rem;">
                     <span>Dist remaining: <b id="nav-dist-remaining">—</b> m</span>
@@ -757,6 +779,7 @@
                     <span style="color:#22d3ee;"> Robot</span>
                     <span style="color:#ef4444;"> Goal</span>
                     <span style="color:#f59e0b;"> Initial Pose</span>
+                    <span style="color:#a855f7;"> Markers</span>
                 </div>
 
                 </div><!-- /navigate -->
