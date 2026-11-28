@@ -16,6 +16,9 @@ into the same image through the camera-lidar calibration, says WHERE. Per object
    Chairs/couches: the backrest is where the points rise highest; its side is the
    back (+depth in the GUI mesh). The lidar sees only the camera-facing surfaces, so
    a footprint shallower than the class minimum is extended AWAY from the robot.
+5. Clean-up: one object with two labels keeps the better-supported one; tables the
+   camera never labels come from the lidar (a surface at 0.60-0.88 m with open space
+   under it); chairs within 35 cm of a table face it and are moved out of it.
 
 Usage:
   room_inventory.py CAPTURE_DIR --oak-calib oak_front_calib.json [--model yolo11x-seg.pt]
@@ -39,6 +42,12 @@ SIZE = {"chair": ((0.4, 0.7), (0.4, 0.7), (0.7, 1.1)), "couch": ((0.75, 2.6), (0
         "table": ((0.5, 2.2), (0.5, 1.2), (0.4, 0.9)), "tv": ((0.5, 1.8), (0.05, 0.5), (0.3, 1.6)),
         "bed": ((1.8, 2.3), (0.9, 2.1), (0.4, 0.8))}
 MIN_SHARE = 0.25                    # of processed frames an instance must appear in
+# Per-class confidence floor. The sofa reads "couch" at only ~0.22 but in 29/31
+# frames; MIN_SHARE is the real evidence for it.
+CONF_FLOOR = {"couch": 0.15}
+TABLE_BAND = (0.60, 0.88)           # lidar table search: surface height band (m) ...
+TABLE_CELL = 0.05                   # ... on a 5 cm top-view grid ...
+SEAT_AT_TABLE_M = 0.35              # chairs this close to a table edge face it
 MERGE_M = 0.5                       # same-class detections closer than this are one object
 
 
@@ -176,12 +185,12 @@ def main():
     dets = []                                          # (frame, kind, conf, idx array)
     for fi, f in enumerate(frames):
         img = cv2.imread(f)
-        r = model.predict(img, conf=a.conf, imgsz=640, retina_masks=True, verbose=False)[0]
+        r = model.predict(img, conf=min([a.conf, *CONF_FLOOR.values()]), imgsz=640, retina_masks=True, verbose=False)[0]
         if r.masks is None:
             continue
         for m, k, s in zip(r.masks.data.cpu().numpy(), r.boxes.cls.tolist(), r.boxes.conf.tolist()):
             kind = KINDS.get(model.names[int(k)])
-            if not kind:
+            if not kind or s < CONF_FLOOR.get(kind, a.conf):
                 continue
             mask = cv2.erode((m > 0.5).astype(np.uint8), np.ones((5, 5), np.uint8))
             u = uv[inimg].astype(int)
@@ -211,11 +220,16 @@ def main():
         f = fit(o["kind"], base[idx])
         if f is None:
             continue
-        f.update(seen=round(share, 2), conf=round(float(np.median(o["conf"])), 2))
-        if os.environ.get("INV_DEBUG"):
-            np.save(os.path.join(a.capture, f"inv_pts_{len(inv)}_{o['kind']}.npy"), base[idx])
+        f.update(seen=round(share, 2), conf=round(float(np.median(o["conf"])), 2), source="camera")
+        f["_idx"] = idx
         inv.append(f)
-    # A point claimed by two objects of different kinds (couch vs armchair) stays where seen.
+    inv = drop_duplicates(inv)
+    inv += lidar_tables(base, inv)
+    seat_chairs(inv)
+    for i, f in enumerate(inv):
+        if os.environ.get("INV_DEBUG") and "_idx" in f:
+            np.save(os.path.join(a.capture, f"inv_pts_{i}_{f['kind']}.npy"), base[f["_idx"]])
+        f.pop("_idx", None)
     for f in inv:
         f.update({k: round(float(v), 3) for k, v in f.items() if isinstance(v, float)})
     json.dump(dict(capture=os.path.abspath(a.capture), frame="base_footprint", frames=len(frames),
@@ -226,6 +240,79 @@ def main():
               + (f" round {f['round']} fill {f['fill']}" if 'round' in f else "")
               + (f" back {f['back_offset']}" if 'back_offset' in f else ""))
     draw(a.capture, base, inv, cam, frames)
+
+
+def drop_duplicates(inv):
+    """One physical object labelled twice (e.g. a "chair" and a "couch" mask on the
+    same armchair): keep the better-supported label when most points are shared."""
+    kept = []
+    for f in sorted(inv, key=lambda f: -f["seen"] * f["conf"]):
+        if any(len(np.intersect1d(f["_idx"], k["_idx"])) > 0.5 * min(len(f["_idx"]), len(k["_idx"])) for k in kept):
+            continue
+        kept.append(f)
+    return kept
+
+
+def lidar_tables(base, inv):
+    """Tables the camera did not label: 5 cm cells with a surface in TABLE_BAND and
+    little directly beneath it (open space under a top) or above it (not a wall or a
+    shelf), grouped 8-connected. The parked lidar sees the near part of the top; fit()
+    grows the box away from the robot to the class minimum."""
+    ij = np.floor(base[:, :2] / TABLE_CELL).astype(int)
+    off = ij.min(0); ij -= off
+    shape = ij.max(0) + 1
+    z = base[:, 2]
+    def count(m):
+        c = np.zeros(shape, np.int32); np.add.at(c, (ij[m, 0], ij[m, 1]), 1); return c
+    top = count((z >= TABLE_BAND[0]) & (z <= TABLE_BAND[1]))
+    under = count((z >= 0.25) & (z < 0.55))
+    above = count(z > 1.0)
+    grid = ((top >= 5) & (under < 0.3 * top) & (above < 0.3 * top)).astype(np.uint8)
+    n, lab = cv2.connectedComponents(grid, connectivity=8)
+    out = []
+    for k in range(1, n):
+        cells = np.argwhere(lab == k)
+        if len(cells) < 12:
+            continue
+        xy = (cells + off + 0.5) * TABLE_CELL
+        if any(f["kind"] == "table" and math.hypot(f["x"] - xy[:, 0].mean(), f["y"] - xy[:, 1].mean()) < 0.6 for f in inv):
+            continue
+        sel = lab[ij[:, 0], ij[:, 1]] == k
+        pts = base[sel & (z >= TABLE_BAND[0]) & (z <= TABLE_BAND[1])]
+        # fit() needs a body; legs are not reliably in the cells, so use the top band only.
+        f = fit("table", pts)
+        if f is None:
+            continue
+        f.update(seen=1.0, conf=0.0, source="lidar", round=False)
+        f.pop("circle_r", None); f.pop("circle_rms", None); f.pop("circle_arc", None)
+        out.append(f)
+    return out
+
+
+def seat_chairs(inv):
+    """A chair next to a table faces it (back away, +depth). The camera-only
+    backrest guess is weak for chairs at a table, whose seat hides under the top.
+    A chair overlapping the table is moved out past the edge its centre is beyond."""
+    tables = [f for f in inv if f["kind"] == "table"]
+    for ch in (f for f in inv if f["kind"] == "chair"):
+        for tb in tables:
+            c, s = math.cos(tb["yaw"]), math.sin(tb["yaw"])
+            dx, dy = ch["x"] - tb["x"], ch["y"] - tb["y"]
+            u, v = c * dx + s * dy, -s * dx + c * dy
+            ou, ov = abs(u) - tb["L"] / 2, abs(v) - tb["D"] / 2
+            half = ch["D"] / 2
+            if ou > half + SEAT_AT_TABLE_M or ov > half + SEAT_AT_TABLE_M:
+                continue
+            along = ou >= ov
+            nu, nv = (math.copysign(1, u), 0.0) if along else (0.0, math.copysign(1, v))
+            if (ou if along else ov) < half:                 # overlapping: move out
+                pu = nu * (tb["L"] / 2 + half + 0.02) if along else u
+                pv = v if along else nv * (tb["D"] / 2 + half + 0.02)
+                ch["x"], ch["y"] = tb["x"] + c * pu - s * pv, tb["y"] + s * pu + c * pv
+            nx, ny = c * nu - s * nv, s * nu + c * nv
+            ch["yaw"] = math.atan2(-nx, ny)                  # +depth (back) away from the table
+            ch["at_table"] = True
+            break
 
 
 def box_corners(f, z0=0.0, z1=None):
